@@ -35,9 +35,16 @@ impl Viewport {
     }
     pub fn fit(&mut self, bounds: [f32; 4], size: [f32; 2]) {
         self.center = [(bounds[0] + bounds[2]) * 0.5, (bounds[1] + bounds[3]) * 0.5];
-        self.zoom = (((size[0] - 64.0).max(1.0) / (bounds[2] - bounds[0]).max(1.0))
-            .min((size[1] - 64.0).max(1.0) / (bounds[3] - bounds[1]).max(1.0)))
-        .clamp(0.03, 32.0);
+        self.zoom = (size[0] / ((bounds[2] - bounds[0]).max(1.0) + 80.0))
+            .min(size[1] / ((bounds[3] - bounds[1]).max(1.0) + 80.0))
+            .clamp(0.03, 32.0);
+    }
+
+    pub fn fit_world(&mut self, bounds: [f32; 4], size: [f32; 2]) {
+        self.center = [(bounds[0] + bounds[2]) * 0.5, (bounds[1] + bounds[3]) * 0.5];
+        self.zoom = (size[0] / ((bounds[2] - bounds[0]).max(1.0) * 1.1 + 300.0))
+            .min(size[1] / ((bounds[3] - bounds[1]).max(1.0) * 1.1))
+            .clamp(0.03, 32.0);
     }
 }
 
@@ -137,6 +144,13 @@ mod tests {
         v.fit([-256.0, -128.0, 256.0, 128.0], [1088.0, 576.0]);
         near(v.center, [0.0, 0.0]);
         assert!(v.zoom > 0.0 && v.zoom <= 2.0);
+    }
+
+    #[test]
+    fn fitting_a_level_uses_original_eighty_point_margin() {
+        let mut view = Viewport::default();
+        view.fit([0.0, 0.0, 320.0, 240.0], [800.0, 600.0]);
+        assert!((view.zoom - 1.875).abs() < 0.0001);
     }
 
     #[test]

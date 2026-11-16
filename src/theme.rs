@@ -29,6 +29,10 @@ pub fn configure(ctx: &egui::Context) {
     fonts
         .families
         .insert(FontFamily::Name("heading".into()), vec!["ldtk-bold".into()]);
+    fonts.families.insert(
+        FontFamily::Name("panel-title".into()),
+        vec!["ldtk-light".into()],
+    );
     for path in [
         "/System/Library/Fonts/Supplemental/Arial.ttf",
         "C:/Windows/Fonts/arial.ttf",
@@ -44,6 +48,47 @@ pub fn configure(ctx: &egui::Context) {
                 .or_default()
                 .insert(0, "system-arial".into());
             break;
+        }
+    }
+    let fallbacks = fonts
+        .families
+        .get(&FontFamily::Proportional)
+        .cloned()
+        .unwrap_or_default();
+    for family in ["heading", "panel-title"] {
+        fonts
+            .families
+            .entry(FontFamily::Name(family.into()))
+            .or_default()
+            .extend(fallbacks.iter().cloned());
+    }
+    for (name, paths) in [
+        (
+            "system-symbols",
+            &[
+                "/System/Library/Fonts/Apple Symbols.ttf",
+                "C:/Windows/Fonts/seguisym.ttf",
+                "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+            ][..],
+        ),
+        (
+            "system-cjk",
+            &[
+                "/System/Library/Fonts/PingFang.ttc",
+                "C:/Windows/Fonts/msyh.ttc",
+                "C:/Windows/Fonts/simsun.ttc",
+                "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+                "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+            ][..],
+        ),
+    ] {
+        if let Some(bytes) = paths.iter().find_map(|path| std::fs::read(path).ok()) {
+            fonts
+                .font_data
+                .insert(name.into(), Arc::new(FontData::from_owned(bytes)));
+            for family in fonts.families.values_mut() {
+                family.push(name.into());
+            }
         }
     }
     ctx.set_fonts(fonts);

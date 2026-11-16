@@ -1,3 +1,93 @@
+#[path = "editor/app_log.rs"]
+mod app_log;
+#[path = "editor/bleep.rs"]
+pub(crate) mod bleep;
+#[path = "editor/brush.rs"]
+mod brush;
+#[path = "editor/chrome.rs"]
+mod chrome;
+#[path = "editor/command_args.rs"]
+mod command_args;
+#[path = "editor/command_tools.rs"]
+mod command_tools;
+#[path = "editor/crash.rs"]
+mod crash;
+#[path = "editor/entity_chain_preview.rs"]
+mod entity_chain_preview;
+#[path = "editor/entity_erase.rs"]
+mod entity_erase;
+#[path = "editor/entity_inspector.rs"]
+mod entity_inspector;
+#[path = "editor/entity_tools.rs"]
+mod entity_tools;
+#[path = "editor/field_tools.rs"]
+mod field_tools;
+#[path = "editor/focus.rs"]
+mod focus;
+#[path = "editor/help.rs"]
+mod help;
+#[path = "editor/home_files.rs"]
+mod home_files;
+#[path = "editor/hooks.rs"]
+mod hooks;
+#[path = "editor/level_navigation.rs"]
+mod level_navigation;
+#[path = "editor/level_resize.rs"]
+mod level_resize;
+#[path = "editor/library.rs"]
+mod library;
+#[cfg(test)]
+#[path = "editor/modal_workflow_tests.rs"]
+mod modal_workflow_tests;
+#[path = "editor/navigation.rs"]
+mod navigation;
+#[path = "editor/notifications.rs"]
+mod notifications;
+#[path = "editor/palette_popout.rs"]
+mod palette_popout;
+#[path = "editor/panels.rs"]
+mod panels;
+#[path = "editor/point_tools.rs"]
+mod point_tools;
+#[path = "editor/preview.rs"]
+mod preview;
+#[path = "editor/resize_tools.rs"]
+mod resize_tools;
+#[path = "editor/resources.rs"]
+mod resources;
+#[path = "editor/search.rs"]
+mod search;
+#[path = "editor/selection_click.rs"]
+mod selection_click;
+#[path = "editor/selection_render.rs"]
+mod selection_render;
+#[path = "editor/selection_tools.rs"]
+mod selection_tools;
+#[path = "editor/services.rs"]
+mod services;
+#[path = "editor/settings.rs"]
+mod settings;
+#[path = "editor/shortcuts.rs"]
+mod shortcuts;
+#[path = "editor/text_editor.rs"]
+mod text_editor;
+#[path = "editor/tools.rs"]
+mod tools;
+#[path = "editor/ui_commit.rs"]
+mod ui_commit;
+#[path = "editor/ui_fields.rs"]
+mod ui_fields;
+#[path = "editor/update_dialog.rs"]
+mod update_dialog;
+#[path = "editor/visibility.rs"]
+mod visibility;
+#[path = "editor/world_context.rs"]
+mod world_context;
+#[path = "editor/world_form_dialog.rs"]
+mod world_form_dialog;
+#[path = "editor/world_tools.rs"]
+mod world_tools;
+
 use crate::{
     assets::Assets,
     canvas::{self, RenderOptions, number, text},
@@ -11,19 +101,44 @@ use ldtk_core::{History, LevelKey, Project};
 use serde_json::Value;
 use std::{
     collections::HashSet,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::mpsc::{self, Receiver},
     time::Instant,
 };
 
-#[derive(Clone, Copy, PartialEq)]
-enum Tool {
-    Paint,
-    Erase,
-    Fill,
+fn resource_path(relative: &str) -> PathBuf {
+    resource_path_in(relative, std::env::current_exe().ok().as_deref())
 }
 
-#[derive(Clone, Copy, PartialEq)]
+fn resource_path_in(relative: &str, executable: Option<&Path>) -> PathBuf {
+    if let Some(parent) = executable.and_then(Path::parent) {
+        for root in [parent.join("../Resources"), parent.join("resources")] {
+            let candidate = root.join(relative);
+            if candidate.exists() {
+                return candidate;
+            }
+        }
+    }
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(relative)
+}
+
+pub fn native_gpu_config() -> eframe::egui_wgpu::WgpuConfiguration {
+    let setup = eframe::egui_wgpu::WgpuSetupCreateNew {
+        power_preference: if settings::Settings::load().bool("useBestGPU") {
+            eframe::wgpu::PowerPreference::HighPerformance
+        } else {
+            eframe::wgpu::PowerPreference::LowPower
+        },
+        ..Default::default()
+    };
+    eframe::egui_wgpu::WgpuConfiguration {
+        desired_maximum_frame_latency: Some(1),
+        wgpu_setup: setup.into(),
+        ..Default::default()
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
 enum Panel {
     Project,
     Level,
@@ -33,19 +148,35 @@ enum Panel {
     Tilesets,
     Help,
     Entity,
+    World,
+    Fields,
+    Rules,
+    Settings,
+    Export,
 }
 
+#[derive(Clone)]
 enum Action {
+    InstallUpdate,
     New,
+    NewInDir(PathBuf),
     Browse,
+    BrowseInDir(PathBuf),
+    BrowseOgmo,
     Open(PathBuf),
+    ImportOgmo(PathBuf),
+    OpenBackup { backup: PathBuf, original: PathBuf },
+    RestoreBackup { backup: PathBuf, original: PathBuf },
+    RenameProject(String),
     Quit,
+    Close,
 }
 
 pub struct EditorApp {
     project: Option<Project>,
     history: History,
     selected: Option<LevelKey>,
+    active_world: Option<usize>,
     layer: usize,
     viewport: Viewport,
     assets: Assets,
@@ -55,7 +186,6 @@ pub struct EditorApp {
     details: bool,
     single_layer: bool,
     zen: bool,
-    tool: Tool,
     int_value: i32,
     tile_id: i32,
     entity_uid: Option<i64>,
@@ -64,10 +194,14 @@ pub struct EditorApp {
     dirty: bool,
     fit: bool,
     stroke: bool,
+    stroke_erase: bool,
     last_cell: Option<[i32; 2]>,
     panel: Option<Panel>,
     pending: Option<Action>,
-    loading: Option<Receiver<Result<Project, String>>>,
+    loading: Option<Receiver<Result<services::LoadedProject, String>>>,
+    saving: Option<Receiver<Result<services::SavedProject, String>>>,
+    exporting: Option<Receiver<Result<ldtk_core::exports::ExportReport, String>>>,
+    external_changes: Option<Vec<PathBuf>>,
     status: String,
     allow_close: bool,
     frame_time: f32,
@@ -75,14 +209,137 @@ pub struct EditorApp {
     new_name: String,
     new_kind: String,
     new_grid: i32,
+    settings: settings::Settings,
+    clipboard: Option<Value>,
+    selection: Option<[i32; 4]>,
+    stamp: Option<Value>,
+    random_tiles: bool,
+    tile_stacking: bool,
+    render_auto: bool,
+    tile_tags: bool,
+    gesture: Option<tools::Gesture>,
+    tile_rect: [i32; 4],
+    atlas_selection: Option<(i64, Vec<i32>)>,
+    definition_uid: Option<i64>,
+    field_owner: Option<i64>,
+    field_uid: Option<i64>,
+    rule_group_uid: Option<i64>,
+    rule_uid: Option<i64>,
+    command_palette: bool,
+    search: String,
+    status_error: bool,
+    file_snapshot: Option<ldtk_core::FilesystemSnapshot>,
+    last_file_check: Instant,
+    command_result: Option<Receiver<command_tools::CommandEvent>>,
+    command_cancel: Option<mpsc::Sender<()>>,
+    command_output: std::collections::VecDeque<(String, bool)>,
+    command_open: bool,
+    command_title: String,
+    command_cancelled: bool,
+    hook_flow: Option<hooks::HookFlow>,
+    resource_checks: std::collections::HashMap<PathBuf, Vec<i64>>,
+    repaint: Option<egui::Context>,
+    search_index: usize,
+    search_focus: bool,
+    space_pressed: Option<Instant>,
+    space_dragged: bool,
+    painted_cells: HashSet<[i32; 2]>,
+    random_state: u64,
+    world_depth: i64,
+    field_pick: Option<field_tools::FieldPick>,
+    chain_entity: Option<String>,
+    selection_group: Option<Value>,
+    crash: Option<(String, Option<PathBuf>)>,
+    last_chance: Option<(String, Instant)>,
+    resource_missing: Vec<(PathBuf, Vec<i64>, String)>,
+    level_resize: Option<level_resize::LevelResize>,
+    preview_tile: Option<i32>,
+    clicktrap: bool,
+    focus_frames: Option<u8>,
+    ui_commit: ui_commit::UiCommit,
+    world_context: world_context::WorldContext,
 }
 
 impl EditorApp {
+    #[allow(
+        dead_code,
+        reason = "Native acceptance harness uses the shared app module"
+    )]
+    pub fn set_capture_view(&mut self, center: [f32; 2], zoom: f32, world: bool) {
+        self.viewport.center = center;
+        self.viewport.zoom = zoom;
+        self.world = world;
+        self.fit = false;
+    }
+    #[allow(
+        dead_code,
+        reason = "Read-only evidence from native acceptance harness"
+    )]
+    pub fn capture_state(&self) -> Value {
+        use std::hash::{Hash, Hasher};
+        let layer = self
+            .selected
+            .and_then(|key| self.project.as_ref()?.layer(key, self.layer));
+        let mut digest = std::collections::hash_map::DefaultHasher::new();
+        layer.map(|l| l["intGridCsv"].to_string()).hash(&mut digest);
+        let gesture = self.gesture.as_ref().map(|gesture| match gesture {
+            tools::Gesture::Rectangle { .. } => "Rectangle",
+            tools::Gesture::SelectionMove { .. } => "SelectionMove",
+            tools::Gesture::EntityMove { .. } => "EntityMove",
+            tools::Gesture::EntityResize { .. } => "EntityResize",
+            tools::Gesture::LevelMove { .. } => "LevelMove",
+        });
+        serde_json::json!({"panel":self.panel.map(|panel|format!("{panel:?}")),"gesture":gesture,"stroke":self.stroke,"ready":self.capture_ready(),"clicktrap":self.clicktrap,"world":self.world,"dirty":self.dirty,"view":{"center":self.viewport.center,"zoom":self.viewport.zoom},"level":self.selected.and_then(|key|self.project.as_ref()?.level(key)).map(|l|l["identifier"].clone()),"layer":layer.map(|l|l["__identifier"].clone()),"layerType":layer.map(|l|l["__type"].clone()),"intGridNonzero":layer.and_then(|l|l["intGridCsv"].as_array()).map(|cells|cells.iter().filter(|v|v.as_i64().is_some_and(|v|v!=0)).count()),"intGridChecksum":format!("{:x}",digest.finish()),"entityCount":layer.and_then(|l|l["entityInstances"].as_array()).map(Vec::len)})
+    }
+    pub fn capture_ready(&self) -> bool {
+        self.project.is_some()
+            && !self.is_busy()
+            && self.assets.stats().pending == 0
+            && self.resource_checks.is_empty()
+    }
     pub fn new(cc: &eframe::CreationContext<'_>, path: Option<PathBuf>) -> Self {
         let mut app = Self::empty();
-        if let Some(path) = path {
-            app.open_async(&cc.egui_ctx, path);
+        canvas::configure_gpu(cc.wgpu_render_state.as_ref());
+        app.repaint = Some(cc.egui_ctx.clone());
+        crate::platform_files::set_context(&cc.egui_ctx);
+        app.settings = settings::Settings::load();
+        app.random_state ^= std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos() as u64)
+            .unwrap_or(1);
+        app.grid = app.settings.bool("grid");
+        app.details = app.settings.bool("showDetails");
+        app.zen = app.settings.bool("zenMode");
+        app.single_layer = app.settings.bool("singleLayerMode");
+        app.tile_stacking = app.settings.bool("tileStacking");
+        app.tile_tags = app.settings.bool("tileEnumOverlays");
+        cc.egui_ctx
+            .set_zoom_factor(app.settings.float("appUiScale", 1.0));
+        if app.settings.bool("startFullScreen") {
+            cc.egui_ctx
+                .send_viewport_cmd(egui::ViewportCommand::Fullscreen(true));
         }
+        let path = path.or_else(|| {
+            app.settings
+                .bool("openLastProject")
+                .then(|| {
+                    app.settings.value["lastProject"]["filePath"]
+                        .as_str()
+                        .map(PathBuf::from)
+                })
+                .flatten()
+        });
+        if let Some(path) = path {
+            if path
+                .extension()
+                .is_some_and(|e| e.eq_ignore_ascii_case("ogmo"))
+            {
+                app.import_ogmo_async(&cc.egui_ctx, path);
+            } else {
+                app.open_async(&cc.egui_ctx, path);
+            }
+        }
+        app.initialize_updater(&cc.egui_ctx);
         app
     }
 
@@ -91,6 +348,7 @@ impl EditorApp {
             project: None,
             history: History::default(),
             selected: None,
+            active_world: None,
             layer: 0,
             viewport: Viewport::default(),
             assets: Assets::default(),
@@ -100,7 +358,6 @@ impl EditorApp {
             details: true,
             single_layer: false,
             zen: false,
-            tool: Tool::Paint,
             int_value: 1,
             tile_id: 0,
             entity_uid: None,
@@ -109,10 +366,14 @@ impl EditorApp {
             dirty: false,
             fit: true,
             stroke: false,
+            stroke_erase: false,
             last_cell: None,
             panel: None,
             pending: None,
             loading: None,
+            saving: None,
+            exporting: None,
+            external_changes: None,
             status: "Open a project or create a new one.".into(),
             allow_close: false,
             frame_time: 0.0,
@@ -120,6 +381,55 @@ impl EditorApp {
             new_name: String::new(),
             new_kind: "IntGrid".into(),
             new_grid: 16,
+            settings: settings::Settings::default(),
+            clipboard: None,
+            selection: None,
+            stamp: None,
+            random_tiles: false,
+            tile_stacking: true,
+            render_auto: true,
+            tile_tags: false,
+            gesture: None,
+            tile_rect: [0, 0, 1, 1],
+            atlas_selection: None,
+            definition_uid: None,
+            field_owner: None,
+            field_uid: None,
+            rule_group_uid: None,
+            rule_uid: None,
+            command_palette: false,
+            search: String::new(),
+            status_error: false,
+            file_snapshot: None,
+            last_file_check: Instant::now(),
+            command_result: None,
+            command_cancel: None,
+            command_output: Default::default(),
+            command_open: false,
+            command_title: String::new(),
+            command_cancelled: false,
+            hook_flow: None,
+            resource_checks: Default::default(),
+            repaint: None,
+            search_index: 0,
+            search_focus: false,
+            space_pressed: None,
+            space_dragged: false,
+            painted_cells: HashSet::new(),
+            random_state: 0x6a09e667f3bcc909,
+            world_depth: 0,
+            field_pick: None,
+            chain_entity: None,
+            selection_group: None,
+            crash: None,
+            last_chance: None,
+            resource_missing: Vec::new(),
+            level_resize: None,
+            preview_tile: None,
+            clicktrap: false,
+            focus_frames: None,
+            ui_commit: ui_commit::UiCommit::default(),
+            world_context: world_context::WorldContext::default(),
         }
     }
 
@@ -129,7 +439,11 @@ impl EditorApp {
         self.status = format!("Opening {}…", path.display());
         let ctx = ctx.clone();
         std::thread::spawn(move || {
-            let result = Project::load(&path).map_err(|e| e.to_string());
+            let result = (|| {
+                let project = Project::load(&path).map_err(|e| e.to_string())?;
+                let loaded = services::prepare_project(project, Vec::new())?;
+                Ok(loaded)
+            })();
             let _ = tx.send(result);
             ctx.request_repaint();
         });
@@ -137,10 +451,41 @@ impl EditorApp {
 
     fn set_project(&mut self, project: Project) {
         self.selected = project.level_keys().first().copied();
+        if self.settings.bool("openLastProject")
+            && project.path.as_ref().is_some_and(|p| {
+                self.settings.value["lastProject"]["filePath"].as_str() == p.to_str()
+            })
+            && let Some(uid) = self.settings.value["lastProject"]["levelUid"].as_i64()
+        {
+            self.selected = project
+                .level_keys()
+                .into_iter()
+                .find(|key| {
+                    project
+                        .level(*key)
+                        .is_some_and(|l| l["uid"].as_i64() == Some(uid))
+                })
+                .or(self.selected);
+        }
+        self.world = false;
+
+        self.active_world = self.selected.and_then(|k| k.world).or_else(|| {
+            project.json["worlds"]
+                .as_array()
+                .filter(|a| !a.is_empty())
+                .map(|_| 0)
+        });
+        self.world_depth = self
+            .selected
+            .and_then(|key| project.level(key))
+            .and_then(|l| l["worldDepth"].as_i64())
+            .unwrap_or(0);
         self.project = Some(project);
         self.layer = 0;
         self.history = History::default();
-        self.assets = Assets::default();
+        self.assets.clear();
+        self.resource_checks.clear();
+        self.resource_missing.clear();
         self.hidden.clear();
         self.dirty = false;
         self.stroke = false;
@@ -148,6 +493,33 @@ impl EditorApp {
         self.fit = true;
         self.panel = None;
         self.entity_index = None;
+        self.selection = None;
+        self.stamp = None;
+        self.gesture = None;
+        self.world_context = world_context::WorldContext::default();
+        self.level_resize = None;
+        self.definition_uid = None;
+        self.field_uid = None;
+        self.field_pick = None;
+        self.chain_entity = None;
+        self.selection_group = None;
+        self.last_chance = None;
+        self.atlas_selection = None;
+        self.preview_tile = None;
+        self.file_snapshot = self
+            .project
+            .as_ref()
+            .and_then(|p| p.filesystem_snapshot().ok());
+        if let Some(project) = &self.project
+            && let Some(path) = &project.path
+        {
+            let uid = self
+                .selected
+                .and_then(|k| project.level(k))
+                .and_then(|l| l["uid"].as_i64())
+                .unwrap_or(0);
+            self.settings.remember(path, uid);
+        }
         self.status =
             "Project opened. Left: draw · Right: erase · Space + drag: pan · Wheel: zoom".into();
     }
@@ -160,12 +532,20 @@ impl EditorApp {
             self.stroke = false;
             self.last_cell = None;
         }
+        self.painted_cells.clear();
     }
 
     fn request(&mut self, ctx: &egui::Context, action: Action) {
-        if self.loading.is_some() || self.pending.is_some() {
+        if world_form_dialog::is_open(ctx) {
             return;
         }
+        if self.defer_ui_action(ctx, ui_commit::DeferredUiAction::Request(action.clone())) {
+            return;
+        }
+        if self.is_busy() || self.pending.is_some() {
+            return;
+        }
+        self.finish_gesture();
         self.finish_stroke();
         if self.dirty {
             self.pending = Some(action);
@@ -176,30 +556,77 @@ impl EditorApp {
 
     fn execute(&mut self, ctx: &egui::Context, action: Action) {
         match action {
+            Action::InstallUpdate => self.install_pending_update(ctx),
             Action::New => {
-                self.set_project(Project::new());
-                self.status = "New project. Add layers in the Layers panel (L).".into();
-                self.panel = Some(Panel::Layers);
+                self.new_project_dialog(ctx, None);
             }
-            Action::Browse => {
-                if let Some(path) = rfd::FileDialog::new()
-                    .add_filter("LDtk project", &["ldtk"])
-                    .pick_file()
-                {
-                    self.open_async(ctx, path);
-                }
-            }
+            Action::NewInDir(dir) => self.new_project_dialog(ctx, Some(dir)),
+            Action::BrowseInDir(dir) => self.browse_project_dialog(ctx, Some(dir)),
+            Action::Browse => self.browse_project_dialog(ctx, None),
             Action::Open(path) => self.open_async(ctx, path),
+            Action::BrowseOgmo => self.browse_ogmo(ctx),
+            Action::ImportOgmo(path) => self.import_ogmo_async(ctx, path),
+            Action::OpenBackup { backup, original } => {
+                self.backup_async(ctx, backup, original, false)
+            }
+            Action::RestoreBackup { backup, original } => {
+                self.backup_async(ctx, backup, original, true)
+            }
+            Action::RenameProject(name) => self.rename_async(ctx, name),
             Action::Quit => {
                 self.allow_close = true;
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             }
+            Action::Close => {
+                self.project = None;
+                self.selected = None;
+                self.active_world = None;
+                self.dirty = false;
+                self.history = History::default();
+                self.panel = None;
+                self.stamp = None;
+                self.selection = None;
+            }
+        }
+    }
+
+    fn new_project_dialog(&mut self, ctx: &egui::Context, dir: Option<PathBuf>) {
+        let mut dialog = rfd::FileDialog::new()
+            .add_filter("LDtk project", &["ldtk"])
+            .set_file_name("World.ldtk");
+        if let Some(dir) = dir.or_else(|| self.settings.ui_dir(None, "NewProject", None)) {
+            dialog = dialog.set_directory(dir);
+        }
+        if let Some(mut path) = dialog.save_file() {
+            path.set_extension("ldtk");
+            if let Some(dir) = path.parent() {
+                self.settings.store_ui_dir(None, "NewProject", dir);
+            }
+            self.create_project_async(ctx, path);
+        }
+    }
+
+    fn browse_project_dialog(&mut self, ctx: &egui::Context, dir: Option<PathBuf>) {
+        let mut dialog = rfd::FileDialog::new().add_filter("LDtk project", &["ldtk", "json"]);
+        if let Some(dir) = dir {
+            dialog = dialog.set_directory(dir);
+        }
+        if let Some(path) = dialog.pick_file() {
+            self.open_async(ctx, path);
         }
     }
 
     fn save(&mut self, save_as: bool) -> bool {
+        let ctx = self.repaint.clone().unwrap_or_default();
+        if self.defer_ui_action(&ctx, ui_commit::DeferredUiAction::Save(save_as)) {
+            return false;
+        }
+        if self.is_busy() {
+            return false;
+        }
+        self.finish_gesture();
         self.finish_stroke();
-        let Some(project) = &mut self.project else {
+        let Some(project) = &self.project else {
             return false;
         };
         let path = if !save_as && project.path.is_some() {
@@ -221,789 +648,26 @@ impl EditorApp {
         let Some(path) = path else {
             return false;
         };
-        match project.save(&path) {
-            Ok(()) => {
-                self.dirty = false;
-                self.status = format!("Saved {}", path.display());
-                true
-            }
-            Err(e) => {
-                self.status = format!("Save failed: {e}");
-                false
-            }
+        let conflicts = self.changed_document_files();
+        if !conflicts.is_empty() {
+            self.external_changes = Some(conflicts);
+            return false;
         }
-    }
-
-    fn shortcuts(&mut self, ctx: &egui::Context) {
-        if ctx.wants_keyboard_input() || self.loading.is_some() || self.pending.is_some() {
-            return;
-        }
-        let input = ctx.input(|i| (i.modifiers, i.events.clone()));
-        for event in input.1 {
-            let egui::Event::Key {
-                key,
-                pressed: true,
-                repeat: false,
-                ..
-            } = event
-            else {
-                continue;
-            };
-            if input.0.command {
-                match key {
-                    Key::S => {
-                        self.save(input.0.shift);
-                    }
-                    Key::O => self.request(ctx, Action::Browse),
-                    Key::N => self.request(ctx, Action::New),
-                    Key::Z => {
-                        self.finish_stroke();
-                        if let Some(p) = &mut self.project {
-                            let changed = if input.0.shift {
-                                self.history.redo(p)
-                            } else {
-                                self.history.undo(p)
-                            };
-                            self.dirty |= changed;
-                        }
-                    }
-                    Key::Y => {
-                        self.finish_stroke();
-                        if let Some(p) = &mut self.project {
-                            self.dirty |= self.history.redo(p);
-                        }
-                    }
-                    Key::H => self.details = !self.details,
-                    _ => {}
-                }
-                continue;
-            }
-            match key {
-                Key::G => self.grid = !self.grid,
-                Key::Tab => self.zen = !self.zen,
-                Key::A if input.0.shift => self.single_layer = !self.single_layer,
-                Key::X => self.flips ^= 1,
-                Key::Y => self.flips ^= 2,
-                Key::F => self.fit = true,
-                Key::Backtick => {
-                    self.world = !self.world;
-                    self.fit = true;
-                }
-                Key::P => self.panel = Some(Panel::Project),
-                Key::C => self.panel = Some(Panel::Level),
-                Key::L => self.panel = Some(Panel::Layers),
-                Key::E => self.panel = Some(Panel::Entities),
-                Key::U => self.panel = Some(Panel::Enums),
-                Key::T => self.panel = Some(Panel::Tilesets),
-                Key::H => self.panel = Some(Panel::Help),
-                Key::Escape => {
-                    self.panel = None;
-                    self.entity_index = None;
-                }
-                Key::Num1
-                | Key::Num2
-                | Key::Num3
-                | Key::Num4
-                | Key::Num5
-                | Key::Num6
-                | Key::Num7
-                | Key::Num8
-                | Key::Num9
-                | Key::Num0 => {
-                    let index = match key {
-                        Key::Num1 => 0,
-                        Key::Num2 => 1,
-                        Key::Num3 => 2,
-                        Key::Num4 => 3,
-                        Key::Num5 => 4,
-                        Key::Num6 => 5,
-                        Key::Num7 => 6,
-                        Key::Num8 => 7,
-                        Key::Num9 => 8,
-                        _ => 9,
-                    };
-                    if self
-                        .selected
-                        .and_then(|k| self.project.as_ref()?.layer(k, index))
-                        .is_some()
-                    {
-                        self.layer = index;
-                        self.entity_index = None;
-                    }
-                }
-                _ => {}
-            }
-        }
-    }
-
-    fn top_bar(&mut self, ctx: &egui::Context) {
-        egui::TopBottomPanel::top("filebar")
-            .exact_height(38.0)
-            .frame(egui::Frame::new().fill(theme::MEDIUM).inner_margin(6.0))
-            .show(ctx, |ui| {
-                if self.loading.is_some() || self.pending.is_some() {
-                    ui.disable();
-                }
-                ui.horizontal(|ui| {
-                    ui.label(
-                        RichText::new("LDtk")
-                            .strong()
-                            .size(22.0)
-                            .color(theme::ACCENT),
-                    );
-                    ui.separator();
-                    if ui.button("New").clicked() {
-                        self.request(ctx, Action::New);
-                    }
-                    if ui.button("Open…").clicked() {
-                        self.request(ctx, Action::Browse);
-                    }
-                    if ui
-                        .add_enabled(self.project.is_some(), egui::Button::new("Save"))
-                        .clicked()
-                    {
-                        self.save(false);
-                    }
-                    if ui
-                        .add_enabled(self.project.is_some(), egui::Button::new("Save as…"))
-                        .clicked()
-                    {
-                        self.save(true);
-                    }
-                    ui.separator();
-                    if ui
-                        .add_enabled(self.history.can_undo(), egui::Button::new("Undo"))
-                        .clicked()
-                    {
-                        self.finish_stroke();
-                        if let Some(p) = &mut self.project {
-                            self.dirty |= self.history.undo(p);
-                        }
-                    }
-                    if ui
-                        .add_enabled(self.history.can_redo(), egui::Button::new("Redo"))
-                        .clicked()
-                    {
-                        self.finish_stroke();
-                        if let Some(p) = &mut self.project {
-                            self.dirty |= self.history.redo(p);
-                        }
-                    }
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        let name = self
-                            .project
-                            .as_ref()
-                            .and_then(|p| p.path.as_ref())
-                            .and_then(|p| p.file_name())
-                            .map(|s| s.to_string_lossy().into_owned())
-                            .unwrap_or_else(|| "Untitled".into());
-                        ui.label(format!("{}{}", if self.dirty { "● " } else { "" }, name));
-                    });
-                });
-            });
-    }
-
-    fn sidebar(&mut self, ctx: &egui::Context) {
-        if self.zen || self.project.is_none() {
-            return;
-        }
-        egui::SidePanel::left("main-panel")
-            .exact_width(300.0)
-            .resizable(false)
-            .frame(egui::Frame::new().fill(theme::DARK).inner_margin(10.0))
-            .show(ctx, |ui| {
-                if self.loading.is_some() || self.pending.is_some() {
-                    ui.disable();
-                }
-                ui.horizontal_wrapped(|ui| {
-                    for (label, panel, icon) in [
-                        (
-                            "Project settings (P)",
-                            Panel::Project,
-                            egui::include_image!("../assets/icons/projectSettings.png"),
-                        ),
-                        (
-                            "Current level (C)",
-                            Panel::Level,
-                            egui::include_image!("../assets/icons/level.svg"),
-                        ),
-                        (
-                            "Layers (L)",
-                            Panel::Layers,
-                            egui::include_image!("../assets/icons/layer.png"),
-                        ),
-                        (
-                            "Entities (E)",
-                            Panel::Entities,
-                            egui::include_image!("../assets/icons/entity.png"),
-                        ),
-                        (
-                            "Enums (U)",
-                            Panel::Enums,
-                            egui::include_image!("../assets/icons/enum.png"),
-                        ),
-                        (
-                            "Tilesets (T)",
-                            Panel::Tilesets,
-                            egui::include_image!("../assets/icons/tile.png"),
-                        ),
-                        (
-                            "Help (H)",
-                            Panel::Help,
-                            egui::include_image!("../assets/icons/help.svg"),
-                        ),
-                    ] {
-                        if ui
-                            .add(
-                                egui::Button::image(
-                                    egui::Image::new(icon)
-                                        .fit_to_exact_size(egui::vec2(20.0, 20.0)),
-                                )
-                                .selected(self.panel == Some(panel)),
-                            )
-                            .on_hover_text(label)
-                            .clicked()
-                        {
-                            self.panel = if self.panel == Some(panel) {
-                                None
-                            } else {
-                                Some(panel)
-                            };
-                        }
-                    }
-                });
-                ui.separator();
-                let keys = self.project.as_ref().unwrap().level_keys();
-                let current_name = self
-                    .selected
-                    .and_then(|key| self.project.as_ref()?.level(key))
-                    .map(|l| text(l, "identifier", "Level"))
-                    .unwrap_or("No level")
-                    .to_owned();
-                egui::ComboBox::from_id_salt("level-picker")
-                    .selected_text(current_name)
-                    .width(265.0)
-                    .show_ui(ui, |ui| {
-                        for key in keys {
-                            let name = self
-                                .project
-                                .as_ref()
-                                .unwrap()
-                                .level(key)
-                                .map(|l| text(l, "identifier", "Level"))
-                                .unwrap_or("Level");
-                            let name = if let Some(world) = key.world {
-                                format!(
-                                    "{} / {name}",
-                                    text(
-                                        &self.project.as_ref().unwrap().json["worlds"][world],
-                                        "identifier",
-                                        "World"
-                                    )
-                                )
-                            } else {
-                                name.to_owned()
-                            };
-                            if ui
-                                .selectable_label(self.selected == Some(key), name)
-                                .clicked()
-                            {
-                                self.finish_stroke();
-                                self.selected = Some(key);
-                                self.layer = 0;
-                                self.entity_index = None;
-                                self.fit = true;
-                            }
-                        }
-                    });
-                ui.horizontal(|ui| {
-                    if ui.selectable_label(self.world, "World view  ~").clicked() {
-                        self.world = !self.world;
-                        self.fit = true;
-                    }
-                    if ui.button("Fit  F").clicked() {
-                        self.fit = true;
-                    }
-                });
-                ui.add_space(7.0);
-                ui.label(RichText::new("LAYERS").color(theme::ACCENT));
-                let layers = self
-                    .selected
-                    .and_then(|key| self.project.as_ref()?.level(key)?["layerInstances"].as_array())
-                    .map(|layers| {
-                        layers
-                            .iter()
-                            .map(|layer| {
-                                (
-                                    layer["layerDefUid"].as_i64().unwrap_or(-1),
-                                    text(layer, "__type", "").to_owned(),
-                                    text(layer, "__identifier", "Layer").to_owned(),
-                                )
-                            })
-                            .collect::<Vec<_>>()
-                    })
-                    .unwrap_or_default();
-                for (index, (uid, kind, name)) in layers.iter().enumerate() {
-                    ui.horizontal(|ui| {
-                        let mut visible = !self.hidden.contains(uid);
-                        if ui.checkbox(&mut visible, "").changed() {
-                            if visible {
-                                self.hidden.remove(uid);
-                            } else {
-                                self.hidden.insert(*uid);
-                            }
-                        }
-                        let marker = match kind.as_str() {
-                            "IntGrid" => "▦",
-                            "Entities" => "◆",
-                            "AutoLayer" => "▧",
-                            _ => "▣",
-                        };
-                        let label = format!("{}  {}  {}", index + 1, marker, name);
-                        if ui
-                            .add_sized(
-                                [225.0, 29.0],
-                                egui::Button::new(label).selected(self.layer == index),
-                            )
-                            .clicked()
-                        {
-                            self.finish_stroke();
-                            self.layer = index;
-                            self.entity_index = None;
-                        }
-                    });
-                }
-                if layers.is_empty() {
-                    ui.label("No layers. Open Layers (L) to add one.");
-                }
-                ui.separator();
-                ui.horizontal(|ui| {
-                    ui.selectable_value(&mut self.tool, Tool::Paint, "Draw");
-                    ui.selectable_value(&mut self.tool, Tool::Erase, "Erase");
-                    ui.selectable_value(&mut self.tool, Tool::Fill, "Fill");
-                });
-                ui.horizontal(|ui| {
-                    ui.checkbox(&mut self.grid, "Grid  G");
-                    ui.checkbox(&mut self.details, "Details");
-                });
-                ui.checkbox(&mut self.single_layer, "Single layer  Shift+A");
-                ui.small("Left: draw · Right: erase · Alt: pick");
-                ui.small("Space + drag: pan · Wheel: zoom");
-                ui.separator();
-                egui::ScrollArea::vertical()
-                    .id_salt("palette-scroll")
-                    .show(ui, |ui| self.palette(ctx, ui));
-            });
-    }
-
-    fn palette(&mut self, ctx: &egui::Context, ui: &mut egui::Ui) {
-        let Some(project) = &self.project else {
-            return;
-        };
-        let Some(key) = self.selected else {
-            return;
-        };
-        let Some(layer) = project.layer(key, self.layer) else {
-            return;
-        };
-        let layer_type = text(layer, "__type", "");
-        ui.label(RichText::new("PALETTE").color(theme::ACCENT));
-        if layer_type == "IntGrid" {
-            if let Some(def) = project.layer_def(layer["layerDefUid"].as_i64().unwrap_or(-1)) {
-                if let Some(values) = def["intGridValues"].as_array() {
-                    for value in values {
-                        let id = value["value"].as_i64().unwrap_or(1) as i32;
-                        let label = format!("  {}  {}", id, text(value, "identifier", "Value"));
-                        let button = egui::Button::new(
-                            RichText::new(label)
-                                .color(theme::color(text(value, "color", "#ffcc00"))),
-                        )
-                        .selected(self.int_value == id);
-                        if ui.add_sized([270.0, 32.0], button).clicked() {
-                            self.int_value = id;
-                        }
-                    }
-                }
-                if def["autoRuleGroups"]
-                    .as_array()
-                    .is_some_and(|a| !a.is_empty())
-                {
-                    ui.add_space(8.0);
-                    ui.small("Auto-layer rules are preserved. Rule regeneration is still in development.");
-                }
-            }
-        } else if layer_type == "Entities" {
-            if let Some(entities) = project.json["defs"]["entities"].as_array() {
-                for def in entities {
-                    let uid = def["uid"].as_i64().unwrap_or(-1);
-                    if self.entity_uid.is_none() {
-                        self.entity_uid = Some(uid);
-                    }
-                    let label = RichText::new(text(def, "identifier", "Entity"))
-                        .color(theme::color(text(def, "color", "#ffcc00")));
-                    if ui
-                        .add_sized(
-                            [270.0, 31.0],
-                            egui::Button::new(label).selected(self.entity_uid == Some(uid)),
-                        )
-                        .clicked()
-                    {
-                        self.entity_uid = Some(uid);
-                    }
-                }
-            }
-        } else if layer_type == "Tiles" || layer_type == "AutoLayer" {
-            if layer_type == "AutoLayer" {
-                ui.small("Generated layer. Edit its source IntGrid to change tiles.");
-            }
-            let Some(tileset) = layer["__tilesetDefUid"]
-                .as_i64()
-                .and_then(|uid| project.tileset(uid))
-            else {
-                ui.label("Assign a tileset in Layers.");
-                return;
-            };
-            let Some(relative) = tileset["relPath"].as_str() else {
-                ui.label("Embedded atlas support is pending.");
-                return;
-            };
-            ui.label(text(tileset, "identifier", "Tileset"));
-            ui.horizontal(|ui| {
-                ui.label("Flip:");
-                if ui.selectable_label(self.flips & 1 != 0, "X").clicked() {
-                    self.flips ^= 1;
-                }
-                if ui.selectable_label(self.flips & 2 != 0, "Y").clicked() {
-                    self.flips ^= 2;
-                }
-            });
-            if let Some(texture) = self
-                .assets
-                .texture(ctx, &canvas::asset_path(project, relative))
-            {
-                let natural = texture.size_vec2();
-                let scale = (270.0 / natural.x).min(2.0);
-                let size = natural * scale;
-                let (rect, response) = ui.allocate_exact_size(size, Sense::click_and_drag());
-                ui.painter().image(
-                    texture.id(),
-                    rect,
-                    Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-                    Color32::WHITE,
-                );
-                let grid = number(tileset, "tileGridSize", 16.0);
-                let spacing = number(tileset, "spacing", 0.0);
-                let padding = number(tileset, "padding", 0.0);
-                let columns = number(
-                    tileset,
-                    "__cWid",
-                    ((natural.x - 2.0 * padding + spacing) / (grid + spacing)).floor(),
-                )
-                .max(1.0) as i32;
-                if (response.clicked() || response.dragged())
-                    && let Some(pos) = response.interact_pointer_pos()
-                {
-                    let p = (pos - rect.min) / scale;
-                    let x = ((p.x - padding) / (grid + spacing)).floor() as i32;
-                    let y = ((p.y - padding) / (grid + spacing)).floor() as i32;
-                    if x >= 0 && y >= 0 && x < columns {
-                        self.tile_id = x + y * columns;
-                        self.flips = 0;
-                    }
-                }
-                let x = self.tile_id % columns;
-                let y = self.tile_id / columns;
-                let marker = Rect::from_min_size(
-                    rect.min
-                        + egui::vec2(
-                            padding + x as f32 * (grid + spacing),
-                            padding + y as f32 * (grid + spacing),
-                        ) * scale,
-                    Vec2::splat(grid * scale),
-                );
-                ui.painter().rect_stroke(
-                    marker,
-                    0.0,
-                    Stroke::new(2.0_f32, theme::ACCENT),
-                    StrokeKind::Inside,
-                );
-                ui.small(format!("Tile #{}", self.tile_id));
-            }
-        }
+        let ctx = self.repaint.clone().unwrap_or_default();
+        self.queue_project_hooks(&ctx, "BeforeSave", hooks::Continuation::Save(path));
+        false
     }
 
     fn canvas_input(&mut self, ctx: &egui::Context, rect: Rect, response: &egui::Response) {
-        if self.project.is_none() || self.pending.is_some() || self.loading.is_some() {
-            return;
-        }
-        if self.fit
-            && let (Some(project), Some(key)) = (&self.project, self.selected)
-        {
-            self.viewport
-                .fit(canvas::bounds(project, key, self.world), rect.size().into());
-            self.fit = false;
-        }
-        let (pointer, delta, scroll, space, alt, control, primary, secondary, middle, pressed) =
-            ctx.input(|i| {
-                (
-                    i.pointer.hover_pos(),
-                    i.pointer.delta(),
-                    i.raw_scroll_delta.y,
-                    i.key_down(Key::Space),
-                    i.modifiers.alt,
-                    i.modifiers.ctrl,
-                    i.pointer.primary_down(),
-                    i.pointer.secondary_down(),
-                    i.pointer.middle_down(),
-                    i.pointer.any_pressed(),
-                )
-            });
-        let Some(pointer) = pointer else {
-            return;
-        };
-        if !rect.contains(pointer) {
-            self.last_cell = None;
-            return;
-        }
-        if response.hovered() && scroll != 0.0 {
-            self.viewport.zoom_at(
-                (scroll * 0.002).exp(),
-                pointer.into(),
-                rect.min.into(),
-                rect.size().into(),
-            );
-        }
-        if middle || (space && primary) {
-            self.viewport.center[0] -= delta.x / self.viewport.zoom;
-            self.viewport.center[1] -= delta.y / self.viewport.zoom;
-            ctx.set_cursor_icon(egui::CursorIcon::Grabbing);
-            return;
-        }
-        if self.world {
-            if response.double_clicked()
-                && let (Some(project), Some(key)) = (&self.project, self.selected)
-            {
-                let world =
-                    self.viewport
-                        .to_world(pointer.into(), rect.min.into(), rect.size().into());
-                for (candidate, b) in canvas::placements(project, key) {
-                    if world[0] >= b[0] && world[0] < b[2] && world[1] >= b[1] && world[1] < b[3] {
-                        self.selected = Some(candidate);
-                        self.world = false;
-                        self.layer = 0;
-                        self.fit = true;
-                        break;
-                    }
-                }
-            }
-            return;
-        }
-        if self.panel.is_some() && ctx.is_pointer_over_area() && !response.hovered() {
-            return;
-        }
-        if !(primary || secondary) || space {
-            return;
-        }
-        let Some(key) = self.selected else {
-            return;
-        };
-        let project = self.project.as_ref().unwrap();
-        let Some(layer) = project.layer(key, self.layer) else {
-            return;
-        };
-        let grid = number(layer, "__gridSize", 16.0).max(1.0);
-        let world = self
-            .viewport
-            .to_world(pointer.into(), rect.min.into(), rect.size().into());
-        let local = [
-            world[0] - number(layer, "__pxTotalOffsetX", 0.0),
-            world[1] - number(layer, "__pxTotalOffsetY", 0.0),
-        ];
-        let cell = [
-            (local[0] / grid).floor() as i32,
-            (local[1] / grid).floor() as i32,
-        ];
-        if cell[0] < 0
-            || cell[1] < 0
-            || cell[0] >= number(layer, "__cWid", 0.0) as i32
-            || cell[1] >= number(layer, "__cHei", 0.0) as i32
-        {
-            self.last_cell = None;
-            return;
-        }
-        if alt && pressed {
-            self.pick(cell, local);
-            return;
-        }
-        if alt {
-            return;
-        }
-        let erase = secondary || control || self.tool == Tool::Erase;
-        if !self.stroke {
-            if !pressed || !response.hovered() {
-                return;
-            }
-            self.history.begin(project, key);
-            self.stroke = true;
-        }
-        let kind = text(layer, "__type", "").to_owned();
-        if self.tool == Tool::Fill && pressed && kind == "IntGrid" {
-            self.fill(cell, erase);
-            self.last_cell = Some(cell);
-            return;
-        }
-        if self.tool == Tool::Fill {
-            return;
-        }
-        if kind == "Entities" {
-            if pressed {
-                self.edit_entity(local, erase);
-            }
-        } else if self.last_cell != Some(cell) {
-            for point in stroke_cells(self.last_cell.unwrap_or(cell), cell) {
-                self.paint_cell(point, erase);
-            }
-        }
-        self.last_cell = Some(cell);
-    }
-
-    fn pick(&mut self, cell: [i32; 2], local: [f32; 2]) {
-        let Some(project) = &self.project else {
-            return;
-        };
-        let Some(layer) = self.selected.and_then(|key| project.layer(key, self.layer)) else {
-            return;
-        };
-        match text(layer, "__type", "") {
-            "IntGrid" => {
-                let width = number(layer, "__cWid", 1.0) as usize;
-                self.int_value = layer["intGridCsv"]
-                    [(cell[0] as usize) + (cell[1] as usize) * width]
-                    .as_i64()
-                    .unwrap_or(0) as i32;
-            }
-            "Tiles" => {
-                let grid = number(layer, "__gridSize", 16.0);
-                if let Some(tile) = layer["gridTiles"].as_array().and_then(|tiles| {
-                    tiles.iter().rev().find(|t| {
-                        t["px"][0].as_f64() == Some((cell[0] as f32 * grid) as f64)
-                            && t["px"][1].as_f64() == Some((cell[1] as f32 * grid) as f64)
-                    })
-                }) {
-                    self.tile_id = tile["t"].as_i64().unwrap_or(0) as i32;
-                    self.flips = tile["f"].as_i64().unwrap_or(0) as i32;
-                }
-            }
-            "Entities" => {
-                if let Some((index, entity)) = hit_entity(layer, local) {
-                    self.entity_index = Some(index);
-                    self.entity_uid = entity["defUid"].as_i64();
-                    self.panel = Some(Panel::Entity);
-                }
-            }
-            _ => {}
-        }
-    }
-
-    fn paint_cell(&mut self, cell: [i32; 2], erase: bool) {
-        let Some(key) = self.selected else {
-            return;
-        };
-        let Some(project) = &mut self.project else {
-            return;
-        };
-        let Some(layer) = project.layer(key, self.layer) else {
-            return;
-        };
-        let result = match text(layer, "__type", "") {
-            "IntGrid" => project.paint_int_grid(
-                key,
-                self.layer,
-                cell[0],
-                cell[1],
-                if erase { 0 } else { self.int_value },
-            ),
-            "Tiles" => {
-                let uid = layer["__tilesetDefUid"].as_i64().unwrap_or(-1);
-                let Some(tileset) = project.tileset(uid) else {
-                    self.status = "Assign a tileset before drawing.".into();
-                    return;
-                };
-                let grid = number(tileset, "tileGridSize", 16.0) as i32;
-                let spacing = number(tileset, "spacing", 0.0) as i32;
-                let padding = number(tileset, "padding", 0.0) as i32;
-                let columns = number(tileset, "__cWid", 1.0).max(1.0) as i32;
-                let src = [
-                    padding + (self.tile_id % columns) * (grid + spacing),
-                    padding + (self.tile_id / columns) * (grid + spacing),
-                ];
-                project.paint_tile(
-                    key,
-                    self.layer,
-                    cell[0],
-                    cell[1],
-                    self.tile_id,
-                    src,
-                    self.flips,
-                    erase,
-                )
-            }
-            _ => return,
-        };
-        match result {
-            Ok(changed) => self.dirty |= changed,
-            Err(e) => self.status = e.to_string(),
-        }
-    }
-
-    fn fill(&mut self, start: [i32; 2], erase: bool) {
-        let Some(project) = &self.project else {
-            return;
-        };
-        let Some(layer) = self.selected.and_then(|key| project.layer(key, self.layer)) else {
-            return;
-        };
-        let width = number(layer, "__cWid", 0.0) as i32;
-        let height = number(layer, "__cHei", 0.0) as i32;
-        let cells = layer["intGridCsv"].as_array().cloned().unwrap_or_default();
-        let target = cells
-            .get((start[0] + start[1] * width) as usize)
-            .and_then(Value::as_i64)
-            .unwrap_or(0);
-        let replacement = if erase { 0 } else { self.int_value as i64 };
-        if target == replacement {
-            return;
-        }
-        let mut seen = HashSet::new();
-        let mut stack = vec![start];
-        while let Some(cell) = stack.pop() {
-            if cell[0] < 0
-                || cell[1] < 0
-                || cell[0] >= width
-                || cell[1] >= height
-                || !seen.insert(cell)
-            {
-                continue;
-            }
-            if cells
-                .get((cell[0] + cell[1] * width) as usize)
-                .and_then(Value::as_i64)
-                .unwrap_or(0)
-                != target
-            {
-                continue;
-            }
-            self.paint_cell(cell, erase);
-            stack.extend([
-                [cell[0] - 1, cell[1]],
-                [cell[0] + 1, cell[1]],
-                [cell[0], cell[1] - 1],
-                [cell[0], cell[1] + 1],
-            ]);
+        if !self.world_context_menu(ctx, rect, response) {
+            self.canvas_controls(ctx, rect, response);
         }
     }
 
     fn edit_entity(&mut self, local: [f32; 2], erase: bool) {
+        if !self.details {
+            return;
+        }
         let Some(key) = self.selected else {
             return;
         };
@@ -1011,12 +675,27 @@ impl EditorApp {
             return;
         };
         if erase {
+            self.chain_entity = None;
+            self.selection_group = None;
             let index = project
                 .layer(key, self.layer)
-                .and_then(|l| hit_entity(l, local).map(|e| e.0));
+                .and_then(|l| hit_entity(project, l, local).map(|e| e.0));
             if let Some(index) = index {
+                let entity =
+                    project.layer(key, self.layer).unwrap()["entityInstances"][index].clone();
+                self.history
+                    .mark_entity_change(project, key, self.layer, &entity);
                 match project.remove_entity(key, self.layer, index) {
-                    Ok(changed) => self.dirty |= changed,
+                    Ok(changed) => {
+                        self.dirty |= changed;
+                        if changed {
+                            self.bleep_entity(key, self.layer, &entity);
+                            self.entity_index = None;
+                            if self.panel == Some(Panel::Entity) {
+                                self.panel = None;
+                            }
+                        }
+                    }
                     Err(e) => self.status = e.to_string(),
                 }
             }
@@ -1025,23 +704,48 @@ impl EditorApp {
                 .layer(key, self.layer)
                 .map(|l| number(l, "__gridSize", 16.0))
                 .unwrap_or(16.0);
-            let pos = if self.grid {
-                [
-                    (local[0] / grid).floor() * grid,
-                    (local[1] / grid).floor() * grid,
-                ]
-            } else {
-                local
+            let Some(def) = project.json["defs"]["entities"]
+                .as_array()
+                .and_then(|a| a.iter().find(|d| d["uid"].as_i64() == Some(uid)))
+            else {
+                return;
             };
-            match project.add_entity(key, self.layer, uid, pos[0] as i32, pos[1] as i32) {
-                Ok(changed) => self.dirty |= changed,
+            let pos = ldtk_core::snapped_entity_position(def, local, grid as i32, self.grid);
+            let prevent_message = format!(
+                "You cannot have more than {} {}.",
+                number(def, "maxCount", 0.) as i32,
+                text(def, "identifier", "entities")
+            );
+            match project.add_entity(key, self.layer, uid, pos[0], pos[1]) {
+                Ok(changed) => {
+                    self.dirty |= changed;
+                    if !changed {
+                        self.status = prevent_message;
+                        self.status_error = true;
+                    }
+                    if changed
+                        && let Some(index) = project
+                            .layer(key, self.layer)
+                            .and_then(|l| l["entityInstances"].as_array())
+                            .map(|a| a.len().saturating_sub(1))
+                    {
+                        self.history.mark_entity_change(
+                            project,
+                            key,
+                            self.layer,
+                            &project.layer(key, self.layer).unwrap()["entityInstances"][index],
+                        );
+                        self.entity_index = Some(index);
+                        self.try_chain_to(key, self.layer, index, true, self.entity_uid);
+                    }
+                }
                 Err(e) => self.status = e.to_string(),
             }
         }
     }
 
     fn dialogs(&mut self, ctx: &egui::Context) {
-        if self.loading.is_some() {
+        if self.is_busy() {
             return;
         }
         if self.pending.is_some() {
@@ -1070,6 +774,17 @@ impl EditorApp {
         let Some(panel) = self.panel else {
             return;
         };
+        if panel == Panel::Entity {
+            self.show_entity_inspector(ctx);
+            return;
+        }
+        if panel == Panel::Settings {
+            self.show_settings_dialog(ctx);
+            return;
+        }
+        if self.source_panel(ctx, panel) {
+            return;
+        }
         let title = match panel {
             Panel::Project => "Project settings",
             Panel::Level => "Current level",
@@ -1079,6 +794,11 @@ impl EditorApp {
             Panel::Tilesets => "Tilesets",
             Panel::Help => "Help & shortcuts",
             Panel::Entity => "Entity instance",
+            Panel::World => "World",
+            Panel::Fields => "Custom fields",
+            Panel::Rules => "Auto-layer rules",
+            Panel::Settings => "App settings",
+            Panel::Export => "Export & commands",
         };
         let mut open = true;
         egui::Window::new(title)
@@ -1091,22 +811,7 @@ impl EditorApp {
                     .max_height(650.0)
                     .show(ui, |ui| {
                         if panel == Panel::Help {
-                            ui.heading("LDtk • Rust");
-                            ui.label("Native Rust port — in development");
-                            ui.separator();
-                            for line in [
-                                "Left mouse: draw  ·  Right mouse: erase",
-                                "Alt + click: pick a cell, tile or entity",
-                                "Space + drag / middle mouse: pan",
-                                "Mouse wheel: zoom under cursor",
-                                "F: fit  ·  ~: world view  ·  double click: enter level",
-                                "1–0: select layer  ·  G: grid  ·  Tab: hide sidebar",
-                                "X / Y: flip tile  ·  Shift+A: single layer",
-                                "Cmd/Ctrl+S: save  ·  Cmd/Ctrl+Shift+S: save as",
-                                "Cmd/Ctrl+Z: undo  ·  Cmd/Ctrl+Y: redo",
-                            ] {
-                                ui.label(line);
-                            }
+                            self.help_contents(ui);
                             return;
                         }
                         self.properties(ui, panel);
@@ -1115,368 +820,6 @@ impl EditorApp {
         if !open {
             self.panel = None;
         }
-    }
-
-    fn properties(&mut self, ui: &mut egui::Ui, panel: Panel) {
-        let Some(project) = &mut self.project else {
-            return;
-        };
-        let mut changed = false;
-        match panel {
-            Panel::Project => {
-                changed |= string_field(
-                    ui,
-                    "Level name pattern",
-                    &mut project.json,
-                    "levelNamePattern",
-                );
-                changed |= integer_field(
-                    ui,
-                    "Default grid",
-                    &mut project.json,
-                    "defaultGridSize",
-                    1..=1024,
-                );
-                changed |= integer_field(
-                    ui,
-                    "Default width",
-                    &mut project.json,
-                    "defaultLevelWidth",
-                    1..=65536,
-                );
-                changed |= integer_field(
-                    ui,
-                    "Default height",
-                    &mut project.json,
-                    "defaultLevelHeight",
-                    1..=65536,
-                );
-                changed |= color_field(ui, "Background", &mut project.json, "bgColor");
-                changed |= bool_field(ui, "Minify JSON", &mut project.json, "minifyJson");
-            }
-            Panel::Level => {
-                let definitions = project.json["defs"]["levelFields"]
-                    .as_array()
-                    .cloned()
-                    .unwrap_or_default();
-                if let Some(level) = self.selected.and_then(|key| project.level_mut(key)) {
-                    changed |= string_field(ui, "Identifier", level, "identifier");
-                    ui.label(format!(
-                        "Size: {} × {}",
-                        number(level, "pxWid", 0.0),
-                        number(level, "pxHei", 0.0)
-                    ));
-                    ui.small("Level resizing and field definitions are still in development.");
-                    changed |= color_field(ui, "Background", level, "__bgColor");
-                    if changed {
-                        level["bgColor"] = level["__bgColor"].clone();
-                    }
-                    ui.separator();
-                    if let Some(fields) = level["fieldInstances"].as_array_mut() {
-                        for field in fields {
-                            let definition =
-                                definitions.iter().find(|d| d["uid"] == field["defUid"]);
-                            changed |= field_input(ui, field, definition);
-                        }
-                    }
-                }
-            }
-            Panel::Layers => {
-                ui.label("Layer definitions");
-                ui.horizontal(|ui| {
-                    ui.label("Name");
-                    ui.text_edit_singleline(&mut self.new_name);
-                });
-                ui.horizontal(|ui| {
-                    egui::ComboBox::from_id_salt("new-layer-kind")
-                        .selected_text(&self.new_kind)
-                        .show_ui(ui, |ui| {
-                            for kind in ["IntGrid", "Tiles", "Entities"] {
-                                ui.selectable_value(&mut self.new_kind, kind.to_owned(), kind);
-                            }
-                        });
-                    ui.label("Grid");
-                    ui.add(egui::DragValue::new(&mut self.new_grid).range(1..=1024));
-                    if ui.button("Add layer").clicked() {
-                        let name = if self.new_name.trim().is_empty() {
-                            format!(
-                                "Layer_{}",
-                                project.json["defs"]["layers"]
-                                    .as_array()
-                                    .map_or(0, Vec::len)
-                            )
-                        } else {
-                            self.new_name.clone()
-                        };
-                        match project.add_layer(&name, &self.new_kind, self.new_grid) {
-                            Ok(uid) => {
-                                self.history = History::default();
-                                changed = true;
-                                self.new_name.clear();
-                                if let Some(layers) = self
-                                    .selected
-                                    .and_then(|k| project.level(k)?["layerInstances"].as_array())
-                                {
-                                    self.layer = layers
-                                        .iter()
-                                        .position(|l| l["layerDefUid"].as_i64() == Some(uid))
-                                        .unwrap_or(0);
-                                }
-                            }
-                            Err(e) => self.status = e.to_string(),
-                        }
-                    }
-                });
-                ui.separator();
-                let tilesets = project.json["defs"]["tilesets"]
-                    .as_array()
-                    .map(|items| {
-                        items
-                            .iter()
-                            .map(|v| {
-                                (
-                                    v["uid"].as_i64().unwrap_or(-1),
-                                    text(v, "identifier", "Tileset").to_owned(),
-                                )
-                            })
-                            .collect::<Vec<_>>()
-                    })
-                    .unwrap_or_default();
-                let mut assignment = None;
-                if let Some(layers) = project.json["defs"]["layers"].as_array_mut() {
-                    for layer in layers {
-                        ui.collapsing(
-                            format!(
-                                "{} · {}",
-                                text(layer, "identifier", "Layer"),
-                                text(layer, "type", "")
-                            ),
-                            |ui| {
-                                ui.label(format!("Grid: {} px", number(layer, "gridSize", 16.0)));
-                                ui.label(format!(
-                                    "Opacity: {:.0}%",
-                                    number(layer, "displayOpacity", 1.0) * 100.0
-                                ));
-                                if let Some(groups) = layer["autoRuleGroups"].as_array() {
-                                    ui.label(format!("{} rule groups", groups.len()));
-                                }
-                                if text(layer, "type", "") == "Tiles" {
-                                    let current = layer["tilesetDefUid"].as_i64().unwrap_or(-1);
-                                    let mut selected = current;
-                                    let name = tilesets
-                                        .iter()
-                                        .find(|(uid, _)| *uid == current)
-                                        .map(|(_, n)| n.as_str())
-                                        .unwrap_or("Select tileset…");
-                                    egui::ComboBox::from_id_salt((
-                                        "assign-atlas",
-                                        layer["uid"].as_i64(),
-                                    ))
-                                    .selected_text(name)
-                                    .show_ui(ui, |ui| {
-                                        for (uid, name) in &tilesets {
-                                            ui.selectable_value(&mut selected, *uid, name);
-                                        }
-                                    });
-                                    if selected != current {
-                                        assignment =
-                                            Some((layer["uid"].as_i64().unwrap_or(-1), selected));
-                                    }
-                                }
-                                if let Some(values) = layer["intGridValues"].as_array_mut() {
-                                    for value in values.iter_mut() {
-                                        changed |= color_field(
-                                            ui,
-                                            &format!("Value {}", value["value"]),
-                                            value,
-                                            "color",
-                                        );
-                                    }
-                                }
-                            },
-                        );
-                    }
-                }
-                if let Some((layer, tileset)) = assignment {
-                    match project.assign_tileset(layer, tileset) {
-                        Ok(()) => changed = true,
-                        Err(e) => self.status = e.to_string(),
-                    }
-                }
-            }
-            Panel::Entities => {
-                ui.horizontal(|ui| {
-                    ui.label("Name");
-                    ui.text_edit_singleline(&mut self.new_name);
-                });
-                if ui.button("Add entity definition").clicked() {
-                    let name = if self.new_name.trim().is_empty() {
-                        format!(
-                            "Entity_{}",
-                            project.json["defs"]["entities"]
-                                .as_array()
-                                .map_or(0, Vec::len)
-                        )
-                    } else {
-                        self.new_name.clone()
-                    };
-                    match project.add_entity_def(&name, self.new_grid, self.new_grid) {
-                        Ok(uid) => {
-                            self.entity_uid = Some(uid);
-                            changed = true;
-                            self.new_name.clear();
-                            self.history = History::default();
-                        }
-                        Err(e) => self.status = e.to_string(),
-                    }
-                }
-                ui.separator();
-                if let Some(defs) = project.json["defs"]["entities"].as_array() {
-                    for def in defs {
-                        ui.collapsing(text(def, "identifier", "Entity"), |ui| {
-                            ui.label(format!(
-                                "Size: {} × {}",
-                                number(def, "width", 16.0),
-                                number(def, "height", 16.0)
-                            ));
-                            if let Some(fields) = def["fieldDefs"].as_array() {
-                                for field in fields {
-                                    ui.label(format!(
-                                        "{}: {}",
-                                        text(field, "identifier", "Field"),
-                                        text(field, "__type", "")
-                                    ));
-                                }
-                            }
-                        });
-                    }
-                }
-                ui.small("Definition editing is still in development.");
-            }
-            Panel::Enums => {
-                for kind in ["enums", "externalEnums"] {
-                    if let Some(defs) = project.json["defs"][kind].as_array() {
-                        for def in defs {
-                            ui.collapsing(text(def, "identifier", "Enum"), |ui| {
-                                if let Some(values) = def["values"].as_array() {
-                                    for value in values {
-                                        ui.label(text(value, "id", "Value"));
-                                    }
-                                }
-                            });
-                        }
-                    }
-                }
-                ui.small("Enum editing and external synchronization are still in development.");
-            }
-            Panel::Tilesets => {
-                ui.horizontal(|ui| {
-                    ui.label("Tile size");
-                    ui.add(egui::DragValue::new(&mut self.new_grid).range(1..=1024));
-                    if ui.button("Import image…").clicked()
-                        && let Some(path) = rfd::FileDialog::new()
-                            .add_filter("Tileset image", &["png", "jpg", "jpeg", "gif"])
-                            .pick_file()
-                    {
-                        match image::image_dimensions(&path) {
-                            Ok((width, height)) => match project.add_tileset(
-                                &path,
-                                self.new_grid,
-                                width as i32,
-                                height as i32,
-                            ) {
-                                Ok(_) => {
-                                    changed = true;
-                                    self.history = History::default();
-                                }
-                                Err(e) => self.status = e.to_string(),
-                            },
-                            Err(e) => self.status = format!("Cannot load tileset: {e}"),
-                        }
-                    }
-                });
-                ui.separator();
-                if let Some(defs) = project.json["defs"]["tilesets"].as_array() {
-                    for def in defs {
-                        ui.collapsing(text(def, "identifier", "Tileset"), |ui| {
-                            ui.label(text(def, "relPath", "Embedded atlas"));
-                            ui.label(format!(
-                                "{} × {} px · {} px grid",
-                                number(def, "pxWid", 0.0),
-                                number(def, "pxHei", 0.0),
-                                number(def, "tileGridSize", 16.0)
-                            ));
-                        });
-                    }
-                }
-                ui.small("Tileset import and definition editing are still in development.");
-            }
-            Panel::Entity => {
-                let definitions = self
-                    .selected
-                    .and_then(|key| project.layer(key, self.layer))
-                    .and_then(|l| l["entityInstances"].as_array())
-                    .and_then(|a| self.entity_index.and_then(|i| a.get(i)))
-                    .and_then(|e| e["defUid"].as_i64())
-                    .and_then(|uid| {
-                        project.json["defs"]["entities"]
-                            .as_array()?
-                            .iter()
-                            .find(|d| d["uid"].as_i64() == Some(uid))
-                    })
-                    .and_then(|d| d["fieldDefs"].as_array())
-                    .cloned()
-                    .unwrap_or_default();
-                let toc_entity = self
-                    .selected
-                    .and_then(|key| project.layer(key, self.layer))
-                    .and_then(|l| l["entityInstances"].as_array())
-                    .and_then(|a| self.entity_index.and_then(|i| a.get(i)))
-                    .and_then(|e| e["defUid"].as_i64())
-                    .is_some_and(|uid| {
-                        project.json["defs"]["entities"]
-                            .as_array()
-                            .is_some_and(|defs| {
-                                defs.iter().any(|d| {
-                                    d["uid"].as_i64() == Some(uid)
-                                        && d["exportToToc"].as_bool() == Some(true)
-                                })
-                            })
-                    });
-                if let Some(entity) = self
-                    .selected
-                    .and_then(|key| project.layer_mut(key, self.layer))
-                    .and_then(|l| l["entityInstances"].as_array_mut())
-                    .and_then(|a| self.entity_index.and_then(|i| a.get_mut(i)))
-                {
-                    ui.heading(text(entity, "__identifier", "Entity"));
-                    ui.label(format!(
-                        "Position: {}, {}",
-                        entity["px"][0], entity["px"][1]
-                    ));
-                    if let Some(fields) = entity["fieldInstances"].as_array_mut() {
-                        ui.add_enabled_ui(!toc_entity, |ui| {
-                            for field in fields {
-                                let definition =
-                                    definitions.iter().find(|d| d["uid"] == field["defUid"]);
-                                changed |= field_input(ui, field, definition);
-                            }
-                        });
-                    }
-                } else {
-                    ui.label("Alt + click an entity to inspect it.");
-                }
-            }
-            Panel::Help => {}
-        }
-        if changed {
-            self.mark_property_change();
-        }
-    }
-
-    fn mark_property_change(&mut self) {
-        self.dirty = true;
-        self.history = History::default();
     }
 
     fn normalize_palette(&mut self) {
@@ -1504,14 +847,7 @@ impl EditorApp {
                         .unwrap_or(0) as i32;
                 }
             }
-            "Entities" => {
-                let defs = project.json["defs"]["entities"].as_array();
-                if !defs.is_some_and(|ds| ds.iter().any(|d| d["uid"].as_i64() == self.entity_uid)) {
-                    self.entity_uid = defs
-                        .and_then(|ds| ds.first())
-                        .and_then(|d| d["uid"].as_i64());
-                }
-            }
+            "Entities" => self.normalize_entity_palette(),
             "Tiles" => {
                 if let Some(def) = layer["__tilesetDefUid"]
                     .as_i64()
@@ -1529,59 +865,76 @@ impl EditorApp {
     }
 }
 
-impl eframe::App for EditorApp {
-    fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+impl EditorApp {
+    fn run_command(&mut self, command: String, cwd: Option<PathBuf>) {
+        let ctx = self.repaint.clone().unwrap_or_default();
+        self.queue_hook_commands(
+            &ctx,
+            std::collections::VecDeque::from([command]),
+            cwd,
+            hooks::Continuation::None,
+        );
+    }
+}
+
+impl EditorApp {
+    fn crash_fallback(&self) -> PathBuf {
+        self.settings
+            .path
+            .as_deref()
+            .and_then(|p| p.parent())
+            .map(PathBuf::from)
+            .unwrap_or_else(std::env::temp_dir)
+            .join("crash-recovery")
+    }
+    fn update_frame(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+        if self.update_installing(ctx) {
+            self.update_dialog(ctx);
+            return;
+        }
         let started = Instant::now();
+        ctx.data_mut(|data| {
+            data.insert_temp(
+                egui::Id::new("source-colorblind-palette"),
+                self.settings.bool("colorBlind"),
+            )
+        });
         self.assets.poll(ctx);
-        if let Some(result) = self.loading.as_ref().and_then(|rx| rx.try_recv().ok()) {
-            self.loading = None;
-            match result {
-                Ok(project) => self.set_project(project),
-                Err(e) => self.status = format!("Open failed: {e}"),
-            }
+        self.poll_command(ctx);
+        self.poll_hooks(ctx);
+        self.poll_services(ctx);
+        self.pointer_lifecycle(ctx);
+        if !self.is_busy()
+            && self.pending.is_none()
+            && !self.ui_commit.pending()
+            && !world_form_dialog::is_open(ctx)
+            && !world_form_dialog::is_open(ctx)
+            && let Some(path) = crate::platform_files::take_open_file()
+        {
+            self.request(ctx, Action::Open(path));
         }
-        if !ctx.input(|i| i.pointer.any_down()) {
-            self.finish_stroke();
-        }
-        if ctx.input(|i| i.viewport().close_requested()) && !self.allow_close && self.dirty {
+        if ctx.input(|i| i.viewport().close_requested())
+            && !self.allow_close
+            && (self.dirty || ui_commit::has_pending_ui_edit(ctx))
+        {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-            self.pending = Some(Action::Quit);
+            self.request(ctx, Action::Quit);
         }
         let dropped = ctx.input(|i| i.raw.dropped_files.iter().find_map(|f| f.path.clone()));
         if let Some(path) = dropped {
-            self.request(ctx, Action::Open(path));
+            let ogmo = path
+                .extension()
+                .is_some_and(|e| e.eq_ignore_ascii_case("ogmo"));
+            self.request(
+                ctx,
+                if ogmo {
+                    Action::ImportOgmo(path)
+                } else {
+                    Action::Open(path)
+                },
+            );
         }
         self.shortcuts(ctx);
-        self.top_bar(ctx);
-        egui::TopBottomPanel::bottom("status")
-            .exact_height(27.0)
-            .show(ctx, |ui| {
-                ui.horizontal(|ui| {
-                    ui.label(&self.status);
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.small(format!(
-                            "{:.0}% · {} visible · CPU {:.2} ms",
-                            self.viewport.zoom * 100.0,
-                            self.visible_tiles,
-                            self.frame_time
-                        ));
-                        if !self.assets.errors.is_empty() {
-                            ui.colored_label(
-                                theme::ACCENT,
-                                format!("{} missing assets", self.assets.errors.len()),
-                            )
-                            .on_hover_text(
-                                self.assets
-                                    .errors
-                                    .iter()
-                                    .map(|(p, e)| format!("{}: {e}", p.display()))
-                                    .collect::<Vec<_>>()
-                                    .join("\n"),
-                            );
-                        }
-                    });
-                });
-            });
         self.sidebar(ctx);
         self.normalize_palette();
         egui::CentralPanel::default()
@@ -1589,6 +942,7 @@ impl eframe::App for EditorApp {
             .show(ctx, |ui| {
                 let (rect, response) =
                     ui.allocate_exact_size(ui.available_size(), Sense::click_and_drag());
+                entity_inspector::remember_canvas(ctx, rect);
                 if self.project.is_some() {
                     self.canvas_input(ctx, rect, &response);
                     if let (Some(project), Some(key)) = (&self.project, self.selected) {
@@ -1606,9 +960,30 @@ impl eframe::App for EditorApp {
                                 details: self.details,
                                 single_layer: self.single_layer,
                                 hidden: &self.hidden,
+                                render_auto: self.render_auto,
+                                tile_tags: self.tile_tags,
+                                ui_scale: self.settings.float("editorUiScale", 1.0),
+                                single_layer_intensity: self
+                                    .settings
+                                    .float("singleLayerModeIntensity", 0.75),
+                                fields_table: self.settings.value["fieldsRender"] == "FR_Table",
+                                world_depth: Some(self.world_depth),
+                                nearby_dist: (64.0
+                                    * self.settings.float("nearbyTilesRenderingDist", 1.0))
+                                .ceil(),
+                                parallax: true,
+                                rulers: true,
+                                guides: self.grid,
                             },
                             &mut self.assets,
                         );
+                        self.draw_brush_preview(ui, rect, response.hovered());
+                        self.draw_tool_overlay(ui, rect);
+                        self.draw_field_pick_targets(ui, rect);
+                        self.draw_level_resize_preview(ui, rect);
+                        self.draw_resize_handles(ui, rect);
+                        self.draw_bleeps(ui, rect);
+                        self.canvas_toolbar(ctx, rect);
                         if response.hovered()
                             && !self.world
                             && let Some(pointer) = response.hover_pos()
@@ -1627,57 +1002,31 @@ impl eframe::App for EditorApp {
                             );
                         }
                     }
+                    self.world_context_overlay(ui, rect);
                 } else {
-                    let area = Rect::from_center_size(rect.center(), egui::vec2(430.0, 330.0));
-                    ui.scope_builder(egui::UiBuilder::new().max_rect(area), |ui| {
-                        ui.vertical_centered(|ui| {
-                            ui.label(
-                                RichText::new("LDtk")
-                                    .size(84.0)
-                                    .strong()
-                                    .color(theme::ACCENT),
-                            );
-                            ui.heading("LEVEL DESIGNER TOOLKIT");
-                            ui.label("Native Rust edition · in development");
-                            ui.add_space(28.0);
-                            if ui
-                                .add_sized([270.0, 40.0], egui::Button::new("Open project…"))
-                                .clicked()
-                            {
-                                self.request(ctx, Action::Browse);
-                            }
-                            if ui
-                                .add_sized([270.0, 40.0], egui::Button::new("Create project"))
-                                .clicked()
-                            {
-                                self.request(ctx, Action::New);
-                            }
-                            let sample = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                                .join("examples/topdown/Typical_TopDown_example.ldtk");
-                            if sample.exists()
-                                && ui
-                                    .add_sized(
-                                        [270.0, 40.0],
-                                        egui::Button::new("Open example world"),
-                                    )
-                                    .clicked()
-                            {
-                                self.request(ctx, Action::Open(sample));
-                            }
-                        });
-                    });
+                    self.library_home(ctx, ui, rect);
                 }
-                if self.loading.is_some() {
-                    ui.painter().text(
-                        rect.center(),
-                        Align2::CENTER_CENTER,
-                        "Opening project…",
-                        FontId::proportional(24.0),
-                        theme::ACCENT,
-                    );
-                }
+                self.canvas_notifications(ctx, rect);
             });
         self.dialogs(ctx);
+        self.world_form_dialog(ctx);
+        self.service_dialogs(ctx);
+        self.palette_dialog(ctx);
+        self.command_dialog(ctx);
+        self.trust_dialog(ctx);
+        self.enum_sync_dialog(ctx);
+        self.resource_dialog(ctx);
+        self.changelog_dialog(ctx);
+        self.update_dialog(ctx);
+        self.remember_selected_level();
+        self.focus_overlay(ctx);
+        self.flush_ui_action(ctx);
+        app_log::record(
+            ctx,
+            self.settings.path.as_deref(),
+            &self.status,
+            self.status_error,
+        );
         let title = format!("{}LDtk • Rust", if self.dirty { "● " } else { "" });
         ctx.send_viewport_cmd(egui::ViewportCommand::Title(title));
         self.frame_time = frame
@@ -1685,67 +1034,79 @@ impl eframe::App for EditorApp {
             .cpu_usage
             .map(|s| s * 1000.0)
             .unwrap_or(started.elapsed().as_secs_f32() * 1000.0);
+        crate::updater::mark_started();
     }
 }
 
-fn hit_entity(layer: &Value, pos: [f32; 2]) -> Option<(usize, &Value)> {
+impl Drop for EditorApp {
+    fn drop(&mut self) {
+        if std::thread::panicking() && self.crash.is_none() {
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                self.capture_crash(
+                    "Native runtime panicked outside the editor update".into(),
+                    self.crash_fallback(),
+                )
+            }));
+        }
+        if let Some(cancel) = &self.command_cancel {
+            let _ = cancel.send(());
+        }
+    }
+}
+
+impl eframe::App for EditorApp {
+    fn raw_input_hook(&mut self, ctx: &egui::Context, input: &mut egui::RawInput) {
+        self.ui_commit_raw_input(ctx, input);
+    }
+    fn on_exit(&mut self) {
+        if let Some(cancel) = &self.command_cancel {
+            let _ = cancel.send(());
+        }
+        let until = Instant::now() + std::time::Duration::from_secs(1);
+        if let Some(ctx) = self.repaint.clone() {
+            self.shutdown_updater(&ctx);
+            while self.command_result.is_some() && Instant::now() < until {
+                self.poll_command(&ctx);
+                std::thread::yield_now();
+            }
+        }
+        self.persist_preferences();
+        app_log::flush();
+    }
+
+    fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+        if self.crash.is_some() {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                ui.label("LDtk encountered an unexpected error.");
+            });
+            self.crash_dialog(ctx);
+            return;
+        }
+        if let Err(error) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            self.update_frame(ctx, frame)
+        })) {
+            let message = error
+                .downcast_ref::<String>()
+                .cloned()
+                .or_else(|| error.downcast_ref::<&str>().map(|s| s.to_string()))
+                .unwrap_or_else(|| "Unexpected native error".into());
+            self.capture_crash(message, self.crash_fallback());
+            ctx.request_repaint();
+        }
+    }
+}
+
+fn hit_entity<'a>(
+    project: &Project,
+    layer: &'a Value,
+    pos: [f32; 2],
+) -> Option<(usize, &'a Value)> {
     layer["entityInstances"]
         .as_array()?
         .iter()
         .enumerate()
         .rev()
-        .find(|(_, e)| {
-            let w = number(e, "width", 16.0);
-            let h = number(e, "height", 16.0);
-            let x = e["px"][0].as_f64().unwrap_or(0.0) as f32
-                - w * e["__pivot"][0].as_f64().unwrap_or(0.0) as f32;
-            let y = e["px"][1].as_f64().unwrap_or(0.0) as f32
-                - h * e["__pivot"][1].as_f64().unwrap_or(0.0) as f32;
-            pos[0] >= x && pos[1] >= y && pos[0] < x + w && pos[1] < y + h
-        })
-}
-
-fn string_field(ui: &mut egui::Ui, label: &str, value: &mut Value, key: &str) -> bool {
-    let mut current = value[key].as_str().unwrap_or("").to_owned();
-    let mut changed = false;
-    ui.horizontal(|ui| {
-        ui.label(label);
-        changed = ui.text_edit_singleline(&mut current).changed();
-    });
-    if changed {
-        value[key] = Value::String(current);
-    }
-    changed
-}
-
-fn integer_field(
-    ui: &mut egui::Ui,
-    label: &str,
-    value: &mut Value,
-    key: &str,
-    range: std::ops::RangeInclusive<i64>,
-) -> bool {
-    let mut current = value[key].as_i64().unwrap_or(*range.start());
-    let mut changed = false;
-    ui.horizontal(|ui| {
-        ui.label(label);
-        changed = ui
-            .add(egui::DragValue::new(&mut current).range(range))
-            .changed();
-    });
-    if changed {
-        value[key] = current.into();
-    }
-    changed
-}
-
-fn bool_field(ui: &mut egui::Ui, label: &str, value: &mut Value, key: &str) -> bool {
-    let mut current = value[key].as_bool().unwrap_or(false);
-    let changed = ui.checkbox(&mut current, label).changed();
-    if changed {
-        value[key] = current.into();
-    }
-    changed
+        .find(|(_, entity)| selection_click::entity_is_over(project, entity, pos))
 }
 
 fn color_field(ui: &mut egui::Ui, label: &str, value: &mut Value, key: &str) -> bool {
@@ -1762,50 +1123,52 @@ fn color_field(ui: &mut egui::Ui, label: &str, value: &mut Value, key: &str) -> 
     changed
 }
 
-fn field_input(ui: &mut egui::Ui, field: &mut Value, definition: Option<&Value>) -> bool {
-    let name = text(field, "__identifier", "Field").to_owned();
-    let kind = text(field, "__type", "").to_owned();
-    let mut current = field["__value"].clone();
-    let value = &mut current;
-    let mut changed = false;
-    ui.horizontal(|ui| {
-        ui.label(name);
-        match kind.as_str() {
-            "Bool" => {
-                let mut v = value.as_bool().unwrap_or(false);
-                if ui.checkbox(&mut v, "").changed() {
-                    *value = v.into();
-                    changed = true;
-                }
-            }
-            "Int" => {
-                let mut v = value.as_i64().unwrap_or(0);
-                if ui.add(egui::DragValue::new(&mut v)).changed() {
-                    *value = v.into();
-                    changed = true;
-                }
-            }
-            "Float" => {
-                let mut v = value.as_f64().unwrap_or(0.0);
-                if ui.add(egui::DragValue::new(&mut v).speed(0.1)).changed() {
-                    *value = v.into();
-                    changed = true;
-                }
-            }
-            "String" | "Multilines" => {
-                ui.label(value.as_str().unwrap_or(""));
-            }
-            _ => {
-                ui.label(value.to_string());
-            }
-        }
-    });
-    changed && crate::fields::write_scalar(field, current, definition).is_ok()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bundled_resources_resolve_from_executable_without_the_source_working_directory() {
+        let directory = tempfile::tempdir().unwrap();
+        let executable = directory
+            .path()
+            .join("LDtk Rust.app/Contents/MacOS/ldtk-rs");
+        let resources = directory.path().join("LDtk Rust.app/Contents/Resources");
+        let asset = resources.join("assets/CHANGELOG.md");
+        let sample = resources.join("examples/original/Entities.ldtk");
+        std::fs::create_dir_all(executable.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(asset.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(sample.parent().unwrap()).unwrap();
+        std::fs::write(&asset, "bundled changelog").unwrap();
+        std::fs::write(&sample, "bundled example").unwrap();
+        assert_eq!(
+            std::fs::read_to_string(resource_path_in("assets/CHANGELOG.md", Some(&executable)))
+                .unwrap(),
+            "bundled changelog"
+        );
+        assert_eq!(
+            std::fs::read_to_string(resource_path_in(
+                "examples/original/Entities.ldtk",
+                Some(&executable)
+            ))
+            .unwrap(),
+            "bundled example"
+        );
+        let portable_executable = directory.path().join("portable/ldtk-rs");
+        let portable_asset = directory
+            .path()
+            .join("portable/resources/assets/CHANGELOG.md");
+        std::fs::create_dir_all(portable_asset.parent().unwrap()).unwrap();
+        std::fs::write(&portable_asset, "portable changelog").unwrap();
+        assert_eq!(
+            resource_path_in("assets/CHANGELOG.md", Some(&portable_executable)),
+            portable_asset
+        );
+        assert_eq!(
+            resource_path_in("assets/CHANGELOG.md", None),
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets/CHANGELOG.md")
+        );
+    }
 
     fn editor() -> EditorApp {
         let mut app = EditorApp::empty();
@@ -1895,20 +1258,20 @@ mod tests {
     }
 
     #[test]
-    fn undo_does_not_erase_a_later_property_change() {
+    fn property_changes_are_undoable_without_losing_the_previous_stroke() {
         let mut app = editor();
         let key = app.selected.unwrap();
-        let project = app.project.as_mut().unwrap();
-        app.history.begin(project, key);
-        project.paint_int_grid(key, 0, 0, 0, 1).unwrap();
-        app.history.commit(project);
-        project.level_mut(key).unwrap()["identifier"] = "Renamed".into();
-        app.mark_property_change();
-        app.history.undo(app.project.as_mut().unwrap());
-        assert_eq!(
+        press_canvas(&mut app);
+        app.edit("Level renamed", |p| {
+            p.level_mut(key).unwrap()["identifier"] = "Renamed".into();
+            Ok(())
+        });
+        assert!(app.history.undo(app.project.as_mut().unwrap()));
+        assert_ne!(
             app.project.as_ref().unwrap().level(key).unwrap()["identifier"],
             "Renamed"
         );
+        assert!(app.history.can_undo());
     }
 
     #[test]
@@ -1943,9 +1306,949 @@ mod tests {
         press_canvas(&mut app);
         assert!(app.dirty);
         let expected = app.project.as_ref().unwrap().json.clone();
-        assert!(app.save(false));
+        app.save(false);
+        let ctx = egui::Context::default();
+        let deadline = Instant::now() + std::time::Duration::from_secs(5);
+        while app.saving.is_some() && Instant::now() < deadline {
+            app.poll_services(&ctx);
+            std::thread::yield_now();
+        }
+        assert!(app.saving.is_none(), "Background save did not complete");
         assert!(!app.dirty);
         let reopened = Project::load(&path).unwrap();
         assert_eq!(reopened.json, expected);
+    }
+
+    #[test]
+    fn flood_fill_only_changes_connected_cells_and_undoes_as_one_stroke() {
+        let mut app = editor();
+        let key = app.selected.unwrap();
+        let project = app.project.as_mut().unwrap();
+        for y in 0..16 {
+            project.paint_int_grid(key, 0, 1, y, 1).unwrap();
+        }
+        app.int_value = 1;
+        app.history.begin(project, key);
+        app.stroke = true;
+        app.fill([0, 0], false);
+        app.finish_stroke();
+        let cells = app.project.as_ref().unwrap().layer(key, 0).unwrap()["intGridCsv"]
+            .as_array()
+            .unwrap();
+        assert_eq!(cells[0], 1);
+        assert_eq!(cells[2], 0);
+        assert!(app.history.undo(app.project.as_mut().unwrap()));
+        assert_eq!(
+            app.project.as_ref().unwrap().layer(key, 0).unwrap()["intGridCsv"][0],
+            0
+        );
+    }
+
+    #[test]
+    fn rectangle_brush_obeys_flips_and_large_tiles() {
+        assert_eq!(
+            tools::stamp_cells([3, 4], [2, 5, 2, 2], 2, 1),
+            vec![
+                ([5, 4], [2, 5]),
+                ([3, 4], [3, 5]),
+                ([5, 6], [2, 6]),
+                ([3, 6], [3, 6])
+            ]
+        );
+        assert_eq!(
+            tools::rectangle_tiles([0, 0, 5, 3], [2, 5, 2, 2], 2),
+            vec![
+                ([0, 0], [2, 5]),
+                ([2, 0], [3, 5]),
+                ([4, 0], [2, 5]),
+                ([0, 2], [2, 6]),
+                ([2, 2], [3, 6]),
+                ([4, 2], [2, 6])
+            ]
+        );
+    }
+
+    #[test]
+    fn displaying_a_null_tile_field_does_not_assign_a_tile() {
+        let ctx = egui::Context::default();
+        let project = Project::new();
+        let mut result = None;
+        let _ = ctx.run(egui::RawInput::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                result = ui_fields::scalar_editor(
+                    ui,
+                    &project,
+                    "Tile",
+                    &Value::Null,
+                    &serde_json::json!({"canBeNull":false}),
+                );
+            });
+        });
+        assert!(
+            result.is_none(),
+            "Displaying a field must not count as editing it"
+        );
+    }
+
+    #[test]
+    fn tile_bucket_matches_underlying_tiles_and_erases_entire_stacks() {
+        let mut app = EditorApp::empty();
+        let mut p = Project::new();
+        let key = p.level_keys()[0];
+        let layer = p.add_layer("Tiles", "Tiles", 16).unwrap();
+        let atlas = p
+            .add_tileset(std::path::Path::new("atlas.png"), 16, 32, 32)
+            .unwrap();
+        p.assign_tileset(layer, atlas).unwrap();
+        p.paint_tile_stacked(key, 0, 0, 0, 0, [0, 0], 0, false, true)
+            .unwrap();
+        p.paint_tile_stacked(key, 0, 0, 0, 1, [16, 0], 0, false, true)
+            .unwrap();
+        p.paint_tile_stacked(key, 0, 1, 0, 1, [16, 0], 0, false, true)
+            .unwrap();
+        p.paint_tile_stacked(key, 0, 1, 0, 0, [0, 0], 0, false, true)
+            .unwrap();
+        app.set_project(p);
+        app.fill([0, 0], true);
+        assert!(
+            app.project.as_ref().unwrap().layer(key, 0).unwrap()["gridTiles"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn navigation_keys_choose_palette_values_without_panning() {
+        let mut app = editor();
+        let uid = app.project.as_ref().unwrap().json["defs"]["layers"][0]["uid"]
+            .as_i64()
+            .unwrap();
+        app.project.as_mut().unwrap().update_layer_properties(uid,&serde_json::json!({"intGridValues":[{"value":1,"identifier":"A","color":"#FFFFFF","groupUid":0},{"value":2,"identifier":"B","color":"#FFFFFF","groupUid":0}]})).unwrap();
+        let before = app.viewport.center;
+        app.navigate_palette(0, 1);
+        assert_eq!(app.int_value, 2);
+        assert_eq!(app.viewport.center, before);
+        app.navigate_palette(-1, 0);
+        assert_eq!(app.int_value, 1);
+    }
+
+    #[test]
+    fn consecutive_entity_placements_auto_chain_their_reference_field() {
+        let mut p = Project::new();
+        p.add_layer("Entities", "Entities", 16).unwrap();
+        let uid = p.add_entity_def("Waypoint", 16, 16).unwrap();
+        p.add_field_definition(Some(uid), "Next", "EntityRef", false)
+            .unwrap();
+        let mut app = EditorApp::empty();
+        app.set_project(p);
+        app.entity_uid = Some(uid);
+        app.edit_entity([8.0, 8.0], false);
+        app.edit_entity([24.0, 8.0], false);
+        let entities = app
+            .project
+            .as_ref()
+            .unwrap()
+            .layer(app.selected.unwrap(), 0)
+            .unwrap()["entityInstances"]
+            .as_array()
+            .unwrap();
+        assert_eq!(
+            entities[0]["fieldInstances"][0]["__value"]["entityIid"],
+            entities[1]["iid"]
+        );
+    }
+
+    #[test]
+    fn select_all_copies_and_pastes_visible_layers_together_as_one_undo() {
+        let mut app = editor();
+        let key = app.selected.unwrap();
+        let p = app.project.as_mut().unwrap();
+        let uid = p.add_layer("Objects", "Entities", 16).unwrap();
+        let entity = p.add_entity_def("Marker", 16, 16).unwrap();
+        let objects = p.level(key).unwrap()["layerInstances"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .position(|l| l["layerDefUid"] == uid)
+            .unwrap();
+        let ground = p.level(key).unwrap()["layerInstances"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .position(|l| l["__type"] == "IntGrid")
+            .unwrap();
+        p.paint_int_grid(key, ground, 0, 0, 1).unwrap();
+        p.add_entity(key, objects, entity, 8, 8).unwrap();
+        app.layer = ground;
+        app.select_all();
+        app.copy_selection(&egui::Context::default(), false);
+        assert_eq!(app.clipboard.as_ref().unwrap()["type"], "SelectionGroup");
+        app.paste_at([4, 4]);
+        let p = app.project.as_ref().unwrap();
+        assert_eq!(
+            p.layer(key, objects).unwrap()["entityInstances"]
+                .as_array()
+                .unwrap()
+                .len(),
+            2
+        );
+        assert_eq!(p.layer(key, ground).unwrap()["intGridCsv"][4 + 4 * 16], 1);
+        app.undo_action(false);
+        assert_eq!(
+            app.project.as_ref().unwrap().layer(key, objects).unwrap()["entityInstances"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn entity_drag_preserves_pivot_and_pointer_cell_phase() {
+        assert_eq!(
+            entity_tools::drag_position([8, 16], [7.0, 8.0], [17.0, 8.0], 16.0, 1.0),
+            [24, 16]
+        );
+        assert_eq!(
+            entity_tools::drag_position([8, 16], [1.0, 1.0], [15.0, 1.0], 16.0, 1.0),
+            [8, 16]
+        );
+        assert_eq!(
+            entity_tools::drag_position([8, 16], [7.0, 8.0], [17.0, 8.0], 16.0, 0.5),
+            [16, 16]
+        );
+    }
+
+    fn canvas_frame(
+        app: &mut EditorApp,
+        ctx: &egui::Context,
+        events: Vec<egui::Event>,
+        modifiers: egui::Modifiers,
+    ) {
+        let _ = ctx.run(
+            egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(256.0, 256.0),
+                )),
+                events,
+                modifiers,
+                ..Default::default()
+            },
+            |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    let (rect, response) =
+                        ui.allocate_exact_size(ui.available_size(), Sense::click_and_drag());
+                    app.canvas_input(ctx, rect, &response);
+                });
+                app.focus_overlay(ctx);
+            },
+        );
+    }
+
+    #[test]
+    fn rectangle_commits_the_release_position_even_when_move_and_release_share_a_frame() {
+        let mut app = editor();
+        let ctx = egui::Context::default();
+        let start = egui::pos2(40.0, 40.0);
+        let end = egui::pos2(104.0, 104.0);
+        let modifiers = egui::Modifiers {
+            shift: true,
+            ..Default::default()
+        };
+        canvas_frame(
+            &mut app,
+            &ctx,
+            vec![egui::Event::PointerMoved(start)],
+            modifiers,
+        );
+        canvas_frame(
+            &mut app,
+            &ctx,
+            vec![egui::Event::PointerButton {
+                pos: start,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers,
+            }],
+            modifiers,
+        );
+        canvas_frame(
+            &mut app,
+            &ctx,
+            vec![
+                egui::Event::PointerMoved(end),
+                egui::Event::PointerButton {
+                    pos: end,
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers,
+                },
+            ],
+            modifiers,
+        );
+        let cells = app
+            .project
+            .as_ref()
+            .unwrap()
+            .layer(app.selected.unwrap(), 0)
+            .unwrap()["intGridCsv"]
+            .as_array()
+            .unwrap();
+        assert_eq!(
+            cells.iter().filter(|v| v.as_i64() == Some(1)).count(),
+            25,
+            "The final rectangle must cover cells 2..=6"
+        );
+        assert_eq!(cells[6 + 6 * 16], 1);
+        assert_eq!(cells[7 + 7 * 16], 0);
+    }
+
+    #[test]
+    fn focus_or_pointer_loss_commits_once_and_does_not_resume_a_stroke() {
+        for lost in [egui::Event::PointerGone, egui::Event::WindowFocused(false)] {
+            let mut app = editor();
+            let ctx = egui::Context::default();
+            let start = egui::pos2(40.0, 40.0);
+            let end = egui::pos2(104.0, 40.0);
+            let modifiers = egui::Modifiers::NONE;
+            canvas_frame(
+                &mut app,
+                &ctx,
+                vec![egui::Event::PointerMoved(start)],
+                modifiers,
+            );
+            canvas_frame(
+                &mut app,
+                &ctx,
+                vec![egui::Event::PointerButton {
+                    pos: start,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers,
+                }],
+                modifiers,
+            );
+            canvas_frame(
+                &mut app,
+                &ctx,
+                vec![egui::Event::PointerMoved(end)],
+                modifiers,
+            );
+            canvas_frame(&mut app, &ctx, vec![lost], modifiers);
+            assert!(!app.stroke && app.gesture.is_none());
+            let before = app.project.as_ref().unwrap().json.clone();
+            canvas_frame(
+                &mut app,
+                &ctx,
+                vec![
+                    egui::Event::WindowFocused(true),
+                    egui::Event::PointerMoved(egui::pos2(184.0, 40.0)),
+                ],
+                modifiers,
+            );
+            assert_eq!(app.project.as_ref().unwrap().json, before);
+            app.undo_action(false);
+            assert!(
+                app.project
+                    .as_ref()
+                    .unwrap()
+                    .layer(app.selected.unwrap(), 0)
+                    .unwrap()["intGridCsv"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .all(|v| v == 0)
+            );
+        }
+    }
+
+    #[test]
+    fn returning_from_another_window_consumes_the_first_click() {
+        let mut app = editor();
+        let ctx = egui::Context::default();
+        let pos = egui::pos2(40.0, 40.0);
+        let modifiers = egui::Modifiers::NONE;
+        canvas_frame(
+            &mut app,
+            &ctx,
+            vec![egui::Event::PointerMoved(pos)],
+            modifiers,
+        );
+        canvas_frame(
+            &mut app,
+            &ctx,
+            vec![egui::Event::WindowFocused(false)],
+            modifiers,
+        );
+        assert!(app.clicktrap);
+        canvas_frame(
+            &mut app,
+            &ctx,
+            vec![
+                egui::Event::WindowFocused(true),
+                egui::Event::PointerMoved(pos),
+                egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers,
+                },
+            ],
+            modifiers,
+        );
+        canvas_frame(
+            &mut app,
+            &ctx,
+            vec![egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers,
+            }],
+            modifiers,
+        );
+        assert!(!app.clicktrap);
+        assert!(!app.dirty);
+        canvas_frame(&mut app, &ctx, Vec::new(), modifiers);
+        canvas_frame(
+            &mut app,
+            &ctx,
+            vec![egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers,
+            }],
+            modifiers,
+        );
+        canvas_frame(
+            &mut app,
+            &ctx,
+            vec![egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers,
+            }],
+            modifiers,
+        );
+        assert!(app.dirty);
+    }
+
+    #[test]
+    fn ordinary_stroke_includes_release_frame_motion() {
+        let mut app = editor();
+        let ctx = egui::Context::default();
+        let start = egui::pos2(40.0, 40.0);
+        let end = egui::pos2(104.0, 40.0);
+        let modifiers = egui::Modifiers::NONE;
+        canvas_frame(
+            &mut app,
+            &ctx,
+            vec![egui::Event::PointerMoved(start)],
+            modifiers,
+        );
+        canvas_frame(
+            &mut app,
+            &ctx,
+            vec![egui::Event::PointerButton {
+                pos: start,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers,
+            }],
+            modifiers,
+        );
+        canvas_frame(
+            &mut app,
+            &ctx,
+            vec![
+                egui::Event::PointerMoved(end),
+                egui::Event::PointerButton {
+                    pos: end,
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers,
+                },
+            ],
+            modifiers,
+        );
+        assert!(!app.stroke);
+        assert_eq!(
+            app.project
+                .as_ref()
+                .unwrap()
+                .layer(app.selected.unwrap(), 0)
+                .unwrap()["intGridCsv"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|v| v.as_i64() == Some(1))
+                .count(),
+            5
+        );
+    }
+
+    #[test]
+    fn point_click_drag_and_right_delete_do_not_create_or_delete_an_entity() {
+        let mut p = Project::new();
+        p.add_layer("Entities", "Entities", 16).unwrap();
+        let uid = p.add_entity_def("Actor", 16, 16).unwrap();
+        let field = p
+            .add_field_definition(Some(uid), "Target", "Point", false)
+            .unwrap();
+        let key = p.level_keys()[0];
+        p.add_entity(key, 0, uid, 16, 16).unwrap();
+        let iid = p.layer(key, 0).unwrap()["entityInstances"][0]["iid"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        p.set_field_value(key, Some(&iid), field, serde_json::json!({"cx":4,"cy":4}))
+            .unwrap();
+        let mut app = EditorApp::empty();
+        app.set_project(p);
+        app.entity_uid = Some(uid);
+        app.fit = false;
+        app.viewport = Viewport {
+            center: [128.0, 128.0],
+            zoom: 1.0,
+        };
+        let ctx = egui::Context::default();
+        let start = egui::pos2(72.0, 72.0);
+        let end = egui::pos2(104.0, 72.0);
+        let modifiers = egui::Modifiers::NONE;
+        canvas_frame(
+            &mut app,
+            &ctx,
+            vec![egui::Event::PointerMoved(start)],
+            modifiers,
+        );
+        canvas_frame(
+            &mut app,
+            &ctx,
+            vec![egui::Event::PointerButton {
+                pos: start,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers,
+            }],
+            modifiers,
+        );
+        canvas_frame(
+            &mut app,
+            &ctx,
+            vec![
+                egui::Event::PointerMoved(end),
+                egui::Event::PointerButton {
+                    pos: end,
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers,
+                },
+            ],
+            modifiers,
+        );
+        let entities = app.project.as_ref().unwrap().layer(key, 0).unwrap()["entityInstances"]
+            .as_array()
+            .unwrap();
+        assert_eq!(
+            entities.len(),
+            1,
+            "Clicking a point must select it rather than create an entity"
+        );
+        assert_eq!(
+            entities[0]["fieldInstances"][0]["__value"],
+            serde_json::json!({"cx":6,"cy":4})
+        );
+        app.undo_action(false);
+        let entities = app.project.as_ref().unwrap().layer(key, 0).unwrap()["entityInstances"]
+            .as_array()
+            .unwrap();
+        assert_eq!(
+            entities[0]["fieldInstances"][0]["__value"],
+            serde_json::json!({"cx":4,"cy":4})
+        );
+        canvas_frame(
+            &mut app,
+            &ctx,
+            vec![
+                egui::Event::PointerMoved(start),
+                egui::Event::PointerButton {
+                    pos: start,
+                    button: egui::PointerButton::Secondary,
+                    pressed: true,
+                    modifiers,
+                },
+            ],
+            modifiers,
+        );
+        canvas_frame(
+            &mut app,
+            &ctx,
+            vec![egui::Event::PointerButton {
+                pos: start,
+                button: egui::PointerButton::Secondary,
+                pressed: false,
+                modifiers,
+            }],
+            modifiers,
+        );
+        let entities = app.project.as_ref().unwrap().layer(key, 0).unwrap()["entityInstances"]
+            .as_array()
+            .unwrap();
+        assert_eq!(entities.len(), 1);
+        assert!(entities[0]["fieldInstances"][0]["__value"].is_null());
+    }
+
+    #[test]
+    fn creating_an_entity_immediately_drags_or_resizes_with_one_undo() {
+        for resizable in [false, true] {
+            let mut p = Project::new();
+            p.add_layer("Entities", "Entities", 16).unwrap();
+            let uid = p.add_entity_def("Actor", 16, 16).unwrap();
+            p.update_entity_definition(
+                uid,
+                &serde_json::json!({"resizableX":resizable,"resizableY":resizable}),
+            )
+            .unwrap();
+            let mut app = EditorApp::empty();
+            app.set_project(p);
+            app.entity_uid = Some(uid);
+            app.fit = false;
+            app.viewport = Viewport {
+                center: [128.0; 2],
+                zoom: 1.0,
+            };
+            let ctx = egui::Context::default();
+            let start = egui::pos2(40.0, 40.0);
+            let end = egui::pos2(104.0, 40.0);
+            let modifiers = egui::Modifiers::NONE;
+            canvas_frame(
+                &mut app,
+                &ctx,
+                vec![egui::Event::PointerMoved(start)],
+                modifiers,
+            );
+            canvas_frame(
+                &mut app,
+                &ctx,
+                vec![egui::Event::PointerButton {
+                    pos: start,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers,
+                }],
+                modifiers,
+            );
+            assert!(app.gesture.is_some());
+            canvas_frame(
+                &mut app,
+                &ctx,
+                vec![
+                    egui::Event::PointerMoved(end),
+                    egui::Event::PointerButton {
+                        pos: end,
+                        button: egui::PointerButton::Primary,
+                        pressed: false,
+                        modifiers,
+                    },
+                ],
+                modifiers,
+            );
+            let entity = &app
+                .project
+                .as_ref()
+                .unwrap()
+                .layer(app.selected.unwrap(), 0)
+                .unwrap()["entityInstances"][0];
+            if resizable {
+                assert!(entity["width"].as_i64().unwrap() > 16);
+            } else {
+                assert_eq!(entity["px"][0], 104);
+            }
+            app.undo_action(false);
+            assert!(
+                app.project
+                    .as_ref()
+                    .unwrap()
+                    .layer(app.selected.unwrap(), 0)
+                    .unwrap()["entityInstances"]
+                    .as_array()
+                    .unwrap()
+                    .is_empty()
+            );
+        }
+    }
+
+    #[test]
+    fn mixed_selection_move_uses_rendered_layer_scales_and_ignores_brush_flips() {
+        let mut p = Project::new();
+        let normal = p.add_layer("Normal", "IntGrid", 16).unwrap();
+        let scaled = p.add_layer("Scaled", "IntGrid", 16).unwrap();
+        p.update_layer_properties(scaled,&serde_json::json!({"parallaxFactorX":0.5,"parallaxFactorY":0.0,"parallaxScaling":true})).unwrap();
+        let key = p.level_keys()[0];
+        let layers = p.level(key).unwrap()["layerInstances"].as_array().unwrap();
+        let scaled_index = layers
+            .iter()
+            .position(|l| l["layerDefUid"] == scaled)
+            .unwrap();
+        let normal_index = layers
+            .iter()
+            .position(|l| l["layerDefUid"] == normal)
+            .unwrap();
+        p.paint_int_grid(key, scaled_index, 0, 0, 1).unwrap();
+        p.paint_int_grid(key, normal_index, 4, 0, 1).unwrap();
+        let mut app = EditorApp::empty();
+        app.set_project(p);
+        app.layer = scaled_index;
+        app.viewport = Viewport {
+            center: [128.0; 2],
+            zoom: 1.0,
+        };
+        app.flips = 3;
+        app.capture_selection([0, 0, 4, 2]);
+        assert_eq!(app.selection_group.as_ref().unwrap()["elementCount"], 2);
+        app.gesture = Some(tools::Gesture::SelectionMove {
+            region: [0, 0, 4, 2],
+            start: [0, 0],
+            end: [2, 0],
+            copy: false,
+            world_start: [65.0, 1.0],
+            world_end: [81.0, 1.0],
+            moved: true,
+        });
+        app.finish_gesture();
+        let p = app.project.as_ref().unwrap();
+        assert_eq!(p.layer(key, scaled_index).unwrap()["intGridCsv"][2], 1);
+        assert_eq!(p.layer(key, normal_index).unwrap()["intGridCsv"][5], 1);
+        assert_eq!(p.layer(key, scaled_index).unwrap()["intGridCsv"][0], 0);
+        app.undo_action(false);
+        let p = app.project.as_ref().unwrap();
+        assert_eq!(p.layer(key, scaled_index).unwrap()["intGridCsv"][0], 1);
+        assert_eq!(p.layer(key, normal_index).unwrap()["intGridCsv"][4], 1);
+    }
+
+    #[test]
+    fn reopening_last_project_restores_its_level_uid_and_persists_navigation() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("World.ldtk");
+        let mut p = Project::new();
+        let first = p.level_keys()[0];
+        let second = p.add_level(None, "Second", 256, 256).unwrap();
+        p.save(&path).unwrap();
+        let first_uid = p.level(first).unwrap()["uid"].clone();
+        let second_uid = p.level(second).unwrap()["uid"].clone();
+        let mut app = EditorApp::empty();
+        app.settings.path = Some(dir.path().join("settings.json"));
+        app.settings.value["openLastProject"] = true.into();
+        app.settings.value["lastProject"] =
+            serde_json::json!({"filePath":path,"levelUid":second_uid});
+        app.set_project(p);
+        assert_eq!(app.selected, Some(second));
+        assert_eq!(app.settings.value["lastProject"]["levelUid"], second_uid);
+        app.selected = Some(first);
+        app.remember_selected_level();
+        let saved: Value =
+            serde_json::from_slice(&std::fs::read(app.settings.path.as_ref().unwrap()).unwrap())
+                .unwrap();
+        assert_eq!(saved["lastProject"]["levelUid"], first_uid);
+    }
+
+    #[test]
+    fn painting_outside_a_selection_and_visibility_modes_clear_the_old_selection() {
+        let mut app = editor();
+        let key = app.selected.unwrap();
+        app.project
+            .as_mut()
+            .unwrap()
+            .paint_int_grid(key, 0, 0, 0, 1)
+            .unwrap();
+        app.capture_selection([0, 0, 1, 1]);
+        let ctx = egui::Context::default();
+        let pos = egui::pos2(72.0, 72.0);
+        let modifiers = egui::Modifiers::NONE;
+        canvas_frame(
+            &mut app,
+            &ctx,
+            vec![egui::Event::PointerMoved(pos)],
+            modifiers,
+        );
+        canvas_frame(
+            &mut app,
+            &ctx,
+            vec![egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers,
+            }],
+            modifiers,
+        );
+        canvas_frame(
+            &mut app,
+            &ctx,
+            vec![egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers,
+            }],
+            modifiers,
+        );
+        assert!(app.selection_group.is_none());
+        app.delete_selection();
+        assert_eq!(
+            app.project.as_ref().unwrap().layer(key, 0).unwrap()["intGridCsv"][0],
+            1
+        );
+        app.capture_selection([0, 0, 1, 1]);
+        app.set_single_layer_mode(true);
+        assert!(app.selection_group.is_none());
+        app.capture_selection([0, 0, 1, 1]);
+        app.set_details(false);
+        assert!(app.selection_group.is_none());
+        app.set_details(true);
+        app.capture_selection([0, 0, 1, 1]);
+        app.set_empty_selection(false);
+        assert!(app.selection_group.is_none());
+    }
+
+    #[test]
+    fn native_undo_is_per_level_and_structural_recovery_is_separate() {
+        let mut app = editor();
+        let first = app.selected.unwrap();
+        let second = app
+            .project
+            .as_mut()
+            .unwrap()
+            .add_level(None, "Second", 256, 256)
+            .unwrap();
+        for key in [first, second] {
+            app.selected = Some(key);
+            app.edit_level("Paint", key, |p| p.paint_int_grid(key, 0, 0, 0, 1));
+        }
+        app.selected = Some(first);
+        app.undo_action(false);
+        assert_eq!(
+            app.project.as_ref().unwrap().layer(first, 0).unwrap()["intGridCsv"][0],
+            0
+        );
+        assert_eq!(
+            app.project.as_ref().unwrap().layer(second, 0).unwrap()["intGridCsv"][0],
+            1
+        );
+        let uid = app.project.as_ref().unwrap().json["defs"]["layers"][0]["uid"]
+            .as_i64()
+            .unwrap();
+        app.edit_recoverable("Layer deleted", |p| p.remove_definition("layers", uid));
+        assert!(
+            !app.history
+                .can_undo_level(app.project.as_ref().unwrap(), second)
+        );
+        app.restore_last_chance();
+        assert_eq!(
+            app.project.as_ref().unwrap().layer(second, 0).unwrap()["intGridCsv"][0],
+            1
+        );
+        assert!(app.last_chance.is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn closing_a_failed_before_save_command_continues_the_source_save_workflow() {
+        let mut app = editor();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("Commands.ldtk");
+        app.project.as_mut().unwrap().json["customCommands"] = serde_json::json!([{"when":"BeforeSave","command":"python3 -c \"raise SystemExit(7)\""}]);
+        app.project.as_mut().unwrap().save(&path).unwrap();
+        let iid = text(&app.project.as_ref().unwrap().json, "iid", "").to_owned();
+        app.settings.set_trusted(&iid, true);
+        press_canvas(&mut app);
+        app.save(false);
+        let ctx = egui::Context::default();
+        let until = Instant::now() + std::time::Duration::from_secs(3);
+        while Instant::now() < until {
+            app.poll_services(&ctx);
+            app.poll_command(&ctx);
+            app.poll_hooks(&ctx);
+            if app.command_open && app.command_result.is_none() {
+                break;
+            }
+            std::thread::yield_now();
+        }
+        assert!(
+            app.command_open,
+            "Failure output stays visible until the user closes it"
+        );
+        assert!(app.dirty);
+        app.command_open = false;
+        while Instant::now() < until && (app.dirty || app.is_busy()) {
+            app.poll_hooks(&ctx);
+            app.poll_services(&ctx);
+            std::thread::yield_now();
+        }
+        assert!(
+            !app.dirty,
+            "Closing the command output must allow saving to continue"
+        );
+        assert_eq!(
+            Project::load(path).unwrap().json,
+            app.project.as_ref().unwrap().json
+        );
+    }
+
+    #[test]
+    fn every_native_properties_panel_preserves_the_official_example_until_edited() {
+        let ctx = egui::Context::default();
+        theme::configure(&ctx);
+        let mut project = Project::load(resource_path(
+            "examples/original/Typical_TopDown_example.ldtk",
+        ))
+        .unwrap();
+        project.migrate_to_current().unwrap();
+        let mut app = EditorApp::empty();
+        app.set_project(project);
+        let before = app.project.as_ref().unwrap().json.clone();
+        for panel in [
+            Panel::Project,
+            Panel::World,
+            Panel::Level,
+            Panel::Layers,
+            Panel::Entities,
+            Panel::Entity,
+            Panel::Fields,
+            Panel::Enums,
+            Panel::Tilesets,
+            Panel::Rules,
+            Panel::Settings,
+            Panel::Export,
+        ] {
+            app.definition_uid = None;
+            app.field_uid = None;
+            app.rule_uid = None;
+            app.rule_group_uid = None;
+            for _ in 0..2 {
+                let _ = ctx.run(
+                    egui::RawInput {
+                        screen_rect: Some(Rect::from_min_size(
+                            egui::Pos2::ZERO,
+                            egui::vec2(1440.0, 900.0),
+                        )),
+                        ..Default::default()
+                    },
+                    |ctx| {
+                        egui::CentralPanel::default().show(ctx, |ui| app.properties(ui, panel));
+                    },
+                );
+            }
+            assert_eq!(
+                app.project.as_ref().unwrap().json,
+                before,
+                "Opening panel {} changed the document",
+                panel as u8
+            );
+        }
     }
 }

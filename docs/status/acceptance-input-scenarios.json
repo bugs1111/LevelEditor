@@ -1,0 +1,89 @@
+{
+  "entity_move": [
+    {
+      "frame": 0,
+      "pointer": [
+        534,
+        578
+      ],
+      "button": "primary",
+      "pressed": true
+    },
+    {
+      "frame": 10,
+      "pointer": [
+        598,
+        546
+      ]
+    }
+  ],
+  "sparse_selection": [
+    {
+      "frame": 0,
+      "pointer": [
+        480,
+        240
+      ],
+      "button": "primary",
+      "pressed": true,
+      "shift": true,
+      "alt": true
+    },
+    {
+      "frame": 10,
+      "pointer": [
+        650,
+        350
+      ],
+      "shift": true,
+      "alt": true
+    },
+    {
+      "frame": 11,
+      "pointer": [
+        650,
+        350
+      ],
+      "button": "primary",
+      "pressed": false,
+      "shift": true,
+      "alt": true
+    },
+    {
+      "frame": 12,
+      "pointer": [
+        1400,
+        850
+      ]
+    }
+  ],
+  "color_picker": [
+    {
+      "frame": 0,
+      "pointer": [
+        425,
+        410
+      ],
+      "button": "primary",
+      "pressed": true
+    },
+    {
+      "frame": 1,
+      "pointer": [
+        425,
+        410
+      ],
+      "button": "primary",
+      "pressed": false
+    }
+  ],
+  "tile_popout": [
+    {
+      "frame": 0,
+      "pointer": [
+        150,
+        500
+      ]
+    }
+  ]
+}

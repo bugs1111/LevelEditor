@@ -1,0 +1,528 @@
+use super::*;
+#[derive(Clone, Debug)]
+pub struct BackupInfo {
+    pub path: PathBuf,
+    pub timestamp: String,
+    pub crash: bool,
+}
+// Only these two root keys are needed to discover backups. Unknown document
+// content is consumed with IgnoredAny, including large strings and tile arrays.
+#[derive(Default)]
+struct BackupMetadata {
+    iid: Option<String>,
+    backup_rel_path: Option<String>,
+}
+struct MetadataString(Option<String>);
+impl<'de> serde::Deserialize<'de> for MetadataString {
+    fn deserialize<D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> std::result::Result<Self, D::Error> {
+        struct Visitor;
+        impl<'de> serde::de::Visitor<'de> for Visitor {
+            type Value = MetadataString;
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("a string or ignored JSON value")
+            }
+            fn visit_str<E: serde::de::Error>(
+                self,
+                value: &str,
+            ) -> std::result::Result<Self::Value, E> {
+                Ok(MetadataString(Some(value.into())))
+            }
+            fn visit_string<E: serde::de::Error>(
+                self,
+                value: String,
+            ) -> std::result::Result<Self::Value, E> {
+                Ok(MetadataString(Some(value)))
+            }
+            fn visit_unit<E: serde::de::Error>(self) -> std::result::Result<Self::Value, E> {
+                Ok(MetadataString(None))
+            }
+            fn visit_bool<E: serde::de::Error>(
+                self,
+                _: bool,
+            ) -> std::result::Result<Self::Value, E> {
+                Ok(MetadataString(None))
+            }
+            fn visit_i64<E: serde::de::Error>(self, _: i64) -> std::result::Result<Self::Value, E> {
+                Ok(MetadataString(None))
+            }
+            fn visit_u64<E: serde::de::Error>(self, _: u64) -> std::result::Result<Self::Value, E> {
+                Ok(MetadataString(None))
+            }
+            fn visit_f64<E: serde::de::Error>(self, _: f64) -> std::result::Result<Self::Value, E> {
+                Ok(MetadataString(None))
+            }
+            fn visit_seq<A: serde::de::SeqAccess<'de>>(
+                self,
+                mut values: A,
+            ) -> std::result::Result<Self::Value, A::Error> {
+                while values.next_element::<serde::de::IgnoredAny>()?.is_some() {}
+                Ok(MetadataString(None))
+            }
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                mut values: A,
+            ) -> std::result::Result<Self::Value, A::Error> {
+                while values
+                    .next_entry::<serde::de::IgnoredAny, serde::de::IgnoredAny>()?
+                    .is_some()
+                {}
+                Ok(MetadataString(None))
+            }
+        }
+        deserializer.deserialize_any(Visitor)
+    }
+}
+impl<'de> serde::Deserialize<'de> for BackupMetadata {
+    fn deserialize<D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> std::result::Result<Self, D::Error> {
+        struct Visitor;
+        impl<'de> serde::de::Visitor<'de> for Visitor {
+            type Value = BackupMetadata;
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("project metadata")
+            }
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                mut values: A,
+            ) -> std::result::Result<Self::Value, A::Error> {
+                let mut metadata = BackupMetadata::default();
+                while let Some(key) = values.next_key::<String>()? {
+                    match key.as_str() {
+                        "iid" => metadata.iid = values.next_value::<MetadataString>()?.0,
+                        "backupRelPath" => {
+                            metadata.backup_rel_path = values.next_value::<MetadataString>()?.0
+                        }
+                        _ => {
+                            values.next_value::<serde::de::IgnoredAny>()?;
+                        }
+                    }
+                }
+                Ok(metadata)
+            }
+        }
+        deserializer.deserialize_map(Visitor)
+    }
+}
+fn read_backup_metadata(path: &Path) -> Result<BackupMetadata> {
+    use std::io::BufRead;
+    let file = fs::File::open(path).map_err(|source| Error::Io {
+        path: path.into(),
+        source,
+    })?;
+    let mut reader = std::io::BufReader::new(file);
+    let object = loop {
+        let bytes = reader.fill_buf().map_err(|source| Error::Io {
+            path: path.into(),
+            source,
+        })?;
+        if bytes.is_empty() {
+            break false;
+        }
+        if let Some(first) = bytes
+            .iter()
+            .position(|byte| !matches!(byte, b' ' | b'\n' | b'\r' | b'\t'))
+        {
+            break bytes[first] == b'{';
+        }
+        let length = bytes.len();
+        reader.consume(length);
+    };
+    // Valid non-object JSON must not trigger the corrupt-backup fallback. Still
+    // consume it fully so malformed arrays/strings or trailing data remain errors.
+    if object {
+        serde_json::from_reader(reader)
+    } else {
+        serde_json::from_reader::<_, serde::de::IgnoredAny>(reader)
+            .map(|_| BackupMetadata::default())
+    }
+    .map_err(|source| Error::Json {
+        path: path.into(),
+        source,
+    })
+}
+
+fn discover_backups(path: &Path, id: &str, relative: Option<&str>) -> Result<Vec<BackupInfo>> {
+    let base = path.parent().expect("absolute path");
+    let dir = relative
+        .map(|relative| base.join(relative))
+        .unwrap_or_else(|| {
+            base.join(path.file_stem().unwrap_or_default())
+                .join("backups")
+        });
+    if !dir.exists() {
+        return Ok(Vec::new());
+    }
+    let mut out = Vec::new();
+    for entry in fs::read_dir(&dir).map_err(|source| Error::Io {
+        path: dir.clone(),
+        source,
+    })? {
+        let entry = entry.map_err(|source| Error::Io {
+            path: dir.clone(),
+            source,
+        })?;
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let matches_iid = valid_backup_name(&name, id);
+        if !entry.file_type().is_ok_and(|kind| kind.is_dir())
+            || !(matches_iid || valid_backup_name(&name, "backup"))
+        {
+            continue;
+        }
+        for file in fs::read_dir(entry.path()).map_err(|source| Error::Io {
+            path: entry.path(),
+            source,
+        })? {
+            let file = file.map_err(|source| Error::Io {
+                path: entry.path(),
+                source,
+            })?;
+            let path = file.path();
+            if !file.file_type().is_ok_and(|kind| kind.is_file())
+                || !path
+                    .extension()
+                    .and_then(|value| value.to_str())
+                    .is_some_and(|extension| {
+                        extension.eq_ignore_ascii_case("ldtk")
+                            || extension.eq_ignore_ascii_case("json")
+                    })
+            {
+                continue;
+            }
+            let belongs = match read_backup_metadata(&path) {
+                Ok(metadata) => metadata.iid.as_deref() == Some(id),
+                Err(_) => matches_iid,
+            };
+            if belongs {
+                let prefix = if name.starts_with("backup_") {
+                    7
+                } else {
+                    id.len() + 1
+                };
+                out.push(BackupInfo {
+                    path,
+                    timestamp: name[prefix..prefix + 19].into(),
+                    crash: name[prefix + 19..].starts_with("_crash"),
+                });
+            }
+        }
+    }
+    out.sort_by(|a, b| {
+        b.timestamp
+            .cmp(&a.timestamp)
+            .then_with(|| b.path.cmp(&a.path))
+    });
+    Ok(out)
+}
+
+#[cfg(any(unix, windows))]
+pub(super) fn local_backup_timestamp(seconds: u64) -> Option<String> {
+    let seconds = libc::time_t::try_from(seconds).ok()?;
+    let mut calendar = std::mem::MaybeUninit::<libc::tm>::uninit();
+    // Both platform APIs initialize the entire output on success and use a caller-owned buffer.
+    #[cfg(unix)]
+    let success = unsafe { !libc::localtime_r(&seconds, calendar.as_mut_ptr()).is_null() };
+    #[cfg(windows)]
+    let success = unsafe { libc::localtime_s(calendar.as_mut_ptr(), &seconds) == 0 };
+    if !success {
+        return None;
+    }
+    // SAFETY: the successful localtime call above initialized this tm.
+    let calendar = unsafe { calendar.assume_init() };
+    Some(format!(
+        "{:04}-{:02}-{:02}_{:02}-{:02}-{:02}",
+        calendar.tm_year + 1900,
+        calendar.tm_mon + 1,
+        calendar.tm_mday,
+        calendar.tm_hour,
+        calendar.tm_min,
+        calendar.tm_sec
+    ))
+}
+impl Project {
+    pub fn is_backup(&self) -> bool {
+        self.path
+            .as_ref()
+            .is_some_and(|path| backup_file(path, self.json["iid"].as_str().unwrap_or("")))
+    }
+    pub fn list_backups(&self) -> Result<Vec<BackupInfo>> {
+        let Some(path) = &self.path else {
+            return Ok(vec![]);
+        };
+        discover_backups(
+            path,
+            self.json["iid"].as_str().unwrap_or(""),
+            self.json["backupRelPath"].as_str(),
+        )
+    }
+    /// Discover saved backups without loading project data, external levels or resources.
+    pub fn list_backups_at(path: impl AsRef<Path>) -> Result<Vec<BackupInfo>> {
+        let path = absolute(path.as_ref())?;
+        let metadata = read_backup_metadata(&path)?;
+        let Some(iid) = metadata.iid else {
+            return Ok(Vec::new());
+        };
+        discover_backups(&path, &iid, metadata.backup_rel_path.as_deref())
+    }
+    pub fn load_backup(backup: impl AsRef<Path>, original: impl AsRef<Path>) -> Result<Self> {
+        let mut project = Self::load(backup)?;
+        let original = absolute(original.as_ref())?;
+        match read_json(&original) {
+            Ok(json) => {
+                if json["iid"].as_str().is_some() && json["iid"] != project.json["iid"] {
+                    return Err(Error::Invalid(
+                        "the selected original project does not match this backup".into(),
+                    ));
+                }
+            }
+            Err(Error::Json { .. }) => (),
+            Err(Error::Io { source, .. }) if source.kind() == std::io::ErrorKind::NotFound => (),
+            Err(error) => return Err(error),
+        }
+        if !project.is_backup() {
+            return Err(Error::Invalid(
+                "selected file is not in a recognized backup directory".into(),
+            ));
+        }
+        let base = project.path.as_ref().unwrap().parent().unwrap();
+        let old = original.parent().unwrap();
+        rebase_paths(&mut project.json, old, base)?;
+        for level in project.external_levels.values_mut() {
+            rebase_paths(level, old, base)?;
+        }
+        Ok(project)
+    }
+    pub fn restore_backup(backup: impl AsRef<Path>, original: impl AsRef<Path>) -> Result<Self> {
+        Ok(Self::restore_backup_with_exports(backup, original)?.0)
+    }
+    pub fn restore_backup_with_exports(
+        backup: impl AsRef<Path>,
+        original: impl AsRef<Path>,
+    ) -> Result<(Self, SaveReport)> {
+        let original = absolute(original.as_ref())?;
+        let mut restored = Self::load_backup(backup, &original)?;
+        // Capture the original before any replacement, independently of the backed-up settings.
+        let mut safety = restored.clone();
+        safety.path = Some(original.clone());
+        safety.backup()?;
+        restored.save_document(&original, false)?;
+        let report = restored.configured_exports_report();
+        Ok((restored, report))
+    }
+    /// Publish the renamed project before deleting any source file.
+    pub fn rename_project(&mut self, new_stem: &str) -> Result<SaveReport> {
+        if self.is_backup() {
+            return Err(Error::Unsupported(
+                "restore a backup before renaming the project".into(),
+            ));
+        }
+        let old = self
+            .path
+            .as_ref()
+            .ok_or_else(|| Error::Invalid("save the project before renaming it".into()))?
+            .clone();
+        let stem = new_stem.trim();
+        if stem.is_empty()
+            || stem == "."
+            || stem == ".."
+            || stem
+                .chars()
+                .any(|c| c.is_control() || "/\\<>:\"|?*".contains(c))
+        {
+            return Err(Error::Invalid("invalid project file name".into()));
+        }
+        let extension = old.extension().and_then(|e| e.to_str()).unwrap_or("ldtk");
+        let target = old.with_file_name(format!("{stem}.{extension}"));
+        if target == old {
+            return Err(Error::Invalid("enter a different project file name".into()));
+        }
+        let base = old.parent().expect("absolute path");
+        let old_dir = base.join(old.file_stem().unwrap_or_default());
+        let new_dir = base.join(stem);
+        let old_meta = old.with_extension(format!("{extension}.meta"));
+        let new_meta = target.with_extension(format!("{extension}.meta"));
+        for path in [&target, &new_dir, &new_meta] {
+            if path.exists() {
+                return Err(Error::Invalid(format!(
+                    "rename destination already exists: {}",
+                    path.display()
+                )));
+            }
+        }
+        let mut candidate = self.clone();
+        rewrite_moved_resources(&mut candidate.json, &old_dir, &new_dir, base)?;
+        for level in candidate.external_levels.values_mut() {
+            rewrite_moved_resources(level, &old_dir, &new_dir, base)?;
+        }
+        let publish = (|| -> Result<()> {
+            if old_dir.exists() {
+                copy_tree(&old_dir, &new_dir)?;
+            }
+            if old_meta.exists() {
+                copy_tree(&old_meta, &new_meta)?;
+            }
+            candidate.save_document(&target, false)
+        })();
+        if let Err(error) = publish {
+            let _ = fs::remove_dir_all(&new_dir);
+            let _ = fs::remove_file(&new_meta);
+            let _ = fs::remove_file(&target);
+            return Err(error);
+        }
+        let mut report = candidate.configured_exports_report();
+        match fs::remove_file(&old) {
+            Ok(()) => {
+                if old_dir.exists()
+                    && let Err(error) = fs::remove_dir_all(&old_dir)
+                {
+                    report.export_errors.push(format!(
+                        "project renamed; could not remove old directory {}: {error}",
+                        old_dir.display()
+                    ));
+                }
+                if old_meta.exists()
+                    && let Err(error) = fs::remove_file(&old_meta)
+                {
+                    report.export_errors.push(format!(
+                        "project renamed; could not remove old metadata {}: {error}",
+                        old_meta.display()
+                    ));
+                }
+            }
+            Err(error) => report.export_errors.push(format!(
+                "project renamed; old source retained because it could not be removed: {error}"
+            )),
+        }
+        *self = candidate;
+        Ok(report)
+    }
+}
+fn copy_tree(from: &Path, to: &Path) -> Result<()> {
+    let metadata = fs::symlink_metadata(from).map_err(|source| Error::Io {
+        path: from.into(),
+        source,
+    })?;
+    if metadata.file_type().is_symlink() {
+        let link = fs::read_link(from).map_err(|source| Error::Io {
+            path: from.into(),
+            source,
+        })?;
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(link, to).map_err(|source| Error::Io {
+            path: to.into(),
+            source,
+        })?;
+        #[cfg(windows)]
+        {
+            if from.is_dir() {
+                std::os::windows::fs::symlink_dir(link, to)
+            } else {
+                std::os::windows::fs::symlink_file(link, to)
+            }
+            .map_err(|source| Error::Io {
+                path: to.into(),
+                source,
+            })?;
+        }
+    } else if metadata.is_dir() {
+        fs::create_dir(to).map_err(|source| Error::Io {
+            path: to.into(),
+            source,
+        })?;
+        for entry in fs::read_dir(from).map_err(|source| Error::Io {
+            path: from.into(),
+            source,
+        })? {
+            let entry = entry.map_err(|source| Error::Io {
+                path: from.into(),
+                source,
+            })?;
+            copy_tree(&entry.path(), &to.join(entry.file_name()))?;
+        }
+        fs::set_permissions(to, metadata.permissions()).map_err(|source| Error::Io {
+            path: to.into(),
+            source,
+        })?;
+    } else {
+        fs::copy(from, to).map_err(|source| Error::Io {
+            path: to.into(),
+            source,
+        })?;
+        fs::File::open(to)
+            .and_then(|f| f.sync_all())
+            .map_err(|source| Error::Io {
+                path: to.into(),
+                source,
+            })?;
+    }
+    Ok(())
+}
+fn rewrite_moved_resources(value: &mut Value, old: &Path, new: &Path, base: &Path) -> Result<()> {
+    fn map(value: &mut Value, old: &Path, new: &Path, base: &Path) -> Result<()> {
+        match value {
+            Value::String(raw) => {
+                let resolved = absolute(&base.join(raw.as_str()))?;
+                if let Ok(tail) = resolved.strip_prefix(old) {
+                    let path = new.join(tail);
+                    *raw = if asset_is_absolute(raw) {
+                        path.to_string_lossy().into_owned()
+                    } else {
+                        relative_to(&path, base)?
+                    };
+                }
+            }
+            Value::Array(a) => {
+                for v in a {
+                    map(v, old, new, base)?;
+                }
+            }
+            Value::Object(o) => {
+                if let Some(v) = o.get_mut("params") {
+                    map(v, old, new, base)?;
+                }
+            }
+            _ => (),
+        }
+        Ok(())
+    }
+    match value {
+        Value::Object(o) => {
+            let file = o
+                .get("__type")
+                .and_then(Value::as_str)
+                .is_some_and(|t| t.contains("FilePath"))
+                || o.get("type")
+                    .and_then(Value::as_str)
+                    .is_some_and(|t| t == "F_Path" || t == "F_File");
+            let level = o.contains_key("layerInstances");
+            for (k, v) in o {
+                if matches!(
+                    k.as_str(),
+                    "relPath" | "bgRelPath" | "__tilesetRelPath" | "externalRelPath"
+                ) && !(level && k == "externalRelPath")
+                    || file
+                        && [
+                            "__value",
+                            "realEditorValues",
+                            "realEditorValue",
+                            "defaultOverride",
+                        ]
+                        .contains(&k.as_str())
+                {
+                    map(v, old, new, base)?;
+                } else {
+                    rewrite_moved_resources(v, old, new, base)?;
+                }
+            }
+        }
+        Value::Array(a) => {
+            for v in a {
+                rewrite_moved_resources(v, old, new, base)?;
+            }
+        }
+        _ => (),
+    }
+    Ok(())
+}

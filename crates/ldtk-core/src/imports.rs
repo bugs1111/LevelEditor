@@ -1,0 +1,487 @@
+//! Ogmo 3.3+ importer, preserving upstream's grid/rotation limitations.
+use crate::exports::load_image_rgba;
+use crate::project::{absolute, read_json};
+use crate::{Error, Project, Result};
+use serde_json::{Value, json};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    fs,
+    path::{Path, PathBuf},
+};
+#[derive(Clone)]
+pub struct OgmoImportReport {
+    pub project: Project,
+    pub warnings: Vec<String>,
+}
+fn arr(v: &Value) -> &[Value] {
+    v.as_array().map(Vec::as_slice).unwrap_or(&[])
+}
+fn n(v: &Value, k: &str) -> i64 {
+    v[k].as_i64().unwrap_or(0)
+}
+fn s<'a>(v: &'a Value, k: &str) -> &'a str {
+    v[k].as_str().unwrap_or("")
+}
+fn iid() -> Value {
+    json!(uuid::Uuid::new_v4().to_string())
+}
+fn uid(p: &mut Project) -> i64 {
+    let id = p.json["nextUid"].as_i64().unwrap_or(1);
+    p.json["nextUid"] = json!(id + 1);
+    id
+}
+pub(crate) fn clean_identifier(raw: &str) -> String {
+    let mut out = String::new();
+    for c in raw.trim().chars() {
+        if c.is_ascii_alphanumeric() {
+            out.push(c);
+        } else if !out.ends_with('_') {
+            out.push('_');
+        }
+    }
+    let leading = out.bytes().take_while(u8::is_ascii_digit).count();
+    if leading > 0 {
+        out = format!("_{}", out[leading..].trim_start_matches('_'));
+    }
+    if out.is_empty() {
+        out.push('_');
+    }
+    out
+}
+fn rgb(raw: &str) -> String {
+    format!(
+        "#{}",
+        raw.trim_start_matches('#').get(..6).unwrap_or("000000")
+    )
+}
+fn grid(v: &Value, fallback: i64) -> Result<i64> {
+    let Some(x) = v["x"].as_i64() else {
+        return Ok(fallback);
+    };
+    if v["y"].as_i64() != Some(x) || x <= 0 {
+        return Err(Error::Unsupported(
+            "Ogmo rectangular or nonpositive grid cells".into(),
+        ));
+    }
+    Ok(x)
+}
+fn flat(v: &Value, one: &str, two: &str) -> Vec<Value> {
+    if let Some(a) = v[one].as_array() {
+        a.clone()
+    } else {
+        arr(&v[two])
+            .iter()
+            .flat_map(|r| arr(r).iter().cloned())
+            .collect()
+    }
+}
+fn walk(dir: &Path, out: &mut BTreeSet<PathBuf>) -> Result<()> {
+    for entry in fs::read_dir(dir).map_err(|source| Error::Io {
+        path: dir.into(),
+        source,
+    })? {
+        let entry = entry.map_err(|source| Error::Io {
+            path: dir.into(),
+            source,
+        })?;
+        let path = entry.path();
+        let ft = entry.file_type().map_err(|source| Error::Io {
+            path: path.clone(),
+            source,
+        })?;
+        if ft.is_dir() {
+            walk(&path, out)?;
+        } else if ft.is_file()
+            && path
+                .extension()
+                .is_some_and(|e| e.eq_ignore_ascii_case("json"))
+        {
+            out.insert(path);
+        }
+    }
+    Ok(())
+}
+fn value_wrapper(kind: &str, value: &Value, depth: usize) -> Value {
+    let (id, mut raw) = match kind {
+        "Int" => ("V_Int", value.clone()),
+        "Float" => ("V_Float", value.clone()),
+        "Bool" => ("V_Bool", value.clone()),
+        "Color" => (
+            "V_Int",
+            json!(value.as_i64().unwrap_or_else(|| {
+                i64::from_str_radix(
+                    value.as_str().unwrap_or("#000000").trim_start_matches('#'),
+                    16,
+                )
+                .unwrap_or(0)
+            })),
+        ),
+        _ => ("V_String", value.clone()),
+    };
+    if let Some(s) = raw.as_str() {
+        let mut s = s.to_owned();
+        for _ in 0..depth {
+            s = s.replace('\\', "\\\\").replace('\n', "\\n");
+        }
+        raw = json!(s);
+    }
+    json!({"id":id,"params":[raw]})
+}
+fn field_def(p: &mut Project, e: &Value, value: &Value) -> Result<Value> {
+    let id = uid(p);
+    let identifier = clean_identifier(s(value, "name"));
+    let (internal, external) = match s(value, "definition") {
+        "Integer" => (json!("F_Int"), "Int".into()),
+        "Float" => (json!("F_Float"), "Float".into()),
+        "Boolean" => (json!("F_Bool"), "Bool".into()),
+        "Color" => (json!("F_Color"), "Color".into()),
+        "String" => (json!("F_String"), "String".into()),
+        "Text" => (json!("F_Text"), "Multilines".into()),
+        "Filepath" => (json!("F_Path"), "FilePath".into()),
+        "Enum" => {
+            let enum_uid = uid(p);
+            let name = clean_identifier(&format!("{}_{}", s(e, "name"), s(value, "name")));
+            let vals:Vec<_>=arr(&value["choices"]).iter().map(|v|json!({"id":clean_identifier(v.as_str().unwrap_or("")),"tileRect":null,"color":null})).collect();
+            p.json["defs"]["enums"].as_array_mut().unwrap().push(json!({"uid":enum_uid,"identifier":name,"externalRelPath":null,"externalFileChecksum":null,"iconTilesetUid":null,"values":vals}));
+            (
+                json!(format!("F_Enum({enum_uid})")),
+                format!("LocalEnum.{name}"),
+            )
+        }
+        other => return Err(Error::Unsupported(format!("Ogmo field type {other}"))),
+    };
+    let default = if external == "Color" {
+        json!(rgb(value["defaults"].as_str().unwrap_or("#000000")))
+    } else {
+        value["defaults"].clone()
+    };
+    let wrapper =
+        if default.is_null() || external.starts_with("LocalEnum.") || external == "FilePath" {
+            Value::Null
+        } else {
+            value_wrapper(&external, &default, 1)
+        };
+    Ok(
+        json!({"uid":id,"identifier":identifier,"__type":external,"type":internal,"isArray":false,"canBeNull":external.starts_with("LocalEnum.")||external=="FilePath"||external=="String"||external=="Multilines","defaultOverride":wrapper,"min":if value["bounded"]==true{value["min"].clone()}else{Value::Null},"max":if value["bounded"]==true{value["max"].clone()}else{Value::Null},"acceptFileTypes":value["extensions"],"editorDisplayMode":if value["display"]==1{"ValueOnly"}else{"NameAndValue"},"editorDisplayPos":"Above","editorLinkStyle":"ZigZag","editorDisplayColor":null,"editorAlwaysShow":false,"editorShowInWorld":true,"editorCutLongValues":true,"editorIsSearchable":false,"exportToToc":false,"doc":null,"arrayMinLength":null,"arrayMaxLength":null,"textLanguageMode":null,"symmetricalRef":false,"autoChainRef":true,"allowOutOfLevelRef":true,"allowedRefs":"Any","allowedRefsEntityUid":null,"allowedRefTags":[],"tilesetUid":null}),
+    )
+}
+impl Project {
+    pub fn import_ogmo(path: impl AsRef<Path>) -> Result<Self> {
+        Ok(Self::import_ogmo_with_report(path)?.project)
+    }
+    pub fn import_ogmo_with_report(path: impl AsRef<Path>) -> Result<OgmoImportReport> {
+        let mut warnings = Vec::new();
+        let path = absolute(path.as_ref())?;
+        let source = read_json(&path)?;
+        let version: Vec<u32> = s(&source, "ogmoVersion")
+            .split('.')
+            .map(|v| v.parse().unwrap_or(0))
+            .collect();
+        if version.first().copied().unwrap_or(0) < 3
+            || (version[0] == 3 && version.get(1).copied().unwrap_or(0) < 3)
+        {
+            return Err(Error::Unsupported(
+                "Ogmo projects must be saved with version 3.3 or later".into(),
+            ));
+        }
+        let base = path.parent().expect("absolute project path");
+        let mut p = Project::new();
+        p.path = Some(path.with_extension("ldtk"));
+        p.json["identifierStyle"] = json!("Free");
+        p.json["worldLayout"] = json!("Free");
+        p.json["bgColor"] = json!(rgb(s(&source, "backgroundColor")));
+        p.json["defaultLevelBgColor"] = p.json["bgColor"].clone();
+        p.json["defaultGridSize"] = json!(grid(&source["layerGridDefaultSize"], 16)?);
+        let mut tilesets = BTreeMap::new();
+        for ts in arr(&source["tilesets"]) {
+            let rel = s(ts, "path");
+            let img = load_image_rgba(&base.join(rel))?;
+            let size = grid(&json!({"x":ts["tileWidth"],"y":ts["tileHeight"]}), 16)?;
+            let id = uid(&mut p);
+            let spacing = n(ts, "tileSeparationX");
+            let padding = n(ts, "tileMarginX");
+            let cols = (img.width() as i64 - 2 * padding + spacing) / (size + spacing);
+            let rows = (img.height() as i64 - 2 * padding + spacing) / (size + spacing);
+            if cols <= 0 || rows <= 0 {
+                return Err(Error::Invalid(
+                    "invalid Ogmo tileset atlas dimensions".into(),
+                ));
+            }
+            p.json["defs"]["tilesets"].as_array_mut().unwrap().push(json!({"uid":id,"identifier":clean_identifier(s(ts,"label")),"relPath":rel,"embedAtlas":null,"pxWid":img.width(),"pxHei":img.height(),"tileGridSize":size,"spacing":spacing,"padding":padding,"__cWid":cols,"__cHei":rows,"tags":[],"enumTags":[],"customData":[],"savedSelections":[],"cachedPixelData":null,"tagsSourceEnumUid":null}));
+            tilesets.insert(s(ts, "label").to_owned(), id);
+        }
+        for e in arr(&source["entities"]) {
+            let name = clean_identifier(s(e, "name"));
+            let width = n(&e["size"], "x").max(1);
+            let height = n(&e["size"], "y").max(1);
+            let id = p.add_entity_def(&name, width as i32, height as i32)?;
+            let mut fields = Vec::new();
+            for value in arr(&e["values"]) {
+                fields.push(field_def(&mut p, e, value)?);
+            }
+            if e["hasNodes"] == true {
+                let id = uid(&mut p);
+                fields.push(json!({"uid":id,"identifier":"ogmoNodes_array","__type":"Array<Point>","type":"F_Point","isArray":true,"canBeNull":false,"defaultOverride":null}));
+            }
+            let ed = p.json["defs"]["entities"]
+                .as_array_mut()
+                .unwrap()
+                .iter_mut()
+                .find(|d| d["uid"] == id)
+                .unwrap();
+            ed["color"] = json!(rgb(s(e, "color")));
+            ed["pivotX"] = json!((n(&e["origin"], "x") as f64 / width as f64 / 0.5).round() * 0.5);
+            ed["pivotY"] = json!((n(&e["origin"], "y") as f64 / height as f64 / 0.5).round() * 0.5);
+            ed["maxCount"] = json!(n(e, "limit").max(0));
+            ed["resizableX"] = json!(e["resizeableX"] == true);
+            ed["resizableY"] = json!(e["resizeableY"] == true);
+            ed["tags"] = if e["tags"].is_array() {
+                e["tags"].clone()
+            } else {
+                json!([])
+            };
+            ed["fieldDefs"] = json!(fields);
+        }
+        let mut legends: BTreeMap<i64, BTreeMap<String, i64>> = BTreeMap::new();
+        for layer in arr(&source["layers"]).iter().rev() {
+            let kind = match s(layer, "definition") {
+                "grid" => "IntGrid",
+                "tile" => "Tiles",
+                "entity" => "Entities",
+                other => return Err(Error::Unsupported(format!("Ogmo layer type {other}"))),
+            };
+            let id = p.add_layer(
+                &clean_identifier(s(layer, "name")),
+                kind,
+                grid(&layer["gridSize"], 16)? as i32,
+            )?;
+            let ld = p.json["defs"]["layers"]
+                .as_array_mut()
+                .unwrap()
+                .iter_mut()
+                .find(|d| d["uid"] == id)
+                .unwrap();
+            if kind == "IntGrid" {
+                let mut values = Vec::new();
+                let mut map = BTreeMap::new();
+                if let Some(legend) = layer["legend"].as_object() {
+                    for (i, (k, c)) in legend.iter().enumerate() {
+                        map.insert(k.clone(), i as i64);
+                        if i > 0 {
+                            values.push(json!({"value":i,"identifier":clean_identifier(&if k.chars().all(|c|c.is_ascii_digit()){format!("v{k}")}else{k.clone()}),"color":rgb(c.as_str().unwrap_or("")),"tile":null,"groupUid":0}));
+                        }
+                    }
+                }
+                ld["intGridValues"] = json!(values);
+                legends.insert(id, map);
+            }
+            if kind == "Tiles" {
+                ld["tilesetDefUid"] = layer["defaultTileset"]
+                    .as_str()
+                    .and_then(|s| tilesets.get(s))
+                    .map(|id| json!(id))
+                    .unwrap_or(Value::Null);
+            }
+            for name in ["requiredTags", "excludedTags"] {
+                if layer[name].is_array() {
+                    ld[name] = layer[name].clone();
+                }
+            }
+        }
+        let template = p.json["levels"][0].clone();
+        let defs = arr(&p.json["defs"]["layers"]).to_vec();
+        let mut files = BTreeSet::new();
+        for dir in arr(&source["levelPaths"]) {
+            if let Some(dir) = dir.as_str() {
+                walk(&base.join(dir), &mut files)?;
+            }
+        }
+        let mut levels = Vec::new();
+        let mut rows: BTreeMap<PathBuf, Vec<usize>> = BTreeMap::new();
+        for file in files {
+            let input = match read_json(&file) {
+                Ok(v)
+                    if v["width"].is_number()
+                        && v["height"].is_number()
+                        && v["layers"].is_array() =>
+                {
+                    v
+                }
+                _ => continue,
+            };
+            let mut level = template.clone();
+            let level_uid = uid(&mut p);
+            level["uid"] = json!(level_uid);
+            level["iid"] = iid();
+            level["identifier"] = json!(clean_identifier(
+                file.file_stem().and_then(|s| s.to_str()).unwrap_or("Level")
+            ));
+            level["useAutoIdentifier"] = json!(false);
+            level["pxWid"] = input["width"].clone();
+            level["pxHei"] = input["height"].clone();
+            level["__bgColor"] = p.json["defaultLevelBgColor"].clone();
+            rows.entry(file.parent().unwrap_or(base).to_path_buf())
+                .or_default()
+                .push(levels.len());
+            let mut instances = Vec::new();
+            for d in &defs {
+                let grid = n(d, "gridSize");
+                let cw = (n(&input, "width") + grid - 1) / grid;
+                let ch = (n(&input, "height") + grid - 1) / grid;
+                let data = arr(&input["layers"])
+                    .iter()
+                    .find(|l| clean_identifier(s(l, "name")) == s(d, "identifier"))
+                    .cloned()
+                    .unwrap_or_else(|| json!({}));
+                let ox = n(&input, "offsetX") + n(&data, "offsetX");
+                let oy = n(&input, "offsetY") + n(&data, "offsetY");
+                let mut li = json!({"__identifier":d["identifier"],"__type":d["type"],"__cWid":cw,"__cHei":ch,"__gridSize":grid,"__opacity":d["displayOpacity"],"__pxTotalOffsetX":ox,"__pxTotalOffsetY":oy,"__tilesetDefUid":null,"__tilesetRelPath":null,"iid":iid(),"levelId":level_uid,"layerDefUid":d["uid"],"pxOffsetX":ox,"pxOffsetY":oy,"visible":true,"optionalRules":[],"intGridCsv":[],"autoLayerTiles":[],"seed":0,"overrideTilesetUid":null,"gridTiles":[],"entityInstances":[]});
+                match s(d, "type") {
+                    "IntGrid" => {
+                        let map = legends.get(&n(d, "uid")).unwrap();
+                        let input_values = flat(&data, "grid", "grid2D");
+                        let mut csv = vec![0i64; (cw * ch) as usize];
+                        for (i, v) in input_values.iter().enumerate().take(csv.len()) {
+                            let key = v
+                                .as_str()
+                                .map(str::to_owned)
+                                .unwrap_or_else(|| v.to_string());
+                            if !map.contains_key(&key) {
+                                warnings.push(format!(
+                                    "Unknown IntGrid value {key} in {}: exported as empty",
+                                    s(d, "identifier")
+                                ));
+                            }
+                            csv[i] = map.get(&key).copied().unwrap_or(0);
+                        }
+                        li["intGridCsv"] = json!(csv);
+                    }
+                    "Tiles" => {
+                        let id = data["tileset"]
+                            .as_str()
+                            .and_then(|s| tilesets.get(s))
+                            .copied()
+                            .or(d["tilesetDefUid"].as_i64());
+                        if let Some(id) = id {
+                            let td = p.tileset(id).unwrap();
+                            li["__tilesetDefUid"] = json!(id);
+                            li["__tilesetRelPath"] = td["relPath"].clone();
+                            if d["tilesetDefUid"] != id {
+                                li["overrideTilesetUid"] = json!(id);
+                            }
+                            let flags = flat(&data, "tileFlags", "tileFlags2D");
+                            let rotations = flags
+                                .iter()
+                                .filter(|f| f.as_i64().is_some_and(|f| f & 1 != 0))
+                                .count();
+                            if rotations > 0 {
+                                warnings.push(format!("Found {rotations} unsupported Ogmo tile rotations in {}: rotations ignored",s(d,"identifier")));
+                            }
+                            let cols = n(td, "__cWid").max(1);
+                            let size = n(td, "tileGridSize");
+                            let spacing = n(td, "spacing");
+                            let padding = n(td, "padding");
+                            let mut tiles = Vec::new();
+                            for (i, t) in flat(&data, "data", "data2D").iter().enumerate() {
+                                let tid = t.as_i64().unwrap_or(-1);
+                                if tid < 0 {
+                                    continue;
+                                }
+                                let f = flags.get(i).and_then(Value::as_i64).unwrap_or(0);
+                                let flips = ((f >> 2) & 1) | (f & 2);
+                                tiles.push(json!({"px":[(i as i64%cw)*grid,(i as i64/cw)*grid],"src":[padding+tid%cols*(size+spacing),padding+tid/cols*(size+spacing)],"f":flips,"t":tid,"d":[i],"a":1}));
+                            }
+                            li["gridTiles"] = json!(tiles);
+                        }
+                    }
+                    "Entities" => {
+                        let mut entities = Vec::new();
+                        for e in arr(&data["entities"]) {
+                            let name = clean_identifier(s(e, "name"));
+                            let ed = arr(&p.json["defs"]["entities"])
+                                .iter()
+                                .find(|d| d["identifier"] == name)
+                                .ok_or_else(|| {
+                                    Error::Invalid(format!("unknown Ogmo entity {name}"))
+                                })?;
+                            let mut fields = Vec::new();
+                            for fd in arr(&ed["fieldDefs"]) {
+                                let typ = s(fd, "__type");
+                                let explicit = e["values"]
+                                    .as_object()
+                                    .and_then(|values| {
+                                        values.iter().find(|(key, _)| {
+                                            clean_identifier(key) == s(fd, "identifier")
+                                        })
+                                    })
+                                    .map(|(_, v)| v.clone());
+                                let value = explicit.clone().unwrap_or(Value::Null);
+                                let value = if typ == "Color" {
+                                    json!(rgb(value.as_str().unwrap_or("")))
+                                } else if typ == "FilePath" {
+                                    value
+                                        .as_str()
+                                        .and_then(|s| s.split_once(':').map(|(_, p)| json!(p)))
+                                        .unwrap_or(Value::Null)
+                                } else if typ.starts_with("LocalEnum.") {
+                                    value
+                                        .as_str()
+                                        .map(|s| json!(clean_identifier(s)))
+                                        .unwrap_or(Value::Null)
+                                } else if typ == "Array<Point>" {
+                                    json!([])
+                                } else {
+                                    value
+                                };
+                                let wrapper = if value.is_null()
+                                    || typ == "Array<Point>"
+                                    || explicit.is_none()
+                                {
+                                    json!([])
+                                } else {
+                                    json!([value_wrapper(typ, &value, 2)])
+                                };
+                                fields.push(json!({"__identifier":fd["identifier"],"__type":fd["__type"],"__value":value,"__tile":null,"defUid":fd["uid"],"realEditorValues":wrapper}));
+                            }
+                            let width = if ed["resizableX"] == true {
+                                e["width"].as_i64().unwrap_or(n(ed, "width"))
+                            } else {
+                                n(ed, "width")
+                            };
+                            let height = if ed["resizableY"] == true {
+                                e["height"].as_i64().unwrap_or(n(ed, "height"))
+                            } else {
+                                n(ed, "height")
+                            };
+                            entities.push(json!({"__identifier":ed["identifier"],"__grid":[n(e,"x")/grid,n(e,"y")/grid],"__pivot":[ed["pivotX"],ed["pivotY"]],"__tags":ed["tags"],"__tile":null,"__smartColor":ed["color"],"iid":iid(),"defUid":ed["uid"],"px":[n(e,"x"),n(e,"y")],"width":width,"height":height,"fieldInstances":fields}));
+                        }
+                        li["entityInstances"] = json!(entities);
+                    }
+                    _ => (),
+                }
+                instances.push(li);
+            }
+            level["layerInstances"] = json!(instances);
+            levels.push(level);
+        }
+        let mut y = 0;
+        for row in rows.values() {
+            let mut x = 0;
+            let mut height = 0;
+            for index in row {
+                let level = &mut levels[*index];
+                level["worldX"] = json!(x);
+                level["worldY"] = json!(y);
+                x += n(level, "pxWid") + 16;
+                height = height.max(n(level, "pxHei"));
+            }
+            y += height + 64;
+        }
+        p.json["levels"] = json!(levels);
+        p.refresh_derived_data()?;
+        Ok(OgmoImportReport {
+            project: p,
+            warnings,
+        })
+    }
+}

@@ -1,0 +1,51 @@
+%YAML 1.2
+---
+# CodeMirror 5 ttcn-cfg tokenizer as invoked by LDtk's TextEditor LangLog.
+# LDtk supplies {name: "ttcn-cfg"}, not the MIME configuration: its keyword
+# maps are empty and unescaped newlines end strings. Do not add MIME keywords.
+# Copyright (C) 2017 Marijn Haverbeke and others; MIT, see THIRD_PARTY_NOTICES.md.
+name: TTCN Configuration
+file_extensions: [cfg, log]
+scope: source.ttcn-config
+contexts:
+  main:
+    - match: '#.*$'
+      scope: comment.line.number-sign.ttcn-config
+    - match: '\[[\w_\]]*'
+      scope: constant.numeric.section.ttcn-config
+    - match: '\b\d[\w.]*'
+      scope: constant.numeric.ttcn-config
+    - match: '[:=]'
+      scope: punctuation.separator.ttcn-config
+    - match: '\|+'
+      scope: keyword.operator.ttcn-config
+    - match: '"'
+      scope: punctuation.definition.string.begin.ttcn-config
+      push: double-string
+    - match: "'"
+      scope: punctuation.definition.string.begin.ttcn-config
+      push: single-string
+    - match: '[\w$_]+'
+      scope: variable.other.ttcn-config
+  double-string:
+    - meta_scope: string.quoted.double.ttcn-config
+    - match: '\\\n'
+      scope: constant.character.escape.ttcn-config
+    - match: '\\.'
+      scope: constant.character.escape.ttcn-config
+    - match: '"[bBhHoO]?'
+      scope: punctuation.definition.string.end.ttcn-config
+      pop: true
+    - match: '\n'
+      pop: true
+  single-string:
+    - meta_scope: string.quoted.single.ttcn-config
+    - match: '\\\n'
+      scope: constant.character.escape.ttcn-config
+    - match: '\\.'
+      scope: constant.character.escape.ttcn-config
+    - match: "'[bBhHoO]?"
+      scope: punctuation.definition.string.end.ttcn-config
+      pop: true
+    - match: '\n'
+      pop: true

@@ -1,0 +1,678 @@
+//! Source single-element picking and selection, shared by Alt-click and tiny rectangles.
+use super::*;
+use serde_json::json;
+
+pub(super) fn entity_is_over(project: &Project, entity: &Value, local: [f32; 2]) -> bool {
+    let Some(def) = project.json["defs"]["entities"]
+        .as_array()
+        .and_then(|defs| defs.iter().find(|d| d["uid"] == entity["defUid"]))
+    else {
+        return false;
+    };
+    let local = local.map(f32::trunc);
+    let w = number(entity, "width", 16.);
+    let h = number(entity, "height", 16.);
+    let x = entity["px"][0].as_f64().unwrap_or(0.) as f32;
+    let y = entity["px"][1].as_f64().unwrap_or(0.) as f32;
+    if (local[0] - x).abs() > w + 8. || (local[1] - y).abs() > h + 8. {
+        return false;
+    }
+    let pivot = [number(def, "pivotX", 0.), number(def, "pivotY", 0.)];
+    let left = (x - w * pivot[0] + 0.5).floor();
+    let top = (y - h * pivot[1] + 0.5).floor();
+    let hollow = def["hollow"] == true;
+    if def["renderMode"] == "Ellipse" {
+        let dx2 = (local[0] - (x + (0.5 - pivot[0]) * w + 0.5).floor()).powi(2);
+        let dy2 = (local[1] - (y + (0.5 - pivot[1]) * h + 0.5).floor()).powi(2);
+        let inside = |pad: f32| {
+            let rx2 = (w * 0.5 + pad).powi(2);
+            let ry2 = (h * 0.5 + pad).powi(2);
+            dx2 * ry2 + dy2 * rx2 <= rx2 * ry2
+        };
+        if hollow {
+            !inside(-4.) && inside(4.)
+        } else {
+            inside(3.)
+        }
+    } else {
+        let inside = |pad: f32| {
+            local[0] >= left - pad
+                && local[0] <= left + w + pad
+                && local[1] >= top - pad
+                && local[1] <= top + h + pad
+        };
+        if hollow {
+            inside(4.) && !inside(-4.)
+        } else {
+            inside(3.)
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+pub(super) enum Element {
+    Grid,
+    Entity(usize),
+    Point {
+        entity: usize,
+        field: i64,
+        index: usize,
+    },
+}
+fn layer_hit(project: &Project, layer: &Value, local: [f32; 2], cell: [i32; 2]) -> Option<Element> {
+    match text(layer, "__type", "") {
+        "IntGrid" => {
+            let width = number(layer, "__cWid", 0.) as i32;
+            let height = number(layer, "__cHei", 0.) as i32;
+            (cell[0] >= 0
+                && cell[1] >= 0
+                && cell[0] < width
+                && cell[1] < height
+                && layer["intGridCsv"][(cell[0] + cell[1] * width) as usize]
+                    .as_i64()
+                    .unwrap_or(0)
+                    > 0)
+            .then_some(Element::Grid)
+        }
+        "Tiles" => {
+            let g = number(layer, "__gridSize", 16.) as i64;
+            layer["gridTiles"]
+                .as_array()
+                .is_some_and(|tiles| {
+                    tiles.iter().any(|t| {
+                        t["px"][0].as_i64() == Some(i64::from(cell[0]) * g)
+                            && t["px"][1].as_i64() == Some(i64::from(cell[1]) * g)
+                    })
+                })
+                .then_some(Element::Grid)
+        }
+        "Entities" => {
+            let mut hit = None;
+            for (index, entity) in layer["entityInstances"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .enumerate()
+            {
+                if entity_is_over(project, entity, local) {
+                    hit = Some(Element::Entity(index));
+                } else {
+                    for field in entity["fieldInstances"].as_array().into_iter().flatten() {
+                        let values = match field["__type"].as_str() {
+                            Some("Point") => std::slice::from_ref(&field["__value"]),
+                            Some("Array<Point>") => field["__value"]
+                                .as_array()
+                                .map(Vec::as_slice)
+                                .unwrap_or_default(),
+                            _ => continue,
+                        };
+                        for (point, value) in values.iter().enumerate() {
+                            if value["cx"].as_i64() == Some(i64::from(cell[0]))
+                                && value["cy"].as_i64() == Some(i64::from(cell[1]))
+                                && let Some(uid) = field["defUid"].as_i64()
+                            {
+                                hit = Some(Element::Point {
+                                    entity: index,
+                                    field: uid,
+                                    index: point,
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+            hit
+        }
+        _ => None,
+    }
+}
+
+impl EditorApp {
+    pub(super) fn generic_element_at(&self, world: [f32; 2]) -> Option<(usize, [i32; 2], Element)> {
+        let key = self.selected?;
+        let project = self.project.as_ref()?;
+        let layers = project.level(key)?["layerInstances"].as_array()?;
+        let mut order = project.json["defs"]["layers"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|d| layers.iter().position(|l| l["layerDefUid"] == d["uid"]))
+            .collect::<Vec<_>>();
+        if self.single_layer
+            && let Some(pos) = order.iter().position(|i| *i == self.layer)
+        {
+            let active = order.remove(pos);
+            order.insert(0, active);
+        }
+        order.into_iter().find_map(|index| {
+            let layer = &layers[index];
+            let uid = layer["layerDefUid"].as_i64()?;
+            let def = project.layer_def(uid)?;
+            if layer["visible"] == false
+                || self.hidden.contains(&uid)
+                || (index != self.layer
+                    && (def["canSelectWhenInactive"] == false
+                        || number(def, "inactiveOpacity", 1.) <= 0.))
+                || (!self.details
+                    && (layer["__type"] == "Entities"
+                        || layer["__type"] == "IntGrid" && def["tilesetDefUid"].is_null()))
+            {
+                return None;
+            }
+            let local = canvas::world_to_layer(
+                project,
+                key,
+                index,
+                &self.viewport,
+                world.map(|v| (v + 0.5).floor()),
+            )
+            .map(f32::trunc);
+            let grid = number(layer, "__gridSize", 16.).max(1.);
+            let cell = local.map(|v| (v / grid).floor() as i32);
+            layer_hit(project, layer, local, cell).map(|element| (index, cell, element))
+        })
+    }
+    pub(super) fn select_element_at(
+        &mut self,
+        world: [f32; 2],
+        copy: bool,
+        start_drag: bool,
+    ) -> bool {
+        let Some(key) = self.selected else {
+            return false;
+        };
+        let Some(project) = &self.project else {
+            return false;
+        };
+        let Some(layers) = project
+            .level(key)
+            .and_then(|l| l["layerInstances"].as_array())
+        else {
+            return false;
+        };
+        let hit = self.generic_element_at(world);
+        let Some((layer_index, cell, element)) = hit else {
+            self.selection = None;
+            self.selection_group = None;
+            self.entity_index = None;
+            self.chain_entity = None;
+            if self.panel == Some(Panel::Entity) {
+                self.panel = None;
+            }
+            return false;
+        };
+        let layer = &layers[layer_index];
+        let grid = number(layer, "__gridSize", 16.);
+        let mut capture_cell = cell;
+        let mut local_min = [cell[0] as f32 * grid, cell[1] as f32 * grid];
+        let mut local_max = [local_min[0] + grid, local_min[1] + grid];
+        if let Element::Entity(index) = element {
+            let e = &layer["entityInstances"][index];
+            let w = number(e, "width", 16.);
+            let h = number(e, "height", 16.);
+            let px = [
+                e["px"][0].as_f64().unwrap_or(0.) as f32,
+                e["px"][1].as_f64().unwrap_or(0.) as f32,
+            ];
+            let pivot = [
+                e["__pivot"][0].as_f64().unwrap_or(0.) as f32,
+                e["__pivot"][1].as_f64().unwrap_or(0.) as f32,
+            ];
+            capture_cell = std::array::from_fn(|i| {
+                ((px[i] - f32::from(pivot[i] == 1.)) / grid).trunc() as i32
+            });
+            local_min = [
+                (px[0] - w * pivot[0] + 0.5).floor(),
+                (px[1] - h * pivot[1] + 0.5).floor(),
+            ];
+            local_max = [local_min[0] + w, local_min[1] + h];
+        }
+        let a = canvas::layer_to_world(project, key, layer_index, &self.viewport, local_min);
+        let b = canvas::layer_to_world(project, key, layer_index, &self.viewport, local_max);
+        let bounds = [
+            a[0].floor() as i32,
+            a[1].floor() as i32,
+            (b[0] - a[0]).ceil().max(1.) as i32,
+            (b[1] - a[1]).ceil().max(1.) as i32,
+        ];
+        let geometries = self.selection_geometries(key);
+        let regions = json!([{"layerIndex":layer_index,"rect":[capture_cell[0],capture_cell[1],1,1],"geometry":geometries[layer_index]}]);
+        let result = project
+            .copy_selection_group_from_regions(key, &regions, bounds)
+            .and_then(|mut group| {
+                let entry = &mut group["layers"][0];
+                match element {
+                    Element::Grid => {
+                        entry["points"] = json!([]);
+                    }
+                    Element::Entity(index) => {
+                        let mut entity = layer["entityInstances"][index].clone();
+                        entity["px"] = json!([
+                            entity["px"][0].as_i64().unwrap_or(0)
+                                - i64::from(capture_cell[0]) * grid as i64,
+                            entity["px"][1].as_i64().unwrap_or(0)
+                                - i64::from(capture_cell[1]) * grid as i64
+                        ]);
+                        entry["clipboard"]["entityInstances"] = json!([entity]);
+                        entry["points"] = json!([]);
+                    }
+                    Element::Point {
+                        entity,
+                        field,
+                        index,
+                    } => {
+                        let owner = &layer["entityInstances"][entity];
+                        entry["clipboard"]["entityInstances"] = json!([]);
+                        entry["points"]
+                            .as_array_mut()
+                            .expect("selection points")
+                            .retain(|p| {
+                                p["entityIid"] == owner["iid"]
+                                    && p["fieldDefUid"] == field
+                                    && p["arrayIndex"] == index
+                            });
+                    }
+                }
+                group["originalRects"] = json!([]);
+                group["emptySpace"] = json!(false);
+                project.refresh_selection_group_geometry(key, &group, &geometries)
+            });
+        let group = match result {
+            Ok(group) => group,
+            Err(e) => {
+                self.status = e.to_string();
+                self.status_error = true;
+                return true;
+            }
+        };
+        self.layer = layer_index;
+        self.entity_index = None;
+        self.chain_entity = None;
+        match element {
+            Element::Grid => {
+                if layer["__type"] == "IntGrid" {
+                    let width = number(layer, "__cWid", 1.) as i32;
+                    self.int_value = layer["intGridCsv"][(cell[0] + cell[1] * width) as usize]
+                        .as_i64()
+                        .unwrap_or(0) as i32;
+                } else if let Some(tile) = layer["gridTiles"].as_array().and_then(|ts| {
+                    ts.iter().rev().find(|t| {
+                        t["px"][0].as_f64() == Some(f64::from(cell[0] as f32 * grid))
+                            && t["px"][1].as_f64() == Some(f64::from(cell[1] as f32 * grid))
+                    })
+                }) {
+                    let uid = layer["__tilesetDefUid"].as_i64().unwrap_or(-1);
+                    let id = tile["t"].as_i64().unwrap_or(0) as i32;
+                    let flips = tile["f"].as_i64().unwrap_or(0) as i32;
+                    let current = self.selected_tile_ids_for(uid);
+                    let saved = project
+                        .tileset(uid)
+                        .and_then(|d| d["savedSelections"].as_array())
+                        .and_then(|ss| {
+                            ss.iter().find(|s| {
+                                s["ids"]
+                                    .as_array()
+                                    .is_some_and(|ids| ids.contains(&json!(id)))
+                            })
+                        });
+                    let saved =
+                        saved.filter(|s| {
+                            !s["ids"].as_array().unwrap().iter().any(|id| {
+                                id.as_i64().is_some_and(|id| current.contains(&(id as i32)))
+                            })
+                        });
+                    let ids = saved
+                        .map(|s| {
+                            s["ids"]
+                                .as_array()
+                                .unwrap()
+                                .iter()
+                                .filter_map(Value::as_i64)
+                                .map(|id| id as i32)
+                                .collect()
+                        })
+                        .unwrap_or_else(|| vec![id]);
+                    if let Some(saved) = saved {
+                        self.random_tiles = saved["mode"] == "Random";
+                    }
+                    self.set_atlas_selection(uid, ids);
+                    self.flips = flips;
+                }
+                if self.panel == Some(Panel::Entity) {
+                    self.panel = None;
+                }
+            }
+            Element::Entity(index) | Element::Point { entity: index, .. } => {
+                self.entity_index = Some(index);
+                self.entity_uid = layer["entityInstances"][index]["defUid"].as_i64();
+                self.panel = Some(Panel::Entity);
+            }
+        }
+        self.set_selection_group(group);
+        if start_drag {
+            self.history.begin(self.project.as_ref().unwrap(), key);
+            self.stroke = true;
+            self.last_chance = None;
+            self.gesture = Some(tools::Gesture::SelectionMove {
+                region: self.selection.unwrap_or([cell[0], cell[1], 1, 1]),
+                start: cell,
+                end: cell,
+                copy,
+                world_start: world,
+                world_end: world,
+                moved: false,
+            });
+        }
+        self.bleep_selected_element(key, layer_index, cell, element);
+        true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    const K: LevelKey = LevelKey {
+        world: None,
+        level: 0,
+    };
+    fn app(project: Project) -> EditorApp {
+        let mut app = EditorApp::empty();
+        app.set_project(project);
+        app.fit = false;
+        app
+    }
+    #[test]
+    fn alt_pick_top_layer_creates_a_group_that_drags_and_deletes() {
+        let mut p = Project::new();
+        p.add_layer("Bottom", "IntGrid", 16).unwrap();
+        p.add_layer("Top", "IntGrid", 16).unwrap();
+        p.paint_int_grid(K, 0, 0, 0, 1).unwrap();
+        p.paint_int_grid(K, 1, 0, 0, 1).unwrap();
+        let mut a = app(p);
+        a.layer = 1;
+        assert!(a.select_element_at([4., 4.], false, true));
+        assert_eq!(a.layer, 0);
+        assert_eq!(a.selection_group.as_ref().unwrap()["elementCount"], 1);
+        assert_eq!(
+            a.selection_group.as_ref().unwrap()["originalRects"],
+            json!([])
+        );
+        assert_eq!(a.int_value, 1);
+        if let Some(tools::Gesture::SelectionMove {
+            world_end, moved, ..
+        }) = &mut a.gesture
+        {
+            *world_end = [36., 4.];
+            *moved = true;
+        } else {
+            panic!("single pick must immediately start selection movement");
+        }
+        a.finish_gesture();
+        assert_eq!(
+            a.project.as_ref().unwrap().layer(K, 0).unwrap()["intGridCsv"][2],
+            1
+        );
+        a.delete_selection();
+        assert_eq!(
+            a.project.as_ref().unwrap().layer(K, 0).unwrap()["intGridCsv"][2],
+            0
+        );
+        assert_eq!(
+            a.project.as_ref().unwrap().layer(K, 1).unwrap()["intGridCsv"][0],
+            1
+        );
+    }
+    #[test]
+    fn entity_click_selects_only_last_hit_even_when_pivots_share_a_cell() {
+        let mut p = Project::new();
+        p.add_layer("Entities", "Entities", 16).unwrap();
+        let def = p.add_entity_def("Actor", 64, 64).unwrap();
+        p.update_entity_definition(def, &json!({"pivotX":0.,"pivotY":0.}))
+            .unwrap();
+        p.add_entity(K, 0, def, 0, 0).unwrap();
+        p.add_entity(K, 0, def, 0, 0).unwrap();
+        let expected = p.layer(K, 0).unwrap()["entityInstances"][1]["iid"].clone();
+        let mut a = app(p);
+        assert!(a.select_element_at([40., 40.], false, false));
+        let g = a.selection_group.as_ref().unwrap();
+        assert_eq!(g["elementCount"], 1);
+        assert_eq!(
+            g["layers"][0]["clipboard"]["entityInstances"][0]["iid"],
+            expected
+        );
+        assert_eq!(
+            g["layers"][0]["clipboard"]["entityInstances"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        assert!(g["layers"][0]["points"].as_array().unwrap().is_empty());
+        assert_eq!(a.entity_index, Some(1));
+        assert!(a.panel == Some(Panel::Entity));
+        a.delete_selection();
+        assert_eq!(
+            a.project.as_ref().unwrap().layer(K, 0).unwrap()["entityInstances"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+    #[test]
+    fn a_later_owners_point_wins_over_an_earlier_body_and_selects_only_that_point() {
+        let mut p = Project::new();
+        p.add_layer("Entities", "Entities", 16).unwrap();
+        let def = p.add_entity_def("Actor", 32, 32).unwrap();
+        p.update_entity_definition(def, &json!({"pivotX":0.,"pivotY":0.}))
+            .unwrap();
+        let field = p
+            .add_field_definition(Some(def), "Target", "Point", false)
+            .unwrap();
+        p.add_entity(K, 0, def, 0, 0).unwrap();
+        p.add_entity(K, 0, def, 80, 80).unwrap();
+        let id = p.layer(K, 0).unwrap()["entityInstances"][1]["iid"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        p.set_field_value(K, Some(&id), field, json!({"cx":1,"cy":1}))
+            .unwrap();
+        let mut a = app(p);
+        assert!(a.select_element_at([20., 20.], false, false));
+        let g = a.selection_group.as_ref().unwrap();
+        assert_eq!(g["elementCount"], 1);
+        assert!(
+            g["layers"][0]["clipboard"]["entityInstances"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(g["layers"][0]["points"][0]["entityIid"], id);
+        assert_eq!(a.entity_index, Some(1));
+        assert!(a.panel == Some(Panel::Entity));
+        a.delete_selection();
+        let entities = &a.project.as_ref().unwrap().layer(K, 0).unwrap()["entityInstances"];
+        assert_eq!(entities.as_array().unwrap().len(), 2);
+        assert!(entities[1]["fieldInstances"][0]["__value"].is_null());
+    }
+    #[test]
+    fn tile_pick_restores_saved_brush_mode_flips_and_selects_one_stacked_cell() {
+        let mut p = Project::new();
+        let layer = p.add_layer("Art", "Tiles", 16).unwrap();
+        let ts = p
+            .add_tileset(std::path::Path::new("art.png"), 16, 64, 32)
+            .unwrap();
+        p.assign_tileset(layer, ts).unwrap();
+        p.json["defs"]["tilesets"][0]["savedSelections"] = json!([{"ids":[1,2],"mode":"Random"}]);
+        p.paint_tile(K, 0, 0, 0, 0, [0, 0], 0, false).unwrap();
+        p.paint_tile_stacked(K, 0, 0, 0, 1, [16, 0], 3, false, true)
+            .unwrap();
+        let mut a = app(p);
+        a.set_atlas_selection(ts, vec![3]);
+        assert!(a.select_element_at([4., 4.], false, false));
+        assert_eq!(a.selected_tile_ids_for(ts), vec![1, 2]);
+        assert!(a.random_tiles);
+        assert_eq!(a.flips, 3);
+        let g = a.selection_group.as_ref().unwrap();
+        assert_eq!(g["elementCount"], 1);
+        assert_eq!(
+            g["layers"][0]["clipboard"]["gridTiles"]
+                .as_array()
+                .unwrap()
+                .len(),
+            2
+        );
+        assert!(a.select_element_at([4., 4.], true, true));
+        assert_eq!(
+            a.selected_tile_ids_for(ts),
+            vec![1],
+            "source does not recall a saved group which already intersects the brush"
+        );
+        if let Some(tools::Gesture::SelectionMove {
+            world_end,
+            moved,
+            copy,
+            ..
+        }) = &mut a.gesture
+        {
+            assert!(*copy);
+            *world_end = [36., 4.];
+            *moved = true;
+        } else {
+            panic!("copy gesture missing");
+        }
+        a.finish_gesture();
+        assert_eq!(
+            a.project.as_ref().unwrap().layer(K, 0).unwrap()["gridTiles"]
+                .as_array()
+                .unwrap()
+                .len(),
+            4
+        );
+    }
+    #[test]
+    fn inactive_filters_and_single_layer_priority_match_source() {
+        let mut p = Project::new();
+        p.add_layer("Bottom", "IntGrid", 16).unwrap();
+        let top = p.add_layer("Top", "IntGrid", 16).unwrap();
+        p.paint_int_grid(K, 0, 0, 0, 1).unwrap();
+        p.paint_int_grid(K, 1, 0, 0, 1).unwrap();
+        let mut a = app(p);
+        a.layer = 1;
+        a.single_layer = true;
+        assert!(a.select_element_at([4., 4.], false, false));
+        assert_eq!(a.layer, 1);
+        a.project
+            .as_mut()
+            .unwrap()
+            .paint_int_grid(K, 1, 0, 0, 0)
+            .unwrap();
+        assert!(a.select_element_at([4., 4.], false, false));
+        assert_eq!(
+            a.layer, 0,
+            "single-layer mode still falls back when active has no hit"
+        );
+        a.layer = 1;
+        a.single_layer = false;
+        a.project.as_mut().unwrap().json["defs"]["layers"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|d| d["uid"] == top)
+            .unwrap()["canSelectWhenInactive"] = json!(false);
+        assert!(!a.select_element_at([4., 4.], false, false));
+        let def = a.project.as_mut().unwrap().json["defs"]["layers"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|d| d["uid"] == top)
+            .unwrap();
+        def["canSelectWhenInactive"] = json!(true);
+        def["inactiveOpacity"] = json!(0.);
+        assert!(!a.select_element_at([4., 4.], false, false));
+        a.layer = 0;
+        a.details = false;
+        assert!(!a.select_element_at([4., 4.], false, false));
+    }
+    #[test]
+    fn native_alt_pointer_press_then_drag_moves_the_picked_cell() {
+        let mut p = Project::new();
+        p.add_layer("Grid", "IntGrid", 16).unwrap();
+        p.paint_int_grid(K, 0, 0, 0, 1).unwrap();
+        let mut a = app(p);
+        a.viewport.center = [0., 0.];
+        a.viewport.zoom = 1.;
+        let ctx = egui::Context::default();
+        let modifiers = egui::Modifiers {
+            alt: true,
+            ..Default::default()
+        };
+        let start = egui::pos2(260., 260.);
+        let end = egui::pos2(292., 260.);
+        let button = |pos, pressed| egui::Event::PointerButton {
+            pos,
+            pressed,
+            button: egui::PointerButton::Primary,
+            modifiers,
+        };
+        for events in [
+            vec![egui::Event::PointerMoved(start)],
+            vec![button(start, true)],
+            vec![egui::Event::PointerMoved(end)],
+            vec![button(end, false)],
+        ] {
+            let _ = ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(512., 512.),
+                    )),
+                    events,
+                    modifiers,
+                    ..Default::default()
+                },
+                |ctx| {
+                    egui::CentralPanel::default()
+                        .frame(egui::Frame::NONE)
+                        .show(ctx, |ui| {
+                            let (rect, response) = ui.allocate_exact_size(
+                                egui::vec2(512., 512.),
+                                Sense::click_and_drag(),
+                            );
+                            a.canvas_input(ctx, rect, &response);
+                        });
+                },
+            );
+        }
+        assert_eq!(
+            a.project.as_ref().unwrap().layer(K, 0).unwrap()["intGridCsv"][0],
+            0
+        );
+        assert_eq!(
+            a.project.as_ref().unwrap().layer(K, 0).unwrap()["intGridCsv"][2],
+            1
+        );
+        assert!(a.selection_group.is_some());
+    }
+    #[test]
+    fn hollow_and_ellipse_shapes_hit_edges_instead_of_their_bounding_box() {
+        let mut p = Project::new();
+        p.add_layer("Entities", "Entities", 16).unwrap();
+        let def = p.add_entity_def("Ring", 64, 64).unwrap();
+        p.update_entity_definition(def, &json!({"pivotX":0.,"pivotY":0.}))
+            .unwrap();
+        p.add_entity(K, 0, def, 0, 0).unwrap();
+        let d = p.json["defs"]["entities"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|d| d["uid"] == def)
+            .unwrap();
+        d["renderMode"] = json!("Ellipse");
+        d["hollow"] = json!(true);
+        let entity = &p.layer(K, 0).unwrap()["entityInstances"][0];
+        assert!(!entity_is_over(&p, entity, [32., 32.]));
+        assert!(!entity_is_over(&p, entity, [0., 0.]));
+        assert!(entity_is_over(&p, entity, [-2., 32.]));
+    }
+}

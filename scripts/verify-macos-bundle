@@ -1,0 +1,63 @@
+#!/usr/bin/env python3
+"""Exercise Finder cold/warm document opening with isolated, copied examples."""
+import json
+import os
+from pathlib import Path
+import shutil
+import signal
+import subprocess
+import sys
+import tempfile
+import time
+
+
+bundle = (Path(sys.argv[1]) if len(sys.argv) > 1 else
+          Path(__file__).resolve().parents[1] / "dist/LDtk Rust.app").resolve()
+executable = str(bundle / "Contents/MacOS/ldtk-rs")
+work = Path(tempfile.mkdtemp(prefix="ldtk-bundle-smoke-"))
+samples = work / "examples"
+shutil.copytree(bundle / "Contents/Resources/examples/original", samples)
+first = samples / "\u51b7 \u542f\u52a8 #.ldtk"
+(samples / "Entities.ldtk").rename(first)
+second = samples / "Typical_TopDown_example.ldtk"
+profile = work / "settings"
+settings = profile / "settings.json"
+
+
+def pids():
+    lines = subprocess.check_output(["ps", "-axo", "pid=,comm="], text=True)
+    return {int(line.split(None, 1)[0]) for line in lines.splitlines()
+            if line.strip() and line.split(None, 1)[1] == executable}
+
+
+def wait_for_project(path):
+    until = time.monotonic() + 20
+    while time.monotonic() < until:
+        if settings.is_file():
+            value = json.loads(settings.read_text())
+            actual = (value.get("lastProject") or {}).get("filePath")
+            if actual and os.path.samefile(actual, path):
+                return
+        time.sleep(0.1)
+    raise RuntimeError(f"Document did not open: {path}; logs: {work}")
+
+
+before = pids()
+if before:
+    raise RuntimeError("Existing LDtk Rust instance: cannot route the warm-open test safely")
+try:
+    subprocess.run(["open", "-n", "-g", "--env", f"LDTK_CONFIG_DIR={profile}",
+                    "--stdout", str(work / "stdout.log"),
+                    "--stderr", str(work / "stderr.log"),
+                    "-a", str(bundle), str(first)], check=True, cwd=work)
+    wait_for_project(first)
+    launched = pids() - before
+    assert len(launched) == 1, f"Expected one new app process: {launched}"
+    subprocess.run(["open", "-g", "-a", str(bundle), str(second)], check=True, cwd=work)
+    wait_for_project(second)
+    assert pids() - before == launched, "Warm document open launched another app"
+    print(json.dumps({"cold_open": True, "unicode_path": True, "warm_open": True,
+                      "same_process": True, "bundle": str(bundle), "evidence": str(work)}))
+finally:
+    for pid in pids() - before:
+        os.kill(pid, signal.SIGTERM)

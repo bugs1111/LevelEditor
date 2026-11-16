@@ -12,16 +12,24 @@ resolver = "2"
 [dependencies]
 ldtk-core = { path = "crates/ldtk-core" }
 eframe = { version = "=0.33.0", default-features = false, features = ["default_fonts", "wgpu", "x11", "wayland"] }
-egui_extras = { version = "=0.33.0", features = ["svg", "image"] }
+egui_extras = { version = "=0.33.0", features = ["svg", "image", "file"] }
+egui_commonmark = { version = "=0.22.0", default-features = false }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif"] }
 rfd = "0.15"
 serde_json = { version = "1", features = ["preserve_order"] }
+syntect = { version = "5.3", default-features = false, features = ["default-fancy"] }
+ureq = { version = "3.1", default-features = false, features = ["rustls"] }
+zip = { version = "4.6", default-features = false, features = ["deflate"] }
+sha2 = "0.10"
+semver = "1"
 
 [dev-dependencies]
 tempfile = "3"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 wgpu = { version = "27", default-features = false, features = ["std", "metal", "wgsl"] }
+objc2 = "=0.6.5"
+objc2-foundation = { version = "=0.3.2", default-features = false, features = ["std", "NSObject", "NSAppleEventManager", "NSAppleEventDescriptor", "NSURL", "NSString", "NSDate", "NSError", "NSRunLoop", "objc2-core-services"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 wgpu = { version = "27", default-features = false, features = ["std", "dx12", "wgsl"] }
@@ -36,3 +44,8 @@ codegen-units = 1
 [[bin]]
 name = "ldtk-rs"
 path = "src/main.rs"
+
+[[test]]
+name = "platform_files"
+path = "tests/platform_files.rs"
+harness = false

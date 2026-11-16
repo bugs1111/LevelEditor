@@ -1,0 +1,12 @@
+{
+  "source": "LDtk 1.5.3, isolated Home, actual DOM computed styles",
+  "viewport": [1440, 900, 2],
+  "units": "CSS logical pixels",
+  "mainButton": {"y": 319, "height": 38, "margin": 1, "padding": [0,8], "font": "14.6667px Arial"},
+  "supportAndLinks": {"height": 38, "margin": 1, "padding": [0,8], "font": "14.6667px Arial"},
+  "allSamples": {"y": 366, "height": 196.6640625, "padding": 4},
+  "sampleTitle": {"y": 367, "height": 32.6640625, "padding": 8, "font": "13.3333px Arial"},
+  "scroller": {"y": 399.6640625, "height": 158, "padding": [4,4,8,4], "overflowX": "auto"},
+  "firstSample": {"y": 403.6640625, "width": 128, "height": 131},
+  "version": {"font": "140px Roboto", "height": 164, "padding": [0,16], "marginTop": 8}
+}

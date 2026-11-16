@@ -35,111 +35,14 @@ fn inside(x: i32, y: i32, width: i32, height: i32) -> bool {
 }
 
 impl Project {
-    pub fn remove_entity(
-        &mut self,
-        key: LevelKey,
-        layer_index: usize,
-        index: usize,
-    ) -> Result<bool> {
-        let layer = self
-            .layer(key, layer_index)
-            .ok_or_else(|| invalid("layer not found"))?;
-        if layer["__type"] != "Entities" {
+    pub fn remove_entity(&mut self, key: LevelKey, layer: usize, index: usize) -> Result<bool> {
+        if self
+            .layer(key, layer)
+            .is_none_or(|l| l["__type"] != "Entities")
+        {
             return Err(invalid("entity removal requires an Entities layer"));
         }
-        let entities = layer
-            .get("entityInstances")
-            .and_then(Value::as_array)
-            .ok_or_else(|| invalid("entityInstances must be an array"))?;
-        let Some(entity) = entities.get(index) else {
-            return Ok(false);
-        };
-        let uid = integer(entity, "defUid")?;
-        self.ensure_toc_editable(uid)?;
-        let iid = entity
-            .get("iid")
-            .and_then(Value::as_str)
-            .ok_or_else(|| invalid("entity IID is missing"))?;
-        self.ensure_entity_unreferenced(iid)?;
-        self.layer_mut(key, layer_index).expect("validated layer")["entityInstances"]
-            .as_array_mut()
-            .expect("validated entity list")
-            .remove(index);
-        Ok(true)
-    }
-
-    fn ensure_toc_editable(&self, uid: i64) -> Result<()> {
-        let definition = self
-            .definition("entities", uid)
-            .ok_or_else(|| invalid("entity definition not found"))?;
-        if definition.get("exportToToc").and_then(Value::as_bool) == Some(true) {
-            return Err(Error::Unsupported("editing entities exported to the table of contents requires derived toc regeneration".into()));
-        }
-        Ok(())
-    }
-
-    fn ensure_entity_unreferenced(&self, iid: &str) -> Result<()> {
-        fn contains_iid(value: &Value, iid: &str) -> bool {
-            match value {
-                Value::String(text) => text == iid,
-                Value::Array(values) => values.iter().any(|value| contains_iid(value, iid)),
-                Value::Object(values) => values.values().any(|value| contains_iid(value, iid)),
-                _ => false,
-            }
-        }
-        fn check_fields(fields: Option<&Value>, iid: &str) -> Result<()> {
-            let Some(fields) = fields else {
-                return Ok(());
-            };
-            let fields = fields.as_array().ok_or_else(|| {
-                invalid("fieldInstances must be an array before checking references")
-            })?;
-            for field in fields {
-                if field
-                    .get("__type")
-                    .and_then(Value::as_str)
-                    .is_some_and(|kind| !kind.contains("EntityRef"))
-                {
-                    continue;
-                }
-                if field
-                    .get("__value")
-                    .is_some_and(|value| contains_iid(value, iid))
-                    || field
-                        .get("realEditorValues")
-                        .is_some_and(|value| contains_iid(value, iid))
-                    || field
-                        .get("realEditorValue")
-                        .is_some_and(|value| contains_iid(value, iid))
-                {
-                    return Err(Error::Unsupported("entity is referenced by a field; removing referenced entities requires a project-wide reference transaction".into()));
-                }
-            }
-            Ok(())
-        }
-        for key in self.level_keys() {
-            let level = self.level(key).ok_or_else(|| {
-                invalid("all external levels must be loaded before checking entity references")
-            })?;
-            check_fields(level.get("fieldInstances"), iid)?;
-            let layers = level
-                .get("layerInstances")
-                .and_then(Value::as_array)
-                .ok_or_else(|| {
-                    invalid("all level layers must be loaded before checking entity references")
-                })?;
-            for layer in layers {
-                if let Some(entities) = layer.get("entityInstances") {
-                    for entity in entities
-                        .as_array()
-                        .ok_or_else(|| invalid("entityInstances must be an array"))?
-                    {
-                        check_fields(entity.get("fieldInstances"), iid)?;
-                    }
-                }
-            }
-        }
-        Ok(())
+        self.remove_entity_with_references(key, layer, index)
     }
 
     pub fn paint_int_grid(
@@ -150,6 +53,15 @@ impl Project {
         y: i32,
         value: i32,
     ) -> Result<bool> {
+        Ok(self.paint_int_grid_cells(key, layer_index, &[([x, y], value)])? > 0)
+    }
+    /// Paint a stroke or rectangle with one auto-rule invalidation and no project clone.
+    pub fn paint_int_grid_cells(
+        &mut self,
+        key: LevelKey,
+        layer_index: usize,
+        cells: &[([i32; 2], i32)],
+    ) -> Result<usize> {
         let layer = self
             .layer(key, layer_index)
             .ok_or_else(|| invalid("layer not found"))?;
@@ -157,72 +69,81 @@ impl Project {
             return Err(invalid("IntGrid painting requires an IntGrid layer"));
         }
         let (width, height, _) = dimensions(layer)?;
-        let cells = layer
-            .get("intGridCsv")
-            .and_then(Value::as_array)
+        let values = layer["intGridCsv"]
+            .as_array()
             .ok_or_else(|| invalid("intGridCsv must be an array"))?;
-        if cells.len() != (width as usize) * (height as usize) {
+        if values.len() != width as usize * height as usize {
             return Err(invalid(
-                "IntGrid cell count or values do not match the layer dimensions",
+                "IntGrid cell count does not match layer dimensions",
             ));
         }
-        if value < 0 {
-            return Err(invalid("IntGrid values must be nonnegative"));
-        }
-        if !inside(x, y, width, height) {
-            return Ok(false);
-        }
-        let index = (y * width + x) as usize;
-        if cells[index]
-            .as_i64()
-            .is_none_or(|n| i32::try_from(n).is_err() || n < 0)
-        {
-            return Err(invalid("invalid IntGrid cell value"));
-        }
-        if value != 0 {
-            let definition = layer
-                .get("layerDefUid")
-                .and_then(Value::as_i64)
-                .and_then(|uid| self.layer_def(uid))
-                .ok_or_else(|| invalid("IntGrid layer definition not found"))?;
-            let palette = definition
-                .get("intGridValues")
-                .and_then(Value::as_array)
-                .ok_or_else(|| invalid("IntGrid definition has no value palette"))?;
-            if !palette
-                .iter()
-                .any(|entry| entry.get("value").and_then(Value::as_i64) == Some(i64::from(value)))
-            {
+        let uid = layer["layerDefUid"].as_i64();
+        let definition = uid.and_then(|uid| self.layer_def(uid));
+        let palette: std::collections::BTreeSet<i64> = definition
+            .and_then(|d| d["intGridValues"].as_array())
+            .into_iter()
+            .flatten()
+            .filter_map(|v| v["value"].as_i64())
+            .collect();
+        let mut touched = std::collections::BTreeMap::new();
+        for &([x, y], value) in cells {
+            if value < 0 {
+                return Err(invalid("IntGrid values must be nonnegative"));
+            }
+            if !inside(x, y, width, height) {
+                continue;
+            }
+            if value > 0 && !palette.contains(&i64::from(value)) {
                 return Err(invalid(
                     "IntGrid replacement value is not defined in this layer's palette",
                 ));
             }
+            let index = (y * width + x) as usize;
+            let old = values[index]
+                .as_i64()
+                .filter(|v| *v >= 0 && i32::try_from(*v).is_ok())
+                .ok_or_else(|| invalid("invalid IntGrid cell value"))?;
+            touched.insert(index, (old, value));
         }
-        if cells[index] == value {
-            return Ok(false);
+        touched.retain(|_, (old, new)| *old != i64::from(*new));
+        if touched.is_empty() {
+            return Ok(0);
         }
-        let uid = layer.get("layerDefUid").and_then(Value::as_i64);
-        if self
-            .json
-            .get("defs")
-            .and_then(|defs| defs.get("layers"))
-            .and_then(Value::as_array)
-            .is_some_and(|defs| {
-                defs.iter().any(|definition| {
-                    (definition.get("uid").and_then(Value::as_i64) == uid
-                        || definition
-                            .get("autoSourceLayerDefUid")
-                            .and_then(Value::as_i64)
-                            == uid)
-                        && active_auto_rules(definition)
-                })
+        let mut min_x = width;
+        let mut min_y = height;
+        let mut max_x = 0;
+        let mut max_y = 0;
+        for (&index, &(_, value)) in &touched {
+            self.layer_mut(key, layer_index).expect("validated layer")["intGridCsv"][index] =
+                json!(value);
+            let x = index as i32 % width;
+            let y = index as i32 / width;
+            min_x = min_x.min(x);
+            min_y = min_y.min(y);
+            max_x = max_x.max(x);
+            max_y = max_y.max(y);
+        }
+        let has_auto = self.json["defs"]["layers"].as_array().is_some_and(|defs| {
+            defs.iter().any(|d| {
+                (d["uid"].as_i64() == uid || d["autoSourceLayerDefUid"].as_i64() == uid)
+                    && active_auto_rules(d)
             })
+        });
+        if has_auto
+            && let Some(uid) = uid
+            && let Err(error) = self.rebuild_auto_layers_area(
+                key,
+                uid,
+                [min_x, min_y, max_x - min_x + 1, max_y - min_y + 1],
+            )
         {
-            return Err(Error::Unsupported("IntGrid editing with active auto rules requires deterministic autotile recomputation".into()));
+            for (&index, &(old, _)) in &touched {
+                self.layer_mut(key, layer_index).expect("validated layer")["intGridCsv"][index] =
+                    json!(old);
+            }
+            return Err(error);
         }
-        self.layer_mut(key, layer_index).expect("validated layer")["intGridCsv"][index] =
-            json!(value);
-        Ok(true)
+        Ok(touched.len())
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -236,6 +157,57 @@ impl Project {
         src: [i32; 2],
         flips: i32,
         erase: bool,
+    ) -> Result<bool> {
+        self.paint_tile_stacked(key, layer_index, x, y, tile_id, src, flips, erase, false)
+    }
+    #[allow(clippy::too_many_arguments)]
+    pub fn paint_tile_stacked(
+        &mut self,
+        key: LevelKey,
+        layer_index: usize,
+        x: i32,
+        y: i32,
+        tile_id: i32,
+        src: [i32; 2],
+        flips: i32,
+        erase: bool,
+        stack: bool,
+    ) -> Result<bool> {
+        let layer = self
+            .layer(key, layer_index)
+            .ok_or_else(|| invalid("layer not found"))?;
+        let uid = layer["layerDefUid"].as_i64();
+        let killer = uid.is_some()
+            && self.json["defs"]["layers"].as_array().is_some_and(|ds| {
+                ds.iter()
+                    .any(|d| d["autoTilesKilledByOtherLayerUid"].as_i64() == uid)
+            });
+        let old = killer.then(|| layer["gridTiles"].clone());
+        let changed =
+            self.paint_tile_inner(key, layer_index, x, y, tile_id, src, flips, erase, stack)?;
+        if changed
+            && killer
+            && let Some(uid) = uid
+            && let Err(error) = self.rebuild_auto_layers_area(key, uid, [x, y, 1, 1])
+        {
+            self.layer_mut(key, layer_index).expect("validated layer")["gridTiles"] =
+                old.expect("saved killer tiles");
+            return Err(error);
+        }
+        Ok(changed)
+    }
+    #[allow(clippy::too_many_arguments)]
+    fn paint_tile_inner(
+        &mut self,
+        key: LevelKey,
+        layer_index: usize,
+        x: i32,
+        y: i32,
+        tile_id: i32,
+        src: [i32; 2],
+        flips: i32,
+        erase: bool,
+        stack: bool,
     ) -> Result<bool> {
         let layer = self
             .layer(key, layer_index)
@@ -285,7 +257,7 @@ impl Project {
                 .ok_or_else(|| invalid("atlas stride overflow"))?;
             let cells = |size: i64| {
                 size.checked_sub(padding.checked_mul(2)?)
-                    .and_then(|n| n.checked_add(spacing))
+                    .and_then(|n| n.checked_add(stride - 1))
                     .map(|n| n / stride)
             };
             let cols = cells(atlas_width)
@@ -329,11 +301,42 @@ impl Project {
         if erase && indices.is_empty() {
             return Ok(false);
         }
+        if stack && erase {
+            self.layer_mut(key, layer_index).expect("validated layer")["gridTiles"]
+                .as_array_mut()
+                .expect("validated tiles")
+                .remove(*indices.last().expect("nonempty stack"));
+            return Ok(true);
+        }
         if !erase && indices.len() == 1 {
             let tile = &tiles[indices[0]];
             if tile["t"] == tile_id && tile["src"] == json!(src) && tile["f"] == flips {
                 return Ok(false);
             }
+        }
+        if stack && !erase {
+            let mut replacement = indices
+                .iter()
+                .find_map(|&i| {
+                    let tile = &tiles[i];
+                    (tile["t"] == tile_id && tile["f"] == flips).then(|| tile.clone())
+                })
+                .unwrap_or_else(|| json!({"a":1,"d":[y*width+x]}));
+            replacement["px"] = px.clone();
+            replacement["src"] = json!(src);
+            replacement["t"] = json!(tile_id);
+            replacement["f"] = json!(flips);
+            let tiles = self.layer_mut(key, layer_index).expect("validated layer")["gridTiles"]
+                .as_array_mut()
+                .expect("validated tiles");
+            if let Some(i) = tiles
+                .iter()
+                .position(|t| t["px"] == px && t["t"] == tile_id && t["f"] == flips)
+            {
+                tiles.remove(i);
+            }
+            tiles.push(replacement);
+            return Ok(true);
         }
         let mut replacement = indices
             .first()
@@ -369,6 +372,16 @@ impl Project {
         x: i32,
         y: i32,
     ) -> Result<bool> {
+        self.edit_document(|p| p.add_entity_inner(key, layer_index, def_uid, x, y))
+    }
+    fn add_entity_inner(
+        &mut self,
+        key: LevelKey,
+        layer_index: usize,
+        def_uid: i64,
+        x: i32,
+        y: i32,
+    ) -> Result<bool> {
         let layer = self
             .layer(key, layer_index)
             .ok_or_else(|| invalid("layer not found"))?;
@@ -393,7 +406,6 @@ impl Project {
         if x < 0 || y < 0 || i64::from(x) >= width || i64::from(y) >= height {
             return Ok(false);
         }
-        self.ensure_toc_editable(def_uid)?;
         if let Some(layer_def) = layer
             .get("layerDefUid")
             .and_then(Value::as_i64)
@@ -457,7 +469,7 @@ impl Project {
                 }
             }
         }
-        let mut entity = build_entity(&definition, def_uid)?;
+        let mut entity = build_entity(self, &definition, def_uid)?;
         let limit_reached = max > 0 && matches.len() as i64 >= max;
         let behavior = definition
             .get("limitBehavior")
@@ -468,39 +480,10 @@ impl Project {
                 "PreventAdding" => return Ok(false),
                 "MoveLastOne" => {
                     let &(old_key, li, ei) = matches.last().expect("positive max reached");
-                    if old_key != key {
-                        return Err(Error::Unsupported(
-                            "moving a limited entity between levels requires cross-level history"
-                                .into(),
-                        ));
-                    }
                     entity = self.layer(old_key, li).expect("matched layer")["entityInstances"][ei]
                         .clone();
-                    if li != layer_index {
-                        let iid = entity
-                            .get("iid")
-                            .and_then(Value::as_str)
-                            .ok_or_else(|| invalid("entity IID is missing"))?;
-                        self.ensure_entity_unreferenced(iid)?;
-                    }
                 }
-                "DiscardOldOnes" => {
-                    let count = matches.len() - max as usize + 1;
-                    for &(old_key, li, ei) in &matches[..count] {
-                        let iid =
-                            self.layer(old_key, li).expect("matched layer")["entityInstances"][ei]
-                                .get("iid")
-                                .and_then(Value::as_str)
-                                .ok_or_else(|| invalid("entity IID is missing"))?;
-                        self.ensure_entity_unreferenced(iid)?;
-                    }
-                    if matches[..count]
-                        .iter()
-                        .any(|(old_key, _, _)| *old_key != key)
-                    {
-                        return Err(Error::Unsupported("discarding limited entities in other levels requires cross-level history".into()));
-                    }
-                }
+                "DiscardOldOnes" => {}
                 _ => return Err(invalid("unknown entity limit behavior")),
             }
         }
@@ -547,11 +530,12 @@ impl Project {
             .as_array_mut()
             .expect("validated entity array")
             .push(entity);
+        self.refresh_derived_data()?;
         Ok(true)
     }
 }
 
-fn build_entity(definition: &Value, uid: i64) -> Result<Value> {
+fn build_entity(project: &Project, definition: &Value, uid: i64) -> Result<Value> {
     let identifier = definition
         .get("identifier")
         .and_then(Value::as_str)
@@ -565,96 +549,16 @@ fn build_entity(definition: &Value, uid: i64) -> Result<Value> {
         .get("fieldDefs")
         .and_then(Value::as_array)
         .ok_or_else(|| invalid("entity fieldDefs must be an array"))?;
-    let fields: Vec<Value> = fields.iter().map(default_field).collect::<Result<_>>()?;
+    let fields: Vec<Value> = fields
+        .iter()
+        .map(|d| project.make_field_instance(d))
+        .collect::<Result<_>>()?;
     Ok(json!({
         "__identifier":identifier,"__grid":[0,0],"__pivot":[definition.get("pivotX").cloned().unwrap_or(json!(0)),definition.get("pivotY").cloned().unwrap_or(json!(0))],
         "__tags":definition.get("tags").cloned().unwrap_or(json!([])),"__tile":definition.get("tileRect").cloned().unwrap_or(Value::Null),
         "__smartColor":definition.get("color").cloned().unwrap_or(json!("#FFFFFF")),
         "iid":uuid::Uuid::new_v4().to_string(),"width":width,"height":height,"defUid":uid,"px":[0,0],"fieldInstances":fields
     }))
-}
-
-fn default_field(definition: &Value) -> Result<Value> {
-    let uid = integer(definition, "uid")?;
-    let identifier = definition
-        .get("identifier")
-        .and_then(Value::as_str)
-        .ok_or_else(|| invalid("field identifier missing"))?;
-    let kind = definition
-        .get("__type")
-        .and_then(Value::as_str)
-        .ok_or_else(|| invalid("field __type missing; migration required for this definition"))?;
-    let is_array = definition
-        .get("isArray")
-        .and_then(Value::as_bool)
-        .unwrap_or(kind.starts_with("Array<"));
-    let base = kind
-        .strip_prefix("Array<")
-        .and_then(|s| s.strip_suffix('>'))
-        .unwrap_or(kind);
-    let nullable = definition
-        .get("canBeNull")
-        .and_then(Value::as_bool)
-        .unwrap_or(false);
-    let override_value = definition
-        .get("defaultOverride")
-        .filter(|v| !v.is_null())
-        .and_then(|v| v.get("params"))
-        .and_then(Value::as_array)
-        .and_then(|v| v.first())
-        .cloned();
-    let mut value = if let Some(value) = override_value {
-        value
-    } else if nullable {
-        Value::Null
-    } else {
-        match base {
-            "Int" | "Float" => json!(0),
-            "Bool" => json!(false),
-            "Color" => json!(0),
-            "String" | "Multilines" => json!(""),
-            "Point" | "EntityRef" | "Tile" | "FilePath" => Value::Null,
-            _ if base.starts_with("LocalEnum.") || base.starts_with("ExternEnum.") => Value::Null,
-            _ => return Err(Error::Unsupported(format!("new entity field type {kind}"))),
-        }
-    };
-    if let Some(number) = value.as_f64().filter(|_| base == "Int" || base == "Float") {
-        let number = definition
-            .get("min")
-            .and_then(Value::as_f64)
-            .map_or(number, |min| number.max(min));
-        let number = definition
-            .get("max")
-            .and_then(Value::as_f64)
-            .map_or(number, |max| number.min(max));
-        value = if base == "Int" {
-            json!(number as i64)
-        } else {
-            json!(number)
-        };
-    }
-    if base == "Color"
-        && let Some(number) = value.as_i64()
-    {
-        value = json!(format!("#{:06X}", number & 0xFFFFFF));
-    }
-    if base == "Tile"
-        && let Some(raw) = value.as_str()
-    {
-        let coords: Vec<i32> = raw
-            .split(',')
-            .map(str::parse)
-            .collect::<std::result::Result<_, _>>()
-            .map_err(|_| invalid("invalid tile field default"))?;
-        if coords.len() != 4 {
-            return Err(invalid("tile field default must contain x,y,w,h"));
-        }
-        value = json!({"tilesetUid":definition["tilesetUid"],"x":coords[0],"y":coords[1],"w":coords[2],"h":coords[3]});
-    }
-    let value = if is_array { json!([]) } else { value };
-    Ok(
-        json!({"__identifier":identifier,"__type":kind,"__value":value,"__tile":null,"defUid":uid,"realEditorValues":[]}),
-    )
 }
 
 fn active_auto_rules(definition: &Value) -> bool {

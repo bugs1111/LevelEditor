@@ -1,0 +1,983 @@
+//! Filesystem exporters ported from the pinned LDtk exporters and ProjectSaver.
+use crate::project::{atomic_save, relative_to};
+use crate::{Error, LevelKey, Project, Result};
+use image::{Rgba, RgbaImage};
+use serde_json::{Value, json};
+use std::{
+    collections::BTreeMap,
+    fs,
+    io::Cursor,
+    path::{Path, PathBuf},
+};
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PngExportMode {
+    OneImagePerLayer,
+    OneImagePerLevel,
+    LayersAndLevels,
+}
+#[derive(Clone, Debug)]
+pub struct PngExportOptions {
+    pub mode: PngExportMode,
+    pub include_background: bool,
+    pub file_pattern: Option<String>,
+}
+impl Default for PngExportOptions {
+    fn default() -> Self {
+        Self {
+            mode: PngExportMode::OneImagePerLayer,
+            include_background: true,
+            file_pattern: None,
+        }
+    }
+}
+#[derive(Clone, Debug, Default)]
+pub struct ExportReport {
+    pub outputs: Vec<PathBuf>,
+    pub warnings: Vec<String>,
+}
+fn n(v: &Value, k: &str) -> i64 {
+    v[k].as_i64().unwrap_or(0)
+}
+fn num(v: &Value, k: &str, default: f64) -> f64 {
+    v[k].as_f64().unwrap_or(default)
+}
+fn s<'a>(v: &'a Value, k: &str) -> &'a str {
+    v[k].as_str().unwrap_or("")
+}
+fn arr(v: &Value) -> &[Value] {
+    v.as_array().map(Vec::as_slice).unwrap_or(&[])
+}
+fn safe_name(name: &str) -> Result<&str> {
+    if name.is_empty() || name.contains('/') || name.contains('\\') || name == "." || name == ".." {
+        Err(Error::Invalid(format!("unsafe export name: {name}")))
+    } else {
+        Ok(name)
+    }
+}
+fn publish(outputs: Vec<(PathBuf, Vec<u8>)>) -> Result<Vec<PathBuf>> {
+    let mut seen = std::collections::BTreeSet::new();
+    for (p, _) in &outputs {
+        if !seen.insert(p.clone()) {
+            return Err(Error::Invalid(format!(
+                "duplicate export output {}",
+                p.display()
+            )));
+        }
+        if let Some(parent) = p.parent() {
+            fs::create_dir_all(parent).map_err(|source| Error::Io {
+                path: parent.into(),
+                source,
+            })?;
+        }
+    }
+    let paths = outputs.iter().map(|o| o.0.clone()).collect();
+    atomic_save(outputs)?;
+    Ok(paths)
+}
+fn bytes(v: &Value) -> Result<Vec<u8>> {
+    serde_json::to_vec_pretty(v).map_err(|e| Error::Invalid(e.to_string()))
+}
+fn fields(v: &Value) -> Value {
+    let mut o = serde_json::Map::new();
+    for f in arr(&v["fieldInstances"]) {
+        o.insert(s(f, "__identifier").to_owned(), f["__value"].clone());
+    }
+    Value::Object(o)
+}
+fn color(v: &str) -> Rgba<u8> {
+    let raw = v.trim_start_matches('#');
+    let c = u32::from_str_radix(raw, 16).unwrap_or(0);
+    if raw.len() == 8 {
+        Rgba([(c >> 24) as u8, (c >> 16) as u8, (c >> 8) as u8, c as u8])
+    } else {
+        Rgba([(c >> 16) as u8, (c >> 8) as u8, c as u8, 255])
+    }
+}
+fn png(img: &RgbaImage) -> Result<Vec<u8>> {
+    let mut out = Cursor::new(Vec::new());
+    image::DynamicImage::ImageRgba8(img.clone())
+        .write_to(&mut out, image::ImageFormat::Png)
+        .map_err(|e| Error::Invalid(e.to_string()))?;
+    Ok(out.into_inner())
+}
+fn blend_pixel(target: &mut RgbaImage, x: i64, y: i64, c: Rgba<u8>, alpha: f64) {
+    if x < 0 || y < 0 || x >= target.width() as i64 || y >= target.height() as i64 {
+        return;
+    }
+    let d = target.get_pixel_mut(x as u32, y as u32);
+    let a = c[3] as f64 / 255.0 * alpha.clamp(0., 1.);
+    let da = d[3] as f64 / 255.;
+    let out = a + da * (1. - a);
+    if out > 0. {
+        for i in 0..3 {
+            d[i] = ((c[i] as f64 * a + d[i] as f64 * da * (1. - a)) / out).round() as u8;
+        }
+    }
+    d[3] = (out * 255.).round() as u8;
+}
+fn composite(target: &mut RgbaImage, source: &RgbaImage, alpha: f64) {
+    for (x, y, p) in source.enumerate_pixels() {
+        blend_pixel(target, x as i64, y as i64, *p, alpha);
+    }
+}
+impl Project {
+    pub fn export_csv(&self, dir: impl AsRef<Path>) -> Result<Vec<PathBuf>> {
+        let mut out = Vec::new();
+        for key in self.level_keys() {
+            let l = self
+                .level(key)
+                .ok_or_else(|| Error::Invalid("missing external level".into()))?;
+            let name = safe_name(s(l, "identifier"))?;
+            for li in arr(&l["layerInstances"]) {
+                if s(li, "__type") != "IntGrid" {
+                    continue;
+                }
+                let w = n(li, "__cWid").max(0) as usize;
+                let h = n(li, "__cHei").max(0) as usize;
+                let mut text = String::new();
+                let values = arr(&li["intGridCsv"]);
+                for y in 0..h {
+                    for x in 0..w {
+                        if x > 0 {
+                            text.push(',');
+                        }
+                        let value =
+                            values.get(x + y * w).and_then(Value::as_i64).unwrap_or(0) as u8;
+                        text.push_str(&value.to_string());
+                    }
+                    if y + 1 < h {
+                        text.push(',');
+                    }
+                    text.push('\n');
+                }
+                out.push((
+                    dir.as_ref()
+                        .join(name)
+                        .join(format!("{}.csv", safe_name(s(li, "__identifier"))?)),
+                    text.into_bytes(),
+                ));
+            }
+        }
+        publish(out)
+    }
+    pub fn export_simplified(&self, dir: impl AsRef<Path>) -> Result<Vec<PathBuf>> {
+        let dir = dir.as_ref();
+        let mut out = Vec::new();
+        for key in self.level_keys() {
+            let l = self
+                .level(key)
+                .ok_or_else(|| Error::Invalid("missing external level".into()))?;
+            let mut entities = serde_json::Map::new();
+            let mut layers = Vec::new();
+            for li in arr(&l["layerInstances"]).iter().rev() {
+                let typ = s(li, "__type");
+                if typ == "Tiles"
+                    || typ == "AutoLayer"
+                    || (typ == "IntGrid" && !li["__tilesetDefUid"].is_null())
+                {
+                    layers.push(json!(format!("{}.png", s(li, "__identifier"))));
+                }
+            }
+            for li in arr(&l["layerInstances"]) {
+                for e in arr(&li["entityInstances"]) {
+                    let entry = entities
+                        .entry(s(e, "__identifier").to_owned())
+                        .or_insert_with(|| json!([]));
+                    entry.as_array_mut().unwrap().push(json!({"id":e["__identifier"],"iid":e["iid"],"layer":li["__identifier"],"x":e["px"][0],"y":e["px"][1],"width":e["width"],"height":e["height"],"color":u32::from_str_radix(s(e,"__smartColor").trim_start_matches('#'),16).unwrap_or(0),"customFields":fields(e)}));
+                }
+            }
+            let simple = json!({"identifier":l["identifier"],"uniqueIdentifer":l["iid"],"x":l["worldX"],"y":l["worldY"],"width":l["pxWid"],"height":l["pxHei"],"bgColor":l["__bgColor"],"neighbourLevels":l["__neighbours"],"customFields":fields(l),"layers":layers,"entities":entities});
+            out.push((
+                dir.join(safe_name(s(l, "identifier"))?).join("data.json"),
+                bytes(&simple)?,
+            ));
+        }
+        let mut paths = publish(out)?;
+        paths.extend(self.export_csv(dir)?);
+        for key in self.level_keys() {
+            let l = self.level(key).unwrap();
+            let options = PngExportOptions {
+                mode: PngExportMode::LayersAndLevels,
+                include_background: self.json["exportLevelBg"].as_bool().unwrap_or(true),
+                file_pattern: Some("%layer_name".into()),
+            };
+            paths.extend(self.export_level_png(
+                key,
+                &dir.join(safe_name(s(l, "identifier"))?),
+                &options,
+                true,
+            )?);
+        }
+        Ok(paths)
+    }
+    pub fn export_png(&self, dir: impl AsRef<Path>) -> Result<Vec<PathBuf>> {
+        let mode = match s(&self.json, "imageExportMode") {
+            "OneImagePerLevel" => PngExportMode::OneImagePerLevel,
+            "LayersAndLevels" => PngExportMode::LayersAndLevels,
+            _ => PngExportMode::OneImagePerLayer,
+        };
+        self.export_png_with_options(
+            dir,
+            &PngExportOptions {
+                mode,
+                include_background: self.json["exportLevelBg"].as_bool().unwrap_or(true),
+                file_pattern: self.json["pngFilePattern"].as_str().map(str::to_owned),
+            },
+        )
+    }
+    pub fn export_png_with_options(
+        &self,
+        dir: impl AsRef<Path>,
+        options: &PngExportOptions,
+    ) -> Result<Vec<PathBuf>> {
+        let mut paths = Vec::new();
+        for key in self.level_keys() {
+            paths.extend(self.export_level_png(key, dir.as_ref(), options, false)?);
+        }
+        Ok(paths)
+    }
+    fn export_level_png(
+        &self,
+        key: LevelKey,
+        dir: &Path,
+        options: &PngExportOptions,
+        simple: bool,
+    ) -> Result<Vec<PathBuf>> {
+        let l = self
+            .level(key)
+            .ok_or_else(|| Error::Invalid("missing external level".into()))?;
+        let (w, h) = dimensions(l)?;
+        let mut out = Vec::new();
+        let name = safe_name(s(l, "identifier"))?;
+        let background = if options.include_background {
+            self.render_background(l)?
+        } else {
+            RgbaImage::new(w, h)
+        };
+        let mut combined =
+            if options.include_background && options.mode == PngExportMode::LayersAndLevels {
+                RgbaImage::from_pixel(w, h, self.level_background_color(l))
+            } else {
+                background.clone()
+            };
+        if options.include_background && options.mode != PngExportMode::OneImagePerLevel {
+            out.push((
+                dir.join(if simple {
+                    "_bg.png".into()
+                } else {
+                    format!("{name}_bg.png")
+                }),
+                png(&background)?,
+            ));
+        }
+        for li in arr(&l["layerInstances"]).iter().rev() {
+            let def = self.layer_def(n(li, "layerDefUid")).unwrap_or(li);
+            let typ = s(li, "__type");
+            let tiles = typ == "Tiles"
+                || typ == "AutoLayer"
+                || (typ == "IntGrid" && li["__tilesetDefUid"].as_i64().is_some());
+            let pattern = options.file_pattern.as_deref().unwrap_or(
+                if options.mode == PngExportMode::OneImagePerLevel {
+                    "%level_name"
+                } else {
+                    "%level_name__%layer_name"
+                },
+            );
+            let file = self.png_name(key, li, pattern)?;
+            if tiles {
+                let image = self.render_tile_layer(l, li)?;
+                composite(
+                    &mut combined,
+                    &image,
+                    if options.mode == PngExportMode::LayersAndLevels {
+                        num(def, "displayOpacity", 1.)
+                    } else {
+                        1.
+                    },
+                );
+                if options.mode != PngExportMode::OneImagePerLevel {
+                    out.push((dir.join(format!("{file}.png")), png(&image)?));
+                }
+            }
+            if typ == "IntGrid" && options.mode != PngExportMode::OneImagePerLevel {
+                let cw = n(li, "__cWid").max(0) as u32;
+                let ch = n(li, "__cHei").max(0) as u32;
+                let mut img = RgbaImage::new(cw, ch);
+                let values = arr(&li["intGridCsv"]);
+                for y in 0..ch {
+                    for x in 0..cw {
+                        let v = values
+                            .get((x + y * cw) as usize)
+                            .and_then(Value::as_i64)
+                            .unwrap_or(0);
+                        if let Some(c) = arr(&def["intGridValues"])
+                            .iter()
+                            .find(|c| n(c, "value") == v)
+                        {
+                            img.put_pixel(x, y, color(s(c, "color")));
+                        }
+                    }
+                }
+                out.push((dir.join(format!("{file}-int.png")), png(&img)?));
+            }
+        }
+        if options.mode != PngExportMode::OneImagePerLayer {
+            let filename = if simple {
+                "_composite".into()
+            } else if options.mode == PngExportMode::OneImagePerLevel {
+                let li = arr(&l["layerInstances"]).first().unwrap_or(l);
+                self.png_name(
+                    key,
+                    li,
+                    options.file_pattern.as_deref().unwrap_or("%level_name"),
+                )?
+            } else {
+                name.to_owned()
+            };
+            out.push((dir.join(format!("{filename}.png")), png(&combined)?));
+        }
+        publish(out)
+    }
+    fn png_name(&self, key: LevelKey, li: &Value, pattern: &str) -> Result<String> {
+        let l = self.level(key).unwrap();
+        let world = key
+            .world
+            .and_then(|w| self.json["worlds"].get(w))
+            .map(|w| s(w, "identifier"))
+            .unwrap_or("World");
+        let idx = arr(&self.json["defs"]["layers"])
+            .iter()
+            .take_while(|d| n(d, "uid") != n(li, "layerDefUid"))
+            .filter(|d| s(d, "type") != "Entities")
+            .count();
+        let result = pattern
+            .replace("%level_name", s(l, "identifier"))
+            .replace("%layer_name", s(li, "__identifier"))
+            .replace("%world", world)
+            .replace("%level_idx", &format!("{:04}", key.level))
+            .replace("%layer_idx", &format!("{idx:02}"));
+        safe_name(&result)?;
+        Ok(result)
+    }
+    fn resource_image(&self, rel: &str) -> Result<RgbaImage> {
+        let base = self
+            .path
+            .as_ref()
+            .and_then(|p| p.parent())
+            .unwrap_or(Path::new("."));
+        let path = base.join(rel);
+        load_image_rgba(&path)
+    }
+    fn level_background_color(&self, l: &Value) -> Rgba<u8> {
+        color(
+            l["bgColor"]
+                .as_str()
+                .or(self.json["defaultLevelBgColor"].as_str())
+                .or(l["__bgColor"].as_str())
+                .unwrap_or("#000000"),
+        )
+    }
+    fn render_background(&self, l: &Value) -> Result<RgbaImage> {
+        let (w, h) = dimensions(l)?;
+        let mut image = RgbaImage::from_pixel(w, h, self.level_background_color(l));
+        if let Some(rel) = l["bgRelPath"].as_str() {
+            let bg = self.resource_image(rel)?;
+            let bw = bg.width() as f64;
+            let bh = bg.height() as f64;
+            let mode = s(l, "bgPos");
+            let (sx, sy) = match mode {
+                "Contain" => {
+                    let scale = (w as f64 / bw).min(h as f64 / bh);
+                    (scale, scale)
+                }
+                "Cover" => {
+                    let scale = (w as f64 / bw).max(h as f64 / bh);
+                    (scale, scale)
+                }
+                "CoverDirty" => (w as f64 / bw, h as f64 / bh),
+                _ => (1., 1.),
+            };
+            let cw = bw.min(w as f64 / sx);
+            let ch = bh.min(h as f64 / sy);
+            let pivot_x = num(l, "bgPivotX", 0.5);
+            let pivot_y = num(l, "bgPivotY", 0.5);
+            let cx = pivot_x * (bw - cw);
+            let cy = pivot_y * (bh - ch);
+            let x = (pivot_x * (w as f64 - cw * sx)).trunc();
+            let y = (pivot_y * (h as f64 - ch * sy)).trunc();
+            for dy in 0..h {
+                for dx in 0..w {
+                    let bx = if mode == "Repeat" {
+                        (dx as f64 - (w as f64 - bw) * pivot_x).rem_euclid(bw)
+                    } else {
+                        (dx as f64 - x) / sx + cx
+                    };
+                    let by = if mode == "Repeat" {
+                        (dy as f64 - (h as f64 - bh) * pivot_y).rem_euclid(bh)
+                    } else {
+                        (dy as f64 - y) / sy + cy
+                    };
+                    if bx >= cx
+                        && by >= cy
+                        && bx < cx + cw
+                        && by < cy + ch
+                        && bx >= 0.
+                        && by >= 0.
+                        && bx < bw
+                        && by < bh
+                    {
+                        blend_pixel(
+                            &mut image,
+                            dx as i64,
+                            dy as i64,
+                            *bg.get_pixel(bx as u32, by as u32),
+                            1.,
+                        );
+                    }
+                }
+            }
+        }
+        Ok(image)
+    }
+    fn render_tile_layer(&self, l: &Value, li: &Value) -> Result<RgbaImage> {
+        let (w, h) = dimensions(l)?;
+        let mut img = RgbaImage::new(w, h);
+        let uid = li["__tilesetDefUid"].as_i64().or_else(|| {
+            self.layer_def(n(li, "layerDefUid"))
+                .and_then(|d| d["tilesetDefUid"].as_i64())
+        });
+        let Some(td) = uid.and_then(|u| self.tileset(u)) else {
+            return Ok(img);
+        };
+        let atlas = if let Some(rel) = td["relPath"].as_str() {
+            self.resource_image(rel)?
+        } else if !td["embedAtlas"].is_null() {
+            embedded_atlas()?
+        } else {
+            return Err(Error::Invalid("missing atlas path".into()));
+        };
+        let size = n(td, "tileGridSize").max(1);
+        let def = self.layer_def(n(li, "layerDefUid")).unwrap_or(li);
+        let alpha = num(def, "displayOpacity", 1.);
+        let ox = n(li, "__pxTotalOffsetX");
+        let oy = n(li, "__pxTotalOffsetY");
+        let values = if s(li, "__type") == "Tiles" {
+            arr(&li["gridTiles"])
+        } else {
+            arr(&li["autoLayerTiles"])
+        };
+        for t in values {
+            let f = n(t, "f");
+            let grid = n(li, "__gridSize").max(1) as f64;
+            let pivot_x = num(def, "tilePivotX", 0.);
+            let pivot_y = num(def, "tilePivotY", 0.);
+            let (tx, ty) = if s(li, "__type") == "Tiles" {
+                (
+                    t["px"][0].as_i64().unwrap_or(0)
+                        + ox
+                        + ((pivot_x + if f & 1 != 0 { 1. } else { 0. }) * grid
+                            - if f & 1 != 0 {
+                                (1. - pivot_x) * size as f64
+                            } else {
+                                pivot_x * size as f64
+                            })
+                        .round() as i64,
+                    t["px"][1].as_i64().unwrap_or(0)
+                        + oy
+                        + ((pivot_x + if f & 2 != 0 { 1. } else { 0. }) * grid
+                            - if f & 2 != 0 {
+                                (1. - pivot_y) * size as f64
+                            } else {
+                                pivot_y * size as f64
+                            })
+                        .round() as i64,
+                )
+            } else {
+                (
+                    t["px"][0].as_i64().unwrap_or(0)
+                        + ox
+                        + ((pivot_x + if f & 1 != 0 { 1. } else { 0. }) * grid
+                            - if f & 1 != 0 { size as f64 } else { 0. })
+                        .round() as i64,
+                    t["px"][1].as_i64().unwrap_or(0)
+                        + oy
+                        + ((pivot_y + if f & 2 != 0 { 1. } else { 0. }) * grid
+                            - if f & 2 != 0 { size as f64 } else { 0. })
+                        .round() as i64,
+                )
+            };
+            let sx = t["src"][0].as_i64().unwrap_or(0);
+            let sy = t["src"][1].as_i64().unwrap_or(0);
+            let f = n(t, "f");
+            for y in 0..size {
+                for x in 0..size {
+                    let ax = sx + if f & 1 != 0 { size - 1 - x } else { x };
+                    let ay = sy + if f & 2 != 0 { size - 1 - y } else { y };
+                    if ax >= 0 && ay >= 0 && ax < atlas.width() as i64 && ay < atlas.height() as i64
+                    {
+                        blend_pixel(
+                            &mut img,
+                            tx + x,
+                            ty + y,
+                            *atlas.get_pixel(ax as u32, ay as u32),
+                            alpha * num(t, "a", 1.),
+                        );
+                    }
+                }
+            }
+        }
+        Ok(img)
+    }
+}
+fn dimensions(l: &Value) -> Result<(u32, u32)> {
+    let (w, h) = (n(l, "pxWid"), n(l, "pxHei"));
+    if w <= 0 || h <= 0 || w.checked_mul(h).is_none_or(|area| area > 268_435_456) {
+        return Err(Error::Invalid("invalid export image dimensions".into()));
+    }
+    Ok((w as u32, h as u32))
+}
+fn xml(v: impl std::fmt::Display) -> String {
+    v.to_string()
+        .replace('&', "&amp;")
+        .replace('"', "&quot;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+}
+fn property(name: &str, typ: Option<&str>, value: &Value) -> String {
+    format!(
+        "<property name=\"{}\"{} value=\"{}\"/>",
+        xml(name),
+        typ.map(|t| format!(" type=\"{t}\"")).unwrap_or_default(),
+        xml(match value {
+            Value::String(s) => s.clone(),
+            Value::Null => "null".into(),
+            v => v.to_string(),
+        })
+    )
+}
+impl Project {
+    pub fn export_tiled_with_report(&self, dir: impl AsRef<Path>) -> Result<ExportReport> {
+        let mut warnings = Vec::new();
+        let defs = arr(&self.json["defs"]["layers"]);
+        let grids: std::collections::BTreeSet<_> = defs.iter().map(|d| n(d, "gridSize")).collect();
+        if grids.len() > 1 {
+            warnings.push("Tiled supports one grid size per map; layers with incompatible grid size are discarded".into());
+        }
+        for td in arr(&self.json["defs"]["tilesets"]) {
+            if !td["embedAtlas"].is_null() {
+                warnings.push(format!(
+                    "Embedded tileset {} is skipped by Tiled export",
+                    s(td, "identifier")
+                ));
+            }
+            if n(td, "padding") != 0 {
+                warnings.push(format!(
+                    "Tileset {} has padding, which is not supported by Tiled export",
+                    s(td, "identifier")
+                ));
+            }
+            if td["relPath"]
+                .as_str()
+                .and_then(|s| Path::new(s).extension())
+                .and_then(|s| s.to_str())
+                .is_some_and(|e| {
+                    e.eq_ignore_ascii_case("ase") || e.eq_ignore_ascii_case("aseprite")
+                })
+            {
+                warnings.push(format!("Aseprite atlas {} is not supported by Tiled; convert the referenced atlas to PNG",s(td,"identifier")));
+            }
+        }
+        let first = self.level_keys().first().and_then(|k| k.world);
+        if self.level_keys().iter().any(|k| k.world != first) {
+            warnings.push(
+                "Tiled export includes the first world only, matching the original exporter".into(),
+            );
+        }
+        for key in self.level_keys() {
+            if let Some(l) = self.level(key) {
+                for li in arr(&l["layerInstances"]) {
+                    let grid = n(li, "__gridSize").max(1);
+                    if arr(&li["autoLayerTiles"]).iter().any(|t| {
+                        t["px"][0].as_i64().unwrap_or(0) % grid != 0
+                            || t["px"][1].as_i64().unwrap_or(0) % grid != 0
+                    }) {
+                        warnings.push(format!("Layer {} in {} contains tiles not aligned with the grid; Tiled shifts these tiles",s(li,"__identifier"),s(l,"identifier")));
+                    }
+                }
+            }
+        }
+        Ok(ExportReport {
+            outputs: self.export_tiled(dir)?,
+            warnings,
+        })
+    }
+    /// TMX deliberately exports the first world only, matching upstream's limitation.
+    pub fn export_tiled(&self, dir: impl AsRef<Path>) -> Result<Vec<PathBuf>> {
+        let dir = dir.as_ref();
+        let mut out = Vec::new();
+        let defs = arr(&self.json["defs"]["layers"]);
+        let mut counts = BTreeMap::new();
+        for d in defs {
+            *counts.entry(n(d, "gridSize")).or_insert(0) += 1;
+        }
+        let grid = counts
+            .iter()
+            .max_by_key(|(_, v)| **v)
+            .map(|(g, _)| *g)
+            .unwrap_or_else(|| n(&self.json, "defaultGridSize"))
+            .max(1);
+        let first_world = self.level_keys().first().and_then(|k| k.world);
+        let keys: Vec<_> = self
+            .level_keys()
+            .into_iter()
+            .filter(|k| k.world == first_world)
+            .collect();
+        let mut maps = Vec::new();
+        for (index, key) in keys.iter().enumerate() {
+            let l = self
+                .level(*key)
+                .ok_or_else(|| Error::Invalid("missing external level".into()))?;
+            let mut tilesets = String::new();
+            let mut gids = BTreeMap::new();
+            let mut gid = 1u32;
+            for td in arr(&self.json["defs"]["tilesets"]) {
+                let Some(rel) = td["relPath"].as_str() else {
+                    continue;
+                };
+                let size = n(td, "tileGridSize").max(1);
+                let cols = (n(td, "pxWid") + size - 1) / size;
+                let count = cols * ((n(td, "pxHei") + size - 1) / size);
+                let base = self
+                    .path
+                    .as_ref()
+                    .and_then(|p| p.parent())
+                    .unwrap_or(Path::new("."));
+                let source = relative_to(&base.join(rel), dir)?;
+                gids.insert(n(td, "uid"), gid);
+                tilesets.push_str(&format!("<tileset firstgid=\"{gid}\" name=\"{}\" tilewidth=\"{size}\" tileheight=\"{size}\" tilecount=\"{count}\" columns=\"{cols}\" objectalignment=\"topleft\" margin=\"0\" spacing=\"{}\"><image source=\"{}\" width=\"{}\" height=\"{}\"/>",xml(s(td,"identifier")),n(td,"spacing"),xml(source),n(td,"pxWid"),n(td,"pxHei")));
+                for data in arr(&td["customData"]) {
+                    let raw = s(data, "data").replace("\\\\", "\\").replace("\\n", "\n");
+                    let value = serde_json::from_str::<Value>(&raw).map_err(|e| {
+                        Error::Invalid(format!(
+                            "invalid Tiled custom data for tile {}: {e}",
+                            n(data, "tileId")
+                        ))
+                    })?;
+                    if let Value::Object(values) = value {
+                        let props: String = values
+                            .into_iter()
+                            .filter(|(_, v)| !v.is_array() && !v.is_object())
+                            .map(|(k, v)| {
+                                property(
+                                    &k,
+                                    if v.is_boolean() {
+                                        Some("bool")
+                                    } else if v.is_i64() {
+                                        Some("int")
+                                    } else if v.is_number() {
+                                        Some("float")
+                                    } else {
+                                        None
+                                    },
+                                    &v,
+                                )
+                            })
+                            .collect();
+                        if !props.is_empty() {
+                            tilesets.push_str(&format!(
+                                "<tile id=\"{}\"><properties>{props}</properties></tile>",
+                                n(data, "tileId")
+                            ));
+                        }
+                    }
+                }
+                tilesets.push_str("</tileset>");
+                gid = gid.saturating_add(count as u32);
+            }
+            for d in defs.iter().filter(|d| s(d, "type") == "IntGrid") {
+                let values = arr(&d["intGridValues"]);
+                let size = n(d, "gridSize").max(1) as u32;
+                let mut image = RgbaImage::new(size * values.len() as u32, size);
+                for (i, v) in values.iter().enumerate() {
+                    for y in 0..size {
+                        for x in 0..size {
+                            image.put_pixel(i as u32 * size + x, y, color(s(v, "color")));
+                        }
+                    }
+                }
+                let filename = format!("{}.intgrid.png", safe_name(s(d, "identifier"))?);
+                if !out.iter().any(|(p, _)| p == &dir.join(&filename)) {
+                    out.push((dir.join(&filename), png(&image)?));
+                }
+                gids.insert(n(d, "uid"), gid);
+                tilesets.push_str(&format!("<tileset firstgid=\"{gid}\" name=\"{}\" tilewidth=\"{size}\" tileheight=\"{size}\" tilecount=\"{}\" columns=\"{}\" objectalignment=\"topleft\"><image source=\"{}\" width=\"{}\" height=\"{size}\"/></tileset>",xml(s(d,"identifier")),values.len(),values.len(),xml(filename),image.width()));
+                gid += values.len() as u32;
+            }
+            let mut layers = String::new();
+            let mut layer_id = 1;
+            let object_id = 1;
+            for li in arr(&l["layerInstances"]).iter().rev() {
+                let def = self.layer_def(n(li, "layerDefUid")).unwrap_or(li);
+                if n(li, "__gridSize") != grid {
+                    continue;
+                }
+                let cw = n(li, "__cWid").max(0) as usize;
+                let ch = n(li, "__cHei").max(0) as usize;
+                let typ = s(li, "__type");
+                let name = s(li, "__identifier");
+                let opacity = num(def, "displayOpacity", 1.);
+                if typ == "Entities" {
+                    layers.push_str(&format!(
+                        "<objectgroup id=\"{layer_id}\" name=\"{}\">",
+                        xml(name)
+                    ));
+                    layer_id += 1;
+                    for e in arr(&li["entityInstances"]) {
+                        let ed = self.definition("entities", n(e, "defUid")).unwrap_or(e);
+                        let x = e["px"][0].as_i64().unwrap_or(0);
+                        let y = e["px"][1].as_i64().unwrap_or(0);
+                        let width = n(ed, "width");
+                        let height = n(ed, "height");
+                        let ex = x - (num(ed, "pivotX", 0.) * width as f64).round() as i64;
+                        let ey = y - (num(ed, "pivotY", 0.) * height as f64).round() as i64;
+                        layers.push_str(&format!("<object name=\"{}\" type=\"{}\" x=\"{ex}\" y=\"{ey}\" width=\"{width}\" height=\"{height}\"><properties>",xml(s(e,"__identifier")),xml(s(e,"__identifier"))));
+                        for (k, v) in [
+                            ("__anchorX", x),
+                            ("__anchorY", y),
+                            ("__cx", (x - i64::from(num(ed, "pivotX", 0.) == 1.)) / grid),
+                            ("__cy", (y - i64::from(num(ed, "pivotY", 0.) == 1.)) / grid),
+                        ] {
+                            layers.push_str(&property(k, Some("int"), &json!(v)));
+                        }
+                        for f in arr(&e["fieldInstances"]) {
+                            let raw_type = s(f, "__type")
+                                .trim_start_matches("Array<")
+                                .trim_end_matches('>');
+                            let kind = match raw_type {
+                                "Int" => Some("int"),
+                                "Float" => Some("float"),
+                                "Bool" => Some("bool"),
+                                "Color" => Some("color"),
+                                "FilePath" => Some("file"),
+                                "Tile" => Some("tile"),
+                                _ => None,
+                            };
+                            let values = if let Some(a) = f["__value"].as_array() {
+                                a.clone()
+                            } else {
+                                vec![f["__value"].clone()]
+                            };
+                            for (i, v) in values.iter().enumerate() {
+                                let name = if values.len() > 1 {
+                                    format!("{}_{i}", s(f, "__identifier"))
+                                } else {
+                                    s(f, "__identifier").to_owned()
+                                };
+                                let v = match raw_type {
+                                    "Color" => json!(format!(
+                                        "#ff{}",
+                                        v.as_str().unwrap_or("#000000").trim_start_matches('#')
+                                    )),
+                                    "EntityRef" => v["entityIid"].clone(),
+                                    "Point" if !v.is_null() => {
+                                        json!(format!("{},{}", n(v, "cx"), n(v, "cy")))
+                                    }
+                                    "Tile" if !v.is_null() => json!(format!(
+                                        "{},{},{},{}",
+                                        n(v, "x"),
+                                        n(v, "y"),
+                                        n(v, "w"),
+                                        n(v, "h")
+                                    )),
+                                    "String" | "Multilines" | "FilePath" => v
+                                        .as_str()
+                                        .map(|v| {
+                                            json!(v.replace("\\\\", "\\").replace("\\n", "\n"))
+                                        })
+                                        .unwrap_or(Value::Null),
+                                    _ => v.clone(),
+                                };
+                                layers.push_str(&property(&name, kind, &v));
+                            }
+                        }
+                        layers.push_str("</properties></object>");
+                    }
+                    layers.push_str("</objectgroup>");
+                    continue;
+                }
+                if typ == "IntGrid" {
+                    let base = *gids.get(&n(li, "layerDefUid")).unwrap_or(&1);
+                    let values: Vec<u32> = (0..cw * ch)
+                        .map(|i| {
+                            let v = arr(&li["intGridCsv"])
+                                .get(i)
+                                .and_then(Value::as_i64)
+                                .unwrap_or(0);
+                            if v > 0 { base + v as u32 - 1 } else { 0 }
+                        })
+                        .collect();
+                    let name = if li["__tilesetDefUid"].is_number() {
+                        format!("{name}_values")
+                    } else {
+                        name.to_owned()
+                    };
+                    layers.push_str(&tmx_layer(layer_id, &name, cw, ch, opacity, &values));
+                    layer_id += 1;
+                }
+                let tiles = if typ == "Tiles" {
+                    arr(&li["gridTiles"])
+                } else {
+                    arr(&li["autoLayerTiles"])
+                };
+                let td_uid = li["__tilesetDefUid"]
+                    .as_i64()
+                    .or_else(|| def["tilesetDefUid"].as_i64());
+                if let Some(base) = td_uid.and_then(|uid| gids.get(&uid)) {
+                    let mut stacks: Vec<Vec<u32>> = Vec::new();
+                    for t in tiles {
+                        let x = t["px"][0].as_i64().unwrap_or(0) / grid;
+                        let y = t["px"][1].as_i64().unwrap_or(0) / grid;
+                        if x < 0 || y < 0 || x >= cw as i64 || y >= ch as i64 {
+                            continue;
+                        }
+                        let coord = x as usize + y as usize * cw;
+                        let mut index = 0;
+                        while index < stacks.len() && stacks[index][coord] != 0 {
+                            index += 1;
+                        }
+                        if index == stacks.len() {
+                            stacks.push(vec![0; cw * ch]);
+                        }
+                        let f = n(t, "f");
+                        stacks[index][coord] = (*base + n(t, "t") as u32)
+                            | if f & 1 != 0 { 0x80000000 } else { 0 }
+                            | if f & 2 != 0 { 0x40000000 } else { 0 };
+                    }
+                    for (i, data) in stacks.iter().enumerate() {
+                        let name = if stacks.len() > 1 {
+                            format!("{name}_{}", i + 1)
+                        } else {
+                            name.to_owned()
+                        };
+                        layers.push_str(&tmx_layer(layer_id, &name, cw, ch, opacity, data));
+                        layer_id += 1;
+                    }
+                }
+            }
+            let xml = format!(
+                "<map version=\"1.4\" tiledversion=\"1.4.2\" orientation=\"orthogonal\" renderorder=\"right-down\" compressionlevel=\"0\" width=\"{}\" height=\"{}\" tilewidth=\"{grid}\" tileheight=\"{grid}\" infinite=\"0\" backgroundcolor=\"{}\" nextlayerid=\"{layer_id}\" nextobjectid=\"{object_id}\">{tilesets}{layers}</map>",
+                (n(l, "pxWid") + grid - 1) / grid,
+                (n(l, "pxHei") + grid - 1) / grid,
+                xml(s(l, "__bgColor"))
+            );
+            let filename = if keys.len() > 1 {
+                format!("{:04}_{}.tmx", index + 1, safe_name(s(l, "identifier"))?)
+            } else {
+                format!("{}.tmx", safe_name(s(l, "identifier"))?)
+            };
+            out.push((dir.join(&filename), xml.into_bytes()));
+            maps.push(json!({"fileName":filename,"x":l["worldX"],"y":l["worldY"]}));
+        }
+        let stem = self
+            .path
+            .as_ref()
+            .and_then(|p| p.file_stem())
+            .and_then(|s| s.to_str())
+            .unwrap_or("Untitled");
+        out.push((
+            dir.join(format!("{stem}.world")),
+            bytes(&json!({"maps":maps,"type":"world"}))?,
+        ));
+        publish(out)
+    }
+    /// This preserves upstream's experimental/incomplete GMS2 schema, including empty entity layers.
+    pub fn export_gamemaker(&self, dir: impl AsRef<Path>) -> Result<Vec<PathBuf>> {
+        let dir = dir.as_ref();
+        let mut out = Vec::new();
+        for td in arr(&self.json["defs"]["tilesets"]) {
+            out.push((dir.join(format!("{}.yy",safe_name(s(td,"identifier"))?)),bytes(&json!({"name":td["identifier"],"tags":[],"resourceType":"GMRTileset","resourceVersion":"1.0"}))?));
+        }
+        for key in self.level_keys() {
+            let l = self
+                .level(key)
+                .ok_or_else(|| Error::Invalid("missing external level".into()))?;
+            let mut layers = Vec::new();
+            for (i, li) in arr(&l["layerInstances"]).iter().enumerate() {
+                let typ = s(li, "__type");
+                let mut layer = json!({"resourceVersion":"1.0","resourceType":match typ{"IntGrid"=>"?","Entities"=>"GMRInstanceLayer",_=>"GMRTileLayer"},"name":li["__identifier"],"tags":[],"properties":[],"layers":[],"gridX":li["__gridSize"],"gridY":li["__gridSize"],"effectType":null,"effectEnabled":true,"userdefinedDepth":false,"inheritLayerDepth":false,"hierarchyFrozen":false,"inheritLayerSettings":false,"depth":i*100,"visible":true});
+                if typ == "Entities" {
+                    layer["instances"] = json!([]);
+                }
+                if typ == "Tiles" {
+                    let cw = n(li, "__cWid").max(0) as usize;
+                    let ch = n(li, "__cHei").max(0) as usize;
+                    let grid = n(li, "__gridSize").max(1);
+                    let mut tiles = vec![2147483648u32; cw * ch];
+                    for t in arr(&li["gridTiles"]) {
+                        let x = t["px"][0].as_i64().unwrap_or(0) / grid;
+                        let y = t["px"][1].as_i64().unwrap_or(0) / grid;
+                        if x >= 0 && y >= 0 && (x as usize) < cw && (y as usize) < ch {
+                            let cell = &mut tiles[x as usize + y as usize * cw];
+                            if *cell == 2147483648 {
+                                *cell = n(t, "t") as u32;
+                            }
+                        }
+                    }
+                    layer["tiles"] =
+                        json!({"SerialiseWidth":cw,"SerialiseHeight":ch,"TileSerialiseData":tiles});
+                    layer["x"] = json!(n(li, "__pxTotalOffsetX"));
+                    layer["y"] = json!(n(li, "__pxTotalOffsetY"));
+                    let td = li["__tilesetDefUid"]
+                        .as_i64()
+                        .and_then(|uid| self.tileset(uid))
+                        .ok_or_else(|| Error::Invalid("GMS tile layer has no tileset".into()))?;
+                    layer["tilesetId"] =
+                        json!({"name":td["identifier"],"path":format!("{}.yy",s(td,"identifier"))});
+                }
+                layers.push(layer);
+            }
+            let room = json!({"name":l["identifier"],"resourceType":"GMRoom","resourceVersion":"1.0","tags":[],"parent":{"name":"","path":""},"isDnd":false,"inheritCode":false,"inheritLayers":false,"inheritCreationOrder":false,"instanceCreationOrder":[],"volume":1,"creationCodeFile":"","sequenceId":null,"layers":layers,"views":[],"physicsSettings":{"inheritPhysicsSettings":false,"PhysicsWorld":false,"PhysicsWorldGravityX":0,"PhysicsWorldGravityY":10,"PhysicsWorldPixToMetres":0.1},"roomSettings":{"Width":l["pxWid"],"Height":l["pxHei"],"persistent":false,"inheritRoomSettings":false},"viewSettings":{"enableViews":false,"inheritViewSettings":false,"clearDisplayBuffer":true,"clearViewBackground":false}});
+            out.push((
+                dir.join(format!("{}.yy", safe_name(s(l, "identifier"))?)),
+                bytes(&room)?,
+            ));
+        }
+        publish(out)
+    }
+}
+fn tmx_layer(id: i32, name: &str, w: usize, h: usize, opacity: f64, data: &[u32]) -> String {
+    format!(
+        "<layer id=\"{id}\" name=\"{}\" width=\"{w}\" height=\"{h}\" opacity=\"{opacity}\"><data encoding=\"csv\">{}</data></layer>",
+        xml(name),
+        data.iter()
+            .map(u32::to_string)
+            .collect::<Vec<_>>()
+            .join(",")
+    )
+}
+
+/// Decode native project atlases; Aseprite resources use their first animation frame.
+pub fn load_image_rgba(path: &Path) -> Result<RgbaImage> {
+    if path
+        .extension()
+        .and_then(|s| s.to_str())
+        .is_some_and(|e| e.eq_ignore_ascii_case("ase") || e.eq_ignore_ascii_case("aseprite"))
+    {
+        let ase = asefile::AsepriteFile::read_file(path)
+            .map_err(|e| Error::Invalid(format!("{}: {e}", path.display())))?;
+        let frame = ase.frame(0).image();
+        RgbaImage::from_raw(frame.width(), frame.height(), frame.into_raw())
+            .ok_or_else(|| Error::Invalid("invalid Aseprite frame dimensions".into()))
+    } else {
+        image::open(path)
+            .map(|i| i.to_rgba8())
+            .map_err(|e| Error::Invalid(format!("{}: {e}", path.display())))
+    }
+}
+pub fn embedded_atlas() -> Result<RgbaImage> {
+    image::load_from_memory(include_bytes!(
+        "../../../assets/embedAtlas/finalbossblues-icons_full_16.png"
+    ))
+    .map(|i| i.to_rgba8())
+    .map_err(|e| Error::Invalid(e.to_string()))
+}

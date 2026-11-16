@@ -1,0 +1,201 @@
+{
+  "method": "original CDP PNG converted to sRGB using macOS ColorSync; x=1500, y=436-distance; native PNG already sRGB",
+  "samples": [
+    {
+      "distance": 1,
+      "source": [
+        134,
+        134,
+        140
+      ],
+      "native": [
+        134,
+        134,
+        141
+      ]
+    },
+    {
+      "distance": 2,
+      "source": [
+        75,
+        75,
+        96
+      ],
+      "native": [
+        75,
+        75,
+        96
+      ]
+    },
+    {
+      "distance": 4,
+      "source": [
+        80,
+        79,
+        100
+      ],
+      "native": [
+        79,
+        79,
+        101
+      ]
+    },
+    {
+      "distance": 8,
+      "source": [
+        85,
+        84,
+        109
+      ],
+      "native": [
+        85,
+        85,
+        108
+      ]
+    },
+    {
+      "distance": 12,
+      "source": [
+        93,
+        92,
+        117
+      ],
+      "native": [
+        91,
+        91,
+        116
+      ]
+    },
+    {
+      "distance": 16,
+      "source": [
+        96,
+        97,
+        124
+      ],
+      "native": [
+        97,
+        97,
+        123
+      ]
+    },
+    {
+      "distance": 20,
+      "source": [
+        102,
+        103,
+        130
+      ],
+      "native": [
+        102,
+        102,
+        130
+      ]
+    },
+    {
+      "distance": 24,
+      "source": [
+        106,
+        107,
+        135
+      ],
+      "native": [
+        106,
+        106,
+        135
+      ]
+    },
+    {
+      "distance": 32,
+      "source": [
+        113,
+        112,
+        144
+      ],
+      "native": [
+        113,
+        113,
+        144
+      ]
+    },
+    {
+      "distance": 40,
+      "source": [
+        117,
+        117,
+        149
+      ],
+      "native": [
+        117,
+        117,
+        149
+      ]
+    },
+    {
+      "distance": 48,
+      "source": [
+        119,
+        119,
+        152
+      ],
+      "native": [
+        119,
+        119,
+        152
+      ]
+    },
+    {
+      "distance": 56,
+      "source": [
+        121,
+        121,
+        153
+      ],
+      "native": [
+        121,
+        121,
+        154
+      ]
+    },
+    {
+      "distance": 64,
+      "source": [
+        121,
+        121,
+        154
+      ],
+      "native": [
+        121,
+        121,
+        154
+      ]
+    },
+    {
+      "distance": 72,
+      "source": [
+        121,
+        121,
+        154
+      ],
+      "native": [
+        121,
+        121,
+        154
+      ]
+    },
+    {
+      "distance": 80,
+      "source": [
+        121,
+        121,
+        154
+      ],
+      "native": [
+        121,
+        121,
+        154
+      ]
+    }
+  ],
+  "maximumChannelDifference": 2
+}

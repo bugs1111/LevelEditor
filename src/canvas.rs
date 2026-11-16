@@ -1,9 +1,30 @@
+#[path = "render_blur.rs"]
+mod blur;
+pub fn configure_gpu(state: Option<&eframe::egui_wgpu::RenderState>) {
+    blur::configure(state);
+}
+#[path = "bitmap_font.rs"]
+mod bitmap_font;
+#[path = "render_entities.rs"]
+mod entities;
+#[path = "render_fields.rs"]
+mod fields;
+#[path = "render_geometry.rs"]
+mod geometry;
+#[path = "render_ghost.rs"]
+mod ghost;
+#[path = "render_outline.rs"]
+mod outline;
+#[path = "render_shadow.rs"]
+mod shadow;
 use crate::{
     assets::Assets,
     theme,
     viewport::{Viewport, tile_uv},
 };
-use eframe::egui::{self, Color32, FontId, Mesh, Painter, Pos2, Rect, Stroke, StrokeKind};
+use eframe::egui::{self, Color32, Mesh, Painter, Pos2, Rect, Stroke, StrokeKind};
+pub(crate) use entities::entity_smart_color;
+pub(crate) use fields::draw_entity_ref_link;
 use ldtk_core::{LevelKey, Project};
 use serde_json::Value;
 use std::{collections::HashSet, path::PathBuf};
@@ -111,6 +132,7 @@ fn screen_rect(view: &Viewport, canvas: Rect, bounds: [f32; 4]) -> Rect {
     Rect::from_min_max(a.into(), b.into())
 }
 
+#[derive(Clone)]
 pub struct RenderOptions<'a> {
     pub selected: LevelKey,
     pub active_layer: usize,
@@ -119,6 +141,860 @@ pub struct RenderOptions<'a> {
     pub details: bool,
     pub single_layer: bool,
     pub hidden: &'a HashSet<i64>,
+    pub render_auto: bool,
+    pub tile_tags: bool,
+    pub ui_scale: f32,
+    pub single_layer_intensity: f32,
+    pub fields_table: bool,
+    pub world_depth: Option<i64>,
+    pub nearby_dist: f32,
+    pub parallax: bool,
+    pub rulers: bool,
+    pub guides: bool,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(super) struct Transform {
+    pub origin: [f32; 2],
+    pub scale: f32,
+}
+impl Transform {
+    pub fn point(self, p: [f32; 2]) -> [f32; 2] {
+        [
+            self.origin[0] + p[0] * self.scale,
+            self.origin[1] + p[1] * self.scale,
+        ]
+    }
+    pub fn rect(self, r: Rect) -> [f32; 4] {
+        let a = self.point(r.min.into());
+        let b = self.point(r.max.into());
+        [a[0], a[1], b[0], b[1]]
+    }
+    pub fn offset(self, p: [f32; 2]) -> Self {
+        Self {
+            origin: self.point(p),
+            scale: self.scale,
+        }
+    }
+}
+pub(super) fn values(value: &Value) -> &[Value] {
+    value.as_array().map_or(&[], Vec::as_slice)
+}
+pub(super) fn pair(value: &Value, fallback: [f32; 2]) -> [f32; 2] {
+    [
+        value[0].as_f64().map_or(fallback[0], |v| v as f32),
+        value[1].as_f64().map_or(fallback[1], |v| v as f32),
+    ]
+}
+pub(super) fn lighten(c: Color32, ratio: f32) -> Color32 {
+    Color32::from_rgba_unmultiplied(
+        (c.r() as f32 + (255 - c.r()) as f32 * ratio) as u8,
+        (c.g() as f32 + (255 - c.g()) as f32 * ratio) as u8,
+        (c.b() as f32 + (255 - c.b()) as f32 * ratio) as u8,
+        c.a(),
+    )
+}
+pub(super) fn darken(c: Color32, ratio: f32) -> Color32 {
+    Color32::from_rgba_unmultiplied(
+        (c.r() as f32 * (1. - ratio)) as u8,
+        (c.g() as f32 * (1. - ratio)) as u8,
+        (c.b() as f32 * (1. - ratio)) as u8,
+        c.a(),
+    )
+}
+fn layer_transform_for(
+    level: &Value,
+    layer: &Value,
+    def: &Value,
+    origin: [f32; 2],
+    view: &Viewport,
+    parallax: bool,
+) -> Transform {
+    let factor = [
+        number(def, "parallaxFactorX", 0.),
+        number(def, "parallaxFactorY", 0.),
+    ];
+    let scaling = def["parallaxScaling"].as_bool().unwrap_or(false);
+    let scale = if scaling && parallax {
+        (1. - factor[0]).max(0.01)
+    } else {
+        1.
+    };
+    let mut offset = origin;
+    if parallax {
+        for axis in 0..2 {
+            let half = if scaling {
+                0.
+            } else {
+                (number(level, if axis == 0 { "pxWid" } else { "pxHei" }, 0.)
+                    - number(layer, if axis == 0 { "pxOffsetX" } else { "pxOffsetY" }, 0.))
+                    * 0.5
+            };
+            offset[axis] += (view.center[axis] - origin[axis] - half) * factor[axis];
+        }
+    }
+    Transform {
+        origin: offset,
+        scale,
+    }
+}
+fn editing_transform(
+    project: &Project,
+    key: LevelKey,
+    index: usize,
+    view: &Viewport,
+) -> Option<Transform> {
+    let level = project.level(key)?;
+    let layer = project.layer(key, index)?;
+    let def = project.layer_def(layer["layerDefUid"].as_i64()?)?;
+    Some(
+        layer_transform_for(level, layer, def, [0.; 2], view, true).offset([
+            number(layer, "__pxTotalOffsetX", 0.),
+            number(layer, "__pxTotalOffsetY", 0.),
+        ]),
+    )
+}
+pub fn world_to_layer(
+    project: &Project,
+    key: LevelKey,
+    index: usize,
+    view: &Viewport,
+    world: [f32; 2],
+) -> [f32; 2] {
+    editing_transform(project, key, index, view).map_or(world, |t| {
+        [
+            (world[0] - t.origin[0]) / t.scale,
+            (world[1] - t.origin[1]) / t.scale,
+        ]
+    })
+}
+pub fn layer_to_world(
+    project: &Project,
+    key: LevelKey,
+    index: usize,
+    view: &Viewport,
+    local: [f32; 2],
+) -> [f32; 2] {
+    editing_transform(project, key, index, view).map_or(local, |t| t.point(local))
+}
+pub(super) struct Scene<'a> {
+    pub ctx: &'a egui::Context,
+    pub project: &'a Project,
+    pub view: &'a Viewport,
+    pub canvas: Rect,
+    pub options: &'a RenderOptions<'a>,
+    pub assets: &'a mut Assets,
+    entity_index: std::cell::OnceCell<fields::EntityIndex<'a>>,
+    file_states: std::cell::RefCell<std::collections::HashMap<PathBuf, bool>>,
+}
+impl Scene<'_> {
+    fn world_background(&mut self, painter: &Painter) {
+        let base = theme::color(text(&self.project.json, "bgColor", "#292c39"));
+        let target = [129., 135., 189.];
+        let delta = -(0.036 / (self.view.zoom * self.ctx.pixels_per_point())).clamp(0., 1.) * 255.;
+        let channels = [base.r(), base.g(), base.b()].map(|v| v as f32);
+        let c = Color32::from_rgb(
+            (channels[0] * 0.15 + target[0] * 0.85 + delta).clamp(0., 255.) as u8,
+            (channels[1] * 0.15 + target[1] * 0.85 + delta).clamp(0., 255.) as u8,
+            (channels[2] * 0.15 + target[2] * 0.85 + delta).clamp(0., 255.) as u8,
+        );
+        painter.rect_filled(self.canvas, 0., c.gamma_multiply(0.3));
+        if let Some(texture) = self.assets.builtin(
+            self.ctx,
+            "world-large-stripes",
+            include_bytes!("../assets/img/world-large-stripes.png"),
+        ) {
+            let size = texture.size_vec2() / self.ctx.pixels_per_point();
+            let mut mesh = Mesh::with_texture(texture.id());
+            let mut y = self.canvas.top();
+            while y < self.canvas.bottom() {
+                let mut x = self.canvas.left();
+                while x < self.canvas.right() {
+                    let dst = Rect::from_min_size(egui::pos2(x, y), size).intersect(self.canvas);
+                    let uv = Rect::from_min_size(Pos2::ZERO, dst.size() / size);
+                    mesh.add_rect_with_uv(dst, uv, Color32::WHITE.gamma_multiply(0.15));
+                    x += size.x;
+                }
+                y += size.y;
+            }
+            painter.add(egui::Shape::mesh(mesh));
+        }
+    }
+    fn world_title(&mut self, painter: &Painter) {
+        if !self.options.details {
+            return;
+        }
+        let b = bounds(self.project, self.options.selected, true);
+        if !b.iter().all(|v| v.is_finite()) {
+            return;
+        }
+        let world = self
+            .options
+            .selected
+            .world
+            .and_then(|i| self.project.json["worlds"].get(i))
+            .unwrap_or(&self.project.json);
+        let multiple = values(&self.project.json["flags"])
+            .iter()
+            .any(|v| v == "MultiWorlds");
+        let file = self
+            .project
+            .path
+            .as_ref()
+            .and_then(|p| p.file_stem())
+            .and_then(|s| s.to_str())
+            .unwrap_or("World");
+        let label = if multiple {
+            text(world, "identifier", file)
+        } else {
+            file
+        };
+        let size = bitmap_font::title_measure(label);
+        let scale = self.view.zoom * (8f32).min((b[2] - b[0]) / size.x.max(1.) * 2.);
+        let anchor = self.point([(b[0] + b[2]) * 0.5, b[1]])
+            - egui::vec2(
+                size.x * scale * 0.5,
+                size.y * scale + 64. / self.ctx.pixels_per_point(),
+            );
+        bitmap_font::title_paint(
+            self.ctx,
+            painter,
+            self.assets,
+            anchor,
+            label,
+            lighten(
+                theme::color(text(&self.project.json, "bgColor", "#292c39")),
+                0.3,
+            ),
+            scale,
+        );
+    }
+    fn world_grid(&self, painter: &Painter) {
+        let settings = self
+            .options
+            .selected
+            .world
+            .and_then(|i| self.project.json["worlds"].get(i))
+            .unwrap_or(&self.project.json);
+        let layout = text(settings, "worldLayout", "Free");
+        let zoom = self.view.zoom;
+        let (spacing, alpha) = if layout == "GridVania" && zoom >= 0.1 && self.options.details {
+            (
+                [
+                    number(settings, "worldGridWidth", 256.),
+                    number(settings, "worldGridHeight", 256.),
+                ],
+                0.1 + 0.2 * ((zoom - 0.1) / 0.3).min(1.),
+            )
+        } else if layout == "Free" && zoom >= 0.5 && self.options.grid {
+            let grid = values(&self.project.json["defs"]["layers"])
+                .iter()
+                .filter(|d| d["type"] != "Entities")
+                .map(|d| number(d, "gridSize", 16.))
+                .reduce(f32::min)
+                .unwrap_or(number(&self.project.json, "defaultGridSize", 16.));
+            ([grid, grid], 0.5 * ((zoom - 0.5) / 0.5).min(1.))
+        } else {
+            ([0., 0.], 0.)
+        };
+        let base = theme::color(text(&self.project.json, "bgColor", "#292c39"));
+        let target = Color32::from_rgb(129, 135, 189);
+        let color = Color32::from_rgb(
+            (base.r() as f32 * 0.15 + target.r() as f32 * 0.85) as u8,
+            (base.g() as f32 * 0.15 + target.g() as f32 * 0.85) as u8,
+            (base.b() as f32 * 0.15 + target.b() as f32 * 0.85) as u8,
+        )
+        .gamma_multiply(alpha);
+        let origin = self.point([0., 0.]);
+        for (axis, spacing) in spacing.iter().enumerate() {
+            let step = spacing * zoom;
+            if step < 2. {
+                continue;
+            }
+            let start = if axis == 0 {
+                self.canvas.left()
+            } else {
+                self.canvas.top()
+            };
+            let end = if axis == 0 {
+                self.canvas.right()
+            } else {
+                self.canvas.bottom()
+            };
+            let off = if axis == 0 { origin.x } else { origin.y };
+            let mut p = start + (off - start).rem_euclid(step);
+            while p <= end {
+                let line = if axis == 0 {
+                    [
+                        egui::pos2(p, self.canvas.top()),
+                        egui::pos2(p, self.canvas.bottom()),
+                    ]
+                } else {
+                    [
+                        egui::pos2(self.canvas.left(), p),
+                        egui::pos2(self.canvas.right(), p),
+                    ]
+                };
+                painter.line_segment(line, Stroke::new(1.0_f32, color));
+                p += step;
+            }
+        }
+        if self.options.details && matches!(layout, "Free" | "GridVania") {
+            painter.line_segment(
+                [
+                    egui::pos2(self.canvas.left(), origin.y),
+                    egui::pos2(self.canvas.right(), origin.y),
+                ],
+                Stroke::new(3.0_f32, Color32::WHITE.gamma_multiply(0.15)),
+            );
+            painter.line_segment(
+                [
+                    egui::pos2(origin.x, self.canvas.top()),
+                    egui::pos2(origin.x, self.canvas.bottom()),
+                ],
+                Stroke::new(3.0_f32, Color32::WHITE.gamma_multiply(0.15)),
+            );
+        }
+    }
+    fn level_identifier(&mut self, painter: &Painter, level: &Value, rect: Rect) {
+        let label = text(level, "identifier", "Level");
+        let color = self.level_color(level);
+        let world = self
+            .options
+            .selected
+            .world
+            .and_then(|i| self.project.json["worlds"].get(i))
+            .unwrap_or(&self.project.json);
+        let layout = text(world, "worldLayout", "Free");
+        let text_size = bitmap_font::measure(self.ctx, label, 1., f32::INFINITY);
+        let scale = if matches!(layout, "Free" | "GridVania") {
+            (rect.width() / (text_size.x + 12.)).min(1.)
+        } else {
+            1.
+        };
+        let size = (text_size + egui::vec2(12., 0.)) * scale;
+        let min = if self.options.world {
+            match layout {
+                "LinearHorizontal" => rect.min + egui::vec2(rect.width() * 0.3, -size.y),
+                "LinearVertical" => egui::pos2(
+                    rect.left() - size.x - 30. * self.view.zoom,
+                    rect.center().y - size.y * 0.5,
+                ),
+                _ => rect.min + egui::Vec2::splat(2. * self.view.zoom),
+            }
+        } else {
+            rect.center_top() - egui::vec2(size.x * 0.5, size.y + 12. * self.view.zoom)
+        };
+        let mut painter = painter.clone();
+        if self.options.world {
+            painter.multiply_opacity(((self.view.zoom - 0.02) / 0.02).clamp(0., 1.));
+        }
+        let angle: f32 = if self.options.world && layout == "LinearHorizontal" {
+            -0.4
+        } else {
+            0.
+        };
+        let rotate = |v: egui::Vec2| {
+            let (sin, cos) = angle.sin_cos();
+            egui::vec2(v.x * cos - v.y * sin, v.x * sin + v.y * cos)
+        };
+        painter.add(egui::Shape::convex_polygon(
+            vec![
+                min,
+                min + rotate(egui::vec2(size.x, 0.)),
+                min + rotate(size),
+                min + rotate(egui::vec2(0., size.y)),
+            ],
+            darken(color, 0.3).gamma_multiply(if level["useAutoIdentifier"] == true {
+                0.4
+            } else {
+                1.
+            }),
+            Stroke::NONE,
+        ));
+        bitmap_font::paint_rotated(
+            self.ctx,
+            &painter,
+            self.assets,
+            min + rotate(egui::vec2(6., -2.) * scale),
+            label,
+            lighten(color, 0.5),
+            scale,
+            f32::INFINITY,
+            false,
+            angle,
+        );
+    }
+    pub fn screen(&self, r: [f32; 4]) -> Rect {
+        screen_rect(self.view, self.canvas, r)
+    }
+    pub fn point(&self, p: [f32; 2]) -> Pos2 {
+        self.view
+            .to_screen(p, self.canvas.min.into(), self.canvas.size().into())
+            .into()
+    }
+    pub fn texture(&mut self, tileset: &Value) -> Option<egui::TextureHandle> {
+        match tileset["relPath"].as_str() {
+            Some(path) => self
+                .assets
+                .texture(self.ctx, &asset_path(self.project, path)),
+            None if !tileset["embedAtlas"].is_null() => self.assets.embedded(self.ctx),
+            None => None,
+        }
+    }
+    fn layer_transform(
+        &self,
+        level: &Value,
+        layer: &Value,
+        def: &Value,
+        origin: [f32; 2],
+    ) -> Transform {
+        layer_transform_for(level, layer, def, origin, self.view, self.options.parallax)
+    }
+    fn layer_alpha(&self, layer: &Value, def: &Value, active: bool) -> f32 {
+        let base = number(def, "displayOpacity", number(layer, "__opacity", 1.));
+        base * if active {
+            1.
+        } else {
+            number(def, "inactiveOpacity", 1.)
+                * if self.options.single_layer {
+                    0.8 - 0.75 * self.options.single_layer_intensity.clamp(0., 1.)
+                } else {
+                    1.
+                }
+        }
+    }
+    fn tile_tint(&self, alpha: f32, inactive: bool) -> Color32 {
+        let mut color = if self.options.tile_tags {
+            Color32::from_rgb(204, 204, 204)
+        } else {
+            Color32::WHITE
+        };
+        if inactive && self.options.single_layer && !blur::available() {
+            let k = self.options.single_layer_intensity.clamp(0., 1.);
+            color = Color32::from_rgb(
+                (color.r() as f32 * (1. - k) + 140. * k) as u8,
+                (color.g() as f32 * (1. - k) + 153. * k) as u8,
+                (color.b() as f32 * (1. - k) + 193. * k) as u8,
+            );
+        }
+        color.gamma_multiply(alpha * if self.options.tile_tags { 0.5 } else { 1. })
+    }
+    fn background(&mut self, painter: &Painter, level: &Value, origin: [f32; 2]) {
+        let Some(path) = level["bgRelPath"].as_str() else {
+            return;
+        };
+        let Some(texture) = self
+            .assets
+            .texture(self.ctx, &asset_path(self.project, path))
+        else {
+            return;
+        };
+        let size = texture.size_vec2();
+        let bounds = Rect::from_min_size(
+            origin.into(),
+            egui::vec2(number(level, "pxWid", 256.), number(level, "pxHei", 256.)),
+        );
+        let src = Rect::from_min_size(Pos2::ZERO, size);
+        let pivot = [
+            number(level, "bgPivotX", 0.5),
+            number(level, "bgPivotY", 0.5),
+        ];
+        let mode = match text(level, "bgPos", "Unscaled") {
+            "Contain" => "FitInside",
+            "Cover" => "Cover",
+            "CoverDirty" => "Stretch",
+            "Repeat" => "Repeat",
+            _ => "FullSizeCropped",
+        };
+        let quads = if mode == "Repeat" {
+            let cropped = size.min(bounds.size());
+            let source = Rect::from_min_size(
+                ((size - cropped) * egui::vec2(pivot[0], pivot[1])).to_pos2(),
+                cropped,
+            );
+            geometry::aligned_repeat(bounds, source, pivot, bounds)
+        } else {
+            let mut quads = geometry::entity_tiles(bounds, src, pivot, mode, [0.; 4]);
+            for q in &mut quads {
+                let off = q.dst.min - bounds.min;
+                let min = bounds.min + egui::vec2(off.x.trunc(), off.y.trunc());
+                q.dst = Rect::from_min_size(min, q.dst.size());
+            }
+            quads
+        };
+        let alpha = if self.options.single_layer && !self.options.world {
+            0.8 - 0.75 * self.options.single_layer_intensity.clamp(0., 1.)
+        } else {
+            1.
+        };
+        let mut mesh = Mesh::with_texture(texture.id());
+        for q in quads {
+            mesh.add_rect_with_uv(
+                self.screen([q.dst.left(), q.dst.top(), q.dst.right(), q.dst.bottom()]),
+                Rect::from_min_max(
+                    (q.src.min.to_vec2() / size).to_pos2(),
+                    (q.src.max.to_vec2() / size).to_pos2(),
+                ),
+                Color32::WHITE.gamma_multiply(alpha),
+            );
+        }
+        painter.add(egui::Shape::mesh(mesh));
+    }
+    fn intgrid(
+        &self,
+        painter: &Painter,
+        layer: &Value,
+        def: &Value,
+        transform: Transform,
+        alpha: f32,
+    ) -> usize {
+        let grid = number(layer, "__gridSize", 16.).max(1.);
+        let width = number(layer, "__cWid", 0.).max(0.) as usize;
+        if width == 0 {
+            return 0;
+        }
+        let cells = values(&layer["intGridCsv"]);
+        let height = cells.len().div_ceil(width);
+        let min = self.view.to_world(
+            painter.clip_rect().min.into(),
+            self.canvas.min.into(),
+            self.canvas.size().into(),
+        );
+        let max = self.view.to_world(
+            painter.clip_rect().max.into(),
+            self.canvas.min.into(),
+            self.canvas.size().into(),
+        );
+        let x0 = (((min[0] - transform.origin[0]) / transform.scale / grid)
+            .floor()
+            .max(0.) as usize)
+            .min(width);
+        let x1 = (((max[0] - transform.origin[0]) / transform.scale / grid)
+            .ceil()
+            .max(0.) as usize)
+            .min(width);
+        let y0 = (((min[1] - transform.origin[1]) / transform.scale / grid)
+            .floor()
+            .max(0.) as usize)
+            .min(height);
+        let y1 = (((max[1] - transform.origin[1]) / transform.scale / grid)
+            .ceil()
+            .max(0.) as usize)
+            .min(height);
+        let mut count = 0;
+        for y in y0..y1 {
+            for x in x0..x1 {
+                let value = cells
+                    .get(x + y * width)
+                    .and_then(Value::as_i64)
+                    .unwrap_or(0);
+                if value == 0 {
+                    continue;
+                }
+                let color = values(&def["intGridValues"])
+                    .iter()
+                    .find(|v| v["value"].as_i64() == Some(value))
+                    .map(|v| theme::color(text(v, "color", "#ffcc00")))
+                    .unwrap_or(theme::ACCENT);
+                painter.rect_filled(
+                    self.screen(transform.rect(Rect::from_min_size(
+                        [x as f32 * grid, y as f32 * grid].into(),
+                        egui::vec2(grid, grid),
+                    ))),
+                    0.,
+                    color.gamma_multiply(alpha),
+                );
+                count += 1;
+            }
+        }
+        count
+    }
+    fn tiles(
+        &mut self,
+        painter: &Painter,
+        layer: &Value,
+        def: &Value,
+        transform: Transform,
+        alpha: f32,
+        active: bool,
+    ) -> usize {
+        self.tiles_in_region(painter, layer, def, transform, alpha, active, None)
+    }
+    #[allow(clippy::too_many_arguments)]
+    fn tiles_in_region(
+        &mut self,
+        painter: &Painter,
+        layer: &Value,
+        def: &Value,
+        transform: Transform,
+        alpha: f32,
+        active: bool,
+        region: Option<Rect>,
+    ) -> usize {
+        let grid = number(layer, "__gridSize", 16.).max(1.);
+        let uid = layer["overrideTilesetUid"]
+            .as_i64()
+            .or_else(|| layer["__tilesetDefUid"].as_i64())
+            .or_else(|| def["tilesetDefUid"].as_i64());
+        let Some(tileset) = uid.and_then(|uid| self.project.tileset(uid)) else {
+            return 0;
+        };
+        let Some(texture) = self.texture(tileset) else {
+            return 0;
+        };
+        let tile_size = number(tileset, "tileGridSize", grid);
+        let atlas = texture.size_vec2();
+        let mut mesh = Mesh::with_texture(texture.id());
+        let mut count = 0;
+        for field in ["autoLayerTiles", "gridTiles"] {
+            if field == "autoLayerTiles" && !self.options.render_auto {
+                continue;
+            }
+            for tile in values(&layer[field]) {
+                if region.is_some_and(|r| {
+                    let px = pair(&tile["px"], [0.; 2]);
+                    px[0] < r.left() || px[0] >= r.right() || px[1] < r.top() || px[1] >= r.bottom()
+                }) {
+                    continue;
+                }
+                let flips = tile["f"].as_i64().unwrap_or(0);
+                let dst = self.screen(transform.rect(geometry::layer_tile_rect(
+                    pair(&tile["px"], [0.; 2]),
+                    grid,
+                    tile_size,
+                    [number(def, "tilePivotX", 0.), number(def, "tilePivotY", 0.)],
+                    flips,
+                    field == "autoLayerTiles",
+                )));
+                if !dst.intersects(painter.clip_rect()) {
+                    continue;
+                }
+                let uv = tile_uv(
+                    pair(&tile["src"], [0.; 2]),
+                    [tile_size; 2],
+                    atlas.into(),
+                    flips,
+                );
+                mesh.add_rect_with_uv(
+                    dst,
+                    Rect::from_min_max(uv[0].into(), uv[1].into()),
+                    self.tile_tint(alpha * number(tile, "a", 1.), !active),
+                );
+                count += 1;
+            }
+        }
+        painter.add(egui::Shape::mesh(mesh));
+        if self.options.tile_tags {
+            self.tile_tags(painter, layer, def, tileset, transform, grid);
+        }
+        count
+    }
+    fn tile_tags(
+        &self,
+        painter: &Painter,
+        layer: &Value,
+        def: &Value,
+        tileset: &Value,
+        transform: Transform,
+        grid: f32,
+    ) {
+        let Some(enum_uid) = tileset["tagsSourceEnumUid"].as_i64() else {
+            return;
+        };
+        let Some(en) = values(&self.project.json["defs"]["enums"])
+            .iter()
+            .chain(values(&self.project.json["defs"]["externalEnums"]))
+            .find(|e| e["uid"] == enum_uid)
+        else {
+            return;
+        };
+        for tile in values(&layer["autoLayerTiles"])
+            .iter()
+            .chain(values(&layer["gridTiles"]))
+        {
+            let mut n = 0.;
+            for value in values(&en["values"]) {
+                if values(&tileset["enumTags"]).iter().any(|tag| {
+                    tag["enumValueId"] == value["id"]
+                        && values(&tag["tileIds"]).contains(&tile["t"])
+                }) {
+                    let px = pair(&tile["px"], [0.; 2]);
+                    let min = [
+                        px[0] + number(def, "tilePivotX", 0.) * grid + n + 0.5,
+                        px[1] + number(def, "tilePivotY", 0.) * grid + n + 0.5,
+                    ];
+                    let r = self.screen(transform.rect(Rect::from_min_size(
+                        min.into(),
+                        egui::vec2(grid - 1. - n * 2., grid - 1. - n * 2.),
+                    )));
+                    painter.rect_stroke(
+                        r,
+                        0.,
+                        Stroke::new(
+                            transform.scale * self.view.zoom,
+                            theme::color(text(value, "color", "#ffcc00")),
+                        ),
+                        StrokeKind::Inside,
+                    );
+                    n += 1.;
+                }
+            }
+        }
+    }
+    fn grid(
+        &self,
+        painter: &Painter,
+        level: &Value,
+        layer: &Value,
+        def: &Value,
+        transform: Transform,
+    ) {
+        let w = number(level, "pxWid", 256.);
+        let h = number(level, "pxHei", 256.);
+        let grid = number(layer, "__gridSize", 16.).max(1.);
+        let viewport_min = self.view.to_world(
+            painter.clip_rect().min.into(),
+            self.canvas.min.into(),
+            self.canvas.size().into(),
+        );
+        let viewport_max = self.view.to_world(
+            painter.clip_rect().max.into(),
+            self.canvas.min.into(),
+            self.canvas.size().into(),
+        );
+        for (axis, limit) in [(0, w), (1, h)] {
+            for (step, alpha) in [
+                (grid, 0.07),
+                (
+                    if self.options.guides {
+                        number(
+                            def,
+                            if axis == 0 {
+                                "guideGridWid"
+                            } else {
+                                "guideGridHei"
+                            },
+                            0.,
+                        )
+                    } else {
+                        0.
+                    },
+                    0.33,
+                ),
+            ] {
+                if step <= 1. || step * self.view.zoom * transform.scale < 4. {
+                    continue;
+                }
+                let start =
+                    (((viewport_min[axis] - transform.origin[axis]) / transform.scale / step)
+                        .floor()
+                        .max(0.)) as i32;
+                let end = (((viewport_max[axis] - transform.origin[axis]) / transform.scale / step)
+                    .ceil()
+                    .min(limit / step)) as i32;
+                for i in start..=end {
+                    let p = i as f32 * step;
+                    let (a, b) = if axis == 0 {
+                        ([p, 0.], [p, h])
+                    } else {
+                        ([0., p], [w, p])
+                    };
+                    painter.line_segment(
+                        [
+                            self.point(transform.point(a)),
+                            self.point(transform.point(b)),
+                        ],
+                        Stroke::new(1.0_f32, Color32::WHITE.gamma_multiply(alpha)),
+                    );
+                }
+            }
+        }
+    }
+    fn rulers(
+        &mut self,
+        painter: &Painter,
+        level: &Value,
+        layer: Option<&Value>,
+        origin: [f32; 2],
+    ) {
+        let w = number(level, "pxWid", 256.);
+        let h = number(level, "pxHei", 256.);
+        let b = self.screen([origin[0], origin[1], origin[0] + w, origin[1] + h]);
+        let pad = 4. * self.view.zoom;
+        let bg = theme::color(text(&self.project.json, "bgColor", "#40465B"));
+        let luminance = (0.299 * (bg.r() as f32 / 255.).powi(2)
+            + 0.587 * (bg.g() as f32 / 255.).powi(2)
+            + 0.114 * (bg.b() as f32 / 255.).powi(2))
+        .sqrt();
+        let handle = if luminance >= 0.7 {
+            Color32::BLACK
+        } else {
+            Color32::WHITE
+        };
+        let label_color = lighten(bg, 0.5);
+        for pos in [
+            b.left_top() + egui::vec2(-pad, -pad),
+            b.center_top() + egui::vec2(0., -pad),
+            b.right_top() + egui::vec2(pad, -pad),
+            b.right_center() + egui::vec2(pad, 0.),
+            b.right_bottom() + egui::vec2(pad, pad),
+            b.center_bottom() + egui::vec2(0., pad),
+            b.left_bottom() + egui::vec2(-pad, pad),
+            b.left_center() + egui::vec2(-pad, 0.),
+        ] {
+            painter.circle_filled(pos, 5. * self.view.zoom, handle.gamma_multiply(0.3));
+        }
+        let horizontal = layer.map_or_else(
+            || format!("{w}px"),
+            |l| format!("{} cells / {w}px", number(l, "__cWid", 0.)),
+        );
+        let vertical = layer.map_or_else(
+            || format!("{h}px"),
+            |l| format!("{} cells / {h}px", number(l, "__cHei", 0.)),
+        );
+        let scale = ruler_scale(self.ctx, self.view.zoom, w);
+        let size = bitmap_font::measure(self.ctx, &horizontal, scale, f32::INFINITY);
+        bitmap_font::paint(
+            self.ctx,
+            painter,
+            self.assets,
+            b.center_bottom() + egui::vec2(-size.x * 0.5, 20. * self.view.zoom - size.y * 0.5),
+            &horizontal,
+            label_color,
+            scale,
+            f32::INFINITY,
+            false,
+        );
+        let scale = ruler_scale(self.ctx, self.view.zoom, h);
+        let size = bitmap_font::measure(self.ctx, &vertical, scale, f32::INFINITY);
+        for x in [
+            b.left() - 20. * self.view.zoom,
+            b.right() + 20. * self.view.zoom,
+        ] {
+            bitmap_font::paint_rotated(
+                self.ctx,
+                painter,
+                self.assets,
+                egui::pos2(x - size.y * 0.5, b.center().y + size.x * 0.5),
+                &vertical,
+                label_color,
+                scale,
+                f32::INFINITY,
+                false,
+                -std::f32::consts::FRAC_PI_2,
+            );
+        }
+    }
+}
+
+fn ruler_scale(ctx: &egui::Context, zoom: f32, extent: f32) -> f32 {
+    zoom * ctx.pixels_per_point() * if extent < 200. { 0.5 } else { 1. }
+}
+
+fn level_bounds_distance(a: [f32; 4], b: [f32; 4]) -> f32 {
+    ((a[0] - b[2]).max(0.) + (b[0] - a[2]).max(0.))
+        .max((a[1] - b[3]).max(0.) + (b[1] - a[3]).max(0.))
 }
 
 pub fn draw(
@@ -130,359 +1006,684 @@ pub fn draw(
     options: &RenderOptions<'_>,
     assets: &mut Assets,
 ) -> usize {
-    painter.rect_filled(canvas, 0.0, theme::DARK);
-    let levels = if options.world {
+    painter.rect_filled(
+        canvas,
+        0.,
+        theme::color(text(&project.json, "bgColor", "#292c39")),
+    );
+    blur::next_frame(options.single_layer);
+    let mut scene = Scene {
+        ctx,
+        project,
+        view,
+        canvas,
+        options,
+        assets,
+        entity_index: std::cell::OnceCell::new(),
+        file_states: Default::default(),
+    };
+    if options.world {
+        scene.world_background(painter);
+        scene.world_grid(painter);
+    }
+    let selected_level = project.level(options.selected);
+    let selected_origin = selected_level
+        .map(|l| [number(l, "worldX", 0.), number(l, "worldY", 0.)])
+        .unwrap_or([0.; 2]);
+    let selected_bounds = bounds(project, options.selected, false);
+    let mut levels = if options.world {
         placements(project, options.selected)
     } else {
-        vec![(options.selected, bounds(project, options.selected, false))]
-    };
-    let mut visible_tiles = 0;
-    for (key, bounds) in levels {
-        let rect = screen_rect(view, canvas, bounds);
-        if !rect.intersects(canvas) {
-            continue;
+        let mut near = Vec::new();
+        for (key, mut b) in placements(project, options.selected) {
+            if key == options.selected {
+                continue;
+            }
+            for axis in 0..2 {
+                b[axis] -= selected_origin[axis];
+                b[axis + 2] -= selected_origin[axis];
+            }
+            near.push((key, b));
         }
+        near.sort_by_key(|(key, _)| {
+            std::cmp::Reverse(
+                project
+                    .level(*key)
+                    .and_then(|l| l["worldDepth"].as_i64())
+                    .unwrap_or(0),
+            )
+        });
+        near.push((options.selected, selected_bounds));
+        near
+    };
+    if options.world {
+        levels.sort_by_key(|(key, _)| {
+            std::cmp::Reverse(
+                project
+                    .level(*key)
+                    .and_then(|l| l["worldDepth"].as_i64())
+                    .unwrap_or(0),
+            )
+        });
+    }
+    let mut count = 0;
+    for (key, bounds) in levels {
         let Some(level) = project.level(key) else {
             continue;
         };
+        let depth = level["worldDepth"].as_i64().unwrap_or(0);
+        let active_depth = options
+            .world_depth
+            .or_else(|| selected_level.and_then(|l| l["worldDepth"].as_i64()))
+            .unwrap_or(0);
+        let depth_delta = depth - active_depth;
+        let bg_alpha = if options.world && depth_delta < 0 {
+            0.
+        } else if options.world && depth_delta > 0 {
+            0.6 * if depth_delta >= 2 { 0.3 } else { 1. }
+        } else {
+            1.
+        };
+        let render_alpha = if options.world && depth_delta < 0 {
+            0.
+        } else if options.world && depth_delta > 0 {
+            0.15
+        } else {
+            1.
+        };
+        let outline_alpha = if options.world && depth_delta < 0 {
+            0.45 * if depth_delta <= -2 { 0.3 } else { 1. }
+        } else if options.world && depth_delta > 0 {
+            0.2
+        } else {
+            1.
+        };
+        let nearby = !options.world && key != options.selected;
+        let rect = scene.screen(bounds);
+        if !rect.expand(64.).intersects(canvas) {
+            continue;
+        }
         let origin = [bounds[0], bounds[1]];
-        painter.rect_filled(rect, 0.0, theme::color(text(level, "__bgColor", "#696A79")));
-        let clipped = painter.with_clip_rect(canvas.intersect(rect));
-        draw_background(ctx, &clipped, canvas, project, level, view, origin, assets);
-        if let Some(layers) = level["layerInstances"].as_array() {
+        if nearby {
+            let distance = level_bounds_distance(bounds, selected_bounds);
+            let mut neighbor_options = options.clone();
+            neighbor_options.single_layer = false;
+            neighbor_options.tile_tags = false;
+            neighbor_options.render_auto = true;
+            neighbor_options.parallax = false;
+            let mut neighbor = Scene {
+                ctx,
+                project,
+                view,
+                canvas,
+                options: &neighbor_options,
+                assets: scene.assets,
+                entity_index: std::cell::OnceCell::new(),
+                file_states: Default::default(),
+            };
+            let mut content = painter.with_clip_rect(canvas.intersect(rect));
+            let bg = theme::color(text(
+                level,
+                "__bgColor",
+                text(&project.json, "defaultLevelBgColor", "#696A79"),
+            ));
+            if depth_delta >= 0 {
+                let opacity = 0.2
+                    * if depth_delta == 0 {
+                        1.
+                    } else {
+                        0.6 * if depth_delta >= 2 { 0.3 } else { 1. }
+                    };
+                content.multiply_opacity(opacity);
+                content.rect_filled(rect, 0., bg);
+                neighbor.background(&content, level, origin);
+                content.set_opacity(painter.opacity());
+                let edge_region = if depth_delta == 0 && distance == 0. && options.nearby_dist > 0.
+                {
+                    Some(Rect::from_min_max(
+                        egui::pos2(
+                            selected_bounds[0] - origin[0] - options.nearby_dist,
+                            selected_bounds[1] - origin[1] - options.nearby_dist,
+                        ),
+                        egui::pos2(
+                            selected_bounds[2] - origin[0] + options.nearby_dist,
+                            selected_bounds[3] - origin[1] + options.nearby_dist,
+                        ),
+                    ))
+                } else {
+                    None
+                };
+                if distance <= 300. {
+                    content.multiply_opacity(if depth_delta > 0 { 0.15 } else { 1. });
+                    count += neighbor.world_layers(&content, level, origin, edge_region);
+                    if let Some(region) = edge_region {
+                        for (index, layer) in
+                            values(&level["layerInstances"]).iter().enumerate().rev()
+                        {
+                            let kind = text(layer, "__type", "");
+                            if kind == "Entities"
+                                || (kind == "IntGrid" && layer["__tilesetDefUid"].is_null())
+                            {
+                                continue;
+                            }
+                            let def = project
+                                .layer_def(layer["layerDefUid"].as_i64().unwrap_or(-1))
+                                .unwrap_or(&Value::Null);
+                            let alpha = number(def, "displayOpacity", 1.)
+                                * if index == options.active_layer {
+                                    1.
+                                } else {
+                                    number(def, "inactiveOpacity", 1.)
+                                };
+                            let transform = Transform { origin, scale: 1. }.offset([
+                                number(layer, "__pxTotalOffsetX", 0.),
+                                number(layer, "__pxTotalOffsetY", 0.),
+                            ]);
+                            count += neighbor.tiles_in_region(
+                                &content,
+                                layer,
+                                def,
+                                transform,
+                                alpha,
+                                true,
+                                Some(region),
+                            );
+                        }
+                    }
+                }
+                painter.rect_filled(rect, 0., bg.gamma_multiply(0.3));
+            }
+            if options.details {
+                let opacity = 0.3
+                    * if depth_delta < 0 {
+                        0.45 * if depth_delta <= -2 { 0.3 } else { 1. }
+                    } else if depth_delta > 0 {
+                        0.2
+                    } else {
+                        1.
+                    };
+                painter.rect_stroke(
+                    rect.shrink(view.zoom),
+                    0.,
+                    Stroke::new(2.0_f32, neighbor.level_color(level).gamma_multiply(opacity)),
+                    StrokeKind::Inside,
+                );
+                if depth_delta == 0 {
+                    let min_zoom = (canvas.width() / selected_bounds[2] / 2.3)
+                        .min(canvas.height() / selected_bounds[3] / 2.3)
+                        * 0.8;
+                    let mut label_painter = painter.clone();
+                    label_painter
+                        .multiply_opacity(((view.zoom - min_zoom) / min_zoom).clamp(0., 1.));
+                    neighbor.level_identifier(&label_painter, level, rect);
+                }
+            }
+            continue;
+        }
+        {
+            painter.rect_filled(
+                rect,
+                0.,
+                theme::color(text(
+                    level,
+                    "__bgColor",
+                    text(&project.json, "defaultLevelBgColor", "#696A79"),
+                ))
+                .gamma_multiply(bg_alpha),
+            );
+        }
+        let clip = canvas.intersect(rect);
+        let clipped = painter.with_clip_rect(clip);
+        {
+            let first = blur::begin(painter);
+            let mut bg_painter = clipped.clone();
+            bg_painter.multiply_opacity(bg_alpha);
+            scene.background(&bg_painter, level, origin);
+            if options.single_layer && !options.world {
+                blur::finish(
+                    painter,
+                    first,
+                    canvas,
+                    options.single_layer_intensity,
+                    (number(level, "uid", 0.) as u64) << 32,
+                );
+            }
+        }
+        let layers = values(&level["layerInstances"]);
+        if options.world {
+            if render_alpha > 0. {
+                let mut layer_painter = clipped.clone();
+                layer_painter.multiply_opacity(render_alpha);
+                count += scene.world_layers(&layer_painter, level, origin, None);
+            }
+        } else {
             for (index, layer) in layers.iter().enumerate().rev() {
                 let uid = layer["layerDefUid"].as_i64().unwrap_or(-1);
+                let def = project.layer_def(uid).unwrap_or(&Value::Null);
                 if options.hidden.contains(&uid) || layer["visible"].as_bool() == Some(false) {
                     continue;
                 }
-                let alpha = number(layer, "__opacity", 1.0)
-                    * if options.single_layer && index != options.active_layer {
-                        0.15
+                let active = key == options.selected && index == options.active_layer;
+                let alpha = scene.layer_alpha(layer, def, active);
+                let base = scene.layer_transform(level, layer, def, origin);
+                let transform = base.offset([
+                    number(layer, "__pxTotalOffsetX", 0.),
+                    number(layer, "__pxTotalOffsetY", 0.),
+                ]);
+                let first = blur::begin(painter);
+                let kind = text(layer, "__type", "");
+                let autotile = kind == "AutoLayer"
+                    || (kind == "IntGrid" && !layer["__tilesetDefUid"].is_null());
+                if kind == "IntGrid" && (!autotile || !options.render_auto) {
+                    count += scene.intgrid(&clipped, layer, def, transform, alpha);
+                }
+                if kind == "Tiles" || (autotile && options.render_auto) {
+                    count += scene.tiles(&clipped, layer, def, transform, alpha, active);
+                }
+                if kind == "Entities" {
+                    for entity in values(&layer["entityInstances"]) {
+                        scene.entity(painter, entity, def, transform, alpha, active, key);
+                    }
+                }
+                if options.single_layer && !active {
+                    blur::finish(
+                        painter,
+                        first,
+                        canvas,
+                        options.single_layer_intensity,
+                        ((number(level, "uid", 0.) as u64) << 32) ^ (uid as u64 + 1),
+                    );
+                }
+            }
+        }
+        if key == options.selected && !options.world {
+            if options.grid
+                && options.details
+                && let Some(layer) = layers.get(options.active_layer)
+            {
+                let def = project
+                    .layer_def(layer["layerDefUid"].as_i64().unwrap_or(-1))
+                    .unwrap_or(&Value::Null);
+                let transform = scene.layer_transform(level, layer, def, origin).offset([
+                    number(layer, "__pxTotalOffsetX", 0.),
+                    number(layer, "__pxTotalOffsetY", 0.),
+                ]);
+                scene.grid(&clipped, level, layer, def, transform);
+            }
+            painter.rect_stroke(
+                rect,
+                0.,
+                Stroke::new(view.zoom, Color32::WHITE.gamma_multiply(0.7)),
+                StrokeKind::Middle,
+            );
+            // Original boundsGlow is added after bounds in DP_UI: its
+            // knockout shadow also darkens the outer half of the white edge.
+            shadow::paint(painter, rect, view.zoom);
+            if options.rulers && options.details {
+                scene.rulers(painter, level, layers.get(options.active_layer), origin);
+            }
+        }
+        {
+            if options.world {
+                if options.details {
+                    painter.rect_stroke(
+                        rect.shrink(view.zoom),
+                        0.,
+                        Stroke::new(
+                            if key == options.selected {
+                                3.0_f32
+                            } else {
+                                2.0_f32
+                            },
+                            scene.level_color(level).gamma_multiply(outline_alpha),
+                        ),
+                        StrokeKind::Inside,
+                    );
+                }
+                if key == options.selected && depth_delta == 0 {
+                    painter.rect_stroke(
+                        rect.expand(if options.details { 2. } else { 0.5 }),
+                        0.,
+                        Stroke::new(
+                            if options.details { 4.0_f32 } else { 1.0_f32 },
+                            theme::ACCENT,
+                        ),
+                        StrokeKind::Middle,
+                    );
+                }
+            }
+            if options.details && (!options.world || depth_delta == 0) {
+                scene.level_identifier(painter, level, rect);
+                scene.level_fields(painter, level, origin);
+            }
+        }
+    }
+    if options.world {
+        scene.world_title(painter);
+    }
+    count
+}
+
+pub fn entity_preview(
+    ctx: &egui::Context,
+    painter: &Painter,
+    rect: Rect,
+    project: &Project,
+    definition: &Value,
+    assets: &mut Assets,
+) {
+    entities::preview(ctx, painter, rect, project, definition, assets);
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GhostMode {
+    Move,
+    Copy,
+    Brush,
+}
+
+/// Render only the clipboard payload; no project or source-layer clone is required.
+#[allow(clippy::too_many_arguments)]
+pub fn draw_selection_ghost(
+    ctx: &egui::Context,
+    painter: &Painter,
+    canvas: Rect,
+    project: &Project,
+    view: &Viewport,
+    key: LevelKey,
+    group: &Value,
+    delta_px: [f32; 2],
+    flips: [bool; 2],
+    assets: &mut Assets,
+) {
+    draw_group_ghost(
+        ctx,
+        painter,
+        canvas,
+        project,
+        view,
+        key,
+        group,
+        delta_px,
+        flips,
+        GhostMode::Move,
+        assets,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn draw_group_ghost(
+    ctx: &egui::Context,
+    painter: &Painter,
+    canvas: Rect,
+    project: &Project,
+    view: &Viewport,
+    key: LevelKey,
+    group: &Value,
+    delta_px: [f32; 2],
+    flips: [bool; 2],
+    mode: GhostMode,
+    assets: &mut Assets,
+) {
+    let Some(level) = project.level(key) else {
+        return;
+    };
+    let hidden = HashSet::new();
+    let options = RenderOptions {
+        selected: key,
+        active_layer: 0,
+        world: false,
+        grid: false,
+        details: false,
+        single_layer: false,
+        hidden: &hidden,
+        render_auto: true,
+        tile_tags: false,
+        ui_scale: 1.,
+        single_layer_intensity: 0.,
+        fields_table: false,
+        world_depth: None,
+        nearby_dist: 0.,
+        parallax: true,
+        rulers: false,
+        guides: false,
+    };
+    let mut scene = Scene {
+        ctx,
+        project,
+        view,
+        canvas,
+        options: &options,
+        assets,
+        entity_index: Default::default(),
+        file_states: Default::default(),
+    };
+    let painter = painter.with_clip_rect(canvas);
+    let origin = pair(&group["origin"], [0.; 2]);
+    let size = pair(&group["size"], [0.; 2]);
+    let legacy_moved = |point: [f32; 2], extent: [f32; 2]| -> [f32; 2] {
+        std::array::from_fn(|axis| {
+            origin[axis]
+                + delta_px[axis]
+                + if flips[axis] {
+                    size[axis] - (point[axis] - origin[axis]) - extent[axis]
+                } else {
+                    point[axis] - origin[axis]
+                }
+        })
+    };
+    for entry in values(&group["layers"]).iter().rev() {
+        let Some((index, layer)) = values(&level["layerInstances"])
+            .iter()
+            .enumerate()
+            .find(|(_, l)| l["layerDefUid"] == entry["layerDefUid"])
+        else {
+            continue;
+        };
+        let def = project
+            .layer_def(layer["layerDefUid"].as_i64().unwrap_or(-1))
+            .unwrap_or(&Value::Null);
+        let transform = editing_transform(project, key, index, view).unwrap_or(Transform {
+            origin: [0.; 2],
+            scale: 1.,
+        });
+        let offset = [
+            number(layer, "__pxTotalOffsetX", 0.),
+            number(layer, "__pxTotalOffsetY", 0.),
+        ];
+        let source_origin = pair(&entry["origin"], [0.; 2]);
+        let clipboard = &entry["clipboard"];
+        let grid = number(clipboard, "gridSize", number(layer, "__gridSize", 16.)).max(1.);
+        let width = number(clipboard, "width", 0.) as usize;
+        let geometry_aware = group["geometryAware"] == true;
+        let scaled = grid * number(&entry["geometry"], "scale", 1.0);
+        let smart = number(group, "scaledGridSize", scaled).max(f32::EPSILON);
+        let raw_delta = if text(layer, "__type", "") == "Entities" {
+            delta_px.map(f32::trunc)
+        } else {
+            delta_px.map(|d| (d / smart).trunc() * (smart / scaled).trunc() * grid)
+        };
+        let point_delta = delta_px.map(|d| (d / scaled).trunc() * grid);
+        let moved = |point: [f32; 2], extent: [f32; 2]| {
+            if geometry_aware {
+                let extent_group = [width as f32 * grid, number(clipboard, "height", 0.) * grid];
+                std::array::from_fn(|axis| {
+                    source_origin[axis]
+                        + raw_delta[axis]
+                        + if flips[axis] {
+                            extent_group[axis] - (point[axis] - source_origin[axis]) - extent[axis]
+                        } else {
+                            point[axis] - source_origin[axis]
+                        }
+                })
+            } else {
+                legacy_moved(point, extent)
+            }
+        };
+
+        if width > 0 {
+            for (i, value) in values(&clipboard["intGridCsv"]).iter().enumerate() {
+                if value.as_i64().unwrap_or(0) == 0 {
+                    continue;
+                }
+                let local = moved(
+                    [
+                        source_origin[0] + (i % width) as f32 * grid,
+                        source_origin[1] + (i / width) as f32 * grid,
+                    ],
+                    [grid; 2],
+                );
+                let color = values(&def["intGridValues"])
+                    .iter()
+                    .find(|v| v["value"] == *value)
+                    .map(|v| theme::color(text(v, "color", "#ffcc00")))
+                    .unwrap_or(theme::ACCENT);
+                let rect = scene.screen(transform.rect(Rect::from_min_size(
+                    egui::pos2(local[0] - offset[0], local[1] - offset[1]),
+                    egui::vec2(grid, grid),
+                )));
+                if mode == GhostMode::Brush {
+                    let scale = view.zoom * transform.scale;
+                    painter.rect_stroke(
+                        rect.shrink(2. * scale),
+                        0.,
+                        Stroke::new(2. * scale, Color32::BLACK),
+                        StrokeKind::Middle,
+                    );
+                    painter.rect_stroke(
+                        rect,
+                        0.,
+                        Stroke::new(2. * scale, color),
+                        StrokeKind::Middle,
+                    );
+                } else {
+                    painter.rect_filled(rect, 0., color);
+                }
+            }
+        }
+        let mut tiles = values(&clipboard["gridTiles"]).to_vec();
+        for tile in &mut tiles {
+            let px = pair(&tile["px"], [0.; 2]);
+            let dst = moved(
+                [source_origin[0] + px[0], source_origin[1] + px[1]],
+                [grid; 2],
+            );
+            tile["px"] = serde_json::json!([dst[0] - offset[0], dst[1] - offset[1]]);
+            tile["f"] = serde_json::json!(
+                tile["f"].as_i64().unwrap_or(0) ^ i64::from(flips[0]) ^ (i64::from(flips[1]) << 1)
+            );
+        }
+        if !tiles.is_empty() {
+            scene.ghost_tiles(&painter, layer, def, &tiles, transform, grid, mode);
+        }
+        let source_offset = [
+            source_origin[0] - entry["rect"][0].as_f64().unwrap_or(0.) as f32 * grid,
+            source_origin[1] - entry["rect"][1].as_f64().unwrap_or(0.) as f32 * grid,
+        ];
+        let remap_point = |value: &Value| {
+            let point = [
+                source_offset[0] + number(value, "cx", 0.) * grid,
+                source_offset[1] + number(value, "cy", 0.) * grid,
+            ];
+            let dst = if geometry_aware {
+                std::array::from_fn(|axis| point[axis] + point_delta[axis])
+            } else {
+                moved(point, [grid; 2])
+            };
+            serde_json::json!({"cx":((dst[0]-offset[0])/grid).floor(),"cy":((dst[1]-offset[1])/grid).floor()})
+        };
+        let mut moved_entities = std::collections::HashMap::new();
+        for entity in values(&clipboard["entityInstances"]) {
+            let mut e = entity.clone();
+            let px = pair(&entity["px"], [0.; 2]);
+            let mut dst = moved(
+                [source_origin[0] + px[0], source_origin[1] + px[1]],
+                [0.; 2],
+            );
+            let pivot = pair(&entity["__pivot"], [0.; 2]);
+            for axis in 0..2 {
+                if flips[axis] {
+                    dst[axis] += ((2. * pivot[axis] - 1.)
+                        * number(entity, if axis == 0 { "width" } else { "height" }, 0.))
+                    .trunc();
+                }
+            }
+            e["px"] = serde_json::json!([dst[0] - offset[0], dst[1] - offset[1]]);
+            for point in values(&entry["points"])
+                .iter()
+                .filter(|p| p["entityIid"] == entity["iid"])
+            {
+                if let Some(field) = e["fieldInstances"]
+                    .as_array_mut()
+                    .and_then(|fs| fs.iter_mut().find(|f| f["defUid"] == point["fieldDefUid"]))
+                {
+                    let mapped = remap_point(&point["value"]);
+                    if field["__type"] == "Array<Point>" {
+                        let i = point["arrayIndex"].as_u64().unwrap_or(0) as usize;
+                        if let Some(value) = field["__value"].get_mut(i) {
+                            *value = mapped;
+                        }
                     } else {
-                        1.0
-                    };
-                let offset = [
-                    origin[0] + number(layer, "__pxTotalOffsetX", 0.0),
-                    origin[1] + number(layer, "__pxTotalOffsetY", 0.0),
-                ];
-                let grid = number(layer, "__gridSize", 16.0).max(1.0);
-                let layer_type = text(layer, "__type", "");
-                if layer_type == "IntGrid"
-                    && options.details
-                    && layer["autoLayerTiles"]
-                        .as_array()
-                        .is_none_or(|a| a.is_empty())
-                    && let (Some(cells), Some(def)) =
-                        (layer["intGridCsv"].as_array(), project.layer_def(uid))
-                {
-                    let width = number(layer, "__cWid", 1.0).max(1.0) as usize;
-                    let viewport_min =
-                        view.to_world(canvas.min.into(), canvas.min.into(), canvas.size().into());
-                    let viewport_max =
-                        view.to_world(canvas.max.into(), canvas.min.into(), canvas.size().into());
-                    let x0 =
-                        (((viewport_min[0] - offset[0]) / grid).floor() as i32).max(0) as usize;
-                    let y0 =
-                        (((viewport_min[1] - offset[1]) / grid).floor() as i32).max(0) as usize;
-                    let x1 = (((viewport_max[0] - offset[0]) / grid).ceil() as i32)
-                        .max(0)
-                        .min(width as i32) as usize;
-                    let height = cells.len().div_ceil(width);
-                    let y1 = (((viewport_max[1] - offset[1]) / grid).ceil() as i32)
-                        .max(0)
-                        .min(height as i32) as usize;
-                    for y in y0..y1 {
-                        for x in x0..x1 {
-                            let value = cells
-                                .get(x + y * width)
-                                .and_then(Value::as_i64)
-                                .unwrap_or(0);
-                            if value == 0 {
-                                continue;
-                            }
-                            let color = def["intGridValues"]
-                                .as_array()
-                                .and_then(|vs| {
-                                    vs.iter().find(|v| v["value"].as_i64() == Some(value))
-                                })
-                                .map(|v| theme::color(text(v, "color", "#ffcc00")))
-                                .unwrap_or(theme::ACCENT);
-                            let cell = screen_rect(
-                                view,
-                                canvas,
-                                [
-                                    offset[0] + x as f32 * grid,
-                                    offset[1] + y as f32 * grid,
-                                    offset[0] + (x + 1) as f32 * grid,
-                                    offset[1] + (y + 1) as f32 * grid,
-                                ],
-                            );
-                            clipped.rect_filled(cell, 0.0, color.gamma_multiply(alpha));
-                            visible_tiles += 1;
-                        }
-                    }
-                }
-                if let Some(uid) = layer["__tilesetDefUid"].as_i64()
-                    && let Some(tileset) = project.tileset(uid)
-                    && let Some(relative) = tileset["relPath"].as_str()
-                    && let Some(texture) = assets.texture(ctx, &asset_path(project, relative))
-                {
-                    let mut mesh = Mesh::with_texture(texture.id());
-                    let tile_size = number(tileset, "tileGridSize", grid);
-                    for field in ["autoLayerTiles", "gridTiles"] {
-                        if let Some(tiles) = layer[field].as_array() {
-                            for tile in tiles {
-                                let pos = [
-                                    offset[0] + tile["px"][0].as_f64().unwrap_or(0.0) as f32,
-                                    offset[1] + tile["px"][1].as_f64().unwrap_or(0.0) as f32,
-                                ];
-                                let rect = screen_rect(
-                                    view,
-                                    canvas,
-                                    [pos[0], pos[1], pos[0] + tile_size, pos[1] + tile_size],
-                                );
-                                if !rect.intersects(clipped.clip_rect()) {
-                                    continue;
-                                }
-                                let uv = tile_uv(
-                                    [
-                                        tile["src"][0].as_f64().unwrap_or(0.0) as f32,
-                                        tile["src"][1].as_f64().unwrap_or(0.0) as f32,
-                                    ],
-                                    [tile_size, tile_size],
-                                    texture.size_vec2().into(),
-                                    tile["f"].as_i64().unwrap_or(0),
-                                );
-                                mesh.add_rect_with_uv(
-                                    rect,
-                                    Rect {
-                                        min: uv[0].into(),
-                                        max: uv[1].into(),
-                                    },
-                                    Color32::WHITE.gamma_multiply(alpha * number(tile, "a", 1.0)),
-                                );
-                                visible_tiles += 1;
-                            }
-                        }
-                    }
-                    clipped.add(egui::Shape::mesh(mesh));
-                }
-                if layer_type == "Entities"
-                    && let Some(entities) = layer["entityInstances"].as_array()
-                {
-                    for entity in entities {
-                        draw_entity(
-                            ctx,
-                            painter,
-                            canvas,
-                            project,
-                            entity,
-                            view,
-                            offset,
-                            alpha,
-                            options.details,
-                            assets,
-                        );
+                        field["__value"] = mapped;
                     }
                 }
             }
-            if options.grid && !options.world {
-                let grid = layers
-                    .get(options.active_layer)
-                    .map(|l| number(l, "__gridSize", 16.0))
-                    .unwrap_or(16.0)
-                    .max(1.0);
-                if grid * view.zoom >= 6.0 {
-                    let offset = layers
-                        .get(options.active_layer)
-                        .map(|l| {
-                            [
-                                number(l, "__pxTotalOffsetX", 0.0),
-                                number(l, "__pxTotalOffsetY", 0.0),
-                            ]
-                        })
-                        .unwrap_or([0.0; 2]);
-                    let start =
-                        view.to_world(canvas.min.into(), canvas.min.into(), canvas.size().into());
-                    let end =
-                        view.to_world(canvas.max.into(), canvas.min.into(), canvas.size().into());
-                    let x0 = ((start[0] - offset[0]) / grid).floor() as i32;
-                    let x1 = ((end[0] - offset[0]) / grid).ceil() as i32;
-                    let y0 = ((start[1] - offset[1]) / grid).floor() as i32;
-                    let y1 = ((end[1] - offset[1]) / grid).ceil() as i32;
-                    let line = Stroke::new(1.0_f32, Color32::from_white_alpha(20));
-                    for x in x0..=x1 {
-                        let sx = view.to_screen(
-                            [offset[0] + x as f32 * grid, 0.0],
-                            canvas.min.into(),
-                            canvas.size().into(),
-                        )[0];
-                        clipped.line_segment(
-                            [Pos2::new(sx, rect.top()), Pos2::new(sx, rect.bottom())],
-                            line,
-                        );
-                    }
-                    for y in y0..=y1 {
-                        let sy = view.to_screen(
-                            [0.0, offset[1] + y as f32 * grid],
-                            canvas.min.into(),
-                            canvas.size().into(),
-                        )[1];
-                        clipped.line_segment(
-                            [Pos2::new(rect.left(), sy), Pos2::new(rect.right(), sy)],
-                            line,
-                        );
-                    }
-                }
-            }
-        }
-        painter.rect_stroke(
-            rect,
-            0.0,
-            Stroke::new(
-                if key == options.selected {
-                    2.0_f32
-                } else {
-                    1.0_f32
-                },
-                if key == options.selected {
-                    theme::ACCENT
-                } else {
-                    theme::LIGHT
-                },
-            ),
-            StrokeKind::Inside,
-        );
-        if options.world {
-            painter.text(
-                rect.left_top() - egui::vec2(0.0, 5.0),
-                egui::Align2::LEFT_BOTTOM,
-                text(level, "identifier", "Level"),
-                FontId::proportional(15.0),
-                theme::TEXT,
+            scene.entity(
+                &painter,
+                &e,
+                def,
+                transform,
+                if mode == GhostMode::Brush { 0.33 } else { 0.5 },
+                true,
+                key,
             );
+            if mode == GhostMode::Move {
+                let entity_def = values(&project.json["defs"]["entities"])
+                    .iter()
+                    .find(|d| d["uid"] == e["defUid"])
+                    .unwrap_or(&Value::Null);
+                scene.ghost_entity_links(&painter, &e, entity_def, transform, grid);
+            }
+            if let Some(iid) = e["iid"].as_str() {
+                moved_entities.insert(iid.to_owned(), e);
+            }
         }
-    }
-    visible_tiles
-}
-
-#[allow(clippy::too_many_arguments)]
-fn draw_background(
-    ctx: &egui::Context,
-    painter: &Painter,
-    canvas: Rect,
-    project: &Project,
-    level: &Value,
-    view: &Viewport,
-    origin: [f32; 2],
-    assets: &mut Assets,
-) {
-    let Some(relative) = level["bgRelPath"].as_str() else {
-        return;
-    };
-    let Some(texture) = assets.texture(ctx, &asset_path(project, relative)) else {
-        return;
-    };
-    let data = &level["__bgPos"];
-    let size = texture.size_vec2();
-    let top = [
-        origin[0] + data["topLeftPx"][0].as_f64().unwrap_or(0.0) as f32,
-        origin[1] + data["topLeftPx"][1].as_f64().unwrap_or(0.0) as f32,
-    ];
-    let crop = [
-        data["cropRect"][0].as_f64().unwrap_or(0.0) as f32,
-        data["cropRect"][1].as_f64().unwrap_or(0.0) as f32,
-        data["cropRect"][2].as_f64().unwrap_or(size.x as f64) as f32,
-        data["cropRect"][3].as_f64().unwrap_or(size.y as f64) as f32,
-    ];
-    let scale = [
-        data["scale"][0].as_f64().unwrap_or(1.0) as f32,
-        data["scale"][1].as_f64().unwrap_or(1.0) as f32,
-    ];
-    let rect = screen_rect(
-        view,
-        canvas,
-        [
-            top[0],
-            top[1],
-            top[0] + crop[2] * scale[0],
-            top[1] + crop[3] * scale[1],
-        ],
-    );
-    let uv = Rect::from_min_max(
-        egui::pos2(crop[0] / size.x, crop[1] / size.y),
-        egui::pos2((crop[0] + crop[2]) / size.x, (crop[1] + crop[3]) / size.y),
-    );
-    painter.image(texture.id(), rect, uv, Color32::WHITE);
-}
-
-#[allow(clippy::too_many_arguments)]
-fn draw_entity(
-    ctx: &egui::Context,
-    painter: &Painter,
-    canvas: Rect,
-    project: &Project,
-    entity: &Value,
-    view: &Viewport,
-    offset: [f32; 2],
-    alpha: f32,
-    details: bool,
-    assets: &mut Assets,
-) {
-    let width = number(entity, "width", 16.0);
-    let height = number(entity, "height", 16.0);
-    let pos = [
-        offset[0] + entity["px"][0].as_f64().unwrap_or(0.0) as f32
-            - width * entity["__pivot"][0].as_f64().unwrap_or(0.0) as f32,
-        offset[1] + entity["px"][1].as_f64().unwrap_or(0.0) as f32
-            - height * entity["__pivot"][1].as_f64().unwrap_or(0.0) as f32,
-    ];
-    let rect = screen_rect(
-        view,
-        canvas,
-        [pos[0], pos[1], pos[0] + width, pos[1] + height],
-    );
-    if !rect.intersects(canvas) {
-        return;
-    }
-    let color = theme::color(text(entity, "__smartColor", "#ffcc00")).gamma_multiply(alpha);
-    let mut has_tile = false;
-    if let Some(uid) = entity["__tile"]["tilesetUid"].as_i64()
-        && let Some(tileset) = project.tileset(uid)
-        && let Some(relative) = tileset["relPath"].as_str()
-        && let Some(texture) = assets.texture(ctx, &asset_path(project, relative))
-    {
-        let tile = &entity["__tile"];
-        let uv = tile_uv(
-            [number(tile, "x", 0.0), number(tile, "y", 0.0)],
-            [number(tile, "w", width), number(tile, "h", height)],
-            texture.size_vec2().into(),
-            0,
-        );
-        painter.image(
-            texture.id(),
-            rect,
-            Rect {
-                min: uv[0].into(),
-                max: uv[1].into(),
-            },
-            Color32::WHITE.gamma_multiply(alpha),
-        );
-        has_tile = true;
-    }
-    if !has_tile {
-        painter.rect_filled(rect, 0.0, color.gamma_multiply(0.35));
-    }
-    if details {
-        painter.rect_stroke(rect, 0.0, Stroke::new(1.0_f32, color), StrokeKind::Inside);
-        if view.zoom >= 1.5 {
-            painter.text(
-                rect.center_top() - egui::vec2(0.0, 3.0),
-                egui::Align2::CENTER_BOTTOM,
-                text(entity, "__identifier", "Entity"),
-                FontId::proportional(12.0),
-                color,
+        for point in values(&entry["points"]) {
+            let Some(entity) = values(&layer["entityInstances"])
+                .iter()
+                .find(|e| e["iid"] == point["entityIid"])
+            else {
+                continue;
+            };
+            let entity_def = values(&project.json["defs"]["entities"])
+                .iter()
+                .find(|d| d["uid"] == entity["defUid"])
+                .unwrap_or(&Value::Null);
+            let Some(fd) = values(&entity_def["fieldDefs"])
+                .iter()
+                .find(|f| f["uid"] == point["fieldDefUid"])
+            else {
+                continue;
+            };
+            scene.ghost_point(
+                &painter,
+                entity,
+                entity_def,
+                fd,
+                point,
+                entry,
+                entity["iid"]
+                    .as_str()
+                    .and_then(|iid| moved_entities.get(iid)),
+                transform,
+                grid,
+                mode,
+                remap_point,
             );
         }
     }
 }
+
+#[cfg(test)]
+#[path = "render_tests.rs"]
+mod render_tests;

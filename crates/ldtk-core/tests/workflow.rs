@@ -1,0 +1,579 @@
+use ldtk_core::{History, LevelKey, Project};
+use serde_json::json;
+const K: LevelKey = LevelKey {
+    world: None,
+    level: 0,
+};
+fn sample() -> Project {
+    let mut p = Project::new();
+    p.add_layer("Actors", "Entities", 16).unwrap();
+    let uid = p.add_entity_def("Hero", 16, 16).unwrap();
+    p.add_entity(K, 0, uid, 16, 16).unwrap();
+    p
+}
+#[test]
+fn duplicate_remaps_ids_and_internal_refs_and_preserves_unknowns() {
+    let mut p = sample();
+    p.json["levels"][0]["unknown"] = json!({"x":7});
+    let old = p.level(K).unwrap().clone();
+    let k = p.duplicate_level(K, "Copy").unwrap();
+    let copied = p.level(k).unwrap();
+    assert_ne!(old["iid"], copied["iid"]);
+    assert_ne!(old["uid"], copied["uid"]);
+    assert_ne!(
+        old["layerInstances"][0]["iid"],
+        copied["layerInstances"][0]["iid"]
+    );
+    assert_ne!(
+        old["layerInstances"][0]["entityInstances"][0]["iid"],
+        copied["layerInstances"][0]["entityInstances"][0]["iid"]
+    );
+    assert_eq!(copied["unknown"], old["unknown"]);
+    assert_eq!(copied["layerInstances"][0]["levelId"], copied["uid"]);
+}
+#[test]
+fn entity_remove_repairs_reference_and_toc() {
+    let mut p = sample();
+    let uid = p.json["defs"]["entities"][0]["uid"].clone();
+    p.json["defs"]["entities"][0]["exportToToc"] = json!(true);
+    let iid = p.layer(K, 0).unwrap()["entityInstances"][0]["iid"].clone();
+    p.json["levels"][0]["fieldInstances"] = json!([{"__type":"EntityRef","__value":{"entityIid":iid},"realEditorValues":[{"id":"V_String","params":[iid]}]}]);
+    p.refresh_derived_data().unwrap();
+    assert_eq!(
+        p.json["toc"][0]["instancesData"].as_array().unwrap().len(),
+        1
+    );
+    assert!(p.remove_entity_with_references(K, 0, 0).unwrap());
+    assert!(p.json["levels"][0]["fieldInstances"][0]["__value"].is_null());
+    assert_eq!(p.json["toc"][0]["instancesData"], json!([]));
+    assert_eq!(p.json["defs"]["entities"][0]["uid"], uid);
+}
+#[test]
+fn world_level_resize_reflows_intgrid_without_losing_cells() {
+    let mut p = Project::new();
+    let w = p.add_world("World").unwrap();
+    let k = p.add_level(Some(w), "Room", 32, 32).unwrap();
+    p.add_layer("Solid", "IntGrid", 16).unwrap();
+    p.layer_mut(k, 0).unwrap()["intGridCsv"] = json!([1, 0, 0, 1]);
+    p.resize_level(k, 48, 32, 16, 0).unwrap();
+    assert_eq!(
+        p.layer(k, 0).unwrap()["intGridCsv"],
+        json!([0, 1, 0, 0, 0, 1])
+    );
+    p.move_level(k, 100, 200, 2).unwrap();
+    assert_eq!(p.level(k).unwrap()["worldX"], 100);
+    p.remove_level(k).unwrap();
+    assert_eq!(p.json["worlds"][w]["levels"], json!([]));
+}
+#[test]
+fn transaction_rolls_back_error() {
+    let mut p = sample();
+    let old = p.json.clone();
+    let result: ldtk_core::Result<()> = p.edit_document(|p| {
+        p.json["nextUid"] = json!(999);
+        Err(ldtk_core::Error::Invalid("abort".into()))
+    });
+    assert!(result.is_err());
+    assert_eq!(p.json, old);
+}
+#[test]
+fn history_project_changes_include_external_and_do_not_overwrite_unrelated_edits() {
+    let mut p = sample();
+    let mut h = History::default();
+    h.begin_project(&p);
+    p.rename_definition(
+        "entities",
+        p.json["defs"]["entities"][0]["uid"].as_i64().unwrap(),
+        "Player",
+    )
+    .unwrap();
+    h.commit(&p);
+    p.json["bgColor"] = json!("#010203");
+    assert!(h.undo(&mut p));
+    assert_eq!(p.json["defs"]["entities"][0]["identifier"], "Hero");
+    assert_eq!(p.json["bgColor"], "#010203");
+    assert!(h.redo(&mut p));
+    assert_eq!(
+        p.layer(K, 0).unwrap()["entityInstances"][0]["__identifier"],
+        "Player"
+    );
+}
+#[test]
+fn definition_remove_propagates_layer_instances() {
+    let mut p = sample();
+    let uid = p.json["defs"]["layers"][0]["uid"].as_i64().unwrap();
+    p.remove_definition("layers", uid).unwrap();
+    assert_eq!(p.level(K).unwrap()["layerInstances"], json!([]));
+    assert_eq!(p.json["defs"]["layers"], json!([]));
+}
+#[test]
+#[ignore = "requires pinned upstream historical fixture under .reference/ldtk"]
+fn official_reference_fixture_can_rebuild_derived_data() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../.reference/ldtk/tests/labRefs.ldtk");
+    let mut p = Project::load(root).unwrap();
+    let unknown = json!({"keep":123});
+    p.json["future"] = unknown.clone();
+    p.refresh_derived_data().unwrap();
+    assert_eq!(p.json["future"], unknown);
+    assert!(p.json["toc"].is_array());
+    for k in p.level_keys() {
+        assert!(p.level(k).unwrap()["layerInstances"].is_array());
+    }
+}
+#[test]
+fn definition_properties_propagate_and_rollback_invalid_dimensions() {
+    let mut p = sample();
+    let uid = p.json["defs"]["entities"][0]["uid"].as_i64().unwrap();
+    p.update_entity_definition(
+        uid,
+        &json!({"identifier":"Player","width":32,"pivotX":1,"tags":["player"],"color":"#123456"}),
+    )
+    .unwrap();
+    let e = &p.layer(K, 0).unwrap()["entityInstances"][0];
+    assert_eq!(e["width"], 32);
+    assert_eq!(e["__pivot"], json!([1, 1]));
+    assert_eq!(e["__identifier"], "Player");
+    assert_eq!(e["__smartColor"], "#123456");
+    let old = p.json.clone();
+    assert!(
+        p.update_entity_definition(uid, &json!({"height":0}))
+            .is_err()
+    );
+    assert_eq!(p.json, old);
+}
+#[test]
+fn history_cancel_restores_pending_cross_document_changes() {
+    let mut p = sample();
+    let mut h = History::default();
+    let old = p.json.clone();
+    h.begin_project(&p);
+    p.add_world("World").unwrap();
+    assert!(h.cancel(&mut p));
+    assert_eq!(p.json, old);
+    assert!(!h.can_undo());
+    assert!(!h.cancel(&mut p));
+}
+#[test]
+fn layer_properties_reorder_and_offsets_propagate() {
+    let mut p = sample();
+    let uid = p.json["defs"]["layers"][0]["uid"].as_i64().unwrap();
+    p.add_layer("Cells", "IntGrid", 16).unwrap();
+    p.reorder_layer(uid, 0).unwrap();
+    p.update_layer_properties(
+        uid,
+        &json!({"identifier":"People","displayOpacity":0.25,"pxOffsetX":8}),
+    )
+    .unwrap();
+    let l = p.layer(K, 0).unwrap();
+    assert_eq!(l["__identifier"], "People");
+    assert_eq!(l["__opacity"], 0.25);
+    assert_eq!(l["__pxTotalOffsetX"], 8);
+}
+#[test]
+fn tileset_geometry_updates_remap_sources_and_preserve_unknown_tile_keys() {
+    let mut p = Project::new();
+    let ts = p
+        .add_tileset(std::path::Path::new("atlas.png"), 16, 32, 32)
+        .unwrap();
+    let layer = p.add_layer("Art", "Tiles", 16).unwrap();
+    p.assign_tileset(layer, ts).unwrap();
+    p.paint_tile(K, 0, 0, 0, 2, [0, 16], 0, false).unwrap();
+    p.layer_mut(K, 0).unwrap()["gridTiles"][0]["meta"] = json!("keep");
+    p.update_tileset_definition(ts, &json!({"pxWid":64}))
+        .unwrap();
+    assert_eq!(
+        p.layer(K, 0).unwrap()["gridTiles"][0]["src"],
+        json!([0, 16])
+    );
+    assert_eq!(p.layer(K, 0).unwrap()["gridTiles"][0]["t"], 4);
+    assert_eq!(p.layer(K, 0).unwrap()["gridTiles"][0]["meta"], "keep");
+}
+#[test]
+fn entity_grid_uses_original_truncation_for_negative_anchor() {
+    let mut p = sample();
+    p.move_entity(K, 0, 0, -1, -1).unwrap();
+    assert_eq!(
+        p.layer(K, 0).unwrap()["entityInstances"][0]["__grid"],
+        json!([0, 0])
+    );
+}
+#[test]
+fn changing_layer_grid_keeps_cell_coordinates_and_scales_entity_anchors() {
+    let mut p = sample();
+    let e = p.json["defs"]["layers"][0]["uid"].as_i64().unwrap();
+    p.change_layer_grid_size(e, 8).unwrap();
+    assert_eq!(
+        p.layer(K, 0).unwrap()["entityInstances"][0]["px"],
+        json!([8, 8])
+    );
+    assert_eq!(p.layer(K, 0).unwrap()["entityInstances"][0]["width"], 16);
+    let uid = p.add_layer("Grid", "IntGrid", 16).unwrap();
+    p.layer_mut(K, 0).unwrap()["intGridCsv"][1] = json!(1);
+    p.change_layer_grid_size(uid, 8).unwrap();
+    assert_eq!(p.layer(K, 0).unwrap()["intGridCsv"][1], 1);
+    assert_eq!(p.layer(K, 0).unwrap()["__cWid"], 32);
+}
+#[test]
+fn layer_conversion_requires_explicit_data_loss_and_can_bake_auto_tiles() {
+    let mut p = Project::new();
+    let uid = p.add_layer("Cells", "IntGrid", 16).unwrap();
+    p.paint_int_grid(K, 0, 0, 0, 1).unwrap();
+    p.layer_mut(K, 0).unwrap()["autoLayerTiles"] =
+        json!([{"px":[0,0],"src":[0,0],"t":0,"f":0,"a":1,"d":[7,0,0]}]);
+    let old = p.json.clone();
+    assert!(p.convert_layer_type(uid, "Tiles", false).is_err());
+    assert_eq!(p.json, old);
+    p.convert_layer_type(uid, "Tiles", true).unwrap();
+    assert_eq!(p.layer(K, 0).unwrap()["__type"], "Tiles");
+    assert_eq!(p.layer(K, 0).unwrap()["gridTiles"][0]["d"], json!([0]));
+    assert_eq!(p.layer(K, 0).unwrap()["intGridCsv"], json!([]));
+}
+#[test]
+fn linear_world_layout_serializes_original_world_coordinates() {
+    let mut p = sample();
+    p.set_world_layout(None, "LinearHorizontal", 128, 128)
+        .unwrap();
+    assert_eq!(p.level(K).unwrap()["worldX"], -1);
+    assert_eq!(p.level(K).unwrap()["worldY"], -1);
+    assert!(
+        p.layer(K, 0).unwrap()["entityInstances"][0]
+            .get("__worldX")
+            .is_none()
+    );
+    assert_eq!(p.level(K).unwrap()["__neighbours"], json!([]));
+}
+#[test]
+fn enum_definition_removal_removes_its_field_definitions_and_instances() {
+    let mut p = Project::new();
+    let e = p.add_enum_definition("Mode", &["Idle"]).unwrap();
+    p.add_field_definition(None, "Mode", "LocalEnum.Mode", false)
+        .unwrap();
+    p.remove_definition("enums", e).unwrap();
+    assert_eq!(p.json["defs"]["levelFields"], json!([]));
+    assert_eq!(p.level(K).unwrap()["fieldInstances"], json!([]));
+}
+#[test]
+fn cross_level_entity_transfer_preserves_iid_and_rewrites_reference_location() {
+    let mut p = sample();
+    let original = p.layer(K, 0).unwrap()["entityInstances"][0]["iid"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let f = p
+        .add_field_definition(None, "Ref", "EntityRef", false)
+        .unwrap();
+    p.set_field_value(K, None, f, json!(original)).unwrap();
+    let other = p.add_level(None, "Other", 64, 64).unwrap();
+    p.transfer_entity(K, 0, 0, other, 0, 32, 32).unwrap();
+    assert_eq!(
+        p.layer(other, 0).unwrap()["entityInstances"][0]["iid"],
+        original
+    );
+    assert_eq!(
+        p.level(K).unwrap()["fieldInstances"][0]["__value"]["levelIid"],
+        p.level(other).unwrap()["iid"]
+    );
+    assert_eq!(p.layer(K, 0).unwrap()["entityInstances"], json!([]));
+}
+#[test]
+fn removing_source_layer_clears_dependent_rules() {
+    let mut p = Project::new();
+    let uid = p.add_layer("Source", "IntGrid", 16).unwrap();
+    let target = p.add_layer("Target", "IntGrid", 16).unwrap();
+    p.update_layer_properties(target,&json!({"autoSourceLayerDefUid":uid,"autoRuleGroups":[{"uid":999,"active":true,"rules":[]}]})).unwrap();
+    p.remove_definition("layers", uid).unwrap();
+    assert_eq!(p.layer_def(target).unwrap()["autoRuleGroups"], json!([]));
+}
+#[test]
+fn resize_keeps_subgrid_offsets_and_moves_point_fields_in_cell_units() {
+    let mut p = sample();
+    let e = p.json["defs"]["entities"][0]["uid"].as_i64().unwrap();
+    let f = p
+        .add_field_definition(Some(e), "Path", "Point", true)
+        .unwrap();
+    let id = p.layer(K, 0).unwrap()["entityInstances"][0]["iid"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    p.set_field_value(K, Some(&id), f, json!([{"cx":1,"cy":1}]))
+        .unwrap();
+    p.resize_level(K, 48, 48, 20, 0).unwrap();
+    let l = p.layer(K, 0).unwrap();
+    assert_eq!(l["pxOffsetX"], 4);
+    assert_eq!(l["__cWid"], 3);
+    assert_eq!(l["entityInstances"][0]["px"], json!([32, 16]));
+    assert_eq!(
+        l["entityInstances"][0]["fieldInstances"][0]["__value"],
+        json!([{"cx":2,"cy":1}])
+    );
+}
+#[test]
+fn resize_removes_entities_outside_bounds_and_cleans_incoming_refs() {
+    let mut p = sample();
+    let f = p
+        .add_field_definition(None, "Hero", "EntityRef", false)
+        .unwrap();
+    let id = p.layer(K, 0).unwrap()["entityInstances"][0]["iid"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    p.set_field_value(K, None, f, json!(id)).unwrap();
+    p.resize_level(K, 16, 16, 0, 0).unwrap();
+    assert_eq!(p.layer(K, 0).unwrap()["entityInstances"], json!([]));
+    assert!(p.level(K).unwrap()["fieldInstances"][0]["__value"].is_null());
+}
+#[test]
+fn official_toc_neighbours_and_entity_caches_match_original_saved_exports() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/original");
+    let mut toc_rows = 0;
+    let mut entities = 0;
+    let mut neighbours = 0;
+    for entry in std::fs::read_dir(root).unwrap() {
+        let path = entry.unwrap().path();
+        if path.extension().is_none_or(|ext| ext != "ldtk") {
+            continue;
+        }
+        let mut p = Project::load(&path).unwrap();
+        let before = p.clone();
+        p.refresh_derived_data().unwrap();
+        assert_eq!(p.json["toc"], before.json["toc"], "{} TOC", path.display());
+        toc_rows += p.json["toc"].as_array().unwrap().len();
+        for key in p.level_keys() {
+            let actual = p.level(key).unwrap();
+            let expected = before.level(key).unwrap();
+            assert_eq!(
+                actual["__neighbours"],
+                expected["__neighbours"],
+                "{} neighbours",
+                path.display()
+            );
+            neighbours += actual["__neighbours"].as_array().unwrap().len();
+            for (i, layer) in actual["layerInstances"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .enumerate()
+            {
+                for (j, e) in layer["entityInstances"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .enumerate()
+                {
+                    for field in [
+                        "__identifier",
+                        "__grid",
+                        "__pivot",
+                        "__tags",
+                        "__tile",
+                        "__smartColor",
+                        "__worldX",
+                        "__worldY",
+                    ] {
+                        assert_eq!(
+                            e[field],
+                            expected["layerInstances"][i]["entityInstances"][j][field],
+                            "{} {field}",
+                            path.display()
+                        );
+                    }
+                    entities += 1;
+                }
+            }
+        }
+    }
+    assert!(toc_rows > 3 && entities > 50 && neighbours > 100);
+    eprintln!("Compared {toc_rows} TOC entries, {entities} entities, {neighbours} neighbours");
+}
+#[test]
+fn moving_level_between_worlds_rewrites_cross_document_entity_refs() {
+    let mut p = sample();
+    let f = p
+        .add_field_definition(None, "Ref", "EntityRef", false)
+        .unwrap();
+    let id = p.layer(K, 0).unwrap()["entityInstances"][0]["iid"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let other = p.add_level(None, "Other", 64, 64).unwrap();
+    p.set_field_value(other, None, f, json!(id)).unwrap();
+    let world = p.add_world("SecondWorld").unwrap();
+    let moved = p
+        .move_level_to_world(
+            LevelKey {
+                world: Some(0),
+                level: 0,
+            },
+            Some(world),
+            0,
+        )
+        .unwrap();
+    assert_eq!(moved.world, Some(world));
+    assert_eq!(
+        p.level(LevelKey {
+            world: Some(0),
+            level: 0
+        })
+        .unwrap()["fieldInstances"][0]["__value"]["worldIid"],
+        p.json["worlds"][world]["iid"]
+    );
+}
+#[test]
+fn duplicate_world_regenerates_all_level_layer_entity_ids() {
+    let mut p = Project::new();
+    let w = p.add_world("First").unwrap();
+    let k = p.add_level(Some(w), "Room", 32, 32).unwrap();
+    p.add_layer("Actors", "Entities", 16).unwrap();
+    let uid = p.add_entity_def("Hero", 16, 16).unwrap();
+    p.add_entity(k, 0, uid, 16, 16).unwrap();
+    let w2 = p.duplicate_world(w, "Second").unwrap();
+    let copy = LevelKey {
+        world: Some(w2),
+        level: 0,
+    };
+    assert_ne!(p.level(k).unwrap()["iid"], p.level(copy).unwrap()["iid"]);
+    assert_ne!(
+        p.layer(k, 0).unwrap()["entityInstances"][0]["iid"],
+        p.layer(copy, 0).unwrap()["entityInstances"][0]["iid"]
+    );
+    assert_ne!(
+        p.level(k).unwrap()["identifier"],
+        p.level(copy).unwrap()["identifier"]
+    );
+}
+#[test]
+fn cheap_entity_geometry_helpers_follow_source_handles_limits_and_pivots() {
+    let d = json!({"width":20,"height":10,"resizableX":true,"resizableY":true,"keepAspectRatio":true,"minWidth":8,"maxWidth":100,"minHeight":4,"maxHeight":50,"pivotX":0.5,"pivotY":1});
+    assert_eq!(
+        ldtk_core::constrained_entity_size(&d, [43, 33], [20, 10], Some(8)),
+        [40, 20]
+    );
+    assert_eq!(
+        ldtk_core::constrained_entity_size(&d, [20, 26], [20, 10], Some(8)),
+        [48, 24]
+    );
+    let mut fixed = d.clone();
+    fixed["resizableY"] = json!(false);
+    assert_eq!(
+        ldtk_core::constrained_entity_size(&fixed, [43, 33], [20, 10], Some(8)),
+        [40, 10]
+    );
+    assert_eq!(
+        ldtk_core::snapped_entity_position(&d, [1., 1.], 16, true),
+        [8, 16]
+    );
+    assert_eq!(
+        ldtk_core::snapped_entity_position(&d, [17., 17.], 16, true),
+        [24, 32]
+    );
+    assert_eq!(
+        ldtk_core::snapped_entity_position(&d, [1.7, 2.2], 16, false),
+        [2, 2]
+    );
+}
+#[test]
+fn adding_world_migrates_legacy_levels_to_source_canonical_multiworld_json() {
+    let mut p = sample();
+    let original = p.level(K).unwrap().clone();
+    let index = p.add_world("NewWorld").unwrap();
+    assert_eq!(index, 1);
+    assert_eq!(p.json["levels"], json!([]));
+    assert!(p.json["worldLayout"].is_null());
+    assert_eq!(
+        p.level(LevelKey {
+            world: Some(0),
+            level: 0
+        })
+        .unwrap()["iid"],
+        original["iid"]
+    );
+    assert_eq!(p.json["worlds"][0]["iid"], p.json["dummyWorldIid"]);
+    assert_eq!(p.level_keys().len(), 1);
+}
+#[test]
+fn removing_palette_values_clears_cells_and_reparents_orphaned_groups() {
+    let mut p = Project::new();
+    let uid = p.add_layer("Cells", "IntGrid", 16).unwrap();
+    p.update_layer_properties(uid,&json!({"intGridValuesGroups":[{"uid":5,"identifier":"Group","color":null}],"intGridValues":[{"value":1,"identifier":"Wall","color":"#FFFFFF","groupUid":5},{"value":2,"identifier":"Floor","color":"#AAAAAA","groupUid":5}]})).unwrap();
+    p.paint_int_grid(K, 0, 0, 0, 1).unwrap();
+    p.paint_int_grid(K, 0, 1, 0, 2).unwrap();
+    p.update_layer_properties(uid,&json!({"intGridValuesGroups":[],"intGridValues":[{"value":2,"identifier":"Floor","color":"#AAAAAA","groupUid":5}]})).unwrap();
+    assert_eq!(p.layer(K, 0).unwrap()["intGridCsv"][0], 0);
+    assert_eq!(p.layer(K, 0).unwrap()["intGridCsv"][1], 2);
+    assert_eq!(p.layer_def(uid).unwrap()["intGridValues"][0]["groupUid"], 0);
+}
+#[test]
+fn derived_external_summaries_keep_document_extensions_in_their_own_document() {
+    let mut p = Project::new();
+    let mut full = p.json["levels"][0].clone();
+    full["externalFuture"] = json!({"keep":true});
+    p.json["levels"][0]["externalRelPath"] = json!("level.ldtkl");
+    p.json["levels"][0]["layerInstances"] = serde_json::Value::Null;
+    p.json["levels"][0]["summaryFuture"] = json!(7);
+    p.external_levels.insert("level.ldtkl".into(), full);
+    p.move_level(K, 10, 20, 0).unwrap();
+    assert!(p.json["levels"][0].get("externalFuture").is_none());
+    assert_eq!(p.json["levels"][0]["summaryFuture"], 7);
+    assert_eq!(
+        p.external_levels["level.ldtkl"]["externalFuture"],
+        json!({"keep":true})
+    );
+    assert_eq!(p.json["levels"][0]["worldX"], 10);
+}
+#[test]
+fn finishing_entity_transform_checks_only_the_touched_entity_and_repairs_refs_and_points() {
+    let mut p = Project::new();
+    let layer = p.add_layer("Actors", "Entities", 16).unwrap();
+    let d = p.add_entity_def("Actor", 16, 16).unwrap();
+    let f = p
+        .add_field_definition(Some(d), "Link", "EntityRef", false)
+        .unwrap();
+    let points = p
+        .add_field_definition(Some(d), "Path", "Point", true)
+        .unwrap();
+    p.add_entity(K, 0, d, 16, 16).unwrap();
+    p.add_entity(K, 0, d, 32, 16).unwrap();
+    let first = p.layer(K, 0).unwrap()["entityInstances"][0]["iid"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let second = p.layer(K, 0).unwrap()["entityInstances"][1]["iid"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    p.set_field_value(K, Some(&second), f, json!(first))
+        .unwrap();
+    p.set_field_value(
+        K,
+        Some(&second),
+        points,
+        json!([{"cx":0,"cy":0},{"cx":9999,"cy":0}]),
+    )
+    .unwrap();
+    p.layer_mut(K, 0).unwrap()["entityInstances"][0]["px"] = json!([-1, 0]);
+    assert!(!p.finish_entity_transform(K, 0, 1).unwrap());
+    assert_eq!(
+        p.layer(K, 0).unwrap()["entityInstances"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+    assert_eq!(
+        p.layer(K, 0).unwrap()["entityInstances"][1]["fieldInstances"][1]["__value"],
+        json!([{"cx":0,"cy":0}])
+    );
+    assert!(p.finish_entity_transform(K, 0, 0).unwrap());
+    assert!(p.layer(K, 0).unwrap()["entityInstances"][0]["fieldInstances"][0]["__value"].is_null());
+    p.update_layer_properties(
+        layer,
+        &json!({"parallaxFactorX":0.5,"parallaxScaling":true}),
+    )
+    .unwrap();
+    let right = p.layer(K, 0).unwrap()["__cWid"].as_i64().unwrap() * 8;
+    p.layer_mut(K, 0).unwrap()["entityInstances"][0]["px"] = json!([right, 0]);
+    assert!(!p.finish_entity_transform(K, 0, 0).unwrap());
+    p.layer_mut(K, 0).unwrap()["entityInstances"][0]["px"] = json!([right + 1, 0]);
+    assert!(p.finish_entity_transform(K, 0, 0).unwrap());
+}

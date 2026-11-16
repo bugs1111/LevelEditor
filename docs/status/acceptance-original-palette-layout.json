@@ -1,0 +1,13 @@
+{
+  "source": "LDtk 1.5.3, isolated profile, Typical_TopDown_example.ldtk, F4",
+  "viewport": [1440, 900, 2],
+  "units": "CSS logical pixels; getBoundingClientRect and computed style",
+  "mainButtons": {"y": 0, "height": 36, "marginBottom": 4},
+  "layers": {"y": 40, "height": 162.5, "rows": 5},
+  "firstLayer": {"y": 40, "height": 31.5, "marginBottom": 1},
+  "lastLayer": {"y": 170, "height": 31.5, "marginBottom": 1},
+  "guide": {"y": 202.5, "height": 33.5, "padding": 4, "border": 1, "marginBottom": 16, "font": "13.2px Roboto", "lineHeight": "normal"},
+  "optionsWrapper": {"y": 252, "height": 29},
+  "mainPaletteWrapper": {"y": 281, "height": 619},
+  "limitation": "DOM layout evidence only; original main WebGL canvas was blank after this project's load."
+}

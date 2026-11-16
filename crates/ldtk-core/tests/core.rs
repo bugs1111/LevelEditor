@@ -60,6 +60,13 @@ fn external_levels_stay_external_after_edit_save_and_history() {
     assert_eq!(p.layer(KEY, 0).unwrap()["intGridCsv"][3], 0);
     assert!(h.redo(&mut p));
     p.save(&path).unwrap();
+    // ProjectSaver regenerates owned external filenames from the project/level identifiers.
+    raw["levels"][0]["externalRelPath"] = json!("map/Level.ldtkl");
+    assert_eq!(
+        serde_json::from_slice::<Value>(&fs::read(temp.path().join("level.ldtkl")).unwrap())
+            .unwrap(),
+        full
+    );
     assert_eq!(
         serde_json::from_slice::<Value>(&fs::read(&path).unwrap()).unwrap(),
         raw
@@ -142,7 +149,7 @@ fn entities_use_definition_defaults_pivot_fields_and_limits() {
     let entity = &p.layer(KEY, 2).unwrap()["entityInstances"][0];
     assert_eq!(entity["__identifier"], "Hero");
     assert_eq!(entity["__grid"], json!([1, 0]));
-    assert_eq!(entity["__pivot"], json!([0.5, 1.0]));
+    assert_eq!(entity["__pivot"], json!([0.5, 1]));
     assert_eq!(entity["px"], json!([16, 16]));
     assert_eq!(entity["fieldInstances"][0]["__value"], 7);
     assert_eq!(entity["fieldInstances"][0]["realEditorValues"], json!([]));
@@ -174,16 +181,22 @@ fn stroke_history_groups_changes_and_discards_redo_on_new_commit() {
 }
 
 #[test]
-fn save_as_rejects_relative_assets_in_new_directory_without_touching_source() {
+fn save_as_rebases_relative_assets_in_new_directory_without_touching_source() {
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("map.ldtk");
     let mut p = project();
     p.save(&path).unwrap();
     fs::create_dir(temp.path().join("other")).unwrap();
     let before = fs::read(&path).unwrap();
-    assert!(p.save(temp.path().join("other/map.ldtk")).is_err());
+    p.save(temp.path().join("other/map.ldtk")).unwrap();
     assert_eq!(fs::read(&path).unwrap(), before);
-    assert!(!temp.path().join("other/map.ldtk").exists());
+    assert!(temp.path().join("other/map.ldtk").exists());
+    assert!(
+        p.json["defs"]["tilesets"][0]["relPath"]
+            .as_str()
+            .unwrap()
+            .starts_with("../")
+    );
 }
 
 #[test]
@@ -216,12 +229,17 @@ fn missing_external_document_is_an_error_before_overwriting_project() {
 }
 
 #[test]
-fn history_only_changes_active_level_and_keeps_thirty_actions() {
+fn history_keeps_source_timeline_window_without_changing_other_levels() {
     let mut p = project();
-    let second = p.json["levels"][0].clone();
+    p.json["defs"]["layers"][0]["intGridValues"]
+        .as_array_mut()
+        .unwrap()
+        .extend((32..=40).map(|value| json!({"value": value})));
+    let mut second = p.json["levels"][0].clone();
+    second["iid"] = json!("second-level");
     p.json["levels"].as_array_mut().unwrap().push(second);
     let mut h = History::default();
-    for value in 1..=31 {
+    for value in 1..=40 {
         h.begin(&p, KEY);
         p.paint_int_grid(KEY, 0, 0, 0, value).unwrap();
         assert!(h.commit(&p));
@@ -232,11 +250,12 @@ fn history_only_changes_active_level_and_keeps_thirty_actions() {
         level: 1,
     };
     p.paint_int_grid(second, 0, 1, 1, 77).unwrap();
-    for _ in 0..30 {
+    // Forty states include the baseline. Overflow drops eleven states at once.
+    for _ in 0..29 {
         assert!(h.undo(&mut p));
     }
     assert!(!h.undo(&mut p));
-    assert_eq!(p.layer(KEY, 0).unwrap()["intGridCsv"][0], 1);
+    assert_eq!(p.layer(KEY, 0).unwrap()["intGridCsv"][0], 11);
     assert_eq!(p.layer(second, 0).unwrap()["intGridCsv"][3], 77);
     assert_eq!(p.json["extension"]["later"], true);
 }
@@ -278,13 +297,25 @@ fn external_save_preflights_all_files_before_replacing_any_document() {
 }
 
 #[test]
-fn int_grid_with_auto_rules_errors_instead_of_saving_stale_generated_tiles() {
+fn int_grid_with_auto_rules_rebuilds_generated_tiles_and_rolls_back_rule_errors() {
     let mut p = project();
-    p.json["defs"]["layers"][0]["autoRuleGroups"] =
-        json!([{"active":true,"rules":[{"active":true}]}]);
+    p.json["defs"]["layers"][0]["gridSize"] = json!(16);
+    p.json["defs"]["layers"][0]["tilesetDefUid"] = json!(9);
+    p.json["defs"]["layers"][0]["autoRuleGroups"] = json!([{"uid":100,"active":true,"rules":[{"uid":101,"active":true,"size":1,"pattern":[1],"tileRectsIds":[[0]],"chance":1}]}]);
+    assert!(p.paint_int_grid(KEY, 0, 0, 0, 1).unwrap());
+    assert_eq!(
+        p.layer(KEY, 0).unwrap()["autoLayerTiles"][0]["px"],
+        json!([0, 0])
+    );
     let before = p.json.clone();
-    assert!(p.paint_int_grid(KEY, 0, 0, 0, 1).is_err());
-    assert_eq!(p.json, before);
+    p.json["defs"]["layers"][0]["autoRuleGroups"][0]["rules"][0]["xModulo"] = json!(0);
+    let broken = p.json.clone();
+    assert!(p.paint_int_grid(KEY, 0, 1, 0, 1).is_err());
+    assert_eq!(p.json, broken);
+    assert_eq!(
+        p.layer(KEY, 0).unwrap()["intGridCsv"],
+        before["levels"][0]["layerInstances"][0]["intGridCsv"]
+    );
 }
 
 #[test]
@@ -295,7 +326,7 @@ fn entity_move_limit_preserves_identity_and_existing_custom_values() {
     let entity = &mut p.layer_mut(KEY, 2).unwrap()["entityInstances"][0];
     let iid = entity["iid"].clone();
     entity["future"] = json!("keep");
-    entity["fieldInstances"][0]["__value"] = json!(99);
+    entity["fieldInstances"][0]["realEditorValues"] = json!([{"id":"V_Int","params":[99]}]);
     assert!(p.add_entity(KEY, 2, 4, 16, 16).unwrap());
     let entities = p.layer(KEY, 2).unwrap()["entityInstances"]
         .as_array()
@@ -323,9 +354,13 @@ fn entity_tag_filters_and_world_count_limits_are_honored() {
     };
     assert!(!p.add_entity(second_key, 2, 4, 0, 0).unwrap());
     p.json["defs"]["entities"][0]["limitBehavior"] = json!("MoveLastOne");
-    let before = p.json.clone();
-    assert!(p.add_entity(second_key, 2, 4, 0, 0).is_err());
-    assert_eq!(p.json, before);
+    let iid = p.layer(KEY, 2).unwrap()["entityInstances"][0]["iid"].clone();
+    assert!(p.add_entity(second_key, 2, 4, 0, 0).unwrap());
+    assert_eq!(p.layer(KEY, 2).unwrap()["entityInstances"], json!([]));
+    assert_eq!(
+        p.layer(second_key, 2).unwrap()["entityInstances"][0]["iid"],
+        iid
+    );
 }
 
 #[test]
@@ -378,12 +413,12 @@ fn int_grid_rejects_malformed_touched_cell_without_scanning_unrelated_cells() {
 }
 
 #[test]
-fn int_grid_auto_layer_source_is_protected_from_stale_generated_tiles() {
+fn int_grid_auto_layer_source_rebuilds_dependent_generated_tiles() {
     let mut p = project();
-    p.json["defs"]["layers"].as_array_mut().unwrap().push(json!({"uid":99,"type":"AutoLayer","autoSourceLayerDefUid":1,"autoRuleGroups":[{"active":true,"rules":[{"active":true}]}]}));
-    let before = p.json.clone();
-    assert!(p.paint_int_grid(KEY, 0, 0, 0, 1).is_err());
-    assert_eq!(p.json, before);
+    p.json["defs"]["layers"].as_array_mut().unwrap().push(json!({"uid":99,"type":"AutoLayer","gridSize":16,"tilesetDefUid":9,"autoSourceLayerDefUid":1,"autoRuleGroups":[{"uid":100,"active":true,"rules":[{"uid":101,"active":true,"size":1,"pattern":[1],"tileRectsIds":[[0]],"chance":1}]}]}));
+    p.json["levels"][0]["layerInstances"].as_array_mut().unwrap().push(json!({"__type":"AutoLayer","layerDefUid":99,"__cWid":2,"__cHei":2,"__gridSize":16,"autoLayerTiles":[]}));
+    assert!(p.paint_int_grid(KEY, 0, 0, 0, 1).unwrap());
+    assert_eq!(p.layer(KEY, 3).unwrap()["autoLayerTiles"][0]["t"], 0);
 }
 
 #[test]
@@ -402,7 +437,15 @@ fn save_as_detects_relative_file_path_fields_even_without_tilesets() {
     p.json["levels"][0]["fieldInstances"] = json!([{"__type":"Array<FilePath>","__value":["data/config.json"],"realEditorValues":[{"id":"V_String","params":["data/config.json"]}]}]);
     p.save(temp.path().join("map.ldtk")).unwrap();
     fs::create_dir(temp.path().join("other")).unwrap();
-    assert!(p.save(temp.path().join("other/map.ldtk")).is_err());
+    p.save(temp.path().join("other/map.ldtk")).unwrap();
+    assert_eq!(
+        p.json["levels"][0]["fieldInstances"][0]["__value"][0],
+        "../data/config.json"
+    );
+    assert_eq!(
+        p.json["levels"][0]["fieldInstances"][0]["realEditorValues"][0]["params"][0],
+        "../data/config.json"
+    );
 }
 
 #[test]
@@ -421,15 +464,21 @@ fn same_directory_save_as_with_external_levels_does_not_modify_the_source_projec
     p.paint_int_grid(KEY, 0, 0, 0, 8).unwrap();
     let source_bytes = fs::read(&source).unwrap();
     let external_bytes = fs::read(&external_path).unwrap();
-    let json_before = p.json.clone();
-    let levels_before = p.external_levels.clone();
-    assert!(p.save(&target).is_err());
-    assert_eq!(p.path.as_deref(), Some(source.as_path()));
-    assert_eq!(p.json, json_before);
-    assert_eq!(p.external_levels, levels_before);
+    p.save(&target).unwrap();
+    assert_eq!(p.path.as_deref(), Some(target.as_path()));
+    assert!(
+        p.json["levels"][0]["externalRelPath"]
+            .as_str()
+            .unwrap()
+            .starts_with("B/")
+    );
+    assert_eq!(
+        Project::load(&target).unwrap().layer(KEY, 0).unwrap()["intGridCsv"][0],
+        8
+    );
     assert_eq!(fs::read(&source).unwrap(), source_bytes);
     assert_eq!(fs::read(&external_path).unwrap(), external_bytes);
-    assert!(!target.exists());
+    assert!(target.exists());
     assert_eq!(
         Project::load(&source).unwrap().layer(KEY, 0).unwrap()["intGridCsv"][0],
         0

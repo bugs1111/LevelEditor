@@ -29,40 +29,39 @@ fn unreferenced_entities_can_be_removed_once_and_out_of_range_is_noop() {
 }
 
 #[test]
-fn deleting_cross_level_scalar_or_array_entity_refs_is_refused_atomically() {
+fn deleting_cross_level_scalar_or_array_entity_refs_cleans_both_documents() {
     for array in [false, true] {
         let (mut p, _, iid) = populated();
         let value =
             json!({"entityIid":iid,"levelIid":"ignored","layerIid":"ignored","worldIid":"ignored"});
         let field = json!({"__type":if array {"Array<EntityRef>"} else {"EntityRef"},"__value":if array {json!([value])}else{value},"realEditorValues":[]});
         p.json["levels"][1]["fieldInstances"] = json!([field]);
-        let before = p.json.clone();
-        assert!(p.remove_entity(KEY, 0, 0).is_err());
-        assert_eq!(p.json, before);
+        assert!(p.remove_entity(KEY, 0, 0).unwrap());
+        assert_eq!(
+            p.json["levels"][1]["fieldInstances"][0]["__value"],
+            if array { json!([]) } else { Value::Null }
+        );
     }
 }
 
 #[test]
-fn editor_values_references_are_checked_even_when_exported_value_is_stale() {
+fn editor_values_references_are_cleaned_even_when_exported_value_is_stale() {
     let (mut p, _, iid) = populated();
     p.json["levels"][1]["fieldInstances"] = json!([{"__type":"EntityRef","__value":null,"realEditorValues":[{"id":"V_String","params":[iid]}]}]);
-    let before = p.json.clone();
-    assert!(p.remove_entity(KEY, 0, 0).is_err());
-    assert_eq!(p.json, before);
+    assert!(p.remove_entity(KEY, 0, 0).unwrap());
+    assert!(p.json["levels"][1]["fieldInstances"][0]["realEditorValues"][0].is_null());
 }
 
 #[test]
-fn discard_old_entities_preflights_inbound_references_before_removal() {
+fn discard_old_entities_cleans_inbound_references_before_replacement() {
     let (mut p, uid, iid) = populated();
     p.json["defs"]["entities"][0]["maxCount"] = json!(1);
     p.json["defs"]["entities"][0]["limitBehavior"] = json!("DiscardOldOnes");
     p.json["levels"][1]["fieldInstances"] =
         json!([{"__type":"EntityRef","__value":{"entityIid":iid},"realEditorValues":[]}]);
     let before = p.json.clone();
-    assert!(p.add_entity(KEY, 0, uid, 32, 32).is_err());
-    assert_eq!(p.json, before);
-    p.json["levels"][1]["fieldInstances"] = json!([]);
     assert!(p.add_entity(KEY, 0, uid, 32, 32).unwrap());
+    assert!(p.json["levels"][1]["fieldInstances"][0]["__value"].is_null());
     assert_ne!(
         p.layer(KEY, 0).unwrap()["entityInstances"][0]["iid"],
         before["levels"][0]["layerInstances"][0]["entityInstances"][0]["iid"]
@@ -78,25 +77,33 @@ fn unresolved_external_level_prevents_unchecked_entity_deletion() {
 }
 
 #[test]
-fn toc_exported_entity_edits_are_refused_until_derived_toc_can_be_regenerated() {
+fn toc_exported_entity_edits_rebuild_derived_entries_and_preserve_metadata() {
     let (mut p, uid, _) = populated();
     p.json["defs"]["entities"][0]["exportToToc"] = json!(true);
     p.json["toc"] = json!([{"identifier":"Hero","instancesData":[],"future":"keep"}]);
-    let before = p.json.clone();
-    assert!(p.add_entity(KEY, 0, uid, 32, 32).is_err());
-    assert_eq!(p.json, before);
-    assert!(p.remove_entity(KEY, 0, 0).is_err());
-    assert_eq!(p.json, before);
+    assert!(p.add_entity(KEY, 0, uid, 32, 32).unwrap());
+    assert_eq!(
+        p.json["toc"][0]["instancesData"].as_array().unwrap().len(),
+        2
+    );
+    assert_eq!(p.json["toc"][0]["future"], "keep");
+    assert!(p.remove_entity(KEY, 0, 0).unwrap());
+    assert_eq!(
+        p.json["toc"][0]["instancesData"].as_array().unwrap().len(),
+        1
+    );
 }
 
 #[test]
-fn move_limited_entity_across_layers_refuses_stale_layer_reference_metadata() {
+fn move_limited_entity_across_layers_rewrites_reference_metadata() {
     let (mut p, uid, iid) = populated();
     p.add_layer("OtherActors", "Entities", 16).unwrap();
     p.json["defs"]["entities"][0]["maxCount"] = json!(1);
     p.json["defs"]["entities"][0]["limitBehavior"] = json!("MoveLastOne");
     p.json["levels"][1]["fieldInstances"] = json!([{"__type":"EntityRef","__value":{"entityIid":iid,"layerIid":"old-layer"},"realEditorValues":[]}]);
-    let before = p.json.clone();
-    assert!(p.add_entity(KEY, 0, uid, 32, 32).is_err());
-    assert_eq!(p.json, before);
+    assert!(p.add_entity(KEY, 0, uid, 32, 32).unwrap());
+    assert_eq!(
+        p.json["levels"][1]["fieldInstances"][0]["__value"]["layerIid"],
+        p.layer(KEY, 0).unwrap()["iid"]
+    );
 }

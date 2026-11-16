@@ -4,22 +4,38 @@ project_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$project_dir"
 scripts/cargo build --release --locked
 bundle="$project_dir/dist/LDtk Rust.app"
-mkdir -p "$bundle/Contents/MacOS" "$bundle/Contents/Resources"
-cp target/release/ldtk-rs "$bundle/Contents/MacOS/ldtk-rs"
-cat > "$bundle/Contents/Info.plist" <<'PLIST'
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0"><dict>
-  <key>CFBundleExecutable</key><string>ldtk-rs</string>
-  <key>CFBundleIdentifier</key><string>io.ldtk.rust-port</string>
-  <key>CFBundleName</key><string>LDtk Rust</string>
-  <key>CFBundleDisplayName</key><string>LDtk Rust</string>
-  <key>CFBundlePackageType</key><string>APPL</string>
-  <key>CFBundleShortVersionString</key><string>0.1.0</string>
-  <key>CFBundleVersion</key><string>1</string>
-  <key>NSHighResolutionCapable</key><true/>
-  <key>LSMinimumSystemVersion</key><string>12.0</string>
-</dict></plist>
-PLIST
-codesign --force --deep --sign - "$bundle"
+mkdir -p "$project_dir/dist"
+staging_dir=$(mktemp -d "$project_dir/dist/.ldtk-rust-app.XXXXXX")
+staged_bundle="$staging_dir/LDtk Rust.app"
+previous_bundle="$staging_dir/previous.app"
+cleanup() {
+    if [ -e "$previous_bundle" ] && [ ! -e "$bundle" ]; then
+        if ! mv "$previous_bundle" "$bundle"; then
+            printf 'Previous bundle retained at %s\n' "$previous_bundle" >&2
+            return 1
+        fi
+    fi
+    rm -rf "$staging_dir"
+}
+trap cleanup EXIT
+trap 'exit 1' HUP INT TERM
+mkdir -p "$staged_bundle/Contents/MacOS" "$staged_bundle/Contents/Resources/examples"
+cp target/release/ldtk-rs "$staged_bundle/Contents/MacOS/ldtk-rs"
+cp -R examples/original "$staged_bundle/Contents/Resources/examples/"
+cp -R assets "$staged_bundle/Contents/Resources/"
+cp assets/LDtk.icns "$staged_bundle/Contents/Resources/LDtk.icns"
+cp assets/project.icns "$staged_bundle/Contents/Resources/project.icns"
+cp LICENSE THIRD_PARTY_NOTICES.md "$staged_bundle/Contents/Resources/"
+cp scripts/ldtk-rs-install.json "$staged_bundle/Contents/Resources/ldtk-rs-install.json"
+cp scripts/macos-info.plist "$staged_bundle/Contents/Info.plist"
+app_version=$(python3 -c 'import pathlib,re; print(re.search(r"^version = \"([^\"]+)\"",pathlib.Path("Cargo.toml").read_text(),re.M)[1])')
+plutil -replace CFBundleShortVersionString -string "$app_version" "$staged_bundle/Contents/Info.plist"
+plutil -replace CFBundleVersion -string "$app_version" "$staged_bundle/Contents/Info.plist"
+plutil -lint "$staged_bundle/Contents/Info.plist"
+codesign --force --deep --sign - "$staged_bundle"
+codesign --verify --deep --strict "$staged_bundle"
+if [ -e "$bundle" ]; then
+    mv "$bundle" "$previous_bundle"
+fi
+mv "$staged_bundle" "$bundle"
 printf '%s\n' "$bundle"

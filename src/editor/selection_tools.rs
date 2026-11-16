@@ -1,0 +1,526 @@
+use super::*;
+use serde_json::json;
+
+impl EditorApp {
+    pub(super) fn selection_geometries(&self, key: LevelKey) -> Value {
+        let Some(project) = &self.project else {
+            return json!([]);
+        };
+        json!(project.level(key).and_then(|l|l["layerInstances"].as_array()).into_iter().flatten().enumerate().map(|(index,layer)|{
+            let origin=canvas::layer_to_world(project,key,index,&self.viewport,[0.0,0.0]);let unit=canvas::layer_to_world(project,key,index,&self.viewport,[1.0,0.0]);
+            let kind=text(layer,"__type","");let details=self.details||matches!(kind,"Tiles"|"AutoLayer")||kind=="IntGrid"&&project.layer_def(layer["layerDefUid"].as_i64().unwrap_or(-1)).is_some_and(|d|d["autoRuleGroups"].as_array().is_some_and(|rules|!rules.is_empty()));
+            let visible=self.layer_visible(key,index)&&(!self.single_layer||index==self.layer)&&details;
+            json!({"layerDefUid":layer["layerDefUid"],"origin":origin,"scale":unit[0]-origin[0],"visible":visible})
+        }).collect::<Vec<_>>())
+    }
+
+    fn selection_smart_layer(&self) -> Option<(LevelKey, usize, f32, f32)> {
+        let key = self.selected?;
+        let project = self.project.as_ref()?;
+        let group = self.selection_group.as_ref()?;
+        group["layers"]
+            .as_array()?
+            .iter()
+            .filter(|entry| {
+                ["entityInstances", "gridTiles"].iter().any(|name| {
+                    entry["clipboard"][*name]
+                        .as_array()
+                        .is_some_and(|v| !v.is_empty())
+                }) || entry["points"].as_array().is_some_and(|v| !v.is_empty())
+                    || entry["clipboard"]["intGridCsv"]
+                        .as_array()
+                        .is_some_and(|v| v.iter().any(|v| v.as_i64().is_some_and(|v| v != 0)))
+            })
+            .filter_map(|entry| {
+                let index = project.level(key)?["layerInstances"]
+                    .as_array()?
+                    .iter()
+                    .position(|l| l["layerDefUid"] == entry["layerDefUid"])?;
+                let grid = number(project.layer(key, index)?, "__gridSize", 16.0);
+                let a = canvas::layer_to_world(project, key, index, &self.viewport, [0.0; 2]);
+                let b = canvas::layer_to_world(project, key, index, &self.viewport, [1.0, 0.0]);
+                Some((key, index, grid, b[0] - a[0]))
+            })
+            .reduce(|best, item| {
+                if item.2 * item.3 > best.2 * best.3 {
+                    item
+                } else {
+                    best
+                }
+            })
+    }
+    pub(super) fn selection_world_delta(&self, start: [f32; 2], end: [f32; 2]) -> [f64; 2] {
+        let Some((key, index, grid, scale)) = self.selection_smart_layer() else {
+            return [0.0; 2];
+        };
+        let project = self.project.as_ref().unwrap();
+        let a = canvas::world_to_layer(project, key, index, &self.viewport, start);
+        let b = canvas::world_to_layer(project, key, index, &self.viewport, end);
+        std::array::from_fn(|axis| {
+            f64::from(((b[axis] / grid).floor() - (a[axis] / grid).floor()) * grid * scale)
+        })
+    }
+    pub(super) fn selection_arrow_origin(&self, point: [f32; 2]) -> [f32; 2] {
+        let Some((key, index, grid, _)) = self.selection_smart_layer() else {
+            return point;
+        };
+        let project = self.project.as_ref().unwrap();
+        let p = canvas::world_to_layer(project, key, index, &self.viewport, point);
+        canvas::layer_to_world(
+            project,
+            key,
+            index,
+            &self.viewport,
+            p.map(|v| ((v / grid).floor() + 0.5) * grid),
+        )
+    }
+    pub(super) fn selection_contains_world(&self, world: [f32; 2]) -> bool {
+        let (Some(project), Some(key)) = (&self.project, self.selected) else {
+            return false;
+        };
+        let Some(group) = &self.selection_group else {
+            return self.selection.is_some_and(|r| {
+                let grid = project
+                    .layer(key, self.layer)
+                    .map(|l| number(l, "__gridSize", 16.0))
+                    .unwrap_or(16.0);
+                let p = canvas::world_to_layer(project, key, self.layer, &self.viewport, world);
+                p[0] >= r[0] as f32 * grid
+                    && p[1] >= r[1] as f32 * grid
+                    && p[0] < (r[0] + r[2]) as f32 * grid
+                    && p[1] < (r[1] + r[3]) as f32 * grid
+            });
+        };
+        if group["emptySpace"] == true
+            && group["originalRects"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .any(|r| {
+                    world[0] >= number(r, "leftPx", 0.0)
+                        && world[0] <= number(r, "rightPx", 0.0)
+                        && world[1] >= number(r, "topPx", 0.0)
+                        && world[1] <= number(r, "bottomPx", 0.0)
+                })
+        {
+            return true;
+        }
+        group["layers"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .any(|entry| {
+                let Some(index) = project
+                    .level(key)
+                    .and_then(|l| l["layerInstances"].as_array())
+                    .and_then(|layers| {
+                        layers
+                            .iter()
+                            .position(|l| l["layerDefUid"] == entry["layerDefUid"])
+                    })
+                else {
+                    return false;
+                };
+                let layer = project.layer(key, index).unwrap();
+                let grid = number(layer, "__gridSize", 16.0);
+                let p = canvas::world_to_layer(project, key, index, &self.viewport, world);
+                let cell = p.map(|v| (v / grid).floor() as i64);
+                let left = entry["rect"][0].as_i64().unwrap_or(0);
+                let top = entry["rect"][1].as_i64().unwrap_or(0);
+                let width = entry["clipboard"]["width"].as_i64().unwrap_or(0);
+                let i = (cell[1] - top) * width + cell[0] - left;
+                if cell[0] >= left
+                    && cell[0] < left + width
+                    && entry["cellMask"]
+                        .as_array()
+                        .is_some_and(|mask| mask.iter().any(|v| v.as_i64() == Some(i)))
+                {
+                    return true;
+                }
+                if entry["clipboard"]["gridTiles"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .any(|t| {
+                        (t["px"][0].as_f64().unwrap_or(0.0) as f32 / grid).floor() as i64 + left
+                            == cell[0]
+                            && (t["px"][1].as_f64().unwrap_or(0.0) as f32 / grid).floor() as i64
+                                + top
+                                == cell[1]
+                    })
+                {
+                    return true;
+                }
+                if entry["points"].as_array().into_iter().flatten().any(|pt| {
+                    pt["value"]["cx"].as_i64() == Some(cell[0])
+                        && pt["value"]["cy"].as_i64() == Some(cell[1])
+                }) {
+                    return true;
+                }
+                entry["clipboard"]["entityInstances"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .any(|selected| {
+                        layer["entityInstances"]
+                            .as_array()
+                            .into_iter()
+                            .flatten()
+                            .find(|e| e["iid"] == selected["iid"])
+                            .is_some_and(|e| selection_click::entity_is_over(project, e, p))
+                    })
+            })
+    }
+    pub(super) fn set_selection_group(&mut self, group: Value) {
+        if group["elementCount"].as_u64().is_some_and(|n| n > 1) {
+            self.entity_index = None;
+            if self.panel == Some(Panel::Entity) {
+                self.panel = None;
+            }
+        }
+        if group["elementCount"].as_u64() == Some(0) {
+            self.selection = None;
+            self.selection_group = None;
+            return;
+        }
+        if let Some(layer) = self
+            .selected
+            .and_then(|k| self.project.as_ref()?.layer(k, self.layer))
+        {
+            let grid = number(layer, "__gridSize", 16.0);
+            if group["geometryAware"] == true {
+                let project = self.project.as_ref().unwrap();
+                let key = self.selected.unwrap();
+                let origin = [
+                    group["origin"][0].as_f64().unwrap_or(0.0) as f32,
+                    group["origin"][1].as_f64().unwrap_or(0.0) as f32,
+                ];
+                let a = canvas::world_to_layer(project, key, self.layer, &self.viewport, origin);
+                let b = canvas::world_to_layer(
+                    project,
+                    key,
+                    self.layer,
+                    &self.viewport,
+                    [
+                        origin[0] + group["size"][0].as_f64().unwrap_or(0.0) as f32,
+                        origin[1] + group["size"][1].as_f64().unwrap_or(0.0) as f32,
+                    ],
+                );
+                self.selection = Some([
+                    (a[0] / grid).floor() as i32,
+                    (a[1] / grid).floor() as i32,
+                    ((b[0] - a[0]) / grid).ceil() as i32,
+                    ((b[1] - a[1]) / grid).ceil() as i32,
+                ]);
+                self.selection_group = Some(group);
+                return;
+            }
+            self.selection = Some([
+                ((group["origin"][0].as_f64().unwrap_or(0.0) as f32
+                    - number(layer, "__pxTotalOffsetX", 0.0))
+                    / grid)
+                    .floor() as i32,
+                ((group["origin"][1].as_f64().unwrap_or(0.0) as f32
+                    - number(layer, "__pxTotalOffsetY", 0.0))
+                    / grid)
+                    .floor() as i32,
+                (group["size"][0].as_f64().unwrap_or(0.0) as f32 / grid).ceil() as i32,
+                (group["size"][1].as_f64().unwrap_or(0.0) as f32 / grid).ceil() as i32,
+            ]);
+        }
+        self.selection_group = Some(group);
+    }
+    fn selectable_layers(&self) -> Vec<usize> {
+        let Some(project) = &self.project else {
+            return vec![];
+        };
+        let Some(level) = self.selected.and_then(|k| project.level(k)) else {
+            return vec![];
+        };
+        level["layerInstances"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .enumerate()
+            .filter(|(i, l)| {
+                let d = l["layerDefUid"]
+                    .as_i64()
+                    .and_then(|uid| project.layer_def(uid));
+                l["visible"] != false
+                    && (!self.single_layer || *i == self.layer)
+                    && !self
+                        .hidden
+                        .contains(&l["layerDefUid"].as_i64().unwrap_or(-1))
+                    && (*i == self.layer || d.is_some_and(|d| d["canSelectWhenInactive"] != false))
+                    && (self.details || l["__type"] != "Entities")
+                    && l["__type"] != "AutoLayer"
+            })
+            .map(|(i, _)| i)
+            .collect()
+    }
+
+    pub(super) fn capture_selection(&mut self, region: [i32; 4]) {
+        let Some(key) = self.selected else {
+            return;
+        };
+        let Some(project) = &self.project else {
+            return;
+        };
+        let Some(layer) = project.layer(key, self.layer) else {
+            return;
+        };
+        let grid = number(layer, "__gridSize", 16.0);
+        let a = canvas::layer_to_world(
+            project,
+            key,
+            self.layer,
+            &self.viewport,
+            [region[0] as f32 * grid, region[1] as f32 * grid],
+        );
+        let b = canvas::layer_to_world(
+            project,
+            key,
+            self.layer,
+            &self.viewport,
+            [
+                (region[0] + region[2]) as f32 * grid,
+                (region[1] + region[3]) as f32 * grid,
+            ],
+        );
+        let bounds = [
+            a[0].floor() as i32,
+            a[1].floor() as i32,
+            (b[0] - a[0]).ceil().max(1.0) as i32,
+            (b[1] - a[1]).ceil().max(1.0) as i32,
+        ];
+        let geometries = self.selection_geometries(key);
+        let regions = json!(
+            self.selectable_layers()
+                .iter()
+                .map(|&index| {
+                    let layer = project.layer(key, index).unwrap();
+                    let grid = number(layer, "__gridSize", 16.0);
+                    let left = canvas::world_to_layer(project, key, index, &self.viewport, a);
+                    let right = canvas::world_to_layer(project, key, index, &self.viewport, b);
+                    let x = (left[0] / grid).floor() as i32;
+                    let y = (left[1] / grid).floor() as i32;
+                    let w = (right[0] / grid).ceil() as i32 - x;
+                    let h = (right[1] / grid).ceil() as i32 - y;
+                    json!({"layerIndex":index,"rect":[x,y,w,h],"geometry":geometries[index]})
+                })
+                .collect::<Vec<_>>()
+        );
+        match project.copy_selection_group_from_regions(key, &regions, bounds) {
+            Ok(mut group) => {
+                group["emptySpace"] = self.settings.bool("emptySpaceSelection").into();
+                if group["elementCount"].as_u64().is_some_and(|n| n > 1) {
+                    self.entity_index = None;
+                    if self.panel == Some(Panel::Entity) {
+                        self.panel = None;
+                    }
+                }
+                self.selection_group = Some(group);
+                self.selection = Some(region);
+            }
+            Err(e) => {
+                self.status = e.to_string();
+                self.status_error = true;
+            }
+        }
+    }
+
+    pub(super) fn select_all(&mut self) {
+        let Some(key) = self.selected else {
+            return;
+        };
+        let Some(project) = &self.project else {
+            return;
+        };
+        let geometries = self.selection_geometries(key);
+        let regions=json!(self.selectable_layers().into_iter().map(|index|{
+            let layer=project.layer(key,index).unwrap();
+            json!({"layerIndex":index,"rect":[0,0,layer["__cWid"],layer["__cHei"]],"geometry":geometries[index],"all":true})
+        }).collect::<Vec<_>>());
+        match project.copy_selection_group_from_regions(
+            key,
+            &regions,
+            [
+                0,
+                0,
+                number(project.level(key).unwrap(), "pxWid", 1.0) as i32,
+                number(project.level(key).unwrap(), "pxHei", 1.0) as i32,
+            ],
+        ) {
+            Ok(mut group) => {
+                group["emptySpace"] = self.settings.bool("emptySpaceSelection").into();
+                self.set_selection_group(group);
+            }
+            Err(e) => {
+                self.status = e.to_string();
+                self.status_error = true;
+            }
+        }
+    }
+
+    pub(super) fn copy_selection(&mut self, ctx: &egui::Context, cut: bool) {
+        let Some(key) = self.selected else {
+            return;
+        };
+        if self.selection_group.is_none()
+            && let Some(region) = self.selection
+        {
+            self.capture_selection(region);
+        }
+        let Some(group) = self.selection_group.clone() else {
+            return;
+        };
+        let geometries = self.selection_geometries(key);
+        let result = if cut {
+            self.edit_level_marked("Selection cut", key, |p, history| {
+                let value = p.refresh_selection_group_geometry(key, &group, &geometries)?;
+                bleep::mark_group(history, p, key, &value, true);
+                p.delete_selection_group(key, &value)?;
+                Ok(value)
+            })
+        } else {
+            self.project.as_ref().and_then(|p| {
+                p.refresh_selection_group_geometry(key, &group, &geometries)
+                    .map_err(|e| {
+                        self.status = e.to_string();
+                    })
+                    .ok()
+            })
+        };
+        if let Some(value) = result {
+            ctx.copy_text(value.to_string());
+            self.clipboard = Some(value);
+            if cut {
+                self.selection = None;
+                self.selection_group = None;
+            }
+        }
+    }
+
+    pub(super) fn paste_at(&mut self, cell: [i32; 2]) {
+        let Some(key) = self.selected else {
+            return;
+        };
+        let Some(value) = self.stamp.clone().or_else(|| self.clipboard.clone()) else {
+            return;
+        };
+        let index = self.layer;
+        let flips = self.flips;
+        let stack = self.tile_stacking;
+        let Some(layer) = self.project.as_ref().and_then(|p| p.layer(key, index)) else {
+            return;
+        };
+        let grid = number(layer, "__gridSize", 16.0) as i32;
+        let project = self.project.as_ref().unwrap();
+        let origin = canvas::layer_to_world(
+            project,
+            key,
+            index,
+            &self.viewport,
+            [cell[0] as f32 * grid as f32, cell[1] as f32 * grid as f32],
+        )
+        .map(f64::from);
+        let geometries = self.selection_geometries(key);
+        let result = self.edit_level_marked("Selection pasted", key, |p, history| {
+            if value["type"] == "SelectionGroup" {
+                p.paste_selection_group_with_geometry(
+                    key,
+                    &value,
+                    origin,
+                    &geometries,
+                    false,
+                    false,
+                    stack,
+                )
+                .map(|group| {
+                    bleep::mark_group(history, p, key, &group, true);
+                    Some(group)
+                })
+            } else {
+                p.paste_region(
+                    key,
+                    index,
+                    &value,
+                    cell[0],
+                    cell[1],
+                    flips & 1 != 0,
+                    flips & 2 != 0,
+                    stack,
+                )?;
+                p.rebuild_auto_layers(key)?;
+                Ok(None)
+            }
+        });
+        if let Some(Some(group)) = result {
+            self.set_selection_group(group);
+        }
+    }
+
+    pub(super) fn delete_selection(&mut self) {
+        let Some(key) = self.selected else {
+            return;
+        };
+        if self.selection_group.is_none()
+            && let Some(region) = self.selection
+        {
+            self.capture_selection(region);
+        }
+        let Some(group) = self.selection_group.clone() else {
+            if let Some(index) = self.entity_index {
+                let layer = self.layer;
+                self.edit_level_marked("Entity deleted", key, |p, history| {
+                    if let Some(entity) = p
+                        .layer(key, layer)
+                        .and_then(|l| l["entityInstances"].get(index))
+                    {
+                        history.mark_entity_change(p, key, layer, entity);
+                    }
+                    p.remove_entity_with_references(key, layer, index)
+                });
+                self.entity_index = None;
+            }
+            return;
+        };
+        if self
+            .edit_level_marked("Selection deleted", key, |p, history| {
+                bleep::mark_group(history, p, key, &group, true);
+                p.delete_selection_group(key, &group)
+            })
+            .is_some()
+        {
+            self.selection = None;
+            self.selection_group = None;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn empty_larger_grid_layer_never_changes_selection_movement_grid() {
+        let mut p = Project::new();
+        p.add_layer("EmptyLarge", "IntGrid", 64).unwrap();
+        let fine = p.add_layer("Fine", "IntGrid", 16).unwrap();
+        let key = p.level_keys()[0];
+        let index = p.level(key).unwrap()["layerInstances"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .position(|l| l["layerDefUid"] == fine)
+            .unwrap();
+        p.paint_int_grid(key, index, 0, 0, 1).unwrap();
+        let mut app = EditorApp::empty();
+        app.set_project(p);
+        app.layer = index;
+        app.capture_selection([0, 0, 4, 1]);
+        assert_eq!(
+            app.selection_world_delta([1.0, 1.0], [17.0, 1.0]),
+            [16.0, 0.0]
+        );
+    }
+}

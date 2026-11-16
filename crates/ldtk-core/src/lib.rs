@@ -1,10 +1,23 @@
+mod autotile;
+pub mod clipboard;
 mod definitions;
 mod edit;
+pub mod enum_sync;
+pub mod exports;
+mod field_edit;
 mod history;
+pub mod imports;
+mod naming;
 mod project;
+mod selection;
+mod selection_group;
+mod workflow;
 
+pub use definitions::TilesetRemap;
+pub use field_edit::FieldArrayEdit;
 pub use history::History;
-pub use project::{LevelKey, Project};
+pub use project::{BackupInfo, FilesystemSnapshot, LevelKey, Project, SaveReport};
+pub use workflow::{constrained_entity_size, snapped_entity_position};
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {

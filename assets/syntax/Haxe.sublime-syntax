@@ -1,0 +1,82 @@
+%YAML 1.2
+---
+# Native translation of CodeMirror 5's Haxe tokenizer bundled with LDtk 1.5.3.
+# Copyright (C) 2017 Marijn Haverbeke and others; MIT, see THIRD_PARTY_NOTICES.md.
+name: Haxe
+file_extensions: [hx, hscript]
+scope: source.haxe
+contexts:
+  main:
+    - match: '//'
+      scope: punctuation.definition.comment.haxe
+      push:
+        - meta_scope: comment.line.double-slash.haxe
+        - match: '$'
+          pop: true
+    - match: '/\*'
+      scope: punctuation.definition.comment.begin.haxe
+      push:
+        - meta_scope: comment.block.haxe
+        - match: '\*/'
+          scope: punctuation.definition.comment.end.haxe
+          pop: true
+    - match: '"'
+      scope: punctuation.definition.string.begin.haxe
+      push: double-string
+    - match: "'"
+      scope: punctuation.definition.string.begin.haxe
+      push: single-string
+    - match: '~/'
+      scope: punctuation.definition.string.begin.haxe
+      push:
+        - meta_scope: string.regexp.haxe
+        - match: '\\.'
+          scope: constant.character.escape.haxe
+        - match: '/[gimsu]*'
+          scope: punctuation.definition.string.end.haxe
+          pop: true
+        - match: '$'
+          pop: true
+    - match: '#.*$'
+      scope: meta.preprocessor.haxe
+    - match: '@:?[\w_]*'
+      scope: meta.annotation.haxe
+    - match: '\b0[xX][\da-fA-F]*'
+      scope: constant.numeric.integer.hexadecimal.haxe
+    - match: '-?\b\d+(?:\.\d*(?!\.))?(?:[eE][+\-]?\d+)?'
+      scope: constant.numeric.haxe
+    # A keyword following a dot is a property, not a reserved word.
+    - match: '(\.)([a-z_][\w_]*)'
+      captures:
+        1: punctuation.accessor.haxe
+        2: variable.other.member.haxe
+    - match: '\b(?:true|false|null)\b'
+      scope: constant.language.haxe
+    - match: '\b(?:inline|static|public|private)\b'
+      scope: entity.other.attribute-name.haxe
+    - match: '\b(?:if|while|else|do|try|return|break|continue|new|throw|var|using|cast|import|macro|function|catch|untyped|callback|for|switch|case|default|never|trace|class|abstract|enum|interface|typedef|extends|implements|dynamic)\b'
+      scope: keyword.control.haxe
+    - match: '\bin\b'
+      scope: keyword.operator.word.haxe
+    - match: '\b[A-Z][\w_<>]*'
+      scope: support.type.haxe
+    - match: '[+\-*&%=<>!?|/]+'
+      scope: keyword.operator.haxe
+    - match: '[\[\]{}(),;:.]'
+      scope: punctuation.haxe
+    - match: '[\w_]+'
+      scope: variable.other.haxe
+  double-string:
+    - meta_scope: string.quoted.double.haxe
+    - match: '\\.'
+      scope: constant.character.escape.haxe
+    - match: '"'
+      scope: punctuation.definition.string.end.haxe
+      pop: true
+  single-string:
+    - meta_scope: string.quoted.single.haxe
+    - match: '\\.'
+      scope: constant.character.escape.haxe
+    - match: "'"
+      scope: punctuation.definition.string.end.haxe
+      pop: true

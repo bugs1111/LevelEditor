@@ -1,0 +1,237 @@
+use ldtk_core::Project;
+use serde_json::json;
+use std::fs;
+#[test]
+fn json_and_text_enums_sync_order_colors_and_checksums() {
+    let t = tempfile::tempdir().unwrap();
+    let mut p = Project::new();
+    p.path = Some(t.path().join("game.ldtk"));
+    let file = t.path().join("values.json");
+    fs::write(&file, r#"{"State":["Idle","Run"]}"#).unwrap();
+    let report = p.sync_external_enums(&file).unwrap();
+    assert!(report.applied);
+    assert_eq!(p.json["defs"]["externalEnums"][0]["values"][1]["id"], "Run");
+    let id = p.json["defs"]["externalEnums"][0]["uid"].clone();
+    assert_eq!(
+        p.json["defs"]["externalEnums"][0]["externalRelPath"],
+        "values.json"
+    );
+    let checksum = p.json["defs"]["externalEnums"][0]["externalFileChecksum"]
+        .as_str()
+        .unwrap();
+    assert_eq!(checksum.len(), 32);
+    fs::write(&file, r#"{"State":["Run","Jump"]}"#).unwrap();
+    p.sync_external_enums(&file).unwrap();
+    assert_eq!(p.json["defs"]["externalEnums"][0]["uid"], id);
+    assert_eq!(p.json["defs"]["externalEnums"][0]["values"][0]["id"], "Run");
+    assert_eq!(
+        p.json["defs"]["externalEnums"][0]["values"][1]["id"],
+        "Jump"
+    );
+}
+#[test]
+fn haxe_parameterized_enums_are_skipped_and_used_removed_values_need_resolution() {
+    let t = tempfile::tempdir().unwrap();
+    let path = t.path().join("State.hx");
+    fs::write(
+        &path,
+        "// enum Bogus { No; }\nenum State { Idle; Run; }\nenum Params { Data(x:Int); }\n",
+    )
+    .unwrap();
+    let mut p = Project::new();
+    p.path = Some(t.path().join("map.ldtk"));
+    p.sync_external_enums(&path).unwrap();
+    assert_eq!(p.json["defs"]["externalEnums"].as_array().unwrap().len(), 1);
+    p.json["levels"][0]["fieldInstances"] = json!([{"__identifier":"state","__type":"ExternEnum.State","__value":"Idle","realEditorValues":[{"id":"V_String","params":["Idle"]}]}]);
+    fs::write(&path, "enum State { Run; Jump; }").unwrap();
+    let before = p.json.clone();
+    let report = p.sync_external_enums(&path).unwrap();
+    assert!(report.requires_confirmation);
+    assert!(!report.applied);
+    assert_eq!(p.json, before);
+    let mut renames = std::collections::BTreeMap::new();
+    renames.insert("State.Idle".into(), "Jump".into());
+    p.apply_external_enum_sync(&path, &renames, false).unwrap();
+    assert_eq!(p.json["levels"][0]["fieldInstances"][0]["__value"], "Jump");
+    assert_eq!(
+        p.json["levels"][0]["fieldInstances"][0]["realEditorValues"][0]["params"][0],
+        "Jump"
+    );
+}
+#[test]
+fn castledb_preserves_colors_and_unique_ids() {
+    let t = tempfile::tempdir().unwrap();
+    let path = t.path().join("data.cdb");
+    fs::write(&path,json!({"sheets":[{"name":"Items","props":{},"columns":[{"name":"id","typeStr":"0"},{"name":"tint","typeStr":"11"}],"lines":[{"id":"A","tint":16711680},{"id":"A","tint":0},{"id":"B","tint":255}]}]}).to_string()).unwrap();
+    let mut p = Project::new();
+    p.path = Some(t.path().join("game.ldtk"));
+    p.sync_external_enums(path).unwrap();
+    let values = &p.json["defs"]["externalEnums"][0]["values"];
+    assert_eq!(values.as_array().unwrap().len(), 2);
+    assert_eq!(values[0]["color"], 16711680);
+    assert_eq!(values[1]["color"], 255);
+}
+#[test]
+fn removed_enum_definitions_require_resolution_and_explicit_removal_tidies_fields() {
+    let t = tempfile::tempdir().unwrap();
+    let path = t.path().join("state.json");
+    fs::write(&path, r#"{"State":["Idle","Run"],"Other":["A","B"]}"#).unwrap();
+    let mut p = Project::new();
+    p.path = Some(t.path().join("game.ldtk"));
+    p.sync_external_enums(&path).unwrap();
+    let id = p.json["defs"]["externalEnums"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["identifier"] == "State")
+        .unwrap()["uid"]
+        .as_i64()
+        .unwrap();
+    p.json["defs"]["levelFields"] = json!([{"uid":77,"identifier":"state","type":format!("F_Enum({id})"),"__type":"ExternEnum.State","defaultOverride":{"id":"V_String","params":["Idle"]}}]);
+    p.json["levels"][0]["fieldInstances"] =
+        json!([{"defUid":77,"__type":"ExternEnum.State","__value":"Idle"}]);
+    fs::write(&path, r#"{"Other":["A","B"]}"#).unwrap();
+    let report = p.sync_external_enums(&path).unwrap();
+    assert!(report.requires_confirmation);
+    p.apply_external_enum_sync(&path, &std::collections::BTreeMap::new(), true)
+        .unwrap();
+    assert_eq!(p.json["defs"]["levelFields"], json!([]));
+    assert_eq!(p.json["levels"][0]["fieldInstances"], json!([]));
+}
+#[test]
+fn identifier_style_and_duplicate_suffixes_follow_original_cleanup() {
+    let t = tempfile::tempdir().unwrap();
+    let path = t.path().join("values.json");
+    fs::write(&path, r#"{" 123_state":["a b","a__b","a b","123go","_"]}"#).unwrap();
+    let mut p = Project::new();
+    p.path = Some(t.path().join("map.ldtk"));
+    p.sync_external_enums(path).unwrap();
+    let e = &p.json["defs"]["externalEnums"][0];
+    assert_eq!(e["identifier"], "_State");
+    assert_eq!(
+        e["values"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v["id"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        vec!["A_b", "A_b2", "A_b3", "_Go", "Unnamed"]
+    );
+}
+#[test]
+fn simultaneous_enum_and_value_renames_preserve_uid_and_references() {
+    let t = tempfile::tempdir().unwrap();
+    let path = t.path().join("state.json");
+    fs::write(&path, r#"{"State":["Idle","Run"]}"#).unwrap();
+    let mut p = Project::new();
+    p.path = Some(t.path().join("map.ldtk"));
+    p.sync_external_enums(&path).unwrap();
+    let uid = p.json["defs"]["externalEnums"][0]["uid"].clone();
+    p.json["levels"][0]["fieldInstances"] = json!([{"__type":"ExternEnum.State","__value":"Idle","realEditorValues":[{"id":"V_String","params":["Idle"]}]}]);
+    fs::write(&path, r#"{"Status":["Waiting","Run"]}"#).unwrap();
+    let renames = std::collections::BTreeMap::from([
+        ("State".into(), "Status".into()),
+        ("State.Idle".into(), "Waiting".into()),
+    ]);
+    let report = p.apply_external_enum_sync(path, &renames, false).unwrap();
+    assert!(report.applied);
+    assert_eq!(p.json["defs"]["externalEnums"][0]["uid"], uid);
+    assert_eq!(
+        p.json["levels"][0]["fieldInstances"][0]["__type"],
+        "ExternEnum.Status"
+    );
+    assert_eq!(
+        p.json["levels"][0]["fieldInstances"][0]["__value"],
+        "Waiting"
+    );
+}
+#[test]
+fn enum_rename_cannot_merge_two_definition_uids_and_orphan_fields() {
+    let t = tempfile::tempdir().unwrap();
+    let path = t.path().join("state.json");
+    fs::write(&path, r#"{"State":["Idle","Run"],"Other":["A","B"]}"#).unwrap();
+    let mut p = Project::new();
+    p.path = Some(t.path().join("map.ldtk"));
+    p.sync_external_enums(&path).unwrap();
+    let before = p.json.clone();
+    fs::write(&path, r#"{"Other":["A","B"]}"#).unwrap();
+    assert!(
+        p.apply_external_enum_sync(
+            &path,
+            &std::collections::BTreeMap::from([("State".into(), "Other".into())]),
+            false
+        )
+        .is_err()
+    );
+    assert_eq!(p.json, before);
+}
+#[test]
+fn external_enum_resolutions_propagate_biomes_tile_tags_and_canonical_null_wrappers() {
+    let t = tempfile::tempdir().unwrap();
+    let path = t.path().join("state.json");
+    fs::write(&path, r#"{"State":["Idle","Run"]}"#).unwrap();
+    let mut p = Project::new();
+    p.path = Some(t.path().join("map.ldtk"));
+    p.sync_external_enums(&path).unwrap();
+    let uid = p.json["defs"]["externalEnums"][0]["uid"].as_i64().unwrap();
+    p.json["defs"]["levelFields"] = json!([{"uid":99,"identifier":"State","type":format!("F_Enum({uid})"),"__type":"ExternEnum.State","isArray":false,"canBeNull":true,"defaultOverride":null}]);
+    p.json["levels"][0]["fieldInstances"] = json!([{"defUid":99,"__type":"ExternEnum.State","__value":"Idle","realEditorValues":[{"id":"V_String","params":["Idle"]}]}]);
+    p.json["defs"]["layers"] = json!([{"uid":2,"type":"IntGrid","biomeFieldUid":99,"autoRuleGroups":[{"uid":3,"requiredBiomeValues":["Idle"],"rules":[]}]}]);
+    p.json["defs"]["tilesets"] = json!([{"uid":4,"tagsSourceEnumUid":uid,"enumTags":[{"enumValueId":"Idle","tileIds":[1,2]}]}]);
+    fs::write(&path, r#"{"State":["Jump","Run"]}"#).unwrap();
+    p.apply_external_enum_sync(
+        &path,
+        &std::collections::BTreeMap::from([("State.Idle".into(), "Jump".into())]),
+        false,
+    )
+    .unwrap();
+    assert_eq!(
+        p.json["defs"]["layers"][0]["autoRuleGroups"][0]["requiredBiomeValues"],
+        json!(["Jump"])
+    );
+    assert_eq!(
+        p.json["defs"]["tilesets"][0]["enumTags"][0]["enumValueId"],
+        "Jump"
+    );
+    fs::write(&path, r#"{"State":["Run","Other"]}"#).unwrap();
+    p.apply_external_enum_sync(path, &std::collections::BTreeMap::new(), true)
+        .unwrap();
+    assert_eq!(
+        p.json["levels"][0]["fieldInstances"][0]["realEditorValues"],
+        json!([null])
+    );
+    assert_eq!(
+        p.json["defs"]["layers"][0]["autoRuleGroups"][0]["requiredBiomeValues"],
+        json!([])
+    );
+    assert_eq!(p.json["defs"]["tilesets"][0]["enumTags"], json!([]));
+}
+#[test]
+fn removing_external_source_drops_all_its_enums_and_dependent_fields_only() {
+    let t = tempfile::tempdir().unwrap();
+    let path = t.path().join("states.json");
+    std::fs::write(&path, r#"{"State":["Idle"],"Team":["Red"]}"#).unwrap();
+    let mut p = Project::new();
+    p.sync_external_enums(&path).unwrap();
+    let uid = p.add_entity_def("Actor", 16, 16).unwrap();
+    p.add_field_definition(Some(uid), "State", "ExternEnum.State", false)
+        .unwrap();
+    let rel = p.json["defs"]["externalEnums"][0]["externalRelPath"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert_eq!(p.remove_external_enum_source(&rel).unwrap(), 2);
+    assert!(
+        p.json["defs"]["externalEnums"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        p.json["defs"]["entities"][0]["fieldDefs"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    assert!(path.exists());
+}

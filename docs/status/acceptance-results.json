@@ -1,0 +1,635 @@
+[
+  {
+    "scenario": "entities",
+    "metrics": [
+      "Ready app.update CPU: 224 samples; median 1.619ms; p95 2.537ms; max 2.898ms",
+      "RSS KiB: ready=Some(164336); capture=Some(227664)"
+    ],
+    "final": {
+      "ready": true,
+      "world": false,
+      "dirty": false,
+      "view": {
+        "center": [
+          408.0,
+          232.0
+        ],
+        "zoom": 1.0
+      },
+      "level": "Entities_demo",
+      "layer": "GameEntities",
+      "layerType": "Entities",
+      "intGridNonzero": 0,
+      "intGridChecksum": "101ab509f5770a5",
+      "entityCount": 9
+    }
+  },
+  {
+    "scenario": "large",
+    "metrics": [
+      "Ready app.update CPU: 224 samples; median 4.457ms; p95 6.556ms; max 8.808ms",
+      "RSS KiB: ready=Some(1084432); capture=Some(1146016)"
+    ],
+    "final": {
+      "ready": true,
+      "world": false,
+      "dirty": true,
+      "view": {
+        "center": [
+          1856.0,
+          864.0
+        ],
+        "zoom": 0.30000001192092896
+      },
+      "level": "Level_0",
+      "layer": "Shadows",
+      "layerType": "Entities",
+      "intGridNonzero": 0,
+      "intGridChecksum": "101ab509f5770a5",
+      "entityCount": 0
+    }
+  },
+  {
+    "scenario": "many-entities",
+    "metrics": [
+      "Ready app.update CPU: 224 samples; median 3.897ms; p95 4.177ms; max 4.478ms",
+      "RSS KiB: ready=Some(196032); capture=Some(257968)"
+    ],
+    "final": {
+      "ready": true,
+      "world": false,
+      "dirty": true,
+      "view": {
+        "center": [
+          616.0,
+          256.0
+        ],
+        "zoom": 0.800000011920929
+      },
+      "level": "Level_0",
+      "layer": "Entities",
+      "layerType": "Entities",
+      "intGridNonzero": 0,
+      "intGridChecksum": "101ab509f5770a5",
+      "entityCount": 2048
+    }
+  },
+  {
+    "scenario": "large-stroke",
+    "metrics": [
+      "Ready app.update CPU: 265 samples; median 1.927ms; p95 3.818ms; max 9.067ms",
+      "Injected input app.update CPU: 62 samples; median 2.707ms; p95 6.624ms; max 10.117ms",
+      "RSS KiB: ready=Some(1083984); capture=Some(1155936)"
+    ],
+    "before": {
+      "ready": true,
+      "world": false,
+      "dirty": true,
+      "view": {
+        "center": [
+          512.0,
+          512.0
+        ],
+        "zoom": 1.0
+      },
+      "level": "Level_0",
+      "layer": "Walls",
+      "layerType": "IntGrid",
+      "intGridNonzero": 2495,
+      "intGridChecksum": "4204950a1531cfe0",
+      "entityCount": 0
+    },
+    "after": {
+      "ready": true,
+      "world": false,
+      "dirty": true,
+      "view": {
+        "center": [
+          512.0,
+          512.0
+        ],
+        "zoom": 1.0
+      },
+      "level": "Level_0",
+      "layer": "Walls",
+      "layerType": "IntGrid",
+      "intGridNonzero": 2518,
+      "intGridChecksum": "bc6e5bab670739f5",
+      "entityCount": 0
+    },
+    "final": {
+      "ready": true,
+      "world": false,
+      "dirty": true,
+      "view": {
+        "center": [
+          512.0,
+          512.0
+        ],
+        "zoom": 1.0
+      },
+      "level": "Level_0",
+      "layer": "Walls",
+      "layerType": "IntGrid",
+      "intGridNonzero": 2518,
+      "intGridChecksum": "bc6e5bab670739f5",
+      "entityCount": 0
+    }
+  },
+  {
+    "scenario": "entities-final",
+    "metrics": [
+      "Ready app.update CPU: 224 samples; median 0.444ms; p95 0.596ms; max 0.790ms",
+      "RSS KiB: ready=Some(168560); capture=Some(232384)"
+    ],
+    "final": {
+      "ready": true,
+      "clicktrap": false,
+      "world": false,
+      "dirty": false,
+      "view": {
+        "center": [
+          408.0,
+          232.0
+        ],
+        "zoom": 1.0
+      },
+      "level": "Entities_demo",
+      "layer": "GameEntities",
+      "layerType": "Entities",
+      "intGridNonzero": 0,
+      "intGridChecksum": "101ab509f5770a5",
+      "entityCount": 9
+    }
+  },
+  {
+    "scenario": "entity-def-final",
+    "metrics": [
+      "Ready app.update CPU: 44 samples; median 1.079ms; p95 2.956ms; max 3.137ms",
+      "RSS KiB: ready=Some(169264); capture=Some(232672)"
+    ],
+    "final": {
+      "ready": true,
+      "clicktrap": false,
+      "world": false,
+      "dirty": false,
+      "view": {
+        "center": [
+          408.0,
+          232.0
+        ],
+        "zoom": 1.0
+      },
+      "level": "Entities_demo",
+      "layer": "GameEntities",
+      "layerType": "Entities",
+      "intGridNonzero": 0,
+      "intGridChecksum": "101ab509f5770a5",
+      "entityCount": 9
+    }
+  },
+  {
+    "scenario": "large-stroke-final",
+    "metrics": [
+      "Ready app.update CPU: 265 samples; median 0.747ms; p95 3.571ms; max 4.173ms",
+      "Injected input app.update CPU: 62 samples; median 2.783ms; p95 6.290ms; max 8.585ms",
+      "RSS KiB: ready=Some(1085856); capture=Some(1154640)"
+    ],
+    "before": {
+      "ready": true,
+      "clicktrap": false,
+      "world": false,
+      "dirty": true,
+      "view": {
+        "center": [
+          512.0,
+          512.0
+        ],
+        "zoom": 1.0
+      },
+      "level": "Level_0",
+      "layer": "Walls",
+      "layerType": "IntGrid",
+      "intGridNonzero": 2495,
+      "intGridChecksum": "4204950a1531cfe0",
+      "entityCount": 0
+    },
+    "after": {
+      "ready": true,
+      "clicktrap": false,
+      "world": false,
+      "dirty": true,
+      "view": {
+        "center": [
+          512.0,
+          512.0
+        ],
+        "zoom": 1.0
+      },
+      "level": "Level_0",
+      "layer": "Walls",
+      "layerType": "IntGrid",
+      "intGridNonzero": 2519,
+      "intGridChecksum": "94ba27bd29d270c4",
+      "entityCount": 0
+    },
+    "final": {
+      "ready": true,
+      "clicktrap": false,
+      "world": false,
+      "dirty": true,
+      "view": {
+        "center": [
+          512.0,
+          512.0
+        ],
+        "zoom": 1.0
+      },
+      "level": "Level_0",
+      "layer": "Walls",
+      "layerType": "IntGrid",
+      "intGridNonzero": 2519,
+      "intGridChecksum": "94ba27bd29d270c4",
+      "entityCount": 0
+    }
+  },
+  {
+    "scenario": "many-entities-final",
+    "metrics": [
+      "Ready app.update CPU: 224 samples; median 3.881ms; p95 4.180ms; max 5.175ms",
+      "RSS KiB: ready=Some(194848); capture=Some(256848)"
+    ],
+    "final": {
+      "ready": true,
+      "clicktrap": false,
+      "world": false,
+      "dirty": true,
+      "view": {
+        "center": [
+          616.0,
+          256.0
+        ],
+        "zoom": 0.800000011920929
+      },
+      "level": "Level_0",
+      "layer": "Entities",
+      "layerType": "Entities",
+      "intGridNonzero": 0,
+      "intGridChecksum": "101ab509f5770a5",
+      "entityCount": 2048
+    }
+  },
+  {
+    "scenario": "entity-move",
+    "phase": "final-wallclock-release",
+    "snapshot": "source UI complete; before Rust updater integration and Home metadata-only backup optimization",
+    "capture": "acceptance-native-entity-move-release.png",
+    "foreground": "simulated RawInput focus; OS foreground not asserted",
+    "metrics": [
+      "Ready app.update CPU: 2812 samples; median 0.497ms; p95 0.510ms; max 1.560ms",
+      "Ready eframe CPU (previous frame update + CPU rendering): 2812 samples; median 0.688ms; p95 0.706ms; max 1.745ms",
+      "Ready update-start wall interval: 2812 samples; median 0.710ms; p95 0.727ms; max 1.768ms",
+      "Injected input update-start wall interval: 2 samples; median 0.806ms; p95 0.806ms; max 0.806ms",
+      "Injected input app.update CPU: 2 samples; median 1.252ms; p95 1.252ms; max 1.252ms",
+      "RSS KiB: ready=Some(163568); capture=Some(235056)"
+    ],
+    "samplingSeconds": 2.0,
+    "settleSeconds": 1,
+    "after": {
+      "panel": "Entity",
+      "gesture": "EntityMove",
+      "stroke": true,
+      "ready": true,
+      "clicktrap": false,
+      "world": false,
+      "dirty": false,
+      "view": {
+        "center": [
+          408.0,
+          232.0
+        ],
+        "zoom": 1.0
+      },
+      "level": "Entities_demo",
+      "layer": "GameEntities",
+      "layerType": "Entities",
+      "intGridNonzero": 0,
+      "intGridChecksum": "101ab509f5770a5",
+      "entityCount": 9
+    },
+    "final": {
+      "panel": "Entity",
+      "gesture": "EntityMove",
+      "stroke": true,
+      "ready": true,
+      "clicktrap": false,
+      "world": false,
+      "dirty": false,
+      "view": {
+        "center": [
+          408.0,
+          232.0
+        ],
+        "zoom": 1.0
+      },
+      "level": "Entities_demo",
+      "layer": "GameEntities",
+      "layerType": "Entities",
+      "intGridNonzero": 0,
+      "intGridChecksum": "101ab509f5770a5",
+      "entityCount": 9
+    }
+  },
+  {
+    "scenario": "color-picker",
+    "phase": "final-wallclock-release",
+    "snapshot": "source UI complete; before Rust updater integration and Home metadata-only backup optimization",
+    "capture": "acceptance-native-color-picker-release.png",
+    "foreground": "simulated RawInput focus; OS foreground not asserted",
+    "metrics": [
+      "Ready app.update CPU: 2345 samples; median 0.573ms; p95 0.588ms; max 1.653ms",
+      "Ready eframe CPU (previous frame update + CPU rendering): 2345 samples; median 0.826ms; p95 0.849ms; max 1.908ms",
+      "Ready update-start wall interval: 2345 samples; median 0.850ms; p95 0.876ms; max 1.936ms",
+      "Injected input update-start wall interval: 2 samples; median 1.071ms; p95 1.071ms; max 1.071ms",
+      "Injected input app.update CPU: 2 samples; median 0.653ms; p95 0.653ms; max 0.653ms",
+      "RSS KiB: ready=Some(164960); capture=Some(231584)"
+    ],
+    "samplingSeconds": 2.0,
+    "settleSeconds": 1,
+    "after": {
+      "panel": "Entities",
+      "gesture": null,
+      "stroke": false,
+      "ready": true,
+      "clicktrap": false,
+      "world": false,
+      "dirty": false,
+      "view": {
+        "center": [
+          408.0,
+          232.0
+        ],
+        "zoom": 1.0
+      },
+      "level": "Entities_demo",
+      "layer": "GameEntities",
+      "layerType": "Entities",
+      "intGridNonzero": 0,
+      "intGridChecksum": "101ab509f5770a5",
+      "entityCount": 9
+    },
+    "final": {
+      "panel": "Entities",
+      "gesture": null,
+      "stroke": false,
+      "ready": true,
+      "clicktrap": false,
+      "world": false,
+      "dirty": false,
+      "view": {
+        "center": [
+          408.0,
+          232.0
+        ],
+        "zoom": 1.0
+      },
+      "level": "Entities_demo",
+      "layer": "GameEntities",
+      "layerType": "Entities",
+      "intGridNonzero": 0,
+      "intGridChecksum": "101ab509f5770a5",
+      "entityCount": 9
+    }
+  },
+  {
+    "scenario": "tile-popout",
+    "phase": "final-wallclock-release",
+    "snapshot": "source UI complete; before Rust updater integration and Home metadata-only backup optimization",
+    "capture": "acceptance-native-tile-popout-release.png",
+    "foreground": "simulated RawInput focus; OS foreground not asserted",
+    "metrics": [
+      "Ready app.update CPU: 4089 samples; median 0.308ms; p95 0.380ms; max 0.529ms",
+      "Ready eframe CPU (previous frame update + CPU rendering): 4089 samples; median 0.421ms; p95 0.508ms; max 0.724ms",
+      "Ready update-start wall interval: 4089 samples; median 0.440ms; p95 0.666ms; max 1.016ms",
+      "RSS KiB: ready=Some(161392); capture=Some(212224)"
+    ],
+    "samplingSeconds": 2.0,
+    "settleSeconds": 1,
+    "final": {
+      "panel": null,
+      "gesture": null,
+      "stroke": false,
+      "ready": true,
+      "clicktrap": false,
+      "world": false,
+      "dirty": false,
+      "view": {
+        "center": [
+          256.0,
+          128.0
+        ],
+        "zoom": 1.925675630569458
+      },
+      "level": "World_Level_0",
+      "layer": "Custom_floor",
+      "layerType": "Tiles",
+      "intGridNonzero": 0,
+      "intGridChecksum": "101ab509f5770a5",
+      "entityCount": 0
+    }
+  },
+  {
+    "scenario": "home",
+    "phase": "final-wallclock-release",
+    "snapshot": "source UI complete; before Rust updater integration and Home metadata-only backup optimization",
+    "capture": "acceptance-native-home-release.png",
+    "foreground": "simulated RawInput focus; OS foreground not asserted",
+    "metrics": [
+      "Ready app.update CPU: 3617 samples; median 0.081ms; p95 0.101ms; max 0.142ms",
+      "Ready eframe CPU (previous frame update + CPU rendering): 3617 samples; median 0.372ms; p95 0.483ms; max 0.661ms",
+      "Ready update-start wall interval: 3617 samples; median 0.558ms; p95 0.644ms; max 0.838ms",
+      "RSS KiB: ready=Some(358256); capture=Some(1506608)"
+    ],
+    "samplingSeconds": 2.0,
+    "settleSeconds": 1,
+    "final": {
+      "panel": null,
+      "gesture": null,
+      "stroke": false,
+      "ready": false,
+      "clicktrap": false,
+      "world": false,
+      "dirty": false,
+      "view": {
+        "center": [
+          0.0,
+          0.0
+        ],
+        "zoom": 1.0
+      },
+      "level": null,
+      "layer": null,
+      "layerType": null,
+      "intGridNonzero": null,
+      "intGridChecksum": "bd60acb658c79e45",
+      "entityCount": null
+    }
+  },
+  {
+    "scenario": "large",
+    "phase": "final-wallclock-release",
+    "snapshot": "source UI complete; before Rust updater integration and Home metadata-only backup optimization",
+    "capture": "acceptance-native-large-release.png",
+    "foreground": "simulated RawInput focus; OS foreground not asserted",
+    "metrics": [
+      "Ready app.update CPU: 618 samples; median 2.966ms; p95 3.209ms; max 5.943ms",
+      "Ready eframe CPU (previous frame update + CPU rendering): 618 samples; median 3.199ms; p95 3.446ms; max 6.177ms",
+      "Ready update-start wall interval: 618 samples; median 3.236ms; p95 3.483ms; max 6.216ms",
+      "RSS KiB: ready=Some(1572912); capture=Some(1633968)"
+    ],
+    "samplingSeconds": 2.003,
+    "settleSeconds": 1,
+    "final": {
+      "panel": null,
+      "gesture": null,
+      "stroke": false,
+      "ready": true,
+      "clicktrap": false,
+      "world": false,
+      "dirty": true,
+      "view": {
+        "center": [
+          1856.0,
+          864.0
+        ],
+        "zoom": 0.30000001192092896
+      },
+      "level": "Level_0",
+      "layer": "Shadows",
+      "layerType": "Entities",
+      "intGridNonzero": 0,
+      "intGridChecksum": "101ab509f5770a5",
+      "entityCount": 0
+    }
+  },
+  {
+    "scenario": "many-entities",
+    "phase": "final-wallclock-release",
+    "snapshot": "source UI complete; before Rust updater integration and Home metadata-only backup optimization",
+    "capture": "acceptance-native-many-entities-release.png",
+    "foreground": "simulated RawInput focus; OS foreground not asserted",
+    "metrics": [
+      "Ready app.update CPU: 302 samples; median 3.819ms; p95 4.124ms; max 4.505ms",
+      "Ready eframe CPU (previous frame update + CPU rendering): 302 samples; median 6.398ms; p95 6.839ms; max 7.603ms",
+      "Ready update-start wall interval: 302 samples; median 6.601ms; p95 7.076ms; max 7.883ms",
+      "RSS KiB: ready=Some(190432); capture=Some(252560)"
+    ],
+    "samplingSeconds": 2.003,
+    "settleSeconds": 1,
+    "final": {
+      "panel": null,
+      "gesture": null,
+      "stroke": false,
+      "ready": true,
+      "clicktrap": false,
+      "world": false,
+      "dirty": true,
+      "view": {
+        "center": [
+          616.0,
+          256.0
+        ],
+        "zoom": 0.800000011920929
+      },
+      "level": "Level_0",
+      "layer": "Entities",
+      "layerType": "Entities",
+      "intGridNonzero": 0,
+      "intGridChecksum": "101ab509f5770a5",
+      "entityCount": 2048
+    }
+  },
+  {
+    "scenario": "large-stroke",
+    "phase": "final-wallclock-release",
+    "snapshot": "source UI complete; before Rust updater integration and Home metadata-only backup optimization",
+    "capture": "acceptance-native-large-stroke-release.png",
+    "foreground": "simulated RawInput focus; OS foreground not asserted",
+    "metrics": [
+      "Ready app.update CPU: 4484 samples; median 0.345ms; p95 0.357ms; max 3.217ms",
+      "Ready eframe CPU (previous frame update + CPU rendering): 4484 samples; median 0.429ms; p95 0.442ms; max 3.357ms",
+      "Ready update-start wall interval: 4484 samples; median 0.445ms; p95 0.458ms; max 3.414ms",
+      "Injected input update-start wall interval: 62 samples; median 0.464ms; p95 1.149ms; max 3.677ms",
+      "Injected input app.update CPU: 62 samples; median 0.359ms; p95 1.036ms; max 3.179ms",
+      "RSS KiB: ready=Some(1568736); capture=Some(1618512)"
+    ],
+    "samplingSeconds": 2.0,
+    "settleSeconds": 1,
+    "before": {
+      "panel": null,
+      "gesture": null,
+      "stroke": false,
+      "ready": true,
+      "clicktrap": false,
+      "world": false,
+      "dirty": true,
+      "view": {
+        "center": [
+          512.0,
+          512.0
+        ],
+        "zoom": 1.0
+      },
+      "level": "Level_0",
+      "layer": "Walls",
+      "layerType": "IntGrid",
+      "intGridNonzero": 2495,
+      "intGridChecksum": "4204950a1531cfe0",
+      "entityCount": 0
+    },
+    "after": {
+      "panel": null,
+      "gesture": null,
+      "stroke": false,
+      "ready": true,
+      "clicktrap": false,
+      "world": false,
+      "dirty": true,
+      "view": {
+        "center": [
+          512.0,
+          512.0
+        ],
+        "zoom": 1.0
+      },
+      "level": "Level_0",
+      "layer": "Walls",
+      "layerType": "IntGrid",
+      "intGridNonzero": 2518,
+      "intGridChecksum": "bc6e5bab670739f5",
+      "entityCount": 0
+    },
+    "final": {
+      "panel": null,
+      "gesture": null,
+      "stroke": false,
+      "ready": true,
+      "clicktrap": false,
+      "world": false,
+      "dirty": true,
+      "view": {
+        "center": [
+          512.0,
+          512.0
+        ],
+        "zoom": 1.0
+      },
+      "level": "Level_0",
+      "layer": "Walls",
+      "layerType": "IntGrid",
+      "intGridNonzero": 2518,
+      "intGridChecksum": "bc6e5bab670739f5",
+      "entityCount": 0
+    }
+  }
+]
