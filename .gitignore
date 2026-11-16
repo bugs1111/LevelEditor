@@ -1,0 +1,7 @@
+/target/
+/dist/
+/.tools/
+/.reference/
+/.superpowers/
+*.log
+.DS_Store

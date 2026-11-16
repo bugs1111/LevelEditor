@@ -1,0 +1,14 @@
+#!/bin/sh
+set -eu
+project_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+if [ -x "$project_dir/.tools/cargo/bin/cargo" ]; then
+    export CARGO_HOME="$project_dir/.tools/cargo"
+    export RUSTUP_HOME="$project_dir/.tools/rustup"
+    export PATH="$CARGO_HOME/bin:$PATH"
+    exec "$CARGO_HOME/bin/cargo" "$@"
+fi
+if command -v cargo >/dev/null 2>&1; then
+    exec cargo "$@"
+fi
+echo 'Rust is missing. Install Rust with rustup, or run scripts/bootstrap-rust.' >&2
+exit 1

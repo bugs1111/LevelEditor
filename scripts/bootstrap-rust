@@ -1,0 +1,16 @@
+#!/bin/sh
+set -eu
+project_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+case "$(uname -sm)" in
+    'Darwin arm64') platform=aarch64-apple-darwin ;;
+    'Darwin x86_64') platform=x86_64-apple-darwin ;;
+    'Linux x86_64') platform=x86_64-unknown-linux-gnu ;;
+    'Linux aarch64') platform=aarch64-unknown-linux-gnu ;;
+    *) echo 'Install Rust from https://rustup.rs for this platform.' >&2; exit 1 ;;
+esac
+mkdir -p "$project_dir/.tools"
+curl --proto '=https' --tlsv1.2 -fL "https://static.rust-lang.org/rustup/dist/$platform/rustup-init" -o "$project_dir/.tools/rustup-init"
+chmod +x "$project_dir/.tools/rustup-init"
+export CARGO_HOME="$project_dir/.tools/cargo"
+export RUSTUP_HOME="$project_dir/.tools/rustup"
+"$project_dir/.tools/rustup-init" -y --no-modify-path --profile minimal --component rustfmt,clippy
