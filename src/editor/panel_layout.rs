@@ -1,6 +1,9 @@
 use super::*;
 use std::collections::BTreeMap;
 
+#[path = "layer_settings.rs"]
+mod layer_settings;
+
 #[path = "project_panel.rs"]
 mod project_panel;
 #[path = "world_level_panel.rs"]

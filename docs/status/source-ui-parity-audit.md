@@ -71,12 +71,26 @@
 
 两项真实 egui 回归先失败后通过，覆盖占位样式、聚焦描边／光晕及输入后的列表筛选。Debug Metal 已检查未聚焦和聚焦两张截图：[未聚焦](/Users/bugs/Projects/LevelEditor/.tools/home-search-native/unfocused.png)、[聚焦](/Users/bugs/Projects/LevelEditor/.tools/home-search-native/focused.png)。日志为 `.tools/home-search-{red,green,workspace,example,clippy}.log` 与 `.tools/home-search-native/*.log`。
 
+## Linux 接续：图层通用设置（2026-11-17）
+
+已按固定 LDtk 1.5.3 的 `editLayerDefs.html` 与 `EditLayerDefs.hx` 将图层通用字段表改为 General layer settings / Display options 分组，代码见 `src/editor/layer_settings.rs`。基础透明度为 10–100%，Inactive 为 0–100%；视差为 −100–100%，按整数百分点输入，模型继续保存倍率。两轴相同时修改 X 同步 Y；Y 可独立编辑、清空回到 X；开启 Scale 对齐两轴并禁用 Y。颜色与重置、各类型的显示选项、所有图层类型的 UI tags、0–1024 辅助网格及 ≤1 关闭行为已补齐。实体隐藏字段和 Tiles 枢轴移入相应类型分组。网格转换、图集重映射与定义历史沿用现有操作。
+
+七项真实 egui 回归覆盖打开不修改、分组与类型可见性、百分比上下限与取整/空值、定义历史撤销、视差联动/独立编辑/Scale/清空、辅助网格限值及 Tiles 九宫格枢轴。原版百分比滑动手势、增减控件和完整类型专用表单仍待补齐；当前没有暴露仅保存元数据而没有运行时作用的异步渲染开关。
+
+Linux 使用 Ubuntu 26.04 / Rust 1.93.1，NVIDIA 595.99.02 / RTX 2060 / Vulkan，在无头 Xorg `:1` 捕获 debug Layers 窗口；证据为忽略目录 `.tools/layer-settings-native/`。这用于检查呈现与状态，Mac 上的字体、悬停、OS 输入和最终视觉验收由用户继续执行。回归日志在 `.tools/layer-settings-{red,review-red,pivot-red,green-final,workspace-final,example-final,clippy,clippy-baseline-allowed-final}.log`。本机严格 Clippy 仍被既有 `crates/ldtk-core/src/project.rs:1105` 的 `nonminimal_bool` 及 `src/editor/field_tools.rs:324` 的既有 `collapsible_else_if` 拦截。
+
+最终验证：完整 workspace 命令以 0 退出，应用 376 passed / 6 ignored；native_smoke 串行完整测试 380 passed / 6 ignored；七项图层回归全部通过；格式与差异检查通过。严格 Clippy 仍有上述两项既有警告，仅允许 `clippy::nonminimal_bool` 和 `clippy::collapsible_else_if` 后的全目标检查通过（`.tools/layer-settings-clippy-baseline-allowed-final.log`）。并行 native 测试曾分别在 `app::tests::closing_a_failed_before_save_command_continues_the_source_save_workflow` 和 `app::update_dialog::tests::install_closes_its_dialog_before_showing_clickable_unsaved_cancel_and_discard` 失败；两项单独复测与串行全量均通过，没有修改这些测试或产品流程。
+
+已检查最终 `entities.png`、`tiles.png` 与 `tiles-pivot.png`；三场景均为 Layers、dirty=false、surface 错误全 0，TopDown 示例 SHA-256 未变。捕获使用测试注入输入及无头 Xorg，不计作 Mac 或 OS 输入验收。
+
+Mac 建议用 `just run examples/original/Typical_TopDown_example.ldtk`，打开 Layers 后分别检查四种图层的选项；测试 Base=0→10%、Inactive=150→100%、X/Y 相同时改 X、独立改 Y、清空 Y、Scale 的对齐/锁定，以及辅助网格 1→关闭和 9999→1024。只打开/关闭面板不应把示例变为已修改。
+
 ## 剩余差异清单
 
 | 面板 | 已确认的差异 | 原版与当前代码依据 |
 | --- | --- | --- |
-| 图层 | 仍是通用字段表，缺少原版 General / Display / 类型专属分组；列表颜色、异步渲染、Kill tiles、Bake auto-layer 控件缺失；筛选标签仅给 Entities 图层；Biome 被放在 Rules 中。 | [当前字段表](/Users/bugs/Projects/LevelEditor/src/editor/panels.rs:673)、[原版模板](/Users/bugs/Projects/LevelEditor/.reference/ldtk/app/assets/tpl/editLayerDefs.html:20)、[原版绑定](/Users/bugs/Projects/LevelEditor/.reference/ldtk/src/electron.renderer/ui/modal/panel/EditLayerDefs.hx:276) |
-| 图层数值行为 | 不透明度显示原始 0–1 小数，原版是百分比且基本透明度下限 10%；视差目前允许 −10–10，原版为 −1–1 的百分比，并有 X/Y 同步、缩放时锁定 Y 的交互。核心补丁服务没有补上这些 UI 规则。 | [当前](/Users/bugs/Projects/LevelEditor/src/editor/panels.rs:702)、[原版](/Users/bugs/Projects/LevelEditor/.reference/ldtk/src/electron.renderer/ui/modal/panel/EditLayerDefs.hx:334)、[核心补丁](/Users/bugs/Projects/LevelEditor/crates/ldtk-core/src/workflow.rs:501) |
+| 图层 | General / Display、列表颜色、所有类型的 UI tags 及 Entities / Tiles 的基础类型选项已恢复；IntGrid / AutoLayer 完整专属分组、异步渲染、Kill tiles、Bake auto-layer 仍待补齐；Biome 仍在 Rules 中。 | [当前字段表](/Users/bugs/Projects/LevelEditor/src/editor/panels.rs:673)、[原版模板](/Users/bugs/Projects/LevelEditor/.reference/ldtk/app/assets/tpl/editLayerDefs.html:20)、[原版绑定](/Users/bugs/Projects/LevelEditor/.reference/ldtk/src/electron.renderer/ui/modal/panel/EditLayerDefs.hx:276) |
+| 图层数值行为 | 百分比范围、取整和 X/Y 联动已恢复；原版数值增减控件、透明度滑动手势仍待补齐。 | [当前](/Users/bugs/Projects/LevelEditor/src/editor/panels.rs:702)、[原版](/Users/bugs/Projects/LevelEditor/.reference/ldtk/src/electron.renderer/ui/modal/panel/EditLayerDefs.hx:334)、[核心补丁](/Users/bugs/Projects/LevelEditor/crates/ldtk-core/src/workflow.rs:501) |
 | 项目 | 缺少实际更改文件扩展名的 Use .ldtk extension 控件；命名规则用普通文本代替变量块编辑器，默认关卡命名缺少 Reset；导出配置缺少对应输出位置的定位链接。 | [当前](/Users/bugs/Projects/LevelEditor/src/editor/project_panel.rs:232)、[原版扩展名操作](/Users/bugs/Projects/LevelEditor/.reference/ldtk/src/electron.renderer/ui/modal/panel/EditProject.hx:136)、[原版命名编辑器](/Users/bugs/Projects/LevelEditor/.reference/ldtk/src/electron.renderer/ui/NamePatternEditor.hx:30) |
 | 项目高级选项 | 当前公开八项，而原版可见列表只有五项及说明文字；只剩一个世界时，当前仍不能取消 MultiWorlds，原版允许。 | [当前](/Users/bugs/Projects/LevelEditor/src/editor/project_panel.rs:550)、[原版选项列表](/Users/bugs/Projects/LevelEditor/.reference/ldtk/src/electron.renderer/ui/modal/panel/EditProject.hx:6)、[原版多世界开关](/Users/bugs/Projects/LevelEditor/.reference/ldtk/src/electron.renderer/ui/modal/panel/EditProject.hx:495) |
 | 世界／关卡 | 主要分组已恢复，但选择的关卡不在当前激活深度时，属性和自定义字段没有像原版一样禁用并加条纹；背景图片仍缺少原版完整的记忆文件菜单。 | [当前关卡表单](/Users/bugs/Projects/LevelEditor/src/editor/world_level_panel.rs:331)、[原版禁用逻辑](/Users/bugs/Projects/LevelEditor/.reference/ldtk/src/electron.renderer/ui/LevelInstanceForm.hx:131)、[原版样式](/Users/bugs/Projects/LevelEditor/.reference/ldtk/app/assets/css/app.scss:8418) |

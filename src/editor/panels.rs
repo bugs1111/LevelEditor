@@ -6,6 +6,9 @@ mod definition_clipboard;
 mod entity_transfer;
 #[path = "enum_sync_dialog.rs"]
 mod enum_sync_dialog;
+#[cfg(test)]
+#[path = "layer_settings_tests.rs"]
+mod layer_settings_tests;
 #[path = "panel_layout.rs"]
 mod panel_layout;
 #[path = "rule_batch.rs"]
@@ -694,38 +697,7 @@ impl EditorApp {
                 self.definition_uid = None;
             }
         });
-        let patch = form(
-            ui,
-            &def,
-            &[
-                P("identifier", "Layer identifier", W::Text),
-                P("doc", "Description", W::Multiline),
-                P("gridSize", "Grid size", W::Int(1, 1024)),
-                P("displayOpacity", "Display opacity", W::Float(0.0, 1.0)),
-                P("inactiveOpacity", "Inactive opacity", W::Float(0.0, 1.0)),
-                P("pxOffsetX", "Horizontal offset", W::Int(-65536, 65536)),
-                P("pxOffsetY", "Vertical offset", W::Int(-65536, 65536)),
-                P(
-                    "parallaxFactorX",
-                    "Horizontal parallax",
-                    W::Float(-10.0, 10.0),
-                ),
-                P(
-                    "parallaxFactorY",
-                    "Vertical parallax",
-                    W::Float(-10.0, 10.0),
-                ),
-                P("parallaxScaling", "Scale with parallax", W::Bool),
-                P("guideGridWid", "Guide grid width", W::Int(0, 65536)),
-                P("guideGridHei", "Guide grid height", W::Int(0, 65536)),
-                P("tilePivotX", "Tile pivot X", W::Float(0.0, 1.0)),
-                P("tilePivotY", "Tile pivot Y", W::Float(0.0, 1.0)),
-                P("hideInList", "Hide in layer list", W::Bool),
-                P("hideFieldsWhenInactive", "Hide inactive fields", W::Bool),
-                P("canSelectWhenInactive", "Select when inactive", W::Bool),
-                P("renderInWorldView", "Render in world view", W::Bool),
-            ],
-        );
+        let patch = self.source_layer_settings(ui, &def);
         if changed(&patch) {
             let operation = |p: &mut Project| {
                 let mut patch = patch.clone();
@@ -748,25 +720,8 @@ impl EditorApp {
             }
         }
         let kind = text(&def, "type", "");
-        if kind == "Tiles" || kind == "AutoLayer" || kind == "IntGrid" {
-            let options = remap_options(ui, ("layer", uid), true, ldtk_core::TilesetRemap::TileIds);
-            let mut selected = def["tilesetDefUid"].as_i64().unwrap_or(-1);
-            let previous = selected;
-            self.tileset_choice(ui, "Tileset", &mut selected);
-            if selected != previous
-                && let Some(discarded) = self.edit_recoverable("Tileset assigned", |p| {
-                    p.assign_tileset_with_policy(
-                        uid,
-                        (selected >= 0).then_some(selected),
-                        options.mode,
-                        options.clear_overrides,
-                        options.allow_loss,
-                    )
-                })
-                && discarded > 0
-            {
-                self.status = format!("Tileset assigned; removed {discarded} references");
-            }
+        if kind == "AutoLayer" || kind == "IntGrid" {
+            self.layer_tileset_assignment(ui, &def);
         }
         if let Some(key) = self.selected
             && let Some((index, instance)) = self
@@ -833,7 +788,7 @@ impl EditorApp {
             {
                 self.begin_entity_transfer(ui.ctx(), uid);
             }
-            for field in ["requiredTags", "excludedTags", "uiFilterTags"] {
+            for field in ["requiredTags", "excludedTags"] {
                 if let Some(value) = tags(ui, field, &def[field]) {
                     let patch = json!({field:value});
                     self.edit("Layer tags changed", |p| {

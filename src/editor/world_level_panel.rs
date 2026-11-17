@@ -35,7 +35,7 @@ fn icon_button(
     .inner
 }
 
-fn text_input(
+pub(super) fn text_input(
     ui: &mut egui::Ui,
     key: impl std::hash::Hash,
     current: &str,
