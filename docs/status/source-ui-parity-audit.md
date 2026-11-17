@@ -65,6 +65,12 @@
 
 该轮未重做 Help 页的快捷键列表或所有上下文菜单内容；浮层阴影使用原生绘制，缩略图内阴影为原生近似。其余面板差异继续按以下清单跟踪。
 
+## Home 搜索框补充修复
+
+按用户左右对比图，对照 `QuickSearch.hx`、`app.scss:887–912 / 2328–2350` 修正搜索框：使用原版 `Search...` 灰色占位文字、白色输入文字和光标、16px 圆角、1px 描边，聚焦时显示黄色边线及 4px 橙色光晕。移除沿用通用 TextEdit 的 100px 圆角和占位文字颜色；图标与文字的左侧偏移计入 1px 边框。仅调整 Home 搜索框，不修改其他输入框的全局样式。
+
+两项真实 egui 回归先失败后通过，覆盖占位样式、聚焦描边／光晕及输入后的列表筛选。Debug Metal 已检查未聚焦和聚焦两张截图：[未聚焦](/Users/bugs/Projects/LevelEditor/.tools/home-search-native/unfocused.png)、[聚焦](/Users/bugs/Projects/LevelEditor/.tools/home-search-native/focused.png)。日志为 `.tools/home-search-{red,green,workspace,example,clippy}.log` 与 `.tools/home-search-native/*.log`。
+
 ## 剩余差异清单
 
 | 面板 | 已确认的差异 | 原版与当前代码依据 |

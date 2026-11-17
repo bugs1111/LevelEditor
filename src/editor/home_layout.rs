@@ -362,27 +362,59 @@ impl EditorApp {
         let mut search = ctx
             .data_mut(|data| data.get_temp::<String>(search_id))
             .unwrap_or_default();
-        let search_widgets = ui.visuals().widgets.clone();
-        ui.visuals_mut().widgets.inactive.corner_radius = egui::CornerRadius::same(100);
-        ui.visuals_mut().widgets.hovered.corner_radius = egui::CornerRadius::same(100);
-        ui.visuals_mut().widgets.active.corner_radius = egui::CornerRadius::same(100);
+        let search_glow = ui.painter().add(egui::Shape::Noop);
+        let search_frame = ui.painter().add(egui::Shape::Noop);
+        let cursor_stroke = ui.visuals().text_cursor.stroke;
+        ui.visuals_mut().text_cursor.stroke = Stroke::new(1_f32, Color32::WHITE);
         let search_response = ui.add_sized(
             [ui.available_width(), 33.],
             egui::TextEdit::singleline(&mut search)
                 .id(search_id.with("input"))
-                .hint_text("Search…")
+                .font(FontId::proportional(14.667))
+                .text_color(Color32::WHITE)
+                .hint_text(RichText::new("Search...").color(Color32::from_rgb(117, 117, 117)))
+                .frame(false)
                 .margin(egui::Margin {
-                    left: 28,
+                    left: 29,
                     right: 8,
                     top: 8,
                     bottom: 8,
                 }),
         );
-        ui.visuals_mut().widgets = search_widgets;
+        ui.visuals_mut().text_cursor.stroke = cursor_stroke;
+        if search_response.has_focus() {
+            ui.painter().set(
+                search_glow,
+                egui::epaint::Shadow {
+                    offset: [0, 0],
+                    blur: 4,
+                    spread: 0,
+                    color: Color32::from_rgb(227, 77, 0),
+                }
+                .as_shape(search_response.rect, 16.),
+            );
+        }
+        ui.painter().set(
+            search_frame,
+            egui::epaint::RectShape::new(
+                search_response.rect,
+                16,
+                theme::DARK,
+                Stroke::new(
+                    1_f32,
+                    if search_response.has_focus() {
+                        theme::ACCENT
+                    } else {
+                        theme::LIGHT
+                    },
+                ),
+                egui::StrokeKind::Inside,
+            ),
+        );
         egui::Image::new(egui::include_image!("../../assets/icons/search.svg")).paint_at(
             &ui,
             Rect::from_center_size(
-                search_response.rect.left_center() + egui::vec2(16., 0.),
+                search_response.rect.left_center() + egui::vec2(17., 0.),
                 Vec2::splat(16.),
             ),
         );
@@ -1106,6 +1138,67 @@ mod tests {
     }
 
     #[test]
+    fn source_home_search_uses_gray_placeholder_and_source_rounding() {
+        let ctx = egui::Context::default();
+        theme::configure(&ctx);
+        let mut app = EditorApp::empty();
+        home_frame(&mut app, &ctx, vec![]);
+        let output = home_frame(&mut app, &ctx, vec![]);
+        let hint = output
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Text(t) if t.galley.text() == "Search..." => Some(t),
+                _ => None,
+            })
+            .expect("original Search... placeholder");
+        assert_eq!(
+            hint.galley.job.sections[0].format.color,
+            Color32::from_rgb(117, 117, 117)
+        );
+        let hint_rect = Rect::from_min_size(hint.pos, hint.galley.size());
+        assert!(output.shapes.iter().any(|shape| matches!(&shape.shape, egui::Shape::Rect(r)
+            if r.rect.contains_rect(hint_rect) && r.corner_radius==egui::CornerRadius::same(16) && r.stroke.color==theme::LIGHT)));
+    }
+
+    #[test]
+    fn source_home_search_focus_glow_does_not_hide_the_hint_or_break_filtering() {
+        let ctx = egui::Context::default();
+        theme::configure(&ctx);
+        let mut app = EditorApp::empty();
+        let dir = tempfile::tempdir().unwrap();
+        app.settings.value["recentDirs"] = serde_json::json!([dir.path()]);
+        home_frame(&mut app, &ctx, vec![]);
+        let id = egui::Id::new("source-home-search").with("input");
+        let bounds = ctx.read_response(id).unwrap().rect;
+        click(&mut app, &ctx, bounds.center());
+        let output = home_frame(&mut app, &ctx, vec![]);
+        assert!(ctx.memory(|memory| memory.has_focus(id)));
+        let hint = text_rect(&output, "Search...");
+        assert!(output.shapes.iter().any(|shape| matches!(&shape.shape, egui::Shape::Rect(r)
+            if r.rect.contains_rect(hint) && r.stroke.color==theme::ACCENT && r.corner_radius==egui::CornerRadius::same(16))));
+        assert!(
+            output
+                .shapes
+                .iter()
+                .any(|shape| matches!(&shape.shape, egui::Shape::Rect(r)
+            if r.fill==Color32::from_rgb(227,77,0) && r.blur_width>0.)),
+            "focused search needs the source orange glow"
+        );
+        let output = home_frame(
+            &mut app,
+            &ctx,
+            vec![egui::Event::Text("no-such-folder".into())],
+        );
+        text_rect(&output, "No recent folder");
+        assert_eq!(
+            ctx.data_mut(|data| data.get_temp::<String>(egui::Id::new("source-home-search")))
+                .as_deref(),
+            Some("no-such-folder")
+        );
+    }
+
+    #[test]
     fn source_home_places_files_and_about_under_header_and_persists_sample_visibility() {
         let ctx = egui::Context::default();
         theme::configure(&ctx);
@@ -1161,7 +1254,7 @@ mod tests {
         );
         app.pending = None;
         let output = home_frame(&mut app, &ctx, vec![]);
-        let search = text_rect(&output, "Search…");
+        let search = text_rect(&output, "Search...");
         click(&mut app, &ctx, search.center());
         let filtered = home_frame(
             &mut app,
@@ -1179,7 +1272,7 @@ mod tests {
         app.settings.value["recentDirs"] = serde_json::json!([std::env::temp_dir()]);
         home_frame(&mut app, &ctx, vec![]);
         let output = home_frame(&mut app, &ctx, vec![]);
-        let search = text_rect(&output, "Search…");
+        let search = text_rect(&output, "Search...");
         let recent = text_rect(&output, "Recent folders");
         assert!(
             recent.top() - search.bottom() < 24.,
@@ -1252,7 +1345,7 @@ mod tests {
         home_frame(&mut app, &ctx, vec![]);
         let output = home_frame(&mut app, &ctx, vec![]);
         let title = text_rect(&output, "Full_height_menu");
-        let search = text_rect(&output, "Search…");
+        let search = text_rect(&output, "Search...");
         let panel = output
             .shapes
             .iter()
