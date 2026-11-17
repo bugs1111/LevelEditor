@@ -130,7 +130,7 @@ impl EditorApp {
             self.selection_group = None;
             self.entity_index = None;
             self.stamp = None;
-            self.panel = None;
+            self.panel = world.then_some(Panel::World);
             self.fit = false;
             self.normalize_palette();
         }
@@ -170,6 +170,7 @@ mod tests {
             .to_world(pointer.into(), rect.min.into(), rect.size().into());
         app.wheel_zoom(&egui::Context::default(), rect, pointer, -100.);
         assert!(app.world);
+        assert_eq!(app.panel, Some(Panel::World));
         assert!((app.viewport.zoom - 600. / (256. * 2.3)).abs() < 0.0001);
         close(
             app.viewport

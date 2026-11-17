@@ -541,7 +541,22 @@ pub(super) fn external_file_editor(ui: &mut egui::Ui, path: &Path) {
 
 pub(super) fn log_editor(ui: &mut egui::Ui, path: &Path) {
     let owner = ui.make_persistent_id("app-log-viewer");
-    if panels::source_controls::button(ui, "View logs").clicked() {
+    let clicked = ui
+        .scope(|ui| {
+            ui.spacing_mut().button_padding = egui::vec2(4., 2.);
+            panels::source_controls::add_sized_button(
+                ui,
+                [30., 30.],
+                egui::Button::image(
+                    egui::Image::new(egui::include_image!("../../assets/icons/edit.svg"))
+                        .fit_to_exact_size(Vec2::splat(16.)),
+                ),
+            )
+            .on_hover_text("View logs")
+            .clicked()
+        })
+        .inner;
+    if clicked {
         app_log::flush();
         let contents = std::fs::read_to_string(path).unwrap_or_default();
         open(ui.ctx(), owner, &contents, "LDtk logs", "LangLog", true);

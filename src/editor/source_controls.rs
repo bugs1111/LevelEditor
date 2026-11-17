@@ -21,10 +21,29 @@ fn help_text(key: &str, label: &str) -> Option<&'static str> {
 }
 pub(in crate::app) const PROPERTY_LABEL_WIDTH: f32 = 124.;
 pub(in crate::app) fn property_label(ui: &mut egui::Ui, label: &str, key: &str) {
+    property_label_with_width(ui, label, key, PROPERTY_LABEL_WIDTH);
+}
+pub(in crate::app) fn property_label_with_width(
+    ui: &mut egui::Ui,
+    label: &str,
+    key: &str,
+    label_width: f32,
+) {
+    property_label_layout(ui, label, key, label_width, true);
+}
+pub(in crate::app) fn property_label_nowrap(
+    ui: &mut egui::Ui,
+    label: &str,
+    key: &str,
+    label_width: f32,
+) {
+    property_label_layout(ui, label, key, label_width, false);
+}
+fn property_label_layout(ui: &mut egui::Ui, label: &str, key: &str, label_width: f32, wrap: bool) {
     let info = HELP["__info__"][key]
         .as_str()
         .or_else(|| HELP["__info__"][label].as_str());
-    let width = ui.available_width().min(PROPERTY_LABEL_WIDTH);
+    let width = ui.available_width().min(label_width);
     let reserve = if info.is_some() { 32. } else { 8. };
     let text_width = (width - reserve).max(0.);
     let font = FontId::proportional(12.667);
@@ -38,7 +57,8 @@ pub(in crate::app) fn property_label(ui: &mut egui::Ui, label: &str, key: &str) 
         } else {
             format!("{line} {word}")
         };
-        if !line.is_empty()
+        if wrap
+            && !line.is_empty()
             && ui
                 .painter()
                 .layout_no_wrap(candidate.clone(), font.clone(), color)

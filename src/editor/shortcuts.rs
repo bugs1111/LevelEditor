@@ -254,13 +254,20 @@ impl EditorApp {
         }
     }
     pub(super) fn switch_layer(&mut self, index: usize) {
-        if self
+        let Some(layer) = self
             .selected
             .and_then(|k| self.project.as_ref()?.layer(k, index))
-            .is_none()
-        {
+        else {
+            return;
+        };
+        if self.layer == index {
             return;
         }
+        self.layer_notification = Some((
+            text(layer, "__identifier", "").to_owned(),
+            text(layer, "__type", "Tiles").to_owned(),
+            Instant::now(),
+        ));
         self.finish_gesture();
         self.finish_stroke();
         self.layer = index;
@@ -398,6 +405,9 @@ impl EditorApp {
     }
 
     pub(super) fn shortcuts(&mut self, ctx: &egui::Context) {
+        if update_dialog::is_open(ctx) {
+            return;
+        }
         if world_form_dialog::is_open(ctx) {
             return;
         }
@@ -413,6 +423,7 @@ impl EditorApp {
         }
         if self.is_busy()
             || self.pending.is_some()
+            || self.suggest_backups
             || self.command_open
             || !self.resource_missing.is_empty()
             || self.crash.is_some()
@@ -424,7 +435,7 @@ impl EditorApp {
             return;
         }
         let focus = ctx.wants_keyboard_input();
-        let (modifiers, events) = ctx.input(|i| (i.modifiers, i.events.clone()));
+        let events = ctx.input(|i| i.events.clone());
         for event in events {
             if !focus {
                 match &event {
@@ -452,6 +463,7 @@ impl EditorApp {
                 key,
                 pressed,
                 repeat: false,
+                modifiers,
                 ..
             } = event
             else {
@@ -476,6 +488,10 @@ impl EditorApp {
             }
             if key == Key::Escape {
                 self.chain_entity = None;
+                if self.world_context.picking {
+                    self.cancel_world_context();
+                    continue;
+                }
                 if self.field_pick.is_some() {
                     self.cancel_field_pick();
                     continue;
@@ -492,7 +508,7 @@ impl EditorApp {
                     self.selection_group = None;
                     self.stamp = None;
                     self.command_palette = false;
-                    self.panel = None;
+                    self.show_panel(None);
                     self.entity_index = None;
                 }
                 continue;
@@ -619,7 +635,32 @@ impl EditorApp {
                 }
                 continue;
             }
-            if self.panel.is_some_and(|p| p != Panel::Entity) {
+            if !focus {
+                let panel = match key {
+                    Key::P => Some(Panel::Project),
+                    Key::C => Some(Panel::Level),
+                    Key::L if !modifiers.shift => Some(Panel::Layers),
+                    Key::E if !modifiers.shift => Some(Panel::Entities),
+                    Key::U => Some(Panel::Enums),
+                    Key::T if !modifiers.shift => Some(Panel::Tilesets),
+                    Key::H if !modifiers.shift => Some(Panel::Help),
+                    Key::Backtick => Some(Panel::World),
+                    Key::W
+                        if modifiers.shift || self.settings.value["navigationKeys"] != "Wasd" =>
+                    {
+                        Some(Panel::World)
+                    }
+                    _ => None,
+                };
+                if let Some(panel) = panel {
+                    self.toggle_toolbar_panel(panel);
+                    continue;
+                }
+            }
+            if self
+                .panel
+                .is_some_and(|p| !matches!(p, Panel::Entity | Panel::World))
+            {
                 continue;
             }
             let navigation = self.settings.value["navigationKeys"]
@@ -651,16 +692,6 @@ impl EditorApp {
                 Key::E if modifiers.shift => {
                     self.set_empty_selection(!self.settings.bool("emptySpaceSelection"));
                 }
-                Key::W if modifiers.shift => {
-                    self.finish_gesture();
-                    self.world = !self.world;
-                    self.fit = true;
-                }
-                Key::W if self.settings.value["navigationKeys"] != "Wasd" => {
-                    self.finish_gesture();
-                    self.world = !self.world;
-                    self.fit = true;
-                }
                 Key::A if modifiers.shift || self.settings.value["navigationKeys"] != "Wasd" => {
                     self.set_single_layer_mode(!self.single_layer)
                 }
@@ -679,18 +710,6 @@ impl EditorApp {
                 Key::PageDown => self.change_depth(-1, modifiers.shift),
                 Key::Delete | Key::Backspace => self.delete_selection(),
                 Key::F => self.fit = true,
-                Key::Backtick => {
-                    self.finish_gesture();
-                    self.world = !self.world;
-                    self.fit = true;
-                }
-                Key::P => self.show_panel(Some(Panel::Project)),
-                Key::C => self.show_panel(Some(Panel::Level)),
-                Key::L => self.show_panel(Some(Panel::Layers)),
-                Key::E => self.show_panel(Some(Panel::Entities)),
-                Key::U => self.show_panel(Some(Panel::Enums)),
-                Key::T => self.show_panel(Some(Panel::Tilesets)),
-                Key::H => self.show_panel(Some(Panel::Help)),
                 _ => {}
             }
         }

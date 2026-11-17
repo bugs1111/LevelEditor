@@ -54,6 +54,8 @@ mod panels;
 mod point_tools;
 #[path = "editor/preview.rs"]
 mod preview;
+#[path = "editor/project_dialogs.rs"]
+mod project_dialogs;
 #[path = "editor/resize_tools.rs"]
 mod resize_tools;
 #[path = "editor/resources.rs"]
@@ -209,6 +211,8 @@ pub struct EditorApp {
     last_cell: Option<[i32; 2]>,
     panel: Option<Panel>,
     pending: Option<Action>,
+    suggest_backups: bool,
+    layer_notification: Option<(String, String, Instant)>,
     loading: Option<Receiver<Result<services::LoadedProject, String>>>,
     saving: Option<Receiver<Result<services::SavedProject, String>>>,
     exporting: Option<Receiver<Result<ldtk_core::exports::ExportReport, String>>>,
@@ -381,6 +385,8 @@ impl EditorApp {
             last_cell: None,
             panel: None,
             pending: None,
+            suggest_backups: false,
+            layer_notification: None,
             loading: None,
             saving: None,
             exporting: None,
@@ -461,6 +467,9 @@ impl EditorApp {
     }
 
     fn set_project(&mut self, project: Project) {
+        let closing_settings = self.panel == Some(Panel::Settings);
+        self.suggest_backups = project_dialogs::suggest_backups(&project);
+        self.layer_notification = None;
         self.selected = project.level_keys().first().copied();
         if self.settings.bool("openLastProject")
             && project.path.as_ref().is_some_and(|p| {
@@ -533,6 +542,9 @@ impl EditorApp {
         }
         self.status =
             "Project opened. Left: draw · Right: erase · Space + drag: pan · Wheel: zoom".into();
+        if closing_settings {
+            self.finish_settings_dialog(&self.repaint.clone().unwrap_or_default());
+        }
     }
 
     fn finish_stroke(&mut self) {
@@ -589,7 +601,12 @@ impl EditorApp {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             }
             Action::Close => {
+                if self.panel == Some(Panel::Settings) {
+                    self.finish_settings_dialog(ctx);
+                }
                 self.project = None;
+                self.suggest_backups = false;
+                self.layer_notification = None;
                 self.selected = None;
                 self.active_world = None;
                 self.dirty = false;
@@ -760,26 +777,11 @@ impl EditorApp {
             return;
         }
         if self.pending.is_some() {
-            egui::Modal::new(egui::Id::new("unsaved-changes")).show(ctx, |ui| {
-                ui.heading("Unsaved changes");
-                ui.label("Save your project before continuing?");
-                ui.horizontal(|ui| {
-                    if ui.button("Save").clicked()
-                        && self.save(false)
-                        && let Some(action) = self.pending.take()
-                    {
-                        self.execute(ctx, action);
-                    }
-                    if ui.button("Discard changes").clicked()
-                        && let Some(action) = self.pending.take()
-                    {
-                        self.execute(ctx, action);
-                    }
-                    if ui.button("Cancel").clicked() {
-                        self.pending = None;
-                    }
-                });
-            });
+            self.show_unsaved_changes_dialog(ctx);
+            return;
+        }
+        if self.suggest_backups {
+            self.show_backup_suggestion(ctx);
             return;
         }
         let Some(panel) = self.panel else {
@@ -953,6 +955,18 @@ impl EditorApp {
             .show(ctx, |ui| {
                 let (rect, response) =
                     ui.allocate_exact_size(ui.available_size(), Sense::click_and_drag());
+                let rect = if self.panel == Some(Panel::World) {
+                    Rect::from_min_max(
+                        egui::pos2(
+                            rect.left()
+                                .max(panels::source_panel_width(Panel::World).min(rect.right())),
+                            rect.top(),
+                        ),
+                        rect.max,
+                    )
+                } else {
+                    rect
+                };
                 entity_inspector::remember_canvas(ctx, rect);
                 if self.project.is_some() {
                     self.canvas_input(ctx, rect, &response);
@@ -1019,6 +1033,9 @@ impl EditorApp {
                 }
                 self.canvas_notifications(ctx, rect);
             });
+        if self.panel == Some(Panel::World) && !self.world {
+            self.show_panel(None);
+        }
         self.dialogs(ctx);
         self.world_form_dialog(ctx);
         self.service_dialogs(ctx);
@@ -1038,7 +1055,7 @@ impl EditorApp {
             &self.status,
             self.status_error,
         );
-        let title = format!("{}LDtk • Rust", if self.dirty { "● " } else { "" });
+        let title = format!("{}LevelEditor", if self.dirty { "● " } else { "" });
         ctx.send_viewport_cmd(egui::ViewportCommand::Title(title));
         self.frame_time = frame
             .info()

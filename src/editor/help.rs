@@ -186,6 +186,7 @@ impl EditorApp {
                 );
                 egui::Grid::new(title)
                     .num_columns(2)
+                    .max_col_width((ui.available_width() - 12.) * 0.5)
                     .spacing([12.0, 8.0])
                     .show(ui, |ui| {
                         for (key, description) in rows {

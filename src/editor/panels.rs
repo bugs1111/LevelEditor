@@ -1,3 +1,5 @@
+#[path = "application_settings.rs"]
+mod application_settings;
 #[path = "definition_clipboard.rs"]
 mod definition_clipboard;
 #[path = "entity_transfer.rs"]
@@ -20,6 +22,15 @@ use super::ui_fields::{
 use super::*;
 use definition_clipboard::ClipTarget;
 use serde_json::json;
+
+pub(super) fn source_panel_width(panel: Panel) -> f32 {
+    match panel {
+        Panel::World => 400.,
+        Panel::Level => 490.,
+        Panel::Project | Panel::Help => 840.,
+        _ => 1000.,
+    }
+}
 
 impl EditorApp {
     pub(super) fn properties(&mut self, ui: &mut egui::Ui, panel: Panel) {
@@ -255,6 +266,17 @@ impl EditorApp {
                 }
             });
         }
+        self.backup_project_dialogs(ui);
+    }
+
+    fn backup_project_dialogs(&mut self, ui: &mut egui::Ui) {
+        let Some(project) = self.project.as_ref() else {
+            return;
+        };
+        let iid = text(&project.json, "iid", "").to_owned();
+        let original_key = egui::Id::new(("backup-original", iid.clone()));
+        let browser_key = egui::Id::new(("backup-browser", iid.clone()));
+        let rename_key = egui::Id::new(("project-rename", iid));
         if let Some(mut name) = ui
             .ctx()
             .data_mut(|data| data.get_temp::<String>(rename_key))
@@ -2646,87 +2668,6 @@ impl EditorApp {
                     p.rebuild_auto_layers(key)
                 });
             }
-        }
-    }
-
-    pub(super) fn show_settings_dialog(&mut self, ctx: &egui::Context) {
-        let mut close = false;
-        let modal = egui::Modal::new(egui::Id::new("app-settings-dialog")).show(ctx, |ui| {
-            ui.heading("Application settings");
-            self.settings_properties(ui);
-            if source_controls::button(ui, "Check for updates").clicked() {
-                self.open_updater(ui.ctx());
-            }
-            close = source_controls::button(ui, "Close").clicked();
-        });
-        if close || modal.should_close() {
-            self.show_panel(None);
-        }
-    }
-    fn settings_properties(&mut self, ui: &mut egui::Ui) {
-        let patch = form(
-            ui,
-            &self.settings.value,
-            &[
-                P("openLastProject", "Reopen last project", W::Bool),
-                P("startFullScreen", "Start fullscreen", W::Bool),
-                P("useBestGPU", "Use best GPU", W::Bool),
-                P(
-                    "navigationKeys",
-                    "Navigation keys",
-                    W::Choice(&["Wasd", "Zqsd", "Arrows"]),
-                ),
-                P("appUiScale", "Application UI scale", W::Float(0.5, 5.0)),
-                P("editorUiScale", "Canvas UI scale", W::Float(0.5, 5.0)),
-                P("mouseWheelSpeed", "Mouse wheel speed", W::Float(0.1, 5.0)),
-                P(
-                    "autoWorldModeSwitch",
-                    "Auto world switching",
-                    W::Choice(&["Never", "ZoomOutOnly", "ZoomInAndOut"]),
-                ),
-                P(
-                    "fieldsRender",
-                    "Fields render",
-                    W::Choice(&["FR_Outline", "FR_Table"]),
-                ),
-                P(
-                    "singleLayerModeIntensity",
-                    "Single layer fade",
-                    W::Float(0.0, 1.0),
-                ),
-                P(
-                    "nearbyTilesRenderingDist",
-                    "Nearby tiles distance",
-                    W::Float(0.0, 10.0),
-                ),
-                P("colorBlind", "Prefer color-blind colors", W::Bool),
-                P("blurMask", "Fade window when not focused", W::Bool),
-            ],
-        );
-        if changed(&patch) {
-            apply_patch(&mut self.settings.value, &patch);
-            ui.ctx()
-                .set_zoom_factor(self.settings.float("appUiScale", 1.0));
-            if let Some(fullscreen) = patch["startFullScreen"].as_bool() {
-                ui.ctx()
-                    .send_viewport_cmd(egui::ViewportCommand::Fullscreen(fullscreen));
-            }
-            if let Err(e) = self.settings.save() {
-                self.status = e.to_string();
-            }
-        }
-        if let Some(path) = app_log::path(self.settings.path.as_deref()) {
-            ui.separator();
-            ui.label(path.display().to_string());
-            ui.horizontal(|ui| {
-                text_editor::log_editor(ui, &path);
-                if source_controls::button(ui, "Locate logs").clicked()
-                    && let Err(error) = home_files::locate(&path, true)
-                {
-                    self.status = error.to_string();
-                    self.status_error = true;
-                }
-            });
         }
     }
 

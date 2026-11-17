@@ -49,24 +49,46 @@ fn button(
     let response = panels::source_controls::add_sized_button(
         ui,
         [width, 38.],
-        egui::Button::image_and_text(
-            egui::Image::new(image).fit_to_exact_size(Vec2::splat(25.)),
-            RichText::new(label).font(font),
-        )
-        .fill(color)
-        .stroke(Stroke::NONE)
-        .corner_radius(0),
+        egui::Button::new("")
+            .fill(color)
+            .stroke(Stroke::NONE)
+            .corner_radius(2),
     );
+    response.widget_info(|| {
+        egui::WidgetInfo::labeled(egui::WidgetType::Button, response.enabled(), label)
+    });
+    let galley = ui.fonts_mut(|fonts| fonts.layout_no_wrap(label.into(), font, Color32::WHITE));
+    let label_width = if label.is_empty() {
+        0.
+    } else {
+        6. + galley.size().x
+    };
+    let group_width = 25. + label_width + if label == "Examples" { 22. } else { 0. };
+    let left = response.rect.center().x - group_width * 0.5;
+    egui::Image::new(image).paint_at(
+        ui,
+        Rect::from_center_size(
+            egui::pos2(left + 12.5, response.rect.center().y),
+            Vec2::splat(25.),
+        ),
+    );
+    if !label.is_empty() {
+        ui.painter().galley(
+            egui::pos2(left + 31., response.rect.center().y - galley.size().y * 0.5),
+            galley,
+            Color32::WHITE,
+        );
+    }
     if label == "Examples" {
         egui::Image::new(egui::include_image!("../../assets/icons/expanded.svg")).paint_at(
             ui,
             Rect::from_center_size(
-                response.rect.center() + egui::vec2(60., 0.),
+                egui::pos2(left + group_width - 8., response.rect.center().y),
                 egui::vec2(16., 16.),
             ),
         );
     }
-    response
+    response.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
 fn left_button(
@@ -107,6 +129,91 @@ fn matches_search(path: &std::path::Path, query: &str) -> bool {
     query
         .split_whitespace()
         .all(|word| path.contains(&word.to_lowercase()))
+}
+
+fn path_job(
+    path: &std::path::Path,
+    color: Color32,
+    folder: bool,
+    missing: bool,
+) -> egui::text::LayoutJob {
+    let path = path.to_string_lossy().replace('\\', "/");
+    let parts = path.split('/').collect::<Vec<_>>();
+    let mut job = egui::text::LayoutJob::default();
+    for (index, part) in parts.iter().enumerate() {
+        if index > 0 {
+            job.append(
+                "/",
+                2.,
+                egui::TextFormat {
+                    font_id: FontId::new(16., egui::FontFamily::Name("body-bold".into())),
+                    color: if missing {
+                        color
+                    } else {
+                        Color32::from_rgb(115, 127, 157)
+                    },
+                    strikethrough: if missing {
+                        Stroke::new(1_f32, color)
+                    } else {
+                        Stroke::NONE
+                    },
+                    ..Default::default()
+                },
+            );
+        }
+        let last = folder && index == parts.len() - 1;
+        let color = if last && !missing {
+            Color32::WHITE
+        } else {
+            color
+        };
+        job.append(
+            part,
+            if index > 0 { 2. } else { 0. },
+            egui::TextFormat {
+                font_id: if last {
+                    FontId::new(13.333, egui::FontFamily::Name("body-bold".into()))
+                } else {
+                    FontId::proportional(12.)
+                },
+                color,
+                strikethrough: if missing {
+                    Stroke::new(1_f32, color)
+                } else {
+                    Stroke::NONE
+                },
+                ..Default::default()
+            },
+        );
+    }
+    if !folder {
+        job.append(
+            "/",
+            2.,
+            egui::TextFormat {
+                font_id: FontId::new(16., egui::FontFamily::Name("body-bold".into())),
+                color: Color32::from_rgb(115, 127, 157),
+                ..Default::default()
+            },
+        );
+    }
+    job.wrap.max_rows = 1;
+    job.wrap.break_anywhere = true;
+    job
+}
+
+fn scrollbar(ui: &mut egui::Ui, width: f32) {
+    ui.spacing_mut().scroll = egui::style::ScrollStyle::solid();
+    ui.spacing_mut().scroll.bar_width = width;
+    ui.spacing_mut().scroll.bar_inner_margin = 0.;
+    ui.spacing_mut().scroll.bar_outer_margin = 0.;
+    ui.visuals_mut().extreme_bg_color = theme::MEDIUM;
+    ui.visuals_mut().widgets.inactive.bg_fill = Color32::from_rgb(115, 127, 157);
+    ui.visuals_mut().widgets.hovered.bg_fill = theme::TEXT;
+    ui.visuals_mut().widgets.active.bg_fill = theme::TEXT;
+    ui.visuals_mut().widgets.inactive.corner_radius = egui::CornerRadius::ZERO;
+    ui.visuals_mut().widgets.hovered.corner_radius = egui::CornerRadius::ZERO;
+    ui.visuals_mut().widgets.active.corner_radius = egui::CornerRadius::ZERO;
 }
 
 impl EditorApp {
@@ -230,17 +337,19 @@ impl EditorApp {
             ui.spacing_mut().item_spacing.x=2.;
             ui.spacing_mut().button_padding=egui::vec2(8.,0.);
             let fullscreen=ctx.input(|input| input.viewport().fullscreen.unwrap_or(false));
-            let flexible=(ui.available_width()-88.-38.-if fullscreen {38.+2.} else {0.}-8.)/3.;
+            let import_font = FontId::proportional(if ctx.content_rect().width() <= 1000. {12.} else {14.667});
+            let import_width = 47. + ui.fonts_mut(|fonts| fonts.layout_no_wrap("Import".into(), import_font, Color32::WHITE).size().x);
+            let flexible=(ui.available_width()-import_width-41.-if fullscreen {41.+2.} else {0.}-8.)/3.;
             if button(ui,flexible,egui::include_image!("../../assets/icons/tutorial.svg"),"Examples",Color32::from_rgb(73,141,85)).on_hover_text("These examples showcase various functionalities from LDtk editor, including auto-layer rules and entities.").clicked() { hide = !hide; }
             if button(ui,flexible,egui::include_image!("../../assets/icons/new.svg"),"New",Color32::from_rgb(227,77,0)).clicked() { action=Some(Action::New); }
             if button(ui,flexible,egui::include_image!("../../assets/icons/open.svg"),"Load",Color32::from_rgb(227,77,0)).clicked() { action=Some(Action::Browse); }
-            let import=button(ui,88.,egui::include_image!("../../assets/icons/open.svg"),"Import",theme::LIGHT);
+            let import=button(ui,import_width,egui::include_image!("../../assets/icons/open.svg"),"Import",theme::LIGHT);
             egui::Popup::menu(&import).show(|ui| {
                 ui.weak("Import a project from another app");
                 if ui.button("Ogmo 3 project").clicked() { action=Some(Action::BrowseOgmo);ui.close(); }
             });
-            if button(ui,38.,egui::include_image!("../../assets/icons/settings.svg"),"",theme::LIGHT).on_hover_text("Application settings").clicked() { self.show_panel(Some(Panel::Settings)); }
-            if fullscreen && button(ui,38.,egui::include_image!("../../assets/icons/exit.svg"),"",theme::DARK).on_hover_text("Close app").clicked() { action=Some(Action::Quit); }
+            if button(ui,41.,egui::include_image!("../../assets/icons/settings.svg"),"",theme::LIGHT).on_hover_text("Application settings").clicked() { self.show_panel(Some(Panel::Settings)); }
+            if fullscreen && button(ui,41.,egui::include_image!("../../assets/icons/exit.svg"),"",theme::DARK).on_hover_text("Close app").clicked() { action=Some(Action::Quit); }
         });
         if !hide {
             self.home_samples(ctx, &mut ui, &mut hide, &mut action);
@@ -278,8 +387,7 @@ impl EditorApp {
             ),
         );
         ctx.data_mut(|data| data.insert_temp(search_id, search.clone()));
-        // CSS keeps a32pt gap between Search and the recent lists.
-        let list_rect = Rect::from_min_max(ui.cursor().min + egui::vec2(0., 32.), files.max);
+        let list_rect = Rect::from_min_max(ui.cursor().min, files.max);
         let column_width = (list_rect.width() - 8.) * 0.5;
         for (index, entries) in [&recent, &directories].into_iter().enumerate() {
             let rect = Rect::from_min_size(
@@ -348,9 +456,10 @@ impl EditorApp {
             .corner_radius(3)
             .inner_margin(4)
             .show(ui, |ui| {
+                ui.spacing_mut().item_spacing.y = 4.;
                 ui.horizontal(|ui| {
                     let (title, _) = ui.allocate_exact_size(
-                        egui::vec2(ui.available_width() - 30., 24.),
+                        egui::vec2(ui.available_width() - 29., 25.),
                         Sense::hover(),
                     );
                     ui.painter().text(
@@ -360,17 +469,33 @@ impl EditorApp {
                         FontId::proportional(13.333),
                         HELP,
                     );
-                    if ui
-                        .add_sized(
-                            [22., 22.],
-                            egui::Button::image(
-                                egui::Image::new(egui::include_image!(
-                                    "../../assets/icons/close.png"
-                                ))
-                                .fit_to_exact_size(Vec2::splat(16.)),
+                    let close = ui
+                        .scope(|ui| {
+                            ui.spacing_mut().button_padding = Vec2::ZERO;
+                            ui.add_sized(
+                                [27., 25.],
+                                egui::Button::image(
+                                    egui::Image::new(egui::include_image!(
+                                        "../../assets/icons/close.png"
+                                    ))
+                                    .fit_to_exact_size(Vec2::splat(23.)),
+                                )
+                                .fill(HELP_DARK)
+                                .corner_radius(0)
+                                .stroke(Stroke::new(1_f32, Color32::from_rgb(94, 171, 107))),
                             )
-                            .fill(HELP_DARK),
-                        )
+                        })
+                        .inner;
+                    if close.hovered() {
+                        ui.painter().rect_stroke(
+                            close.rect,
+                            0.,
+                            Stroke::new(1_f32, Color32::WHITE),
+                            egui::StrokeKind::Inside,
+                        );
+                    }
+                    if close
+                        .on_hover_cursor(egui::CursorIcon::PointingHand)
                         .clicked()
                     {
                         *hide = true;
@@ -385,12 +510,10 @@ impl EditorApp {
                         bottom: 8,
                     })
                     .show(ui, |ui| {
-                        ui.spacing_mut().scroll = egui::style::ScrollStyle::solid();
-                        ui.spacing_mut().scroll.bar_width = 15.;
-                        ui.spacing_mut().scroll.bar_inner_margin = 0.;
-                        ui.spacing_mut().scroll.bar_outer_margin = 0.;
+                        scrollbar(ui, 15.);
                         egui::ScrollArea::horizontal()
                             .id_salt("source-home-samples")
+                            .auto_shrink([false, true])
                             .max_height(148.)
                             .show(ui, |ui| {
                                 ui.horizontal(|ui| {
@@ -407,7 +530,6 @@ impl EditorApp {
                                             egui::vec2(128., 131.),
                                             Sense::click(),
                                         );
-                                        ui.painter().rect_filled(rect, 4., Color32::BLACK);
                                         let thumb =
                                             Rect::from_min_size(rect.min, egui::vec2(128., 96.));
                                         let name =
@@ -424,6 +546,15 @@ impl EditorApp {
                                         } else {
                                             Color32::WHITE
                                         };
+                                        ui.painter().rect_filled(
+                                            rect,
+                                            4.,
+                                            if seen {
+                                                Color32::from_black_alpha(153)
+                                            } else {
+                                                Color32::BLACK
+                                            },
+                                        );
                                         if let Some(texture) = self.assets.texture(
                                             ctx,
                                             &path
@@ -446,7 +577,30 @@ impl EditorApp {
                                                     egui::pos2(1., (1. + h) * 0.5),
                                                 )
                                             };
-                                            ui.painter().image(texture.id(), thumb, uv, tint);
+                                            egui::Image::from_texture(&texture)
+                                                .uv(uv)
+                                                .tint(tint)
+                                                .corner_radius(egui::CornerRadius {
+                                                    nw: 4,
+                                                    ne: 4,
+                                                    sw: 0,
+                                                    se: 0,
+                                                })
+                                                .paint_at(ui, thumb);
+                                        }
+                                        for inset in 0..8 {
+                                            ui.painter().rect_stroke(
+                                                thumb.shrink(inset as f32),
+                                                3.,
+                                                Stroke::new(
+                                                    1_f32,
+                                                    Color32::from_black_alpha(
+                                                        ((1. - inset as f32 / 8.).powi(2) * 90.)
+                                                            as u8,
+                                                    ),
+                                                ),
+                                                egui::StrokeKind::Inside,
+                                            );
                                         }
                                         let text_rect = Rect::from_min_max(
                                             thumb.left_bottom() + egui::vec2(2., 4.),
@@ -455,7 +609,11 @@ impl EditorApp {
                                         let galley = ui.painter().layout(
                                             name.replace('_', " "),
                                             FontId::proportional(11.333),
-                                            tint,
+                                            if seen {
+                                                theme::TEXT.gamma_multiply(0.6)
+                                            } else {
+                                                tint
+                                            },
                                             text_rect.width(),
                                         );
                                         ui.painter().galley(
@@ -529,11 +687,14 @@ impl EditorApp {
             return;
         }
         let mut content = child(ui, rect.shrink(4.), "source-recent-inner");
+        scrollbar(&mut content, 10.);
         egui::ScrollArea::vertical()
             .id_salt(if files { "files" } else { "folders" })
+            .auto_shrink([false, false])
             .max_height(rect.height() - 8.)
             .show(&mut content, |ui| {
-                ui.set_width(rect.width() - 8.);
+                ui.spacing_mut().item_spacing.y = 0.;
+                ui.add_space(3.);
                 ui.label(
                     RichText::new(if files {
                         "Recent projects"
@@ -541,11 +702,12 @@ impl EditorApp {
                         "Recent folders"
                     })
                     .font(FontId::new(
-                        12.,
+                        11.733,
                         egui::FontFamily::Name("panel-title".into()),
                     ))
                     .color(theme::ACCENT),
                 );
+                ui.add_space(3.);
                 ui.spacing_mut().item_spacing.y = 1.;
                 for path in entries {
                     let directory = if files {
@@ -567,7 +729,13 @@ impl EditorApp {
                     let (row, response) = ui.allocate_exact_size(
                         egui::vec2(
                             ui.available_width(),
-                            if files && !sample { 46. } else { 28. },
+                            if files && !sample {
+                                50.
+                            } else if files {
+                                37.
+                            } else {
+                                31.
+                            },
                         ),
                         Sense::click(),
                     );
@@ -601,38 +769,102 @@ impl EditorApp {
                     } else {
                         path.to_string_lossy()
                     };
+                    let padding_y = if files { 6. } else { 2. };
+                    let menu_rect = Rect::from_min_max(
+                        egui::pos2(row.right() - 26., row.top() + padding_y),
+                        egui::pos2(row.right() - 8., row.bottom() - padding_y),
+                    );
+                    let menu_response = ui
+                        .interact(
+                            menu_rect,
+                            ui.id().with(("recent-context", &path)),
+                            Sense::click(),
+                        )
+                        .on_hover_cursor(egui::CursorIcon::PointingHand);
+                    ui.painter().rect(
+                        menu_rect,
+                        2.,
+                        Color32::from_black_alpha(if menu_response.hovered() { 128 } else { 26 }),
+                        Stroke::new(1_f32, Color32::from_black_alpha(51)),
+                        egui::StrokeKind::Inside,
+                    );
+                    egui::Image::new(egui::include_image!("../../assets/icons/contextMenu.svg"))
+                        .paint_at(
+                            ui,
+                            Rect::from_center_size(menu_rect.center(), egui::vec2(14.667, 24.933)),
+                        );
+                    egui::Popup::menu(&menu_response).show(|ui| {
+                        if files {
+                            self.recent_file_menu(ui, &path);
+                        } else {
+                            self.recent_folder_menu(ui, &path);
+                        }
+                    });
+                    let mut text_right = menu_rect.left() - 8.;
+                    if files {
+                        let mut backup = child(
+                            ui,
+                            Rect::from_min_size(
+                                egui::pos2(row.right() - 78., row.top() + padding_y),
+                                egui::vec2(54., row.height() - 2. * padding_y),
+                            ),
+                            &format!("recent-backups-{}", path.display()),
+                        );
+                        self.home_backups_menu(&mut backup, &path);
+                        if backup.min_size().x > 0. {
+                            text_right = backup.max_rect().left() - 8.;
+                        }
+                    }
                     let text_rect = Rect::from_min_max(
-                        row.min + egui::vec2(8., if files && !sample { 5. } else { 3. }),
-                        egui::pos2(row.right() - if files { 82. } else { 24. }, row.bottom()),
+                        row.min
+                            + egui::vec2(
+                                8.,
+                                if files && !sample {
+                                    6.
+                                } else {
+                                    (row.height() - 19.) / 2.
+                                },
+                            ),
+                        egui::pos2(text_right, row.bottom()),
                     );
                     let font = FontId::new(
                         16.,
-                        egui::FontFamily::Name(
-                            if files { "heading" } else { "panel-title" }.into(),
-                        ),
+                        if missing {
+                            egui::FontFamily::Proportional
+                        } else {
+                            egui::FontFamily::Name("body-bold".into())
+                        },
                     );
-                    let mut job = egui::text::LayoutJob::simple(
-                        title.to_string(),
-                        font,
-                        text_color,
-                        text_rect.width(),
-                    );
+                    let mut job = if files {
+                        egui::text::LayoutJob::simple(
+                            title.to_string(),
+                            font,
+                            text_color,
+                            text_rect.width(),
+                        )
+                    } else {
+                        path_job(&path, text_color, true, missing)
+                    };
+                    if sample && !files {
+                        for section in &mut job.sections {
+                            section.format.color = text_color;
+                        }
+                    }
+                    job.wrap.max_width = text_rect.width();
                     job.wrap.max_rows = 1;
                     job.wrap.break_anywhere = true;
-                    if missing {
+                    if missing && files {
                         job.sections[0].format.strikethrough = Stroke::new(1_f32, text_color);
                     }
                     let galley = ui.fonts_mut(|fonts| fonts.layout_job(job));
                     ui.painter().galley(text_rect.min, galley, text_color);
                     if files && !sample {
-                        let path_color =
-                            mix_color(theme::DARK, mix_color(color, Color32::WHITE, 0.6), 0.55);
-                        let mut job = egui::text::LayoutJob::simple(
-                            directory.to_string_lossy().into_owned(),
-                            FontId::proportional(12.),
-                            path_color,
-                            text_rect.width(),
-                        );
+                        let path_color = mix_color(color, Color32::WHITE, 0.6);
+                        let mut job = path_job(directory, path_color, false, false);
+                        for section in &mut job.sections {
+                            section.format.color = section.format.color.gamma_multiply(0.55);
+                        }
+                        job.wrap.max_width = text_rect.width();
                         job.wrap.max_rows = 1;
                         job.wrap.break_anywhere = true;
                         let galley = ui.fonts_mut(|fonts| fonts.layout_job(job));
@@ -641,36 +873,6 @@ impl EditorApp {
                             galley,
                             path_color,
                         );
-                    }
-                    let mut menu = child(
-                        ui,
-                        Rect::from_min_max(egui::pos2(row.right() - 22., row.top()), row.max),
-                        &format!("recent-context-{}", path.display()),
-                    );
-                    menu.spacing_mut().button_padding = Vec2::ZERO;
-                    menu.menu_button(
-                        egui::Image::new(egui::include_image!(
-                            "../../assets/icons/contextMenu.svg"
-                        ))
-                        .fit_to_exact_size(Vec2::splat(16.)),
-                        |ui| {
-                            if files {
-                                self.recent_file_menu(ui, &path);
-                            } else {
-                                self.recent_folder_menu(ui, &path);
-                            }
-                        },
-                    );
-                    if files {
-                        let mut backup = child(
-                            ui,
-                            Rect::from_min_size(
-                                egui::pos2(row.right() - 78., row.top() + 5.),
-                                egui::vec2(54., row.height() - 10.),
-                            ),
-                            &format!("recent-backups-{}", path.display()),
-                        );
-                        self.home_backups_menu(&mut backup, &path);
                     }
                     if response
                         .clone()
@@ -967,6 +1169,150 @@ mod tests {
             vec![egui::Event::Text("never-matches-this-folder".into())],
         );
         assert!(!filtered.shapes.iter().any(|s| matches!(&s.shape,egui::Shape::Text(t) if t.galley.job.text == "Needle" || t.galley.job.text == directory.path().to_str().unwrap())));
+    }
+
+    #[test]
+    fn source_home_recent_lists_follow_search_without_extra_blank_space() {
+        let ctx = egui::Context::default();
+        theme::configure(&ctx);
+        let mut app = EditorApp::empty();
+        app.settings.value["recentDirs"] = serde_json::json!([std::env::temp_dir()]);
+        home_frame(&mut app, &ctx, vec![]);
+        let output = home_frame(&mut app, &ctx, vec![]);
+        let search = text_rect(&output, "Search…");
+        let recent = text_rect(&output, "Recent folders");
+        assert!(
+            recent.top() - search.bottom() < 24.,
+            "extra Home gap: search={search:?} recent={recent:?}"
+        );
+    }
+
+    #[test]
+    fn source_home_paths_use_components_with_a_bold_final_folder() {
+        let ctx = egui::Context::default();
+        theme::configure(&ctx);
+        let mut app = EditorApp::empty();
+        let dir = tempfile::tempdir().unwrap();
+        app.settings.value["recentDirs"] = serde_json::json!([dir.path()]);
+        let output = home_frame(&mut app, &ctx, vec![]);
+        let path = output
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Text(t) if t.galley.text() == dir.path().to_str().unwrap() => Some(t),
+                _ => None,
+            })
+            .expect("recent folder path");
+        assert!(
+            path.galley.job.sections.len() >= 3,
+            "the original styles slash separators and path components separately"
+        );
+        let last = &path.galley.job.sections.last().unwrap().format;
+        assert_eq!(
+            last.font_id.family,
+            egui::FontFamily::Name("body-bold".into())
+        );
+        assert!((last.font_id.size - 13.333).abs() < 0.01);
+        assert_eq!(last.color, Color32::WHITE);
+    }
+
+    #[test]
+    fn source_home_missing_folder_marks_separators_and_components_as_missing() {
+        let ctx = egui::Context::default();
+        theme::configure(&ctx);
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("deleted-folder");
+        let mut app = EditorApp::empty();
+        app.settings.value["recentDirs"] = serde_json::json!([missing]);
+        let output = home_frame(&mut app, &ctx, vec![]);
+        let path = output
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Text(t) if t.galley.text() == missing.to_str().unwrap() => Some(t),
+                _ => None,
+            })
+            .expect("missing folder path");
+        for section in &path.galley.job.sections {
+            assert_eq!(section.format.color, Color32::from_rgb(255, 163, 134));
+            assert!(section.format.strikethrough.width > 0.);
+        }
+    }
+
+    #[test]
+    fn source_home_context_button_fills_the_project_row_and_keeps_clicks_in_menu() {
+        let ctx = egui::Context::default();
+        theme::configure(&ctx);
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("Full_height_menu.ldtk");
+        Project::new().save(&path).unwrap();
+        let mut app = EditorApp::empty();
+        app.settings.value["recentProjects"] = serde_json::json!([path]);
+        app.dirty = true;
+        home_frame(&mut app, &ctx, vec![]);
+        let output = home_frame(&mut app, &ctx, vec![]);
+        let title = text_rect(&output, "Full_height_menu");
+        let search = text_rect(&output, "Search…");
+        let panel = output
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Rect(r)
+                    if r.stroke.color == theme::LIGHT
+                        && r.rect.top() > search.bottom()
+                        && r.rect.width() > 300. =>
+                {
+                    Some(r.rect)
+                }
+                _ => None,
+            })
+            .expect("recent project list bounds");
+        click(
+            &mut app,
+            &ctx,
+            egui::pos2(panel.right() - 21., title.top() + 34.),
+        );
+        let output = home_frame(&mut app, &ctx, vec![]);
+        text_rect(&output, "Locate file");
+        assert!(
+            app.pending.is_none() && app.project.is_none(),
+            "context menu click must not open the row"
+        );
+    }
+
+    #[test]
+    fn source_home_sample_close_button_fits_inside_the_examples_frame() {
+        let ctx = egui::Context::default();
+        theme::configure(&ctx);
+        let mut app = EditorApp::empty();
+        home_frame(&mut app, &ctx, vec![]);
+        let output = home_frame(&mut app, &ctx, vec![]);
+        let panel = output
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Rect(r) if r.stroke.color == HELP && r.rect.width() > 500. => {
+                    Some(r.rect)
+                }
+                _ => None,
+            })
+            .expect("examples panel");
+        let close = output
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Rect(r) if r.fill == HELP_DARK && r.rect.width() < 50. => Some(r.rect),
+                _ => None,
+            })
+            .expect("examples close button");
+        assert!(
+            panel.shrink(1.).contains_rect(close),
+            "clipped close control: panel={panel:?} button={close:?}"
+        );
+        assert!(
+            close.width() <= 27. && close.height() <= 27.,
+            "source icon button must not inherit general button padding: {close:?}"
+        );
     }
 
     #[test]

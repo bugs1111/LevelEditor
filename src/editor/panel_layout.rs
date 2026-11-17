@@ -1,6 +1,11 @@
 use super::*;
 use std::collections::BTreeMap;
 
+#[path = "project_panel.rs"]
+mod project_panel;
+#[path = "world_level_panel.rs"]
+mod world_level_panel;
+
 const LIST_WIDTH: f32 = 250.;
 const SOURCE_ORANGE: Color32 = Color32::from_rgb(235, 78, 0);
 const GROUP_BAR: Color32 = Color32::from_rgb(117, 130, 164);
@@ -25,8 +30,8 @@ fn title(panel: Panel) -> &'static str {
         Panel::Rules => "AUTO-LAYER RULES",
         Panel::Fields => "CUSTOM FIELDS",
         Panel::Project => "PROJECT SETTINGS",
-        Panel::World => "WORLD SETTINGS",
-        Panel::Level => "LEVEL SETTINGS",
+        Panel::World => "WORLD",
+        Panel::Level => "CURRENT LEVEL",
         Panel::Export => "PROJECT EXPORT",
         Panel::Help => "HELP",
         _ => "",
@@ -189,13 +194,31 @@ fn section(
     mut open: bool,
     body: impl FnOnce(&mut egui::Ui),
 ) -> bool {
-    egui::Frame::new()
+    let mut hovered = false;
+    let frame = egui::Frame::new()
         .stroke(Stroke::new(1_f32, theme::LIGHT))
         .show(ui, |ui| {
             ui.spacing_mut().item_spacing.y = 0.;
             let (rect, response) =
                 ui.allocate_exact_size(egui::vec2(ui.available_width(), 28.), Sense::click());
-            ui.painter().rect_filled(rect, 0., GROUP_BAR);
+            hovered = response.hovered();
+            // The source custom collapse cursor uses zoom-out as its native fallback.
+            let response = response.on_hover_cursor(if open {
+                egui::CursorIcon::ZoomOut
+            } else {
+                egui::CursorIcon::Cell
+            });
+            ui.painter().rect_filled(
+                rect,
+                0.,
+                if hovered {
+                    theme::ACCENT
+                } else if open {
+                    GROUP_BAR
+                } else {
+                    theme::LIGHT
+                },
+            );
             let arrow = if open {
                 [
                     egui::vec2(7., -3.),
@@ -216,7 +239,11 @@ fn section(
                 Align2::LEFT_CENTER,
                 title,
                 FontId::new(17., egui::FontFamily::Name("panel-title".into())),
-                if open { Color32::BLACK } else { theme::ACCENT },
+                if open || hovered {
+                    Color32::BLACK
+                } else {
+                    theme::ACCENT
+                },
             );
             if response.clicked() {
                 open = !open;
@@ -227,6 +254,14 @@ fn section(
                     .show(ui, body);
             }
         });
+    if hovered {
+        ui.painter().rect_stroke(
+            frame.response.rect,
+            0.,
+            Stroke::new(1_f32, theme::ACCENT),
+            egui::StrokeKind::Inside,
+        );
+    }
     open
 }
 impl EditorApp {
@@ -298,24 +333,56 @@ impl EditorApp {
             }
         }
         let screen = ctx.content_rect();
-        let width = 1000_f32.min(screen.width());
+        let width = source_panel_width(panel).min(screen.width());
+        let single_column = matches!(panel, Panel::Project | Panel::World | Panel::Level);
         let height = (screen.height() - 34.).max(100.);
         let body_height = (height - 69.).max(40.);
-        let mut close = false;
+        let outside_click = ctx.input(|input| {
+            input
+                .pointer
+                .primary_clicked()
+                .then(|| input.pointer.interact_pos())
+                .flatten()
+        });
+        let mut close = panel != Panel::World
+            && outside_click.is_some_and(|pos| {
+                pos.x > width
+                    && pos.y >= 34.
+                    && ctx
+                        .layer_id_at(pos)
+                        .is_none_or(|layer| layer.order == egui::Order::Background)
+            });
         let dimmer = ctx.layer_painter(egui::LayerId::new(
             egui::Order::Foreground,
             egui::Id::new("source-panel-dimmer"),
         ));
-        dimmer.rect_filled(
-            Rect::from_min_max(egui::pos2(width, 0.), screen.max),
-            0.,
-            Color32::from_black_alpha(100),
-        );
-        dimmer.rect_filled(
-            Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(width, 34.)),
-            0.,
-            Color32::from_black_alpha(100),
-        );
+        if panel != Panel::World {
+            dimmer.rect_filled(
+                Rect::from_min_max(egui::pos2(width, 34.), screen.max),
+                0.,
+                Color32::from_black_alpha(100),
+            );
+        }
+        let active_button = match panel {
+            Panel::Project => Some(0),
+            Panel::World => Some(1),
+            Panel::Level => Some(2),
+            Panel::Layers | Panel::Rules => Some(3),
+            Panel::Entities => Some(4),
+            Panel::Enums => Some(5),
+            Panel::Tilesets => Some(6),
+            Panel::Help => Some(7),
+            _ => None,
+        };
+        for index in 0..10 {
+            if active_button != Some(index) {
+                dimmer.rect_filled(
+                    Rect::from_min_size(egui::pos2(index as f32 * 30., 0.), egui::vec2(30., 34.)),
+                    0.,
+                    Color32::from_black_alpha(100),
+                );
+            }
+        }
         egui::Area::new(egui::Id::new("source-definition-panel"))
             .order(egui::Order::Foreground)
             .fixed_pos(egui::pos2(0., 34.))
@@ -332,7 +399,11 @@ impl EditorApp {
                 ui.set_min_height(height);
                 ui.spacing_mut().item_spacing = egui::vec2(0., 0.);
                 egui::Frame::new()
-                    .fill(theme::MEDIUM)
+                    .fill(if panel == Panel::World {
+                        theme::DARK
+                    } else {
+                        theme::MEDIUM
+                    })
                     .corner_radius(4.)
                     .show(ui, |ui| {
                         let (rect, _) =
@@ -358,7 +429,7 @@ impl EditorApp {
                             FontId::new(20., egui::FontFamily::Name("panel-title".into())),
                             Color32::WHITE,
                         );
-                        close = ui
+                        close |= ui
                             .put(
                                 Rect::from_min_size(
                                     egui::pos2(rect.right() - 57., rect.top() + 8.),
@@ -373,8 +444,8 @@ impl EditorApp {
                             .clicked();
                         egui::Frame::new()
                             .inner_margin(egui::Margin {
-                                left: 20,
-                                right: 20,
+                                left: if panel == Panel::World { 16 } else { 20 },
+                                right: if panel == Panel::World { 16 } else { 20 },
                                 top: 16,
                                 bottom: 0,
                             })
@@ -386,6 +457,32 @@ impl EditorApp {
                                         .max_height(body_height)
                                         .auto_shrink([false, false])
                                         .show(ui, |ui| self.help_contents(ui));
+                                    return;
+                                }
+                                if single_column {
+                                    let inner_width =
+                                        width - if panel == Panel::World { 32. } else { 40. };
+                                    ui.set_width(inner_width);
+                                    ui.set_max_width(inner_width);
+                                    ui.ctx()
+                                        .data_mut(|data| data.insert_temp(active_id(), true));
+                                    egui::ScrollArea::vertical()
+                                        .id_salt(("source-panel-body", title(panel)))
+                                        .max_height(body_height)
+                                        .auto_shrink([false, false])
+                                        .show(ui, |ui| {
+                                            let content_width = ui.available_width();
+                                            ui.set_width(content_width);
+                                            ui.set_max_width(content_width);
+                                            match panel {
+                                                Panel::World => self.source_world_form(ui),
+                                                Panel::Level => self.source_level_form(ui),
+                                                Panel::Project => self.source_project_form(ui),
+                                                _ => unreachable!(),
+                                            }
+                                        });
+                                    ui.ctx()
+                                        .data_mut(|data| data.insert_temp(active_id(), false));
                                     return;
                                 }
                                 ui.horizontal_top(|ui| {
@@ -2546,6 +2643,106 @@ impl EditorApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn draw_section(
+        ctx: &egui::Context,
+        open: &mut bool,
+        events: Vec<egui::Event>,
+    ) -> egui::FullOutput {
+        ctx.run(
+            egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(640., 480.),
+                )),
+                events,
+                ..Default::default()
+            },
+            |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    ui.set_width(360.);
+                    *open = section(ui, "WORLD SETTINGS: \"World\"", *open, |ui| {
+                        ui.label("Section content");
+                    });
+                });
+            },
+        )
+    }
+    #[test]
+    fn source_collapser_hover_highlights_the_header_and_group_border_and_changes_cursor() {
+        for (mut open, cursor) in [
+            (true, egui::CursorIcon::ZoomOut),
+            (false, egui::CursorIcon::Cell),
+        ] {
+            let ctx = egui::Context::default();
+            theme::configure(&ctx);
+            let output = draw_section(&ctx, &mut open, vec![]);
+            let pos = output
+                .shapes
+                .iter()
+                .find_map(|shape| text_center(&shape.shape, "WORLD SETTINGS: \"World\""))
+                .unwrap();
+            draw_section(&ctx, &mut open, vec![egui::Event::PointerMoved(pos)]);
+            let output = draw_section(&ctx, &mut open, vec![]);
+            assert_eq!(output.platform_output.cursor_icon, cursor);
+            assert!(output.shapes.iter().any(|shape|matches!(&shape.shape,egui::Shape::Rect(rect) if rect.rect.contains(pos) && rect.fill==Color32::from_rgb(255,204,0))),"hovered title must be yellow");
+            assert!(output.shapes.iter().any(|shape|matches!(&shape.shape,egui::Shape::Rect(rect) if rect.rect.contains(pos) && rect.stroke.color==Color32::from_rgb(255,204,0) && (!open || rect.rect.height()>28.))),"hovered expanded group must have a yellow content border");
+            let output = draw_section(
+                &ctx,
+                &mut open,
+                vec![egui::Event::PointerMoved(egui::pos2(620., 450.))],
+            );
+            assert_eq!(
+                output.platform_output.cursor_icon,
+                egui::CursorIcon::Default
+            );
+            assert!(!output.shapes.iter().any(|shape|matches!(&shape.shape,egui::Shape::Rect(rect) if rect.rect.contains(pos) && (rect.fill==Color32::from_rgb(255,204,0) || rect.stroke.color==Color32::from_rgb(255,204,0)))));
+        }
+    }
+
+    #[test]
+    fn source_collapser_click_switches_the_hover_cursor_and_content_visibility() {
+        let ctx = egui::Context::default();
+        theme::configure(&ctx);
+        let mut open = true;
+        let output = draw_section(&ctx, &mut open, vec![]);
+        let pos = output
+            .shapes
+            .iter()
+            .find_map(|shape| text_center(&shape.shape, "WORLD SETTINGS: \"World\""))
+            .unwrap();
+        for expected_open in [false, true] {
+            draw_section(&ctx, &mut open, vec![egui::Event::PointerMoved(pos)]);
+            for pressed in [true, false] {
+                draw_section(
+                    &ctx,
+                    &mut open,
+                    vec![egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: Default::default(),
+                    }],
+                );
+            }
+            let output = draw_section(&ctx, &mut open, vec![]);
+            assert_eq!(open, expected_open);
+            assert_eq!(
+                output.platform_output.cursor_icon,
+                if open {
+                    egui::CursorIcon::ZoomOut
+                } else {
+                    egui::CursorIcon::Cell
+                }
+            );
+            assert_eq!(
+                output
+                    .shapes
+                    .iter()
+                    .any(|shape| text_center(&shape.shape, "Section content").is_some()),
+                open
+            );
+        }
+    }
     fn draw_fields(
         app: &mut EditorApp,
         ctx: &egui::Context,

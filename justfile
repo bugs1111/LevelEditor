@@ -8,7 +8,12 @@ push $message:
 pull:
     git pull --ff-only
 
-# 使用现有 release 启动脚本，可追加工程路径
+# 启动 debug 版本并显示控制台日志，可追加工程路径
 [positional-arguments]
 run *args:
     exec scripts/run "$@"
+
+# 在 Mac 上构建指定平台和模式的便携目录
+[positional-arguments]
+build *args:
+    exec python3 scripts/build.py "$@"

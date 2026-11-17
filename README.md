@@ -1,4 +1,4 @@
-# LDtk Rust 移植
+# LevelEditor
 
 正在进行的全 Rust 原生桌面移植，包含窗口、界面、GPU 画布和编辑核心，无 Electron、WebView、JavaScript 或 Haxe 运行时。
 
@@ -17,7 +17,7 @@ just run
 just run examples/original/Typical_TopDown_example.ldtk
 ```
 
-`push` 暂存全部改动，有改动时提交，再推送到当前分支配置的上游（当前为 `origin/main`）；没有新改动时仍会推送已有提交。`pull` 仅允许快进更新。`run` 复用现有 release 启动脚本并保留传入参数。
+`push` 暂存全部改动，有改动时提交，再推送到当前分支配置的上游（当前为 `origin/main`）；没有新改动时仍会推送已有提交。`pull` 仅允许快进更新。`run` 默认编译并启动 debug 版本，保留传入参数；运行状态和错误同时写入终端及 `LDtk.log`，重复状态不会每帧刷屏。默认开启 `RUST_BACKTRACE=1`，可用已有环境变量覆盖。
 
 也可直接使用脚本：
 
@@ -30,13 +30,33 @@ scripts/run examples/original/Typical_TopDown_example.ldtk
 
 Linux 的 X11 运行环境还需要 Vulkan 驱动与 `libxkbcommon-x11`；Ubuntu/Debian 对应运行库为 `libvulkan1`、`libxkbcommon-x11-0`。GUI CI 使用独立 Xvfb 显示和 Mesa lavapipe，实际适配器及硬件验收范围见[GUI/GPU 记录](docs/status/gui-platform-acceptance.md)。
 
+在 Mac 上构建三平台程序：
+
+```sh
+just build -t mac -m debug
+just build -t win -m release
+just build -t linux -m release
+```
+
+`-t` 和 `-m` 均必填；三个目标都支持 `debug`、`release`。构建成功后生成独立便携目录，包含可执行文件、原版资源、examples 和许可文件，可整体复制到目标系统。
+
+| `-t` | 构建目标 | 输出目录 |
+|---|---|---|
+| `mac` | 本机 macOS CPU 架构 | `dist/mac/<模式>/ldtk-rs` |
+| `win` | `x86_64-pc-windows-gnu` | `dist/win/<模式>/ldtk-rs.exe` |
+| `linux` | `x86_64-unknown-linux-gnu`，glibc ≥ 2.28 | `dist/linux/<模式>/ldtk-rs` |
+
+首次构建会按需安装缺少的 Rust target。Windows 使用 [Homebrew MinGW](https://formulae.brew.sh/formula/mingw-w64)，缺少编译器时执行 `brew install mingw-w64`，因此需先安装 Homebrew；编译器运行库静态链接。Linux 使用 [cargo-zigbuild](https://github.com/rust-cross/cargo-zigbuild) 0.21.8 和 Zig 0.15.2，自动安装到 `.tools/cross` 的 Python 虚拟环境，并缓存后续构建。首次安装需要网络，已有工具链及 Cargo 依赖可复用。
+
+这些命令使用 `Cargo.lock` 构建当前源码并打印最终路径。Linux 运行时仍需 Vulkan 驱动及 X11/Wayland 运行库。Windows/Linux 的交叉编译与目标系统的 GUI 运行分别验收；本地构建记录见 [构建命令验收](docs/status/build-command.md)。
+
 macOS 应用打包：
 
 ```sh
 scripts/package-macos
 ```
 
-生成 `dist/LDtk Rust.app`。四平台已通过六场景原生 GUI 和三项 GPU 自动验收，CI 实际使用的虚拟/软件驱动与物理 M6、RTX 2060 验证范围见 [GUI/GPU 记录](docs/status/gui-platform-acceptance.md)。包支持 Finder 打开 .ldtk，并保留原版默认文件关联。
+生成 `dist/LevelEditor.app`。四平台已通过六场景原生 GUI 和三项 GPU 自动验收，CI 实际使用的虚拟/软件驱动与物理 M6、RTX 2060 验证范围见 [GUI/GPU 记录](docs/status/gui-platform-acceptance.md)。包支持 Finder 打开 .ldtk，并保留原版默认文件关联。
 
 打包后可运行 `scripts/verify-macos-bundle`，使用独立设置和复制的示例检查含空格/中文路径的冷启动、运行时打开文件与进程复用；结束时关闭本次测试创建的进程。
 

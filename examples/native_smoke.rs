@@ -344,6 +344,10 @@ impl eframe::App for Smoke {
                             rss_kib()
                         );
                         eprintln!("Capture final: {}", self.app.capture_state());
+                        eprintln!(
+                            "Capture cursor: {:?}",
+                            ctx.output(|output| output.cursor_icon)
+                        );
                         eprintln!("Screenshot saved: {}", target.display());
                     }
                     Err(error) => {
@@ -479,7 +483,7 @@ fn main() -> eframe::Result {
         ..Default::default()
     };
     let result = eframe::run_native(
-        "LDtk Rust runtime verification",
+        "LevelEditor runtime verification",
         options,
         Box::new(move |cc| {
             theme::configure(&cc.egui_ctx);

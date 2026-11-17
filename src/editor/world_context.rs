@@ -5,7 +5,7 @@ use serde_json::json;
 #[derive(Default)]
 pub(super) struct WorldContext {
     menu: Option<WorldMenu>,
-    picking: bool,
+    pub(super) picking: bool,
     pointer: Option<[f32; 2]>,
     no_room: bool,
 }
@@ -89,6 +89,9 @@ impl EditorApp {
         response: &egui::Response,
     ) -> bool {
         if self.project.as_ref().is_none_or(Project::is_backup)
+            || self
+                .panel
+                .is_some_and(|panel| !matches!(panel, Panel::Entity | Panel::World))
             || self.is_busy()
             || self.pending.is_some()
             || self.crash.is_some()

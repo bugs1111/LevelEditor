@@ -60,6 +60,9 @@ pub(super) fn record(ctx: &egui::Context, settings: Option<&Path>, message: &str
         "[{timestamp}] {} {message}\n",
         if error { "ERROR" } else { "INFO" }
     );
+    if cfg!(debug_assertions) {
+        eprint!("{line}");
+    }
     let _ = writer().try_send(Message::Entry(path, line));
 }
 pub(super) fn flush() {

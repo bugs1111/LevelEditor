@@ -17,10 +17,12 @@ TARGETS = {"aarch64-apple-darwin", "x86_64-apple-darwin",
 
 def package(target, destination):
     if target.endswith("apple-darwin"):
-        source = ROOT / "dist/LDtk Rust.app"
+        source = ROOT / "dist/LevelEditor.app"
         if not (source / "Contents/Resources/ldtk-rs-install.json").is_file():
             raise ValueError("Run scripts/package-macos before creating the release archive")
-        write_zip(source, destination)
+        # Installed updaters require this archive root; the app's display name
+        # and the local bundle are LevelEditor independently of that format.
+        write_zip(source, destination, "LDtk Rust.app")
     else:
         with tempfile.TemporaryDirectory(prefix="ldtk-release-") as staging:
             source = Path(staging) / "ldtk-rs"
@@ -35,11 +37,11 @@ def package(target, destination):
             write_zip(source, destination)
 
 
-def write_zip(source, destination):
+def write_zip(source, destination, archive_root=None):
     with zipfile.ZipFile(destination, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as archive:
         for path in sorted(source.rglob("*")):
             if path.is_file():
-                archive.write(path, path.relative_to(source.parent))
+                archive.write(path, Path(archive_root or source.name) / path.relative_to(source))
 
 
 def main():

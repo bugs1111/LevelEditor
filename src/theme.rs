@@ -56,6 +56,25 @@ pub fn configure(ctx: &egui::Context) {
         .get(&FontFamily::Proportional)
         .cloned()
         .unwrap_or_default();
+    let mut bold = vec!["ldtk-bold".into()];
+    for path in [
+        "/System/Library/Fonts/Supplemental/Arial Bold.ttf",
+        "C:/Windows/Fonts/arialbd.ttf",
+        "/usr/share/fonts/truetype/msttcorefonts/Arial_Bold.ttf",
+    ] {
+        if let Ok(bytes) = std::fs::read(path) {
+            fonts.font_data.insert(
+                "system-arial-bold".into(),
+                Arc::new(FontData::from_owned(bytes)),
+            );
+            bold.insert(0, "system-arial-bold".into());
+            break;
+        }
+    }
+    bold.extend(fallbacks.iter().cloned());
+    fonts
+        .families
+        .insert(FontFamily::Name("body-bold".into()), bold);
     for family in ["heading", "panel-title"] {
         fonts
             .families

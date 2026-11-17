@@ -76,9 +76,27 @@ impl EditorApp {
         if self.defer_ui_action(&ctx, ui_commit::DeferredUiAction::Panel(panel)) {
             return;
         }
+        if self.panel == Some(Panel::Settings) && panel != Some(Panel::Settings) {
+            self.finish_settings_dialog(&ctx);
+        }
         self.finish_gesture();
         self.finish_stroke();
+        self.cancel_world_context();
+        if panel == Some(Panel::World) {
+            if !self.world {
+                self.world = true;
+                self.fit = true;
+            }
+        } else if self.panel == Some(Panel::World) || panel.is_none() && self.world {
+            self.world = false;
+            self.fit = true;
+        }
         self.panel = panel;
+    }
+
+    pub(super) fn toggle_toolbar_panel(&mut self, panel: Panel) {
+        let open = self.panel != Some(panel);
+        self.show_panel(open.then_some(panel));
     }
     pub(super) fn follow_entity(&mut self, iid: &str) -> bool {
         let target = self.project.as_ref().and_then(|p| {

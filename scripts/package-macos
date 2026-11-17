@@ -3,10 +3,10 @@ set -eu
 project_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$project_dir"
 scripts/cargo build --release --locked
-bundle="$project_dir/dist/LDtk Rust.app"
+bundle="$project_dir/dist/LevelEditor.app"
 mkdir -p "$project_dir/dist"
 staging_dir=$(mktemp -d "$project_dir/dist/.ldtk-rust-app.XXXXXX")
-staged_bundle="$staging_dir/LDtk Rust.app"
+staged_bundle="$staging_dir/LevelEditor.app"
 previous_bundle="$staging_dir/previous.app"
 cleanup() {
     if [ -e "$previous_bundle" ] && [ ! -e "$bundle" ]; then

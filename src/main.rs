@@ -27,13 +27,13 @@ fn main() -> eframe::Result {
                 eframe::icon_data::from_png_bytes(include_bytes!("../assets/appIcon.png"))
                     .expect("bundled LDtk icon"),
             )
-            .with_title("LDtk • Rust"),
+            .with_title("LevelEditor"),
         renderer: eframe::Renderer::Wgpu,
         wgpu_options: app::native_gpu_config(),
         ..Default::default()
     };
     eframe::run_native(
-        "LDtk • Rust",
+        "LevelEditor",
         options,
         Box::new(move |cc| {
             theme::configure(&cc.egui_ctx);

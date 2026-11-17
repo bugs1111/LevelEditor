@@ -514,6 +514,7 @@ impl EditorApp {
     ) {
         if self.project.is_none()
             || self.pending.is_some()
+            || self.suggest_backups
             || self.is_busy()
             || self.command_palette
             || self.command_open
@@ -536,6 +537,12 @@ impl EditorApp {
                 self.viewport.fit(bounds, rect.size().into());
             }
             self.fit = false;
+        }
+        if self
+            .panel
+            .is_some_and(|panel| !matches!(panel, Panel::Entity | Panel::World))
+        {
+            return;
         }
         if self.level_resize_input(ctx, rect, response) {
             return;

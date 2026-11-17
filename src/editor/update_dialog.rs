@@ -25,6 +25,21 @@ fn state(ctx: &egui::Context) -> Arc<Mutex<Dialog>> {
         }
     })
 }
+pub(super) fn settings_update_version(ctx: &egui::Context) -> Option<String> {
+    let shared = state(ctx);
+    let dialog = shared.lock().unwrap_or_else(|error| error.into_inner());
+    match &dialog.updater.state {
+        State::Available(release) => Some(release.version.clone()),
+        State::Ready(prepared) => Some(prepared.version.clone()),
+        _ => None,
+    }
+}
+pub(super) fn is_open(ctx: &egui::Context) -> bool {
+    state(ctx)
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .open
+}
 fn token(dialog: &Dialog) -> Option<String> {
     if dialog.token.trim().is_empty() {
         updater::environment_token()
@@ -173,10 +188,10 @@ impl EditorApp {
             let mut close = false;
             let modal=egui::Modal::new(id().with("dialog")).show(ctx,|ui| {
                 ui.set_width(460.);ui.set_max_width(460.);
-                ui.heading("LDtk Rust updates");
+                ui.heading("LevelEditor updates");
                 ui.label(format!("Installed version {}",env!("CARGO_PKG_VERSION")));
                 match &snapshot {
-                    State::Idle=>{ui.label("Check for a published Rust release.");},
+                    State::Idle=>{ui.label("Check for a published LevelEditor release.");},
                     State::Checking=>{ui.horizontal(|ui|{ui.spinner();ui.label("Looking for update…");});if super::panels::source_controls::button(ui,"Cancel check").clicked(){dialog.updater.cancel();}},
                     State::Current(version)=>{ui.label(format!("App is up-to-date ({version})."));},
                     State::Available(release)=>{
@@ -232,6 +247,50 @@ impl EditorApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn escape_closes_updater_without_closing_parent_settings() {
+        let ctx = egui::Context::default();
+        theme::configure(&ctx);
+        let mut app = EditorApp::empty();
+        app.repaint = Some(ctx.clone());
+        app.show_panel(Some(Panel::Settings));
+        let shared = state(&ctx);
+        {
+            let mut dialog = shared.lock().unwrap();
+            dialog.open = true;
+            dialog.updater.state = State::Current("0.1.1".into());
+        }
+        for escape in [false, false, false, true] {
+            let _ = ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1440., 900.),
+                    )),
+                    focused: true,
+                    events: if escape {
+                        vec![egui::Event::Key {
+                            key: Key::Escape,
+                            physical_key: None,
+                            pressed: true,
+                            repeat: false,
+                            modifiers: Default::default(),
+                        }]
+                    } else {
+                        vec![]
+                    },
+                    ..Default::default()
+                },
+                |ctx| {
+                    app.shortcuts(ctx);
+                    app.dialogs(ctx);
+                    app.update_dialog(ctx);
+                },
+            );
+        }
+        assert!(!shared.lock().unwrap().open);
+        assert_eq!(app.panel, Some(Panel::Settings));
+    }
     fn frame(
         app: &mut EditorApp,
         ctx: &egui::Context,
@@ -291,7 +350,7 @@ mod tests {
     }
     #[test]
     fn install_closes_its_dialog_before_showing_clickable_unsaved_cancel_and_discard() {
-        for choice in ["Cancel", "Discard changes", "Save"] {
+        for choice in ["CANCEL", "NO", "YES"] {
             let ctx = egui::Context::default();
             theme::configure(&ctx);
             let mut app = EditorApp::empty();
@@ -322,7 +381,7 @@ mod tests {
             frame(&mut app, &ctx, vec![]);
             let output = frame(&mut app, &ctx, vec![]);
             click(&mut app, &ctx, center(&output, choice));
-            if choice == "Save" {
+            if choice == "YES" {
                 for _ in 0..200 {
                     app.poll_hooks(&ctx);
                     app.poll_services(&ctx);
@@ -338,7 +397,7 @@ mod tests {
             );
             assert_eq!(
                 shared.lock().unwrap().updater.test_install_requests,
-                usize::from(choice != "Cancel")
+                usize::from(choice != "CANCEL")
             );
         }
     }
@@ -407,7 +466,7 @@ mod tests {
         assert!(matches!(app.pending, Some(Action::InstallUpdate)));
         assert_eq!(shared.lock().unwrap().updater.test_install_requests, 0);
         let output = frame(&mut app, &ctx, vec![]);
-        click(&mut app, &ctx, center(&output, "Cancel"));
+        click(&mut app, &ctx, center(&output, "CANCEL"));
         assert!(app.pending.is_none());
     }
     #[test]

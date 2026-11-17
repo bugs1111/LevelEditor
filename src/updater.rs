@@ -655,6 +655,7 @@ fn stage_release(
 }
 fn bundle_name() -> &'static str {
     if cfg!(target_os = "macos") {
+        // Keep the archive format accepted by already installed updaters.
         "LDtk Rust.app"
     } else {
         "ldtk-rs"
@@ -687,9 +688,9 @@ fn validate_root(root: &Path) -> Result<()> {
     {
         return Err("Update installation root cannot be a symbolic link".into());
     }
-    let value:Value=serde_json::from_slice(&fs::read(marker_path(root)).map_err(|_|"This is not a packaged LDtk Rust installation. Download a release package first; cargo/development builds cannot replace their surrounding directory.".to_owned())?).map_err(|_|"Invalid Rust installation marker".to_owned())?;
+    let value:Value=serde_json::from_slice(&fs::read(marker_path(root)).map_err(|_|"This is not a packaged LevelEditor installation. Download a release package first; cargo/development builds cannot replace their surrounding directory.".to_owned())?).map_err(|_|"Invalid LevelEditor installation marker".to_owned())?;
     if value["product"] != "ldtk-rs" || value["layout"] != 1 || !executable(root).is_file() {
-        return Err("Invalid Rust installation layout".into());
+        return Err("Invalid LevelEditor installation layout".into());
     }
     Ok(())
 }

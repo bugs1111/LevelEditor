@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32">
+  <defs>
+    <filter id="shadow" x="0" y="0" width="32" height="32" filterUnits="userSpaceOnUse">
+      <feGaussianBlur stdDeviation="1"/>
+    </filter>
+    <mask id="outside" x="0" y="0" width="32" height="32" maskUnits="userSpaceOnUse">
+      <rect width="32" height="32" fill="white"/>
+      <rect x="2" y="2" width="28" height="24" rx="2" fill="black"/>
+    </mask>
+  </defs>
+  <g mask="url(#outside)">
+    <rect x="2" y="4" width="28" height="24" rx="2" fill="black" filter="url(#shadow)"/>
+  </g>
+  <rect x="2" y="2" width="28" height="24" rx="2" fill="#e1d6bb" fill-opacity=".55"/>
+  <path d="M2 22h28v2a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2Z" fill="#e0d5ba" fill-opacity=".55"/>
+</svg>

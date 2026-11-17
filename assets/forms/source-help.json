@@ -80,6 +80,7 @@
     "Try to use best GPU": "When enabled, ::app:: will always try to use the best GPU available on your system, resulting in better performances. This might use extra battery life.",
     "gpu": "When enabled, ::app:: will download and install new updates fully automatically. This is strongly RECOMMENDED as many updates contain important bug fixes and new features. But in some case, like when using an outdated importer for your game engine, you may also prefer to stick to a specific ::app:: version.",
     "Auto update": "When enabled, ::app:: will download and install new updates fully automatically. This is strongly RECOMMENDED as many updates contain important bug fixes and new features. But in some case, like when using an outdated importer for your game engine, you may also prefer to stick to a specific ::app:: version.",
+    "nativeAutoDownloadUpdates": "Automatically download updates on supported native platforms. Installation still requires confirmation.",
     "Log file": "The LOG file is only useful when reporting bugs. You can attach it to an e-mail or when you create an issue on GitHub site. It doesn't contain any sensitive or personal information, except used file paths.",
     "Source file": "This Enum was imported from an external file and can be kept in-sync with it.",
     "Enum identifier": "An identifier should be UNIQUE (in this context) and can only contain LETTERS, NUMBERS or UNDERSCORES (ie. \"_\").",

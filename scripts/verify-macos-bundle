@@ -12,7 +12,7 @@ import time
 
 
 bundle = (Path(sys.argv[1]) if len(sys.argv) > 1 else
-          Path(__file__).resolve().parents[1] / "dist/LDtk Rust.app").resolve()
+          Path(__file__).resolve().parents[1] / "dist/LevelEditor.app").resolve()
 executable = str(bundle / "Contents/MacOS/ldtk-rs")
 work = Path(tempfile.mkdtemp(prefix="ldtk-bundle-smoke-"))
 samples = work / "examples"
@@ -44,7 +44,7 @@ def wait_for_project(path):
 
 before = pids()
 if before:
-    raise RuntimeError("Existing LDtk Rust instance: cannot route the warm-open test safely")
+    raise RuntimeError("Existing LevelEditor instance: cannot route the warm-open test safely")
 try:
     subprocess.run(["open", "-n", "-g", "--env", f"LDTK_CONFIG_DIR={profile}",
                     "--stdout", str(work / "stdout.log"),

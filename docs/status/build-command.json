@@ -1,0 +1,366 @@
+{
+  "date": "2026-11-17",
+  "timezone": "Asia/Shanghai",
+  "host": "aarch64-apple-darwin",
+  "application_source_baseline": "5ab95cacdcfc0df99e35a73b0683ccd298dfaa80",
+  "application_sources_changed": true,
+  "build_script_sha256": "cf24d9faeb3abb5d1b0c50f5f1979003b01e7367cda97478cd8e595d69733b31",
+  "toolchains": {
+    "windows": "mingw-w64 14.0.0_3 / GCC 16.2.0, x86_64-pc-windows-gnu, +crt-static",
+    "linux": "cargo-zigbuild 0.21.8 / Zig 0.15.2, x86_64-unknown-linux-gnu.2.28",
+    "mac": "native host Cargo/Rust 1.100.0"
+  },
+  "artifacts": [
+    {
+      "target": "mac",
+      "mode": "debug",
+      "exit": 0,
+      "command": [
+        "just",
+        "build",
+        "-t",
+        "mac",
+        "-m",
+        "debug"
+      ],
+      "log": ".tools/app-settings-native/mac-debug-build.log",
+      "binary": "dist/mac/debug/ldtk-rs",
+      "size": 107438392,
+      "sha256": "f6af240a7fbfbab40373f68c542a3af7aa7ef800d128680a4c846fe45a800f8b",
+      "format": "Mach-O 64-bit executable arm64",
+      "resources_verified": 253,
+      "licenses_verified": true
+    },
+    {
+      "target": "mac",
+      "mode": "release",
+      "exit": 0,
+      "command": [
+        "just",
+        "build",
+        "-t",
+        "mac",
+        "-m",
+        "release"
+      ],
+      "log": ".tools/app-settings-native/mac-release-build.log",
+      "binary": "dist/mac/release/ldtk-rs",
+      "size": 24551872,
+      "sha256": "a97df137156582c024ed0ead2da18e52e041d428e27eae72e889267779fe7ef0",
+      "format": "Mach-O 64-bit executable arm64",
+      "resources_verified": 253,
+      "licenses_verified": true
+    },
+    {
+      "target": "win",
+      "mode": "debug",
+      "exit": 0,
+      "command": [
+        "just",
+        "build",
+        "-t",
+        "win",
+        "-m",
+        "debug"
+      ],
+      "log": ".tools/app-settings-native/win-debug-build.log",
+      "binary": "dist/win/debug/ldtk-rs.exe",
+      "size": 450027609,
+      "sha256": "d2a44fa91a8af773bda62ca6f92b42cfa6ed80a733af47359a5ad9fe21dc8cf5",
+      "format": "PE32+ executable (console) x86-64, for MS Windows",
+      "resources_verified": 253,
+      "licenses_verified": true,
+      "imported_dlls": [
+        "ADVAPI32.dll",
+        "bcrypt.dll",
+        "KERNEL32.dll",
+        "api-ms-win-crt-environment-l1-1-0.dll",
+        "api-ms-win-crt-heap-l1-1-0.dll",
+        "api-ms-win-crt-locale-l1-1-0.dll",
+        "api-ms-win-crt-math-l1-1-0.dll",
+        "api-ms-win-crt-private-l1-1-0.dll",
+        "api-ms-win-crt-runtime-l1-1-0.dll",
+        "api-ms-win-crt-stdio-l1-1-0.dll",
+        "api-ms-win-crt-string-l1-1-0.dll",
+        "api-ms-win-crt-time-l1-1-0.dll",
+        "ntdll.dll",
+        "api-ms-win-core-synch-l1-2-0.dll",
+        "api-ms-win-core-winrt-error-l1-1-0.dll",
+        "dwmapi.dll",
+        "imm32.dll",
+        "kernel32.dll",
+        "ntdll.dll",
+        "ole32.dll",
+        "oleaut32.dll",
+        "propsys.dll",
+        "user32.dll",
+        "userenv.dll",
+        "uxtheme.dll",
+        "ws2_32.dll",
+        "bcryptprimitives.dll",
+        "kernel32.dll",
+        "kernel32.dll",
+        "shlwapi.dll",
+        "api-ms-win-core-path-l1-1-0.dll",
+        "combase.dll",
+        "gdi32.dll",
+        "kernel32.dll",
+        "ole32.dll",
+        "oleaut32.dll",
+        "shell32.dll",
+        "user32.dll"
+      ],
+      "external_mingw_runtime_dlls": []
+    },
+    {
+      "target": "win",
+      "mode": "release",
+      "exit": 0,
+      "command": [
+        "just",
+        "build",
+        "-t",
+        "win",
+        "-m",
+        "release"
+      ],
+      "log": ".tools/app-settings-native/win-release-build.log",
+      "binary": "dist/win/release/ldtk-rs.exe",
+      "size": 26764435,
+      "sha256": "9ebc8591502bc2737aa7a47a22d9089fc841197ef5001e475e8b251001d645b3",
+      "format": "PE32+ executable (console) x86-64 (stripped to external PDB), for MS Windows",
+      "resources_verified": 253,
+      "licenses_verified": true,
+      "imported_dlls": [
+        "ADVAPI32.dll",
+        "bcrypt.dll",
+        "KERNEL32.dll",
+        "api-ms-win-crt-environment-l1-1-0.dll",
+        "api-ms-win-crt-heap-l1-1-0.dll",
+        "api-ms-win-crt-locale-l1-1-0.dll",
+        "api-ms-win-crt-math-l1-1-0.dll",
+        "api-ms-win-crt-private-l1-1-0.dll",
+        "api-ms-win-crt-runtime-l1-1-0.dll",
+        "api-ms-win-crt-stdio-l1-1-0.dll",
+        "api-ms-win-crt-string-l1-1-0.dll",
+        "api-ms-win-crt-time-l1-1-0.dll",
+        "ntdll.dll",
+        "api-ms-win-core-synch-l1-2-0.dll",
+        "dwmapi.dll",
+        "imm32.dll",
+        "kernel32.dll",
+        "ntdll.dll",
+        "user32.dll",
+        "uxtheme.dll",
+        "ws2_32.dll",
+        "bcryptprimitives.dll",
+        "kernel32.dll",
+        "kernel32.dll",
+        "shlwapi.dll",
+        "combase.dll",
+        "gdi32.dll",
+        "kernel32.dll",
+        "ntdll.dll",
+        "ole32.dll",
+        "oleaut32.dll",
+        "shell32.dll",
+        "user32.dll"
+      ],
+      "external_mingw_runtime_dlls": []
+    },
+    {
+      "target": "linux",
+      "mode": "debug",
+      "exit": 0,
+      "command": [
+        "just",
+        "build",
+        "-t",
+        "linux",
+        "-m",
+        "debug"
+      ],
+      "log": ".tools/app-settings-native/linux-debug-build.log",
+      "binary": "dist/linux/debug/ldtk-rs",
+      "size": 482937600,
+      "sha256": "8e57a789ad4b7d211c60cc112c00d21a4000bc1a14d80f3c6fe390492c8b824b",
+      "format": "ELF 64-bit LSB pie executable, x86-64, version 1 (SYSV), dynamically linked, interpreter /lib64/ld-linux-x86-64.so.2, for GNU/Linux 2.0.0, with debug_info, not stripped",
+      "resources_verified": 253,
+      "licenses_verified": true,
+      "max_glibc_required": "2.28",
+      "needed": [
+        "libm.so.6",
+        "libpthread.so.0",
+        "libc.so.6",
+        "libdl.so.2",
+        "ld-linux-x86-64.so.2"
+      ]
+    },
+    {
+      "target": "linux",
+      "mode": "release",
+      "exit": 0,
+      "command": [
+        "just",
+        "build",
+        "-t",
+        "linux",
+        "-m",
+        "release"
+      ],
+      "log": ".tools/app-settings-native/linux-release-build.log",
+      "binary": "dist/linux/release/ldtk-rs",
+      "size": 29196792,
+      "sha256": "b09e47711c1f3f4444a53b343466750c45c15443c0fb54f1c9ff3f5d2ff8b0ba",
+      "format": "ELF 64-bit LSB pie executable, x86-64, version 1 (SYSV), dynamically linked, interpreter /lib64/ld-linux-x86-64.so.2, for GNU/Linux 2.0.0, stripped",
+      "resources_verified": 253,
+      "licenses_verified": true,
+      "max_glibc_required": "2.28",
+      "needed": [
+        "libm.so.6",
+        "libpthread.so.0",
+        "libc.so.6",
+        "libdl.so.2",
+        "ld-linux-x86-64.so.2"
+      ]
+    }
+  ],
+  "mac_startup": [
+    {
+      "mode": "debug",
+      "opened_project": true,
+      "alive_after_open": true,
+      "stderr": ".tools/app-settings-native/startup-debug/stderr.log",
+      "stderr_bytes": 0
+    },
+    {
+      "mode": "release",
+      "opened_project": true,
+      "alive_after_open": true,
+      "stderr": ".tools/app-settings-native/startup-release/stderr.log",
+      "stderr_bytes": 0
+    },
+    {
+      "mode": "app",
+      "opened_project": true,
+      "alive_after_open": true,
+      "stderr": ".tools/app-settings-native/startup-app/stderr.log",
+      "stderr_bytes": 0
+    }
+  ],
+  "tests": {
+    "command": "python3 tests/test_build_command.py",
+    "passed": 6,
+    "includes_packaging_failure_regression": true
+  },
+  "limits": [
+    "Windows and Linux binaries were cross-linked and inspected on macOS; no target-system GUI execution of these exact GNU binaries was performed.",
+    "Vulkan and X11/Wayland runtime libraries are dynamically loaded on Linux.",
+    "Output directories are portable build products, without updater installation markers."
+  ],
+  "application_patch": "Close-project guard; original toolbar World/level/project forms; source Application settings dialog and settings lifecycle. See source-ui-parity-audit.md for remaining differences.",
+  "native_close_project": {
+    "exit": 0,
+    "states": {
+      "Workflow before": {
+        "panel": null,
+        "gesture": null,
+        "stroke": false,
+        "ready": true,
+        "clicktrap": false,
+        "world": false,
+        "dirty": false,
+        "view": {
+          "center": [
+            408.0,
+            232.0
+          ],
+          "zoom": 1.2723214626312256
+        },
+        "level": "Entities_demo",
+        "layer": "GameEntities",
+        "layerType": "Entities",
+        "intGridNonzero": 0,
+        "intGridChecksum": "101ab509f5770a5",
+        "entityCount": 9
+      },
+      "Input after": {
+        "panel": null,
+        "gesture": null,
+        "stroke": false,
+        "ready": false,
+        "clicktrap": false,
+        "world": false,
+        "dirty": false,
+        "view": {
+          "center": [
+            408.0,
+            232.0
+          ],
+          "zoom": 1.2723214626312256
+        },
+        "level": null,
+        "layer": null,
+        "layerType": null,
+        "intGridNonzero": null,
+        "intGridChecksum": "bd60acb658c79e45",
+        "entityCount": null
+      },
+      "Capture final": {
+        "panel": null,
+        "gesture": null,
+        "stroke": false,
+        "ready": false,
+        "clicktrap": false,
+        "world": false,
+        "dirty": false,
+        "view": {
+          "center": [
+            408.0,
+            232.0
+          ],
+          "zoom": 1.2723214626312256
+        },
+        "level": null,
+        "layer": null,
+        "layerType": null,
+        "intGridNonzero": null,
+        "intGridChecksum": "bd60acb658c79e45",
+        "entityCount": null
+      }
+    },
+    "surface_errors": {
+      "Timeout": 0,
+      "Outdated": 0,
+      "Lost": 0,
+      "OutOfMemory": 0,
+      "Other": 0
+    },
+    "screenshot": "home-after-close.png",
+    "panic": false,
+    "backend": "Apple M6 / Metal",
+    "screenshots_visually_inspected": 1
+  },
+  "exit_regression_tests": {
+    "suite": "app::chrome::tests",
+    "passed": 5,
+    "new_tests": 3,
+    "red_log": ".tools/close-project-red.log",
+    "green_log": ".tools/close-project/window-close-tests.log",
+    "full_workspace_app_passed": 319,
+    "full_example_passed": 323,
+    "strict_clippy": "passed"
+  },
+  "native_toolbar_panels": {
+    "count": 9,
+    "results": ".tools/source-toolbar-panels/native-results.json",
+    "report": "source-toolbar-panels.md"
+  },
+  "native_app_settings": {
+    "results": ".tools/app-settings-native/results.json",
+    "audit": "source-ui-parity-audit.md",
+    "app_tests_passed": 352,
+    "example_tests_passed": 356,
+    "strict_clippy": "passed"
+  }
+}

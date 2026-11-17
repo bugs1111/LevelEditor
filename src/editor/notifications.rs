@@ -2,6 +2,53 @@ use super::*;
 
 impl EditorApp {
     pub(super) fn canvas_notifications(&mut self, ctx: &egui::Context, rect: Rect) {
+        if let Some((name, kind, since)) = &self.layer_notification {
+            let elapsed = since.elapsed().as_secs_f32();
+            if elapsed >= 1.2 {
+                self.layer_notification = None;
+            } else if self.project.is_some() {
+                egui::Area::new(egui::Id::new("layer-switch-notification"))
+                    .fixed_pos(egui::pos2(rect.left() + 125., rect.top() + 20.))
+                    .order(egui::Order::Foreground)
+                    .interactable(false)
+                    .show(ctx, |ui| {
+                        ui.set_opacity(1. - elapsed / 1.2);
+                        egui::Frame::new()
+                            .fill(Color32::from_black_alpha(204))
+                            .corner_radius(8)
+                            .inner_margin(egui::Margin::symmetric(16, 4))
+                            .show(ui, |ui| {
+                                ui.spacing_mut().item_spacing.x = 8.;
+                                ui.horizontal(|ui| {
+                                    let icon = match kind.as_str() {
+                                        "Entities" => {
+                                            egui::include_image!("../../assets/icons/entity.png")
+                                        }
+                                        "IntGrid" => {
+                                            egui::include_image!("../../assets/icons/intGrid.png")
+                                        }
+                                        "AutoLayer" => {
+                                            egui::include_image!("../../assets/icons/autoLayer.svg")
+                                        }
+                                        _ => egui::include_image!("../../assets/icons/tile.png"),
+                                    };
+                                    ui.add(
+                                        egui::Image::new(icon).fit_to_exact_size(Vec2::splat(50.)),
+                                    );
+                                    ui.label(
+                                        RichText::new(name)
+                                            .font(FontId::new(
+                                                40.,
+                                                egui::FontFamily::Name("panel-title".into()),
+                                            ))
+                                            .color(theme::ACCENT),
+                                    );
+                                });
+                            });
+                    });
+                ctx.request_repaint_after(std::time::Duration::from_millis(16));
+            }
+        }
         if self
             .last_chance
             .as_ref()
