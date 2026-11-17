@@ -8,6 +8,19 @@
 
 ## 运行
 
+安装 `just` 后，可在项目目录执行：
+
+```sh
+just push "提交说明"
+just pull
+just run
+just run examples/original/Typical_TopDown_example.ldtk
+```
+
+`push` 暂存全部改动，有改动时提交，再推送到当前分支配置的上游（当前为 `origin/main`）；没有新改动时仍会推送已有提交。`pull` 仅允许快进更新。`run` 复用现有 release 启动脚本并保留传入参数。
+
+也可直接使用脚本：
+
 ```sh
 scripts/run
 scripts/run examples/original/Typical_TopDown_example.ldtk
