@@ -196,12 +196,19 @@ fn enum_rename_updates_internal_type_and_instances() {
 }
 #[test]
 fn absolute_file_fields_rebase_against_project_directory() {
+    let dir = tempfile::tempdir().unwrap();
+    let project_dir = dir.path().join("game with spaces");
     let mut p = Project::new();
-    p.path = Some(std::path::PathBuf::from("/tmp/game/project.ldtk"));
+    p.path = Some(project_dir.join("project.ldtk"));
     let f = p
         .add_field_definition(None, "Path", "FilePath", false)
         .unwrap();
-    p.set_field_value(K, None, f, json!("/tmp/game/assets/hero.png"))
+    let asset = project_dir.join("assets/hero.png");
+    assert!(
+        asset.is_absolute(),
+        "fixture must be an absolute path on this host"
+    );
+    p.set_field_value(K, None, f, json!(asset.to_string_lossy()))
         .unwrap();
     assert_eq!(
         p.level(K).unwrap()["fieldInstances"][0]["__value"],
@@ -599,17 +606,15 @@ fn editor_field_errors_match_required_values_and_do_not_validate_regex() {
 
 #[test]
 fn editor_field_errors_report_missing_files_and_lost_references() {
+    let dir = tempfile::tempdir().unwrap();
+    let missing = dir.path().join("missing-field-file.txt");
+    assert!(!missing.exists());
     let mut p = Project::new();
     let path = p
         .add_field_definition(None, "File", "FilePath", false)
         .unwrap();
-    p.set_field_editor_value(
-        K,
-        None,
-        path,
-        json!("/private/tmp/ldtk-nonexistent-field-file-5b71"),
-    )
-    .unwrap();
+    p.set_field_editor_value(K, None, path, json!(missing.to_string_lossy()))
+        .unwrap();
     assert_eq!(
         p.field_value_errors(K, None, path).unwrap(),
         vec!["File not found"]

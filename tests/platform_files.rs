@@ -27,7 +27,7 @@ fn main() {
 }
 
 fn bundle_declares_project_documents_without_claiming_external_levels() {
-    let plist = std::process::Command::new("python3")
+    let plist = std::process::Command::new(if cfg!(windows) { "python" } else { "python3" })
         .args([
             "-c",
             "import json,plistlib,sys; print(json.dumps(plistlib.load(open(sys.argv[1],'rb'))))",

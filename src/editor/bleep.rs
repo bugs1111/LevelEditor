@@ -1124,7 +1124,38 @@ mod tests {
         assert!(p.add_entity(KEY, index, uid, 1000, 1000).unwrap());
         assert!(p.add_entity(KEY, index, uid, 2000, 2000).unwrap());
         p.reorder_layer(layer, 1).unwrap();
-        draw(&app, &ctx, 0.);
+        let (project, level) = identity(p, KEY).unwrap();
+        let mut scan = ErrorScan {
+            project,
+            level,
+            running: true,
+            ..Default::default()
+        };
+        // Force a yield after the first layer; its error must not be queued while
+        // a later layer can still replace it, regardless of the machine's speed.
+        assert!(!advance_error_scan(
+            p,
+            KEY,
+            &mut scan,
+            std::time::Duration::ZERO
+        ));
+        assert_eq!(scan.layer, 1);
+        assert_eq!(
+            scan.candidate.as_ref().unwrap().0,
+            p.layer(KEY, 0).unwrap()["layerDefUid"]
+        );
+        assert!(ctx.data(|d| d.get_temp::<Queue>(id())).is_none());
+        ctx.data_mut(|d| d.insert_temp(id().with("errors"), scan));
+        // Only the last layer's first entity remains. One frame examines it;
+        // a second completes the scan if the soft budget caused another yield.
+        for _ in 0..2 {
+            draw(&app, &ctx, 0.);
+        }
+        assert!(ctx.data(|d| {
+            !d.get_temp::<ErrorScan>(id().with("errors"))
+                .unwrap()
+                .running
+        }));
         let queue = ctx
             .data(|d| d.get_temp::<Queue>(id()))
             .expect("offscreen error still queues feedback");

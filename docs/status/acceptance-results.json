@@ -669,5 +669,87 @@
       "intGridChecksum": "bd60acb658c79e45",
       "entityCount": null
     }
+  },
+  {
+    "scenario": "color-picker-readable",
+    "phase": "readable-labels-header-debug-followup",
+    "build": "debug",
+    "purpose": "visual state verification, not CPU benchmark",
+    "capture": "acceptance-native-color-picker-readable-debug.png",
+    "accepted": true,
+    "settleSeconds": 3,
+    "metrics": [
+      "Ready app.update CPU: 121 samples; median 7.086ms; p95 8.115ms; max 8.380ms",
+      "Ready eframe CPU (previous frame update + CPU rendering): 121 samples; median 9.463ms; p95 10.476ms; max 10.764ms",
+      "Ready update-start wall interval: 121 samples; median 16.660ms; p95 16.878ms; max 17.146ms",
+      "Injected input update-start wall interval: 2 samples; median 17.656ms; p95 17.656ms; max 17.656ms",
+      "Injected input app.update CPU: 2 samples; median 7.857ms; p95 7.857ms; max 7.857ms",
+      "RSS KiB: ready=Some(184496); capture=Some(228400)"
+    ],
+    "updaterObservation": "Could not update / Details banner visible; private-feed unauthenticated session, updater install not exercised",
+    "samplingSeconds": 2.0,
+    "final": {
+      "panel": "Entities",
+      "gesture": null,
+      "stroke": false,
+      "ready": true,
+      "clicktrap": false,
+      "world": false,
+      "dirty": false,
+      "view": {
+        "center": [
+          408.0,
+          232.0
+        ],
+        "zoom": 1.0
+      },
+      "level": "Entities_demo",
+      "layer": "GameEntities",
+      "layerType": "Entities",
+      "intGridNonzero": 0,
+      "intGridChecksum": "101ab509f5770a5",
+      "entityCount": 9
+    }
+  },
+  {
+    "scenario": "entity-move-aligned",
+    "phase": "readable-labels-header-debug-followup",
+    "build": "debug",
+    "purpose": "visual state verification, not CPU benchmark",
+    "capture": "acceptance-native-entity-move-aligned-debug.png",
+    "accepted": true,
+    "settleSeconds": 3,
+    "metrics": [
+      "Ready app.update CPU: 239 samples; median 5.921ms; p95 6.932ms; max 7.197ms",
+      "Ready eframe CPU (previous frame update + CPU rendering): 239 samples; median 7.533ms; p95 8.502ms; max 8.845ms",
+      "Ready update-start wall interval: 239 samples; median 8.765ms; p95 8.956ms; max 9.431ms",
+      "Injected input update-start wall interval: 2 samples; median 16.771ms; p95 16.771ms; max 16.771ms",
+      "Injected input app.update CPU: 2 samples; median 10.003ms; p95 10.003ms; max 10.003ms",
+      "RSS KiB: ready=Some(179616); capture=Some(227824)"
+    ],
+    "updaterObservation": "Could not update / Details banner visible; private-feed unauthenticated session, updater install not exercised",
+    "samplingSeconds": 2.008,
+    "final": {
+      "panel": "Entity",
+      "gesture": "EntityMove",
+      "stroke": true,
+      "ready": true,
+      "clicktrap": false,
+      "world": false,
+      "dirty": false,
+      "view": {
+        "center": [
+          408.0,
+          232.0
+        ],
+        "zoom": 1.0
+      },
+      "level": "Entities_demo",
+      "layer": "GameEntities",
+      "layerType": "Entities",
+      "intGridNonzero": 0,
+      "intGridChecksum": "101ab509f5770a5",
+      "entityCount": 9
+    }
   }
 ]

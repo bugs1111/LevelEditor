@@ -98,29 +98,41 @@ fn invalid_indices_and_non_array_targets_are_atomic_errors() {
 }
 #[test]
 fn set_normalizes_only_new_path_value_and_preserves_other_raw_strings() {
+    let dir = tempfile::tempdir().unwrap();
+    let project_dir = dir.path().join("project with spaces");
     let mut p = Project::new();
     let uid = p
         .add_field_definition(None, "Files", "FilePath", true)
         .unwrap();
-    p.path = Some("/private/tmp/project/World.ldtk".into());
+    p.path = Some(project_dir.join("World.ldtk"));
     p.set_field_editor_value(K, None, uid, json!(["old.txt"]))
         .unwrap();
     let before = p.level(K).unwrap()["fieldInstances"][0]["realEditorValues"][0].clone();
     p.edit_field_array(K, None, uid, Edit::Insert { index: 1 })
         .unwrap();
-    p.edit_field_array(
-        K,
-        None,
-        uid,
-        Edit::Set {
-            index: 1,
-            value: json!("/private/tmp/project/new.txt"),
-        },
-    )
-    .unwrap();
-    let f = &p.level(K).unwrap()["fieldInstances"][0];
-    assert_eq!(f["__value"], json!(["old.txt", "new.txt"]));
-    assert_eq!(f["realEditorValues"][0], before);
+    for (path, expected) in [
+        (project_dir.join("new.txt"), "new.txt"),
+        (project_dir.join("assets/ui/new.txt"), "assets/ui/new.txt"),
+        (dir.path().join("outside/new.txt"), "../outside/new.txt"),
+    ] {
+        assert!(
+            path.is_absolute(),
+            "fixture must be an absolute path on this host"
+        );
+        p.edit_field_array(
+            K,
+            None,
+            uid,
+            Edit::Set {
+                index: 1,
+                value: json!(path.to_string_lossy()),
+            },
+        )
+        .unwrap();
+        let f = &p.level(K).unwrap()["fieldInstances"][0];
+        assert_eq!(f["__value"], json!(["old.txt", expected]));
+        assert_eq!(f["realEditorValues"][0], before);
+    }
 }
 #[test]
 fn indexed_entity_reference_edits_update_both_ends_and_reject_invalid_targets_atomically() {
