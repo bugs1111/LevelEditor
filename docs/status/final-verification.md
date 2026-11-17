@@ -19,7 +19,7 @@
 复现最终渲染检查：
 
 ```sh
-scripts/cargo test --release --bin ldtk-rs --locked --offline -- --ignored --nocapture --test-threads=1
+scripts/cargo test --release --bin ldtk-rs canvas:: --locked --offline -- --ignored --nocapture --test-threads=1
 scripts/cargo build --release --bin ldtk-rs --example native_smoke --locked --offline
 scripts/package-macos
 scripts/verify-macos-bundle
@@ -30,3 +30,11 @@ scripts/verify-macos-bundle
 本机窗口为真实 Metal 输出；验收程序显式模拟前景输入，计时分别记录 App.update CPU、eframe CPU rendering 和 frame-start 间隔。这些数值不等于实际呈现 FPS、GPU 时间戳或输入到屏幕延迟。跨应用全界面逐像素等价、其他平台实际 GUI 及硬件运行尚未完成全面验收，不能由这些测试推导出无条件的完整移植保证。
 
 本机详细日志位于 `.tools/final-workspace-tests7.log`、`final-native-tests.log`、`final-native-gpu.log`、`final-history-latency.log`、`final-clippy7.log`、`final-windows2.log`、`final-linux2.log`、`final-package.log`；`.tools` 是本地验证输出，不纳入源码发布。
+
+## 私有仓库与系统验收后续
+
+- 首次源码提交 `ac127fb` 已推送到用户指定的私有 `bugs1111/LevelEditor`。首次远程运行 `43921626476` 的 Apple Silicon macOS 构建、测试和打包成功；Linux 实际测试发现字体度量导致检查器 Edit 按钮偏离右边，已改为真正的右侧布局并添加随包字体回归。该轮已取消，未发布版本；Windows/Intel 取消结果不记作通过。
+- 最新嵌套三列表单回归验证完整字形可读、clip 内、无跨列、原版 12.667pt 字号和面板不超过 1000pt。实际 Color 截图已确认。修复前只扩大 clip 限制的版本保留为拒绝证据，不记为成功。
+- 最新全部目标测试和严格 Clippy 通过，日志为 `.tools/verified-labels-workspace.log`、`verified-labels-clippy.log`；检查器 13 项（含 fallback 字体）通过。
+- 最新应用包的真实 LaunchServices 冷/热打开检查通过：中文与空格文件路径、同一进程复用，使用独立设置和复制示例，结束时仅停止本次创建的测试进程。日志 `.tools/bundle-cold-warm.log`。
+- Home streaming debug 复测 capture RSS 为 248,480 KiB；先前 release 为 1,506,608 KiB。相同设置含 13 MB 最近工程，等待 3 秒、采样至少 2 秒；构建模式不同，不据此推导 CPU 提升或精确降幅。核心 16 MiB ignored JSON 字段测试另证实流式元数据读取单次分配低于 256 KiB。

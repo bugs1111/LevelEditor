@@ -273,42 +273,48 @@ impl EditorApp {
         ];
         let readonly = project.is_backup();
         let project_iid = text(&project.json, "iid", "").to_owned();
-        ui.horizontal(|ui| {
-            let width = (ui.available_width() - 36. - ui.spacing().item_spacing.x).max(1.);
-            ui.allocate_ui_with_layout(
-                egui::vec2(width, 20.),
-                egui::Layout::left_to_right(egui::Align::Center),
-                |ui| {
-                    ui.set_min_width(width);
-                    ui.add(
-                        egui::Label::new(
-                            RichText::new(text(&def, "identifier", "Entity"))
-                                .strong()
-                                .color(theme::ACCENT),
+        let edit = ui
+            .horizontal(|ui| {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let edit = ui
+                        .add(
+                            egui::Button::new(
+                                RichText::new("Edit")
+                                    .strong()
+                                    .size(10.667)
+                                    .color(Color32::BLACK),
+                            )
+                            .fill(theme::ACCENT)
+                            .corner_radius(2)
+                            .small()
+                            .wrap_mode(egui::TextWrapMode::Extend),
                         )
-                        .truncate(),
+                        .clicked();
+                    let width = ui.available_width().max(1.);
+                    ui.allocate_ui_with_layout(
+                        egui::vec2(width, 20.),
+                        egui::Layout::left_to_right(egui::Align::Center),
+                        |ui| {
+                            ui.set_min_width(width);
+                            ui.add(
+                                egui::Label::new(
+                                    RichText::new(text(&def, "identifier", "Entity"))
+                                        .strong()
+                                        .color(theme::ACCENT),
+                                )
+                                .truncate(),
+                            );
+                        },
                     );
-                },
-            );
-            if ui
-                .add(
-                    egui::Button::new(
-                        RichText::new("Edit")
-                            .strong()
-                            .size(10.667)
-                            .color(Color32::BLACK),
-                    )
-                    .fill(theme::ACCENT)
-                    .corner_radius(2)
-                    .small()
-                    .wrap_mode(egui::TextWrapMode::Extend),
-                )
-                .clicked()
-            {
-                self.definition_uid = def["uid"].as_i64();
-                self.show_panel(Some(Panel::Entities));
-            }
-        });
+                    edit
+                })
+                .inner
+            })
+            .inner;
+        if edit {
+            self.definition_uid = def["uid"].as_i64();
+            self.show_panel(Some(Panel::Entities));
+        }
         ui.separator();
         let mut extra_open = self
             .settings
@@ -619,6 +625,35 @@ mod tests {
         assert_eq!(
             output.shapes.iter().find_map(|shape| rows(&shape.shape)),
             Some(1)
+        );
+    }
+    #[test]
+    fn inspector_header_stays_right_aligned_with_the_bundled_fallback_font() {
+        let mut f = Fixture::new();
+        f.ctx.all_styles_mut(|style| {
+            style.override_font_id = Some(FontId::new(
+                14.667,
+                egui::FontFamily::Name("panel-title".into()),
+            ))
+        });
+        let output = f.warm();
+        let button = output
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Rect(rect)
+                    if rect.fill == theme::ACCENT
+                        && rect.rect.width() > 15.
+                        && rect.rect.height() < 30. =>
+                {
+                    Some(rect.rect)
+                }
+                _ => None,
+            })
+            .unwrap();
+        assert!(
+            (button.right() - (f.state().rect.right() - 10.)).abs() < 1.,
+            "{button:?}"
         );
     }
     #[test]

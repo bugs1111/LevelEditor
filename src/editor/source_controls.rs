@@ -19,37 +19,58 @@ fn help_text(key: &str, label: &str) -> Option<&'static str> {
         .or_else(|| HELP[key].as_str())
         .or_else(|| HELP[label].as_str())
 }
+pub(in crate::app) const PROPERTY_LABEL_WIDTH: f32 = 124.;
 pub(in crate::app) fn property_label(ui: &mut egui::Ui, label: &str, key: &str) {
     let info = HELP["__info__"][key]
         .as_str()
         .or_else(|| HELP["__info__"][label].as_str());
-    if let Some(help) = info {
-        let display = if matches!(label, "Entity identifier" | "Field identifier") {
-            label.replacen(' ', "\n", 1)
+    let width = ui.available_width().min(PROPERTY_LABEL_WIDTH);
+    let reserve = if info.is_some() { 32. } else { 8. };
+    let text_width = (width - reserve).max(0.);
+    let font = FontId::proportional(12.667);
+    let color = ui.visuals().text_color();
+    // CSS dt labels wrap at spaces, without splitting an individual word.
+    let mut lines = Vec::new();
+    let mut line = String::new();
+    for word in label.split_whitespace() {
+        let candidate = if line.is_empty() {
+            word.to_owned()
         } else {
-            label.to_owned()
+            format!("{line} {word}")
         };
-        let font = egui::TextStyle::Body.resolve(ui.style());
-        let galley = ui
-            .painter()
-            .layout_no_wrap(display, font, ui.visuals().text_color());
-        let width = ui.available_width().min(124.);
-        let (rect, _) =
-            ui.allocate_exact_size(egui::vec2(width, galley.size().y.max(30.)), Sense::hover());
-        let right = rect.right() - 32.;
-        ui.painter()
-            .with_clip_rect(
-                Rect::from_min_max(rect.min, egui::pos2(right, rect.bottom()))
-                    .intersect(ui.clip_rect()),
-            )
-            .galley(
-                egui::pos2(
-                    right - galley.size().x,
-                    rect.center().y - galley.size().y * 0.5,
-                ),
-                galley,
-                ui.visuals().text_color(),
-            );
+        if !line.is_empty()
+            && ui
+                .painter()
+                .layout_no_wrap(candidate.clone(), font.clone(), color)
+                .size()
+                .x
+                > text_width
+        {
+            lines.push(line);
+            line = word.to_owned();
+        } else {
+            line = candidate;
+        }
+    }
+    lines.push(line);
+    let galley = ui.painter().layout_no_wrap(lines.join("\n"), font, color);
+    let (rect, response) =
+        ui.allocate_exact_size(egui::vec2(width, galley.size().y.max(30.)), Sense::hover());
+    let right = rect.right() - reserve;
+    ui.painter()
+        .with_clip_rect(
+            Rect::from_min_max(rect.min, egui::pos2(right, rect.bottom()))
+                .intersect(ui.clip_rect()),
+        )
+        .galley(
+            egui::pos2(
+                right - galley.size().x,
+                rect.center().y - galley.size().y * 0.5,
+            ),
+            galley,
+            color,
+        );
+    if let Some(help) = info {
         let badge = Rect::from_center_size(
             egui::pos2(rect.right() - 12., rect.center().y),
             egui::vec2(24., 16.),
@@ -60,13 +81,11 @@ pub(in crate::app) fn property_label(ui: &mut egui::Ui, label: &str, key: &str) 
                 .layout(egui::Layout::left_to_right(egui::Align::Center)),
         );
         help_badge(&mut child, help);
-    } else {
-        let response = ui.add(egui::Label::new(label).extend());
-        if let Some(help) = help_text(key, label) {
-            help_tooltip(response, help);
-        }
+    } else if let Some(help) = help_text(key, label) {
+        help_tooltip(response, help);
     }
 }
+
 fn help_tooltip(response: egui::Response, help: &str) -> egui::Response {
     response.on_hover_ui(|ui| {
         egui::Frame::new()

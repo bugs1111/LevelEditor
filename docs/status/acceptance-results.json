@@ -631,5 +631,43 @@
       "intGridChecksum": "bc6e5bab670739f5",
       "entityCount": 0
     }
+  },
+  {
+    "scenario": "home-streaming",
+    "phase": "home-streaming-debug-followup",
+    "build": "debug",
+    "purpose": "RSS and visual verification only; no CPU speedup comparison against prior release",
+    "capture": "acceptance-native-home-streaming-debug.png",
+    "settleSeconds": 3,
+    "samplingSeconds": 2.001,
+    "recentIncludes": "13 MB world1 plus lotsOfEntities, same isolated profile",
+    "metrics": [
+      "Ready app.update CPU: 1765 samples; median 0.459ms; p95 0.477ms; max 0.593ms",
+      "Ready eframe CPU (previous frame update + CPU rendering): 1765 samples; median 1.076ms; p95 1.107ms; max 1.363ms",
+      "Ready update-start wall interval: 1765 samples; median 1.130ms; p95 1.166ms; max 1.617ms",
+      "RSS KiB: ready=Some(194736); capture=Some(248480)"
+    ],
+    "final": {
+      "panel": null,
+      "gesture": null,
+      "stroke": false,
+      "ready": false,
+      "clicktrap": false,
+      "world": false,
+      "dirty": false,
+      "view": {
+        "center": [
+          0.0,
+          0.0
+        ],
+        "zoom": 1.0
+      },
+      "level": null,
+      "layer": null,
+      "layerType": null,
+      "intGridNonzero": null,
+      "intGridChecksum": "bd60acb658c79e45",
+      "entityCount": null
+    }
   }
 ]

@@ -2668,6 +2668,114 @@ mod tests {
         );
     }
     #[test]
+    fn nested_field_form_labels_remain_fully_readable_inside_their_third_column() {
+        fn texts<'a>(
+            shape: &'a egui::Shape,
+            clip: Rect,
+            items: &mut Vec<(Rect, &'a egui::epaint::TextShape)>,
+        ) {
+            match shape {
+                egui::Shape::Text(text) => items.push((clip, text)),
+                egui::Shape::Vec(shapes) => {
+                    for shape in shapes {
+                        texts(shape, clip, items)
+                    }
+                }
+                _ => {}
+            }
+        }
+        let ctx = egui::Context::default();
+        theme::configure(&ctx);
+        let mut project = Project::load(resource_path("examples/original/Entities.ldtk")).unwrap();
+        project.migrate_to_current().unwrap();
+        let mut app = EditorApp::empty();
+        app.set_project(project);
+        app.settings.set_ui_state_int("extraEntityDetails", None, 0);
+        let mut time = 0.;
+        let mut draw = |app: &mut EditorApp| {
+            time += 1.;
+            ctx.run(
+                egui::RawInput {
+                    time: Some(time),
+                    screen_rect: Some(Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1440., 900.),
+                    )),
+                    ..Default::default()
+                },
+                |ctx| {
+                    app.source_panel(ctx, Panel::Entities);
+                },
+            )
+        };
+        draw(&mut app);
+        draw(&mut app);
+        let output = draw(&mut app);
+        let mut items = Vec::new();
+        for shape in &output.shapes {
+            texts(&shape.shape, shape.clip_rect, &mut items);
+        }
+        let general = items
+            .iter()
+            .find(|(_, text)| text.galley.job.text == "GENERAL SETTINGS")
+            .unwrap()
+            .1;
+        for label in ["Field identifier", "Documentation", "Minimum", "Maximum"] {
+            let (clip, text) = items
+                .iter()
+                .find(|(_, text)| {
+                    text.pos.y > general.pos.y
+                        && text
+                            .galley
+                            .job
+                            .text
+                            .split_whitespace()
+                            .collect::<Vec<_>>()
+                            .join(" ")
+                            == label
+                })
+                .unwrap_or_else(|| panic!("missing third-column label {label}"));
+            let bounds = Rect::from_min_size(text.pos, text.galley.size());
+            assert!(
+                bounds.left() >= general.pos.x - 0.1,
+                "{label} escapes left into the field list: {bounds:?}, third column {}",
+                general.pos.x
+            );
+            assert!(
+                clip.expand(0.1).contains_rect(bounds),
+                "{label} is clipped instead of readable: text {bounds:?}, clip {clip:?}"
+            );
+            assert!(text.galley.rows.len() <= 2, "{label} wraps inside words");
+            let reserve = if label == "Maximum" { 8. } else { 32. };
+            assert!(
+                bounds.right() <= general.pos.x + 124. - reserve + 0.1,
+                "{label} overlaps its label-cell padding/info pill: {bounds:?}"
+            );
+            assert!(
+                (text.galley.job.sections[0].format.font_id.size - 12.667).abs() < 0.001,
+                "source dt labels use 9.5pt"
+            );
+        }
+        let body = output
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Rect(rect)
+                    if rect.fill == theme::MEDIUM
+                        && rect.rect.left() == 0.
+                        && rect.rect.height() > 500. =>
+                {
+                    Some(rect.rect)
+                }
+                _ => None,
+            })
+            .unwrap();
+        assert!(
+            body.right() <= 1000.,
+            "third column body must stay under the original 1000-point header: {body:?}"
+        );
+    }
+    #[test]
     fn source_entity_panel_has_original_header_geometry_and_integrated_fields() {
         let ctx = egui::Context::default();
         theme::configure(&ctx);

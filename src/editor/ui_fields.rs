@@ -146,6 +146,7 @@ pub(super) fn form(ui: &mut egui::Ui, value: &Value, properties: &[Property]) ->
             .with(("property-form", properties.first().map(|p| p.0))),
     )
     .num_columns(2)
+    .min_col_width(super::panels::source_controls::PROPERTY_LABEL_WIDTH)
     .spacing([18.0, 8.0])
     .show(ui, |ui| {
         for Property(key, label, widget) in properties {
