@@ -38,7 +38,7 @@ jobs:
           restore-keys: cargo-${{ runner.os }}-${{ runner.arch }}-
       - name: Linux native dependencies
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev libwayland-dev libxrandr-dev libxi-dev libxcursor-dev libxinerama-dev
+        run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev libxkbcommon-x11-0 libwayland-dev libxrandr-dev libxi-dev libxcursor-dev libxinerama-dev
       - name: Rust toolchain
         run: |
           rustup update stable --no-self-update

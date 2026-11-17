@@ -15,6 +15,8 @@ scripts/run examples/original/Typical_TopDown_example.ldtk
 
 脚本优先使用项目内 `.tools/` 工具链，也支持系统已安装的 Cargo。首次安装 Rust 可运行 `scripts/bootstrap-rust`，该脚本不修改全局 shell 配置。
 
+Linux 的 X11 运行环境还需要 Vulkan 驱动与 `libxkbcommon-x11`；Ubuntu/Debian 对应运行库为 `libvulkan1`、`libxkbcommon-x11-0`。GUI CI 使用独立 Xvfb 显示和 Mesa lavapipe，实际适配器及硬件验收范围见[GUI/GPU 记录](docs/status/gui-platform-acceptance.md)。
+
 macOS 应用打包：
 
 ```sh

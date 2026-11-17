@@ -75,7 +75,7 @@ def validate_capture(name, text, screenshot, returncode):
     if adapter:
         if re.search(r"llvmpipe|lavapipe|software|microsoft.*(?:basic|warp)|device_type: Cpu", adapter, re.I):
             kind = "software"
-        elif "VirtualGpu" in adapter:
+        elif "VirtualGpu" in adapter or "paravirtual" in adapter.lower():
             kind = "virtual"
         elif "IntegratedGpu" in adapter or "DiscreteGpu" in adapter:
             kind = "hardware"

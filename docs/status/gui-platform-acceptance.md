@@ -3,7 +3,9 @@
 This supplements the compile/test/package matrix in `platform-acceptance.json`.
 The manually dispatched **Native GUI and GPU acceptance** workflow runs native
 windows on `macos-15` (ARM), `macos-15-intel`, `windows-latest` and `ubuntu-24.04`.
-Creating the workflow does not establish that those GUI runs have passed.
+The `linux_only` dispatch input defaults to false; selecting it reruns only
+Linux after a CI dependency correction while preserving the normal four-target
+matrix. Creating the workflow does not establish that those GUI runs have passed.
 
 Each runner builds the release `native_smoke` example and application test
 binary, then runs six sequential native-window scenarios:
@@ -69,7 +71,9 @@ failing if its driver is absent or ambiguous. Windows may select a
 software adapter such as WARP; macOS must obtain an available Metal adapter.
 The adapter actually returned is recorded for each scene. `software`, `virtual`
 and `unknown` adapters remain distinct from reported integrated/discrete GPU
-adapters. Even a hosted runner reporting hardware does not establish acceptance
+adapters. Apple's `Apple Paravirtual device` is classified as `virtual` even
+when wgpu reports `IntegratedGpu`; the original adapter metadata is preserved.
+Even a hosted runner reporting hardware does not establish acceptance
 on a user's physical Windows/Linux/Intel Mac hardware. Missing graphics/display
 capability is a failed CI result to investigate, not a platform success.
 Windows RSS may be unavailable because the current harness samples with `ps`;
@@ -168,3 +172,31 @@ Its script, geometry and validator output are preserved under
 negative missing/invalid viewport/DPI and mismatched PNG dimensions. Timing
 lines from the final run are observations only; other verification was running
 concurrently, so this run is not a performance comparison.
+
+### Linux X11 runtime dependency
+
+The first final Linux run built successfully and passed all three offscreen GPU
+tests, but its six native windows exited before capture because
+`xkbcommon-dl` could not load `libxkbcommon-x11.so`. The GUI workflow now installs
+`libxkbcommon-x11-0` alongside the existing X11/Wayland build dependencies.
+This is a runner runtime dependency correction; product source, Cargo inputs
+and assets remain those of `554e86a`. The Linux native-window result requires
+its successful rerun and must not be inferred from the offscreen GPU tests.
+
+### Physical NVIDIA Vulkan offscreen validation
+
+The portable Linux test executable from source
+`554e86a52123a964e1d65a11b50a5daa23455fba` ran on the existing `host-test` machine
+with the NVIDIA ICD forced and all display/auth environment variables removed.
+Each of the three exact GPU tests passed once, with none failed or ignored,
+and each independently logged `NVIDIA GeForce RTX 2060`, `DiscreteGpu`, driver
+`595.99.02`, backend `Vulkan`. This establishes actual execution of the blur,
+outline and pending-upload surface-error regression on physical NVIDIA hardware.
+It does not establish native-window presentation or GUI input on that machine.
+
+The run used only `/run/user/1000/ldtk-rtx-acceptance.bVp4hO` for its executable,
+temp/cache files and evidence; it did not use the shared display or start Xvfb.
+Downloaded evidence is `.tools/final-gui-artifacts/physical-rtx2060/results.json`
+and its three GPU logs plus driver/summary logs. The uploaded ZIP hash matches
+the downloaded CI artifact:
+`d11d6935853866a9b5b4e81de8959e21384b2282313225f0cedfb3a3e6e5318c`.
