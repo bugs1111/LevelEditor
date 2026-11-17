@@ -325,6 +325,34 @@ fn rename_moves_external_tree_and_meta_after_success_and_rejects_collisions() {
     assert_eq!(fs::read(t.path().join("Collision.ldtk")).unwrap(), b"keep");
 }
 #[test]
+fn rename_copies_read_only_resources_and_preserves_their_permissions() {
+    let t = tempfile::tempdir().unwrap();
+    let mut p = Project::new();
+    p.json["externalLevels"] = json!(true);
+    p.save(t.path().join("A.ldtk")).unwrap();
+    let source = t.path().join("A/read-only.txt");
+    let target = t.path().join("B/read-only.txt");
+    fs::write(&source, b"read-only resource").unwrap();
+    let original = fs::metadata(&source).unwrap().permissions();
+    let mut permissions = original.clone();
+    permissions.set_readonly(true);
+    fs::set_permissions(&source, permissions).unwrap();
+    let renamed = p.rename_project("B");
+    let bytes = fs::read(&target);
+    let copied_permissions = fs::metadata(&target).map(|m| m.permissions());
+    // Windows can retain an old read-only resource with a reported cleanup error.
+    // Restore only this test's files so its temporary tree can always be removed.
+    for path in [&source, &target] {
+        if path.exists() {
+            fs::set_permissions(path, original.clone()).unwrap();
+        }
+    }
+    renamed.unwrap();
+    assert_eq!(bytes.unwrap(), b"read-only resource");
+    assert!(copied_permissions.unwrap().readonly());
+    assert!(Project::load(t.path().join("B.ldtk")).is_ok());
+}
+#[test]
 fn rename_failure_preserves_every_source_file_and_resource_relocation_updates_paths() {
     let t = tempfile::tempdir().unwrap();
     let old = t.path().join("A.ldtk");

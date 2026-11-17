@@ -751,5 +751,112 @@
       "intGridChecksum": "101ab509f5770a5",
       "entityCount": 9
     }
+  },
+  {
+    "scenario": "home",
+    "phase": "home-release-graphics-investigation",
+    "build": "release",
+    "status": "native-trigger-unresolved",
+    "productionChanged": false,
+    "report": "home-memory-investigation.md",
+    "profile": "/private/tmp/ldtk-acceptance-settings",
+    "backend": "Metal / Apple M6",
+    "viewportLogical": [
+      1440,
+      900
+    ],
+    "cases": [
+      {
+        "name": "initial-release",
+        "log": ".tools/home-streaming-release.log",
+        "metrics": [
+          "Ready sampling window: 2.000s after 3.000s settling",
+          "Ready app.update CPU: 3648 samples; median 0.093ms; p95 0.107ms; max 0.132ms",
+          "Ready eframe CPU (previous frame update + CPU rendering): 3648 samples; median 0.366ms; p95 0.473ms; max 0.615ms",
+          "Ready update-start wall interval: 3648 samples; median 0.544ms; p95 0.664ms; max 0.842ms",
+          "RSS KiB: ready=Some(202096); capture=Some(1246720)",
+          "Native smoke: 10273 frames in 5.462s; screenshot=true"
+        ]
+      },
+      {
+        "name": "longer-high-update-rate",
+        "log": ".tools/home-rss-diagnosis-smoke.log",
+        "metrics": [
+          "Ready sampling window: 2.000s after 10.000s settling",
+          "Ready app.update CPU: 3651 samples; median 0.092ms; p95 0.106ms; max 0.130ms",
+          "Ready eframe CPU (previous frame update + CPU rendering): 3651 samples; median 0.362ms; p95 0.472ms; max 0.620ms",
+          "Ready update-start wall interval: 3651 samples; median 0.543ms; p95 0.665ms; max 0.770ms",
+          "RSS KiB: ready=Some(197648); capture=Some(1249104)",
+          "Native smoke: 20329 frames in 12.463s; screenshot=true"
+        ]
+      },
+      {
+        "name": "original-path-recheck",
+        "log": ".tools/home-rss-path-recheck-root.log",
+        "metrics": [
+          "Ready sampling window: 2.001s after 3.000s settling",
+          "Ready app.update CPU: 241 samples; median 0.470ms; p95 0.527ms; max 0.551ms",
+          "Ready eframe CPU (previous frame update + CPU rendering): 241 samples; median 1.053ms; p95 1.154ms; max 1.216ms",
+          "Ready update-start wall interval: 241 samples; median 8.721ms; p95 8.879ms; max 9.814ms",
+          "RSS KiB: ready=Some(194560); capture=Some(257968)",
+          "Native smoke: 607 frames in 5.161s; screenshot=true"
+        ]
+      },
+      {
+        "name": "byte-identical-copy-recheck",
+        "log": ".tools/home-rss-path-recheck-copied.log",
+        "metrics": [
+          "Ready sampling window: 2.000s after 3.000s settling",
+          "Ready app.update CPU: 241 samples; median 0.469ms; p95 0.552ms; max 0.631ms",
+          "Ready eframe CPU (previous frame update + CPU rendering): 241 samples; median 1.071ms; p95 1.277ms; max 1.516ms",
+          "Ready update-start wall interval: 241 samples; median 8.713ms; p95 8.993ms; max 9.793ms",
+          "RSS KiB: ready=Some(195776); capture=Some(258432)",
+          "Native smoke: 606 frames in 5.127s; screenshot=true"
+        ]
+      },
+      {
+        "name": "os-activation-request",
+        "log": ".tools/home-rss-os-active.log",
+        "metrics": [
+          "Ready sampling window: 2.008s after 3.000s settling",
+          "Ready app.update CPU: 242 samples; median 0.476ms; p95 0.529ms; max 0.656ms",
+          "Ready eframe CPU (previous frame update + CPU rendering): 242 samples; median 1.062ms; p95 1.206ms; max 1.380ms",
+          "Ready update-start wall interval: 242 samples; median 8.725ms; p95 8.887ms; max 9.094ms",
+          "RSS KiB: ready=Some(193648); capture=Some(256256)",
+          "Native smoke: 607 frames in 5.142s; screenshot=true"
+        ]
+      },
+      {
+        "name": "os-hide-restore",
+        "log": ".tools/home-rss-os-hide-restore.log",
+        "metrics": [
+          "Ready sampling window: 2.000s after 6.000s settling",
+          "Ready app.update CPU: 241 samples; median 0.467ms; p95 0.508ms; max 0.541ms",
+          "Ready eframe CPU (previous frame update + CPU rendering): 241 samples; median 1.039ms; p95 1.118ms; max 1.225ms",
+          "Ready update-start wall interval: 241 samples; median 8.708ms; p95 8.817ms; max 8.940ms",
+          "RSS KiB: ready=Some(195344); capture=Some(257824)",
+          "Native smoke: 966 frames in 8.140s; screenshot=true"
+        ]
+      }
+    ],
+    "unchangedBinarySha256": "f2d909e32a7896b81803e04df4f9db9f6c4ec84979b595fa69e6c0506f49f34e",
+    "plateauSamplesLog": ".tools/home-rss-samples.json",
+    "vmmapLogs": [
+      ".tools/home-rss-vmmap-0.5.log",
+      ".tools/home-rss-vmmap-7.0.log"
+    ],
+    "osStateControls": {
+      "log": ".tools/home-rss-os-results.json",
+      "activationReportedActive": false,
+      "hideReportedHidden": true,
+      "restoreReportedHidden": false
+    },
+    "limits": [
+      "Ready RSS is sampled at ready frame 20 before settling; capture RSS includes screenshot readback.",
+      "The same unchanged binary later returned to approximately 120 updates per second; the earlier high-update-rate native trigger remains unresolved.",
+      "Surface-acquisition error counters were not collected in the high-RSS run.",
+      "The temporary GPU-wait control ran only in the lower-memory regime and does not establish a fix."
+    ],
+    "processCleanupLog": ".tools/home-rss-process-cleanup-check.log"
   }
 ]

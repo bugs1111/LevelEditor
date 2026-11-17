@@ -446,12 +446,26 @@ fn copy_tree(from: &Path, to: &Path) -> Result<()> {
             source,
         })?;
     } else {
-        fs::copy(from, to).map_err(|source| Error::Io {
-            path: to.into(),
+        if !metadata.is_file() {
+            return Err(Error::Unsupported("resource is not a regular file".into()));
+        }
+        let mut input = fs::File::open(from).map_err(|source| Error::Io {
+            path: from.into(),
             source,
         })?;
-        fs::File::open(to)
-            .and_then(|f| f.sync_all())
+        let mut output = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(to)
+            .map_err(|source| Error::Io {
+                path: to.into(),
+                source,
+            })?;
+        // Keep the writable handle while restoring attributes and flushing:
+        // reopening a read-only copy cannot FlushFileBuffers on Windows.
+        std::io::copy(&mut input, &mut output)
+            .and_then(|_| output.set_permissions(metadata.permissions()))
+            .and_then(|()| output.sync_all())
             .map_err(|source| Error::Io {
                 path: to.into(),
                 source,

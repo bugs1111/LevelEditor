@@ -216,6 +216,51 @@ fn absolute_file_fields_rebase_against_project_directory() {
     );
 }
 #[test]
+fn absolute_file_paths_use_slashes_before_parsing_string_escapes() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = format!("{}/assets\\new\\readme.txt", dir.path().display());
+    assert!(std::path::Path::new(&path).is_absolute());
+    for is_array in [false, true] {
+        let mut p = Project::new();
+        p.path = Some(dir.path().join("project.ldtk"));
+        let uid = p
+            .add_field_definition(None, "File", "FilePath", is_array)
+            .unwrap();
+        p.set_field_editor_value(
+            K,
+            None,
+            uid,
+            if is_array { json!([path]) } else { json!(path) },
+        )
+        .unwrap();
+        let expected = if is_array {
+            json!(["assets/new/readme.txt"])
+        } else {
+            json!("assets/new/readme.txt")
+        };
+        assert_eq!(
+            p.level(K).unwrap()["fieldInstances"][0]["__value"],
+            expected
+        );
+        if is_array {
+            p.edit_field_array(
+                K,
+                None,
+                uid,
+                ldtk_core::FieldArrayEdit::Set {
+                    index: 0,
+                    value: json!(path),
+                },
+            )
+            .unwrap();
+            assert_eq!(
+                p.level(K).unwrap()["fieldInstances"][0]["__value"],
+                expected
+            );
+        }
+    }
+}
+#[test]
 #[ignore = "requires pinned upstream historical fixtures under .reference/ldtk"]
 fn original_fixture_defaults_match_saved_public_values() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.reference/ldtk/tests");

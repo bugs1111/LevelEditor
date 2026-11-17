@@ -7,27 +7,41 @@ struct ChangelogEntry {
 }
 fn changelog_entries() -> &'static [ChangelogEntry] {
     static ENTRIES: std::sync::OnceLock<Vec<ChangelogEntry>> = std::sync::OnceLock::new();
-    ENTRIES.get_or_init(|| {
-        include_str!("../../assets/CHANGELOG.md")
-            .trim_start_matches("# ")
-            .split("\n# ")
-            .map(|section| {
-                let (heading, notes) = section.split_once('\n').unwrap_or((section, ""));
-                let (version, title) = heading.split_once(" - ").unwrap_or((heading, ""));
-                ChangelogEntry {
-                    version,
-                    title,
-                    notes,
-                }
-            })
-            .collect()
-    })
+    ENTRIES.get_or_init(|| parse_changelog(include_str!("../../assets/CHANGELOG.md")))
+}
+fn parse_changelog(source: &'static str) -> Vec<ChangelogEntry> {
+    source
+        .trim_start_matches("# ")
+        .split("\n# ")
+        .map(|section| {
+            let (heading, notes) = section.split_once('\n').unwrap_or((section, ""));
+            let heading = heading.trim_end_matches('\r');
+            let (version, title) = heading.split_once(" - ").unwrap_or((heading, ""));
+            ChangelogEntry {
+                version,
+                title,
+                notes,
+            }
+        })
+        .collect()
 }
 fn changelog_markdown(entry: &ChangelogEntry) -> String {
-    let root = resource_path("assets/changelogImg")
-        .to_string_lossy()
-        .replace('\\', "/");
-    entry.notes.replace("![](", &format!("![](file://{root}/"))
+    changelog_markdown_at(entry, &resource_path("assets/changelogImg"))
+}
+fn changelog_markdown_at(entry: &ChangelogEntry, root: &std::path::Path) -> String {
+    let root = root.to_string_lossy().replace('\\', "/");
+    let mut parts = entry.notes.split("![](");
+    let mut markdown = parts.next().unwrap_or_default().to_owned();
+    for part in parts {
+        if let Some((image, after)) = part.split_once(')') {
+            markdown.push_str(&format!("![](<file://{root}/{image}>)"));
+            markdown.push_str(after);
+        } else {
+            markdown.push_str("![](");
+            markdown.push_str(part);
+        }
+    }
+    markdown
 }
 pub(super) fn changelog_is_open(ctx: &egui::Context) -> bool {
     ctx.data_mut(|d| d.get_temp::<bool>(egui::Id::new("release-notes-open")))
@@ -230,6 +244,99 @@ impl EditorApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[derive(Default)]
+    struct ImageRequests(std::sync::Mutex<Vec<String>>);
+    impl egui::load::BytesLoader for ImageRequests {
+        fn id(&self) -> &str {
+            egui::generate_loader_id!(ImageRequests)
+        }
+        fn load(&self, _: &egui::Context, uri: &str) -> egui::load::BytesLoadResult {
+            self.0.lock().unwrap().push(uri.to_owned());
+            Err(egui::load::LoadError::NotSupported)
+        }
+        fn forget(&self, _: &str) {}
+        fn forget_all(&self) {}
+        fn byte_size(&self) -> usize {
+            0
+        }
+    }
+    #[test]
+    fn release_images_load_through_commonmark_from_a_bundle_path_with_spaces_and_hashes() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir
+            .path()
+            .join("LDtk Rust #test.app/Contents/Resources/assets/changelogImg");
+        std::fs::create_dir_all(&root).unwrap();
+        let png = include_bytes!("../../assets/icons/intGrid.png");
+        let image = root.join("logo#1.png");
+        std::fs::write(&image, png).unwrap();
+        let entry = ChangelogEntry {
+            version: "1.5.0",
+            title: "Fixture",
+            notes: "Before.\n\n![](logo#1.png)\n\n[Unchanged link](https://example.test/help)\n",
+        };
+        let markdown = changelog_markdown_at(&entry, &root);
+        let expected = format!("file://{}", image.to_string_lossy().replace('\\', "/"));
+        let ctx = egui::Context::default();
+        egui_extras::install_image_loaders(&ctx);
+        let requests = std::sync::Arc::new(ImageRequests::default());
+        ctx.add_bytes_loader(requests.clone());
+        let mut cache = egui_commonmark::CommonMarkCache::default();
+        let decoded = image::load_from_memory(png).unwrap();
+        let size = [decoded.width() as usize, decoded.height() as usize];
+        let mut loaded = false;
+        let mut draw = || {
+            let output = ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(800., 600.),
+                    )),
+                    ..Default::default()
+                },
+                |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        egui_commonmark::CommonMarkViewer::new().show(ui, &mut cache, &markdown);
+                    });
+                },
+            );
+            output
+                .textures_delta
+                .set
+                .iter()
+                .any(|(id, delta)| *id != egui::TextureId::Managed(0) && delta.image.size() == size)
+        };
+        for _ in 0..3 {
+            loaded |= draw();
+        }
+        let observed = requests.0.lock().unwrap().clone();
+        assert!(
+            observed.contains(&expected),
+            "CommonMark must request the complete raw file URI: {observed:?}"
+        );
+        for _ in 0..100 {
+            if loaded {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+            loaded |= draw();
+        }
+        assert!(
+            loaded,
+            "the real file/image loaders must decode the bundled PNG without URI percent-encoding"
+        );
+        assert!(markdown.contains("[Unchanged link](https://example.test/help)"));
+    }
+    #[test]
+    fn windows_release_notes_keep_clean_versions_and_titles() {
+        let entries = parse_changelog(
+            "# 1.5.3\r\n\r\n- Fixed\r\n\r\n# 1.5.0 - New LDtk logo\r\n\r\n![](logo.png)\r\n",
+        );
+        assert_eq!(entries[0].version, "1.5.3");
+        assert_eq!(entries[1].version, "1.5.0");
+        assert_eq!(entries[1].title, "New LDtk logo");
+        assert!(entries[1].notes.contains("![](logo.png)"));
+    }
     #[test]
     fn original_release_entries_preserve_versions_text_and_bundled_images() {
         let entries = changelog_entries();

@@ -206,6 +206,38 @@ pub(super) fn launch(prepared: &Prepared, reopen: Option<PathBuf>) -> Result<()>
 fn spawn_editor(exe: &Path, reopen: Option<&Path>) -> Result<()> {
     spawn_and_wait(exe, reopen, Duration::from_secs(60))
 }
+fn receive_startup_ack(listener: &TcpListener, nonce: &str) -> Result<bool> {
+    loop {
+        let mut socket = match listener.accept() {
+            Ok((socket, _)) => socket,
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => return Ok(false),
+            Err(error) => return Err(error.to_string()),
+        };
+        socket.set_nonblocking(false).map_err(|e| e.to_string())?;
+        socket
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .map_err(|e| e.to_string())?;
+        let mut message = [0; 64];
+        if socket.read_exact(&mut message).is_ok() && message.as_slice() == nonce.as_bytes() {
+            return Ok(true);
+        }
+    }
+}
+fn exited_before_ready(
+    listener: &TcpListener,
+    nonce: &str,
+    status: std::process::ExitStatus,
+) -> Result<()> {
+    // A completed first frame can send its ACK after accept() said WouldBlock,
+    // then exit before try_wait(). Inspect that queued ACK before rolling back.
+    if receive_startup_ack(listener, nonce)? {
+        Ok(())
+    } else {
+        Err(format!(
+            "Updated editor exited before its first successful frame ({status})"
+        ))
+    }
+}
 fn spawn_and_wait(exe: &Path, reopen: Option<&Path>, timeout: Duration) -> Result<()> {
     let listener = TcpListener::bind(("127.0.0.1", 0)).map_err(|e| e.to_string())?;
     listener.set_nonblocking(true).map_err(|e| e.to_string())?;
@@ -245,20 +277,16 @@ fn spawn_and_wait(exe: &Path, reopen: Option<&Path>, timeout: Duration) -> Resul
     let mut child = command.spawn().map_err(|e| e.to_string())?;
     let started = Instant::now();
     loop {
-        if let Ok((mut socket, _)) = listener.accept() {
-            socket.set_nonblocking(false).map_err(|e| e.to_string())?;
-            let _ = socket.set_read_timeout(Some(Duration::from_secs(1)));
-            let mut message = [0; 64];
-            if socket.read_exact(&mut message).is_ok() && message.as_slice() == nonce.as_bytes() {
-                return Ok(());
-            }
+        if receive_startup_ack(&listener, &nonce)? {
+            return Ok(());
         }
         if let Some(status) = child.try_wait().map_err(|e| e.to_string())? {
-            return Err(format!(
-                "Updated editor exited before its first successful frame ({status})"
-            ));
+            return exited_before_ready(&listener, &nonce, status);
         }
         if started.elapsed() >= timeout {
+            if receive_startup_ack(&listener, &nonce)? {
+                return Ok(());
+            }
             let _ = child.kill();
             let _ = child.wait();
             return Err(
@@ -494,6 +522,58 @@ mod tests {
     }
     #[test]
     fn fixture_exits_without_a_ready_frame() {}
+    #[test]
+    fn fixture_sends_invalid_startup_message() {
+        if let Ok(message) = std::env::var("LDTK_UPDATE_FIXTURE_MESSAGE") {
+            let mut socket =
+                TcpStream::connect(std::env::var("LDTK_UPDATE_READY_ADDR").unwrap()).unwrap();
+            socket.write_all(message.as_bytes()).unwrap();
+        }
+    }
+    fn completed_startup_message(message: Option<&str>) -> (TcpListener, std::process::ExitStatus) {
+        let dir = tempfile::tempdir().unwrap();
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let mut command = Command::new(std::env::current_exe().unwrap());
+        command
+            .args([
+                "--exact",
+                if message.is_some() {
+                    "updater::installer::tests::fixture_sends_invalid_startup_message"
+                } else {
+                    "updater::installer::tests::fixture_restarted_editor"
+                },
+            ])
+            .env(
+                "LDTK_UPDATE_READY_ADDR",
+                listener.local_addr().unwrap().to_string(),
+            )
+            .env("LDTK_UPDATE_READY_NONCE", "a".repeat(64))
+            .env("LDTK_UPDATE_FIXTURE_RESTART", dir.path().join("restarted"))
+            .stdout(Stdio::null());
+        if let Some(message) = message {
+            command.env("LDTK_UPDATE_FIXTURE_MESSAGE", message);
+        }
+        let status = command.spawn().unwrap().wait().unwrap();
+        assert!(status.success());
+        (listener, status)
+    }
+    #[test]
+    fn a_queued_first_frame_ack_wins_when_the_process_exits_before_the_status_poll() {
+        let (listener, status) = completed_startup_message(None);
+        exited_before_ready(&listener, &"a".repeat(64), status).unwrap();
+    }
+    #[test]
+    fn an_exited_process_with_invalid_or_truncated_ack_is_still_rejected() {
+        for message in ["b".repeat(64), "a".repeat(12)] {
+            let (listener, status) = completed_startup_message(Some(&message));
+            assert!(
+                exited_before_ready(&listener, &"a".repeat(64), status)
+                    .unwrap_err()
+                    .contains("exited before its first successful frame")
+            );
+        }
+    }
     #[test]
     fn an_immediately_exiting_updated_process_is_not_accepted_as_a_successful_restart() {
         let dir = tempfile::tempdir().unwrap();

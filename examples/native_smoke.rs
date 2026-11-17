@@ -16,10 +16,49 @@ mod viewport;
 use eframe::egui;
 use std::{
     path::PathBuf,
-    sync::atomic::{AtomicBool, Ordering},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, AtomicU64, Ordering},
+    },
     time::Instant,
 };
 static CAPTURED: AtomicBool = AtomicBool::new(false);
+
+#[derive(Default)]
+struct SurfaceErrors([AtomicU64; 5]);
+impl SurfaceErrors {
+    fn record(&self, error: &eframe::wgpu::SurfaceError) {
+        use eframe::wgpu::SurfaceError;
+        let index = match error {
+            SurfaceError::Timeout => 0,
+            SurfaceError::Outdated => 1,
+            SurfaceError::Lost => 2,
+            SurfaceError::OutOfMemory => 3,
+            SurfaceError::Other => 4,
+        };
+        self.0[index].fetch_add(1, Ordering::Relaxed);
+    }
+    fn snapshot(&self) -> [u64; 5] {
+        std::array::from_fn(|i| self.0[i].load(Ordering::Relaxed))
+    }
+    fn print(&self) {
+        let [timeout, outdated, lost, out_of_memory, other] = self.snapshot();
+        eprintln!(
+            "Surface acquire errors (all frames): {}",
+            serde_json::json!({"Timeout":timeout,"Outdated":outdated,"Lost":lost,"OutOfMemory":out_of_memory,"Other":other})
+        );
+    }
+}
+fn observe_surface_errors(config: &mut eframe::egui_wgpu::WgpuConfiguration) -> Arc<SurfaceErrors> {
+    let counts = Arc::new(SurfaceErrors::default());
+    let observed = counts.clone();
+    let original = config.on_surface_error.clone();
+    config.on_surface_error = Arc::new(move |error| {
+        observed.record(&error);
+        original(error)
+    });
+    counts
+}
 
 struct Smoke {
     app: app::EditorApp,
@@ -55,6 +94,7 @@ struct Smoke {
     eframe_cpu_times: Vec<f64>,
     update_intervals: Vec<f64>,
     input_intervals: Vec<f64>,
+    surface_errors: Arc<SurfaceErrors>,
 }
 fn rss_kib() -> Option<u64> {
     let output = std::process::Command::new("ps")
@@ -292,6 +332,7 @@ impl eframe::App for Smoke {
                             "Injected input app.update CPU",
                             &mut self.input_update_times,
                         );
+                        self.surface_errors.print();
                         eprintln!(
                             "RSS KiB: ready={:?}; capture={:?}",
                             self.ready_rss,
@@ -324,6 +365,7 @@ impl eframe::App for Smoke {
             ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(egui::UserData::default()));
         }
         if self.started.elapsed().as_secs() > 60 && !self.captured {
+            self.surface_errors.print();
             eprintln!(
                 "Native smoke FAILED: no verified capture after 60 seconds ({} stable frames); state={}",
                 self.ready_frames,
@@ -422,10 +464,13 @@ fn main() -> eframe::Result {
         })
         .unwrap_or(1.);
     assert!(settle_seconds.is_finite() && settle_seconds >= 1.);
+    let mut wgpu_options = app::native_gpu_config();
+    let surface_errors = observe_surface_errors(&mut wgpu_options);
+    let final_errors = surface_errors.clone();
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default().with_inner_size([1440., 900.]),
         renderer: eframe::Renderer::Wgpu,
-        wgpu_options: app::native_gpu_config(),
+        wgpu_options,
         ..Default::default()
     };
     let result = eframe::run_native(
@@ -470,11 +515,15 @@ fn main() -> eframe::Result {
                 eframe_cpu_times: Vec::new(),
                 update_intervals: Vec::new(),
                 input_intervals: Vec::new(),
+                surface_errors,
             }))
         }),
     );
-    if result.is_ok() && !CAPTURED.load(Ordering::Relaxed) {
-        std::process::exit(1);
+    if !CAPTURED.load(Ordering::Relaxed) {
+        final_errors.print();
+        if result.is_ok() {
+            std::process::exit(1);
+        }
     }
     result
 }
@@ -609,6 +658,40 @@ struct CaptureAction {
 #[cfg(test)]
 mod capture_tests {
     use super::*;
+    #[test]
+    fn surface_error_observation_counts_each_kind_without_changing_handler_actions() {
+        use eframe::{egui_wgpu::SurfaceErrorAction, wgpu::SurfaceError};
+        let delegated = Arc::new(AtomicU64::new(0));
+        let calls = delegated.clone();
+        let mut config = eframe::egui_wgpu::WgpuConfiguration {
+            on_surface_error: Arc::new(move |error| {
+                calls.fetch_add(1, Ordering::Relaxed);
+                if error == SurfaceError::Outdated {
+                    SurfaceErrorAction::RecreateSurface
+                } else {
+                    SurfaceErrorAction::SkipFrame
+                }
+            }),
+            ..Default::default()
+        };
+        let counts = observe_surface_errors(&mut config);
+        for error in [
+            SurfaceError::Timeout,
+            SurfaceError::Outdated,
+            SurfaceError::Lost,
+            SurfaceError::OutOfMemory,
+            SurfaceError::Other,
+        ] {
+            let recreate = error == SurfaceError::Outdated;
+            let action = (config.on_surface_error)(error);
+            assert_eq!(
+                matches!(action, SurfaceErrorAction::RecreateSurface),
+                recreate
+            );
+        }
+        assert_eq!(counts.snapshot(), [1, 1, 1, 1, 1]);
+        assert_eq!(delegated.load(Ordering::Relaxed), 5);
+    }
     #[test]
     fn view_parameters_require_finite_coordinates_positive_zoom_and_explicit_mode() {
         assert_eq!(

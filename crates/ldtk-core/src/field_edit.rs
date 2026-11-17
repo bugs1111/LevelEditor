@@ -585,17 +585,19 @@ impl Project {
                     if index >= values.len() {
                         return Err(invalid("array index outside field"));
                     }
-                    let mut value = normalize_input(&d, value, true)?;
+                    let mut value = value;
+                    // The source file picker uses slashes before parsing text escapes.
                     if base(&d) == "FilePath"
                         && let (Some(path), Some(base)) =
                             (value.as_str(), p.path.as_ref().and_then(|p| p.parent()))
-                        && std::path::Path::new(path).is_absolute()
+                        && std::path::Path::new(path.trim()).is_absolute()
                     {
                         value = json!(crate::project::relative_to(
-                            std::path::Path::new(path),
+                            std::path::Path::new(path.trim()),
                             base
                         )?);
                     }
+                    let value = normalize_input(&d, value, true)?;
                     if base(&d) == "EntityRef" {
                         validate_refs(p, key, entity, &d, std::slice::from_ref(&value))?;
                     }
@@ -671,21 +673,18 @@ impl Project {
             } else {
                 vec![value]
             };
-            for value in &mut values {
-                *value = normalize_input(&d, value.clone(), true)?;
-            }
-            if base(&d) == "FilePath" {
-                for v in &mut values {
-                    if let (Some(path), Some(base)) =
+            for v in &mut values {
+                if base(&d) == "FilePath"
+                    && let (Some(path), Some(base)) =
                         (v.as_str(), p.path.as_ref().and_then(|p| p.parent()))
-                        && std::path::Path::new(path).is_absolute()
-                    {
-                        *v = json!(crate::project::relative_to(
-                            std::path::Path::new(path),
-                            base
-                        )?);
-                    }
+                    && std::path::Path::new(path.trim()).is_absolute()
+                {
+                    *v = json!(crate::project::relative_to(
+                        std::path::Path::new(path.trim()),
+                        base
+                    )?);
                 }
+                *v = normalize_input(&d, v.clone(), true)?;
             }
             if base(&d) == "EntityRef" {
                 validate_refs(p, key, entity, &d, &values)?;
