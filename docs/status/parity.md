@@ -35,6 +35,6 @@
 - 49 个工程/552 层确定性重建中，477 个历史保存缓存匹配，75 个不同。历史缓存不能直接代表当前原版的重建结果；官方当前样本和独立编译原版算法向量另有精确比较。
 - 保存有预检、暂存、fsync、发布顺序及可处理错误回滚，不承诺任意断电时独立文件之间的原子事务。
 - Tiled/GameMaker/PNG 保留上游支持范围和局限；语料迁移幂等不等于每个历史版本加载器输出字节相同。
-- macOS 运行与 Windows/Linux 编译检查不能互相替代；其他平台/硬件实际 UI、GPU、打包与输入需相应环境验收。Rust 更新源已接入用户指定的私有仓库，首次真实发布/下载验证与四平台 CI 结果另列，不能由本机 fixture 测试代替。
+- 四平台原生 CI 的格式、严格 Clippy、工作区测试、capture 回归、release 构建及打包已在 `dbaa6c6` 全部通过；`v0.1.0` 四包实际下载校验、真实私有更新源及 ARM 下载包冷/热打开也通过，见 [四平台证据](platform-acceptance.json)。其他平台/实体硬件的完整 UI、GPU 呈现与输入延迟仍需相应运行环境验证，不能由这些 CI 或本机 fixture 测试推导。
 
 证据：[最终集成检查](final-verification.md)、[formats](formats-report.md)、[workflow](workflow-report.md)、[autotile](autotile-report.md)、[renderer](renderer-report.md)、[resources](resource-recovery-report.md)、[acceptance](acceptance-report.md)。旧 review 是问题发现时的快照，最终修复和验证见执行账本。

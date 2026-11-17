@@ -10,8 +10,8 @@
 | GPU/渲染专项 | release 串行执行的 4 项检查全部通过：真实 GPU Gaussian、两遍 60-sample 字段轮廓、4 个代表性官方样本的实际网格/世界渲染、实体密集场景绘制 |
 | 历史性能复测 | 13 MB 关卡局部历史预热 begin+commit 平均 3.782091 ms；bounds 随事务保存，不为高亮克隆关卡 |
 | macOS 静态检查 | 工作区及全部目标严格 Clippy、格式检查、diff check 通过 |
-| 远程原生平台 | 第二轮 Intel macOS、Ubuntu 24.04 完整检查/测试/打包通过；第三轮 ARM macOS、Ubuntu 24.04 通过。Windows 实机 runner 已运行测试并发现问题，修复后仍须下一轮原生 CI 通过；不能用早期交叉编译结果代替 |
-| 应用包 | ARM64 release `.app`，约 41 MiB；包含原版 examples/assets、项目图标与许可文件；暂存签名验证后替换，失败回滚另有测试 |
+| 远程原生平台 | 第四轮 `44018713667` 在提交 `dbaa6c6` 上四个平台全部通过：Apple Silicon macOS、Intel macOS、Windows MSVC、Ubuntu 24.04；包括格式、严格全目标 Clippy、完整工作区测试、文件事件 harness、5 项 capture 回归、release 构建及打包 |
+| 应用包 | `v0.1.0` 四个平台 ZIP 已发布并实际下载；大小、SHA-256、ZIP CRC、架构、安装布局、原版资源及许可文件校验通过；两个 macOS 下载包严格签名验证通过，ARM 下载包实际冷/热打开通过。签名为 ad-hoc，未建立公证结果 |
 
 核心和原生的 ignored 检查需要资源或 GPU，默认测试跳过不代表缺少运行证据；上表分别记录其独立运行。`block 0.1.6` 依赖仍输出 Rust future-incompatibility 提示，严格 Clippy 当前通过。
 
@@ -24,13 +24,33 @@ scripts/package-macos
 scripts/verify-macos-bundle
 ```
 
-首次 GitHub 发布/下载与最终四平台 CI 结果仍待补入。具体截图/输入/计时方法见 [acceptance-report.md](acceptance-report.md)；旧的加载中、焦点遮罩或被外部输入污染的截图不作为通过证据。更新器实现及临时安装证据见 [updater-report.md](updater-report.md)。
+首次 GitHub 发布、实际下载、私有更新源和第四轮四平台 CI 已完成，详细结果见下节及 [platform-acceptance.json](platform-acceptance.json)。具体截图/输入/计时方法见 [acceptance-report.md](acceptance-report.md)；旧的加载中、焦点遮罩或被外部输入污染的截图不作为通过证据。更新器实现及临时安装证据见 [updater-report.md](updater-report.md)。
 
 本机窗口为真实 Metal 输出；验收程序显式模拟前景输入，计时分别记录 App.update CPU、eframe CPU rendering 和 frame-start 间隔。这些数值不等于实际呈现 FPS、GPU 时间戳或输入到屏幕延迟。跨应用全界面逐像素等价、其他平台实际 GUI 及硬件运行尚未完成全面验收，不能由这些测试推导出无条件的完整移植保证。
 
 本机详细日志位于 `.tools/final-workspace-tests7.log`、`final-native-tests.log`、`final-native-gpu.log`、`final-history-latency.log`、`final-clippy7.log`、`final-windows2.log`、`final-linux2.log`、`final-package.log`；`.tools` 是本地验证输出，不纳入源码发布。
 
-## 私有仓库与系统验收后续
+## 第四轮四平台与发布包验收
+
+2026-11-17 收尾核验：[CI 44018713667](https://github.com/bugs1111/LevelEditor/actions/runs/44018713667)，源码提交 `dbaa6c68557dfba10a0d1009726561e7a25cf239`。[v0.1.0](https://github.com/bugs1111/LevelEditor/releases/tag/v0.1.0) 于北京时间 12:57 发布，目标提交与本地验收代码一致。
+
+| 原生 runner / 目标 | 应用测试 | 工作区其余目标 / capture 回归 / release 包 |
+|---|---|---|
+| [macos-15 / ARM64](https://github.com/bugs1111/LevelEditor/actions/runs/44018713667/job/133822797423) | 315 passed、0 failed、5 ignored | 全部通过 / 5 passed / 通过 |
+| [macos-15-intel / x86_64](https://github.com/bugs1111/LevelEditor/actions/runs/44018713667/job/133822797183) | 315 passed、0 failed、5 ignored | 全部通过 / 5 passed / 通过 |
+| [windows-latest / MSVC x86_64](https://github.com/bugs1111/LevelEditor/actions/runs/44018713667/job/133822797450) | 312 passed、0 failed、5 ignored | 全部通过 / 5 passed / 通过 |
+| [ubuntu-24.04 / GNU x86_64](https://github.com/bugs1111/LevelEditor/actions/runs/44018713667/job/133822797486) | 314 passed、0 failed、5 ignored | 全部通过 / 5 passed / 通过 |
+
+不同平台的测试数来自条件编译；子进程执行的重复用例和共享 app/example 测试不累计为独立用例。各 runner 均完成格式及严格全目标 Clippy。默认 ignored 的 GPU/语料/真实私有源检查不能据本表视为四个平台都运行过；本机专项证据和下列真实源测试分别记录。
+
+- 使用 `gh release download v0.1.0 --repo bugs1111/LevelEditor` 将 manifest 和四个 ZIP 下载到 `.tools/release-v0.1.0/`。四包均通过 manifest 大小/SHA-256、ZIP CRC、安全根目录、安装标记、许可文件、执行权限及 Mach-O/PE/ELF 架构检查。每包逐项核对 253 个 assets/examples 文件；Windows 的 39 个 UTF-8 文本仅 CRLF 换行不同，其余资源字节一致。校验值及差异清单保存在 `platform-acceptance.json`。
+- 两个下载版 `.app` 用 `ditto -x -k` 解包后，`codesign --verify --deep --strict` 均通过；版本和 bundle identifier 正确。这是 ad-hoc 签名验证，不是 Apple 公证。
+- 显式运行 `updater::tests::live_private_release_downloads_verifies_and_stages_without_installing`：1 passed、0 failed。应用自身从真实私有 GitHub 源检查 `v0.1.0`，下载 host 包、校验、暂存并清理；认证仅传给子进程环境，未安装或替换现有应用。日志 `.tools/live-private-release-acceptance.log`。
+- 对实际下载的 ARM `.app` 运行 `scripts/verify-macos-bundle`：中文、空格和 `#` 路径冷启动成功，热打开第二个工程成功且复用同一进程。复制示例及独立设置位于临时目录；测试进程已退出，stderr 为空。日志 `.tools/published-bundle-cold-warm.log`。
+
+本轮完成四平台原生 CI、发布包和上述本机运行验收。Windows/Linux/Intel 实体硬件的完整 GUI、GPU 呈现、输入延迟及全界面视觉等价仍不是此 CI 的验证范围；先前 Home 强制重绘的高显存/RSS 触发条件仍未解释。
+
+## 私有仓库与系统验收历史
 
 - 首次源码提交 `ac127fb` 已推送到用户指定的私有 `bugs1111/LevelEditor`。首次远程运行 `43921626476` 的 Apple Silicon macOS 构建、测试和打包成功；Linux 实际测试发现字体度量导致检查器 Edit 按钮偏离右边，已改为真正的右侧布局并添加随包字体回归。该轮已取消，未发布版本；Windows/Intel 取消结果不记作通过。
 - 最新嵌套三列表单回归验证完整字形可读、clip 内、无跨列、原版 12.667pt 字号和面板不超过 1000pt。实际 Color 截图已确认。修复前只扩大 clip 限制的版本保留为拒绝证据，不记为成功。
@@ -38,6 +58,6 @@ scripts/verify-macos-bundle
 - 最新应用包的真实 LaunchServices 冷/热打开检查通过：中文与空格文件路径、同一进程复用，使用独立设置和复制示例，结束时仅停止本次创建的测试进程。日志 `.tools/bundle-cold-warm.log`。
 - Home streaming debug 复测 capture RSS 为 248,480 KiB；先前 release 为 1,506,608 KiB。相同设置含 13 MB 最近工程，等待 3 秒、采样至少 2 秒；构建模式不同，不据此推导 CPU 提升或精确降幅。核心 16 MiB ignored JSON 字段测试另证实流式元数据读取单次分配低于 256 KiB。
 - 第二轮 `44009550954` 的 ARM 扫描测试曾把软 1ms 分帧扫描当成一次调用完成；回归现主动制造暂停并驱动恢复，生产扫描预算不变。Windows 测试也已改用平台原生绝对路径，不再硬编码 Unix 路径。修复提交 `2bf0201`。
-- 第三轮 `44012907455` 收齐所有失败目标：Intel 更新助手漏读子进程退出前已排队的首帧 ACK；Windows 文件字段在路径相对化前误解析 `\\n`/`\\r`，资源搬迁以只读文件句柄刷盘被拒绝，以及发布说明 CRLF 版本号残留 `\r`。ACK、路径、CRLF 均已有先失败后通过的确定性回归；资源搬迁现保留写句柄直到权限恢复和刷盘，并补只读资源复制回归。最新工作区、验收目标和严格全目标 Clippy 均通过，仍须下一轮四平台 CI。尚无已发布版本。
+- 第三轮 `44012907455` 收齐所有失败目标：Intel 更新助手漏读子进程退出前已排队的首帧 ACK；Windows 文件字段在路径相对化前误解析 `\\n`/`\\r`，资源搬迁以只读文件句柄刷盘被拒绝，以及发布说明 CRLF 版本号残留 `\r`。ACK、路径、CRLF 均已有先失败后通过的确定性回归；资源搬迁现保留写句柄直到权限恢复和刷盘，并补只读资源复制回归。这些修复已由第四轮四平台原生 CI 验证通过，随后发布 `v0.1.0`。
 - 实际 CommonMark/file/image loader 回归还复现并修正了打包路径含空格和 `#` 时发布说明图片无法解析的问题：只为图片目标添加 CommonMark 尖括号，保留原始文件路径；普通链接、正文和原图不变。
 - release Home 强制重绘复测曾观察到 1,246,720 KiB capture RSS；同一字节不变的程序后续恢复约 252 MiB，触发条件未查明，不能据 debug 或后续低占用宣称彻底解决。正常应用无强制重绘的独立进程在 3–7 秒为 197,024–197,104 KiB；vmmap 显示高占用主要增长在 graphics/IOSurface。新增验收程序 SurfaceError 计数保持原 handler 行为。详细证据、控制与未解决边界见 [Home 内存调查](home-memory-investigation.md)。

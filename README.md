@@ -68,3 +68,5 @@ scripts/cargo run --release --example native_smoke -- examples/topdown/Typical_T
 仓库目前为私有：在应用设置的 `Check for updates` 窗口输入仅本次会话有效的 GitHub token，或由启动环境提供 `GH_TOKEN` / `GITHUB_TOKEN`。token 需要仓库 Contents 读取权限，不写入应用配置文件。
 
 仓库的 `Build and release` 工作流会在四个平台运行检查、测试并打包。标签 `v<版本>` 或手动选择发布会生成包含所有平台校验值的 `ldtk-rs-updates.json`；稳定通道拒绝预发布版本。macOS 本地仍可用 `scripts/package-macos` 生成应用，用 `python3 scripts/package-release.py --target aarch64-apple-darwin` 生成对应 ZIP。
+
+[v0.1.0 四平台下载](https://github.com/bugs1111/LevelEditor/releases/tag/v0.1.0)已发布。四平台原生 CI、发布包校验、真实私有更新源和 ARM macOS 下载包冷/热打开均已通过，具体结果与验收范围见[最终集成记录](docs/status/final-verification.md)。
