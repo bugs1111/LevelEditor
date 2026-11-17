@@ -23,7 +23,7 @@ macOS 应用打包：
 scripts/package-macos
 ```
 
-生成 `dist/LDtk Rust.app`。本机实际运行平台为 Apple Silicon macOS；Windows/Linux 的编译检查与其他平台的实际 UI/GPU 验收分开记录。包支持 Finder 打开 .ldtk，并保留原版默认文件关联。
+生成 `dist/LDtk Rust.app`。四平台已通过六场景原生 GUI 和三项 GPU 自动验收，CI 实际使用的虚拟/软件驱动与物理 M6、RTX 2060 验证范围见 [GUI/GPU 记录](docs/status/gui-platform-acceptance.md)。包支持 Finder 打开 .ldtk，并保留原版默认文件关联。
 
 打包后可运行 `scripts/verify-macos-bundle`，使用独立设置和复制的示例检查含空格/中文路径的冷启动、运行时打开文件与进程复用；结束时关闭本次测试创建的进程。
 
@@ -72,3 +72,5 @@ scripts/cargo run --release --example native_smoke -- examples/topdown/Typical_T
 仓库的 `Build and release` 工作流会在四个平台运行检查、测试并打包。标签 `v<版本>` 或手动选择发布会生成包含所有平台校验值的 `ldtk-rs-updates.json`；稳定通道拒绝预发布版本。macOS 本地仍可用 `scripts/package-macos` 生成应用，用 `python3 scripts/package-release.py --target aarch64-apple-darwin` 生成对应 ZIP。
 
 [v0.1.0 四平台下载](https://github.com/bugs1111/LevelEditor/releases/tag/v0.1.0)已发布。四平台原生 CI、发布包校验、真实私有更新源和 ARM macOS 下载包冷/热打开均已通过，具体结果与验收范围见[最终集成记录](docs/status/final-verification.md)。
+
+0.1.1 已修复取帧失败时 GPU 上传缓冲累积导致的 Home 高内存，四平台构建、GUI/GPU 与应用包验收通过；四包及清单位于本地 `.tools/release-v0.1.1/`，正式发布等待当前用户明确授权。证据见 [0.1.1 包验收](docs/status/release-0.1.1-acceptance.json)及 [Home 内存调查](docs/status/home-memory-investigation.md)。

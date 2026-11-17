@@ -35,6 +35,6 @@
 - 49 个工程/552 层确定性重建中，477 个历史保存缓存匹配，75 个不同。历史缓存不能直接代表当前原版的重建结果；官方当前样本和独立编译原版算法向量另有精确比较。
 - 保存有预检、暂存、fsync、发布顺序及可处理错误回滚，不承诺任意断电时独立文件之间的原子事务。
 - Tiled/GameMaker/PNG 保留上游支持范围和局限；语料迁移幂等不等于每个历史版本加载器输出字节相同。
-- 四平台原生 CI 的格式、严格 Clippy、工作区测试、capture 回归、release 构建及打包已在 `dbaa6c6` 全部通过；`v0.1.0` 四包实际下载校验、真实私有更新源及 ARM 下载包冷/热打开也通过，见 [四平台证据](platform-acceptance.json)。其他平台/实体硬件的完整 UI、GPU 呈现与输入延迟仍需相应运行环境验证，不能由这些 CI 或本机 fixture 测试推导。
+- 0.1.1 四平台格式、严格 Clippy、工作区测试、capture 回归、release 构建和打包通过；每平台六个原生 GUI 场景和三项 GPU 测试通过，24 张截图已逐张检查。CI macOS 为 Apple Paravirtual/Metal、Windows 为软件 DX12、Linux 为 Xvfb/lavapipe Vulkan；物理 M6/Metal 六场景及 GPU 检查通过，RTX 2060/Vulkan 三项离屏检查通过。见 [GUI/GPU 证据](gui-platform-acceptance-results.json)和 [0.1.1 包验收](release-0.1.1-acceptance.json)。Home 取帧错误时上传缓冲累积已复现并修复，压力结果见 [内存调查](home-memory-investigation.md)。0.1.1 发布被自动审批拦截，等待当前用户明确授权；已发布的 v0.1.0 真实私有源结果保留在 [历史证据](platform-acceptance.json)。所有实体硬件上的完整 UI 呈现、OS 输入及输入延迟未由这些检查建立保证。
 
 证据：[最终集成检查](final-verification.md)、[formats](formats-report.md)、[workflow](workflow-report.md)、[autotile](autotile-report.md)、[renderer](renderer-report.md)、[resources](resource-recovery-report.md)、[acceptance](acceptance-report.md)。旧 review 是问题发现时的快照，最终修复和验证见执行账本。

@@ -1,0 +1,1128 @@
+{
+  "date": "2026-11-17",
+  "source_commit": "554e86a52123a964e1d65a11b50a5daa23455fba",
+  "linux_rerun_commit": "2d55ca2f1afd96d33914b0ad2e8b22eb064c9790",
+  "application_sources_identical": true,
+  "classification_note": "Hosted Apple Paravirtual device is virtual, irrespective of the IntegratedGpu/DiscreteGpu label in raw wgpu metadata. Original artifacts are preserved unchanged.",
+  "platforms": [
+    {
+      "target": "aarch64-apple-darwin",
+      "source_commit": "554e86a52123a964e1d65a11b50a5daa23455fba",
+      "job_url": "https://github.com/bugs1111/LevelEditor/actions/runs/44036707023/job/133881216916",
+      "artifact": {
+        "artifact_id": 14307711981,
+        "sha256": "76cfe80b91572e92e4b9e980c2d7428a4f765630a05bba51907e323198a6bbf3",
+        "size": 37841842
+      },
+      "local_evidence": ".tools/final-gui-artifacts/aarch64-apple-darwin",
+      "scenarios": [
+        {
+          "adapter": "AdapterInfo { name: \"Apple Paravirtual device\", vendor: 0, device: 0, device_type: IntegratedGpu, driver: \"\", driver_info: \"\", backend: Metal }",
+          "adapter_kind": "virtual",
+          "viewport": {
+            "logicalSize": [
+              1024.0,
+              653.0
+            ],
+            "pixelsPerPoint": 1.0
+          },
+          "image_size": [
+            1024,
+            653
+          ],
+          "surface_errors": [
+            {
+              "Timeout": 0,
+              "Outdated": 0,
+              "Lost": 0,
+              "OutOfMemory": 0,
+              "Other": 0
+            }
+          ],
+          "name": "home",
+          "passed": true,
+          "screenshot_sha256": "c0ce6d44453f0a417e82fd1118ccd48e11e48bd987a5ef8b50351a8e1e19b401",
+          "log_sha256": "f7d342d0df86df42f1080053ffbf774d2c32360f0337189bef187c9579cc1524"
+        },
+        {
+          "adapter": "AdapterInfo { name: \"Apple Paravirtual device\", vendor: 0, device: 0, device_type: IntegratedGpu, driver: \"\", driver_info: \"\", backend: Metal }",
+          "adapter_kind": "virtual",
+          "viewport": {
+            "logicalSize": [
+              1024.0,
+              656.0
+            ],
+            "pixelsPerPoint": 1.0
+          },
+          "image_size": [
+            1024,
+            656
+          ],
+          "surface_errors": [
+            {
+              "Timeout": 0,
+              "Outdated": 0,
+              "Lost": 0,
+              "OutOfMemory": 0,
+              "Other": 0
+            }
+          ],
+          "name": "entities",
+          "passed": true,
+          "screenshot_sha256": "56aa14cec1c5de3f527a7bd9d785eb4f014dc48845e74f4aa454b93e3628db6a",
+          "log_sha256": "1763e8d84d1368f2080d4eb11a2f63909da1e1b4020a0b08ff3dd60133369c90"
+        },
+        {
+          "adapter": "AdapterInfo { name: \"Apple Paravirtual device\", vendor: 0, device: 0, device_type: IntegratedGpu, driver: \"\", driver_info: \"\", backend: Metal }",
+          "adapter_kind": "virtual",
+          "viewport": {
+            "logicalSize": [
+              1024.0,
+              656.0
+            ],
+            "pixelsPerPoint": 1.0
+          },
+          "image_size": [
+            1024,
+            656
+          ],
+          "surface_errors": [
+            {
+              "Timeout": 0,
+              "Outdated": 0,
+              "Lost": 0,
+              "OutOfMemory": 0,
+              "Other": 0
+            }
+          ],
+          "name": "entity-form",
+          "passed": true,
+          "screenshot_sha256": "4cb93af70ab259b8f0591e1216a10cf9d66004a19b0e1cc0209fbf1bcbaa2fa8",
+          "log_sha256": "3491828f88ed54bd58f63668375556cb17a6deac082a4136674d8182117d583a"
+        },
+        {
+          "adapter": "AdapterInfo { name: \"Apple Paravirtual device\", vendor: 0, device: 0, device_type: IntegratedGpu, driver: \"\", driver_info: \"\", backend: Metal }",
+          "adapter_kind": "virtual",
+          "viewport": {
+            "logicalSize": [
+              1024.0,
+              656.0
+            ],
+            "pixelsPerPoint": 1.0
+          },
+          "image_size": [
+            1024,
+            656
+          ],
+          "surface_errors": [
+            {
+              "Timeout": 0,
+              "Outdated": 0,
+              "Lost": 0,
+              "OutOfMemory": 0,
+              "Other": 0
+            }
+          ],
+          "name": "entity-drag",
+          "passed": true,
+          "screenshot_sha256": "15d1a951e1265a5b9b8c182d5e2499e8bed22493cc4af6eb67fb1254d5711fe1",
+          "log_sha256": "a0034771ef0f595f62ae4a5e151b3585e5869b3dcad7a59d416346df7159fb70",
+          "held_drag": {
+            "gesture": "EntityMove",
+            "stroke": true,
+            "panel": "Entity",
+            "entityCount": 9,
+            "dirty": false
+          }
+        },
+        {
+          "adapter": "AdapterInfo { name: \"Apple Paravirtual device\", vendor: 0, device: 0, device_type: IntegratedGpu, driver: \"\", driver_info: \"\", backend: Metal }",
+          "adapter_kind": "virtual",
+          "viewport": {
+            "logicalSize": [
+              1024.0,
+              656.0
+            ],
+            "pixelsPerPoint": 1.0
+          },
+          "image_size": [
+            1024,
+            656
+          ],
+          "surface_errors": [
+            {
+              "Timeout": 0,
+              "Outdated": 0,
+              "Lost": 0,
+              "OutOfMemory": 0,
+              "Other": 0
+            }
+          ],
+          "name": "world",
+          "passed": true,
+          "screenshot_sha256": "c67362c2d189b9d9eac38484aac64cc9388af76f2c68c22ebc2ccba25b113dec",
+          "log_sha256": "51eaa99634efdbfd43482ea199b33dd2b7072c34ba8335d78f6235ad52af56ab"
+        },
+        {
+          "adapter": "AdapterInfo { name: \"Apple Paravirtual device\", vendor: 0, device: 0, device_type: IntegratedGpu, driver: \"\", driver_info: \"\", backend: Metal }",
+          "adapter_kind": "virtual",
+          "viewport": {
+            "logicalSize": [
+              1024.0,
+              656.0
+            ],
+            "pixelsPerPoint": 1.0
+          },
+          "image_size": [
+            1024,
+            656
+          ],
+          "surface_errors": [
+            {
+              "Timeout": 0,
+              "Outdated": 0,
+              "Lost": 0,
+              "OutOfMemory": 0,
+              "Other": 0
+            }
+          ],
+          "name": "paint",
+          "passed": true,
+          "screenshot_sha256": "2bcb072d0752c4f8e21057fc46f8f4bef082dc6dd8fe5b9829ace21d04c0d243",
+          "log_sha256": "4dc381587e53c4287aea382f11f019c92a45951871dd4d03d1eb1f1b2df547e6",
+          "paint": {
+            "before": 484,
+            "after": 497,
+            "checksum": "d13146f10a0c8f"
+          }
+        }
+      ],
+      "gpu_tests": [
+        {
+          "test": "canvas::blur::gpu_tests::gaussian_composites_original_layer_then_blurs_on_gpu",
+          "passed": true,
+          "log_sha256": "0e6c3c5e4a19dc117431de81551989d727f774adf68f24107d82910589e74b8b",
+          "adapter": "AdapterInfo { name: \"Apple Paravirtual device\", vendor: 0, device: 0, device_type: IntegratedGpu, driver: \"\", driver_info: \"\", backend: Metal }"
+        },
+        {
+          "test": "canvas::outline::tests::field_outline_uses_two_sixty_sample_passes_and_reuses_cached_flow",
+          "passed": true,
+          "log_sha256": "386f317c5dca14e7a86220df9068eb97a9fb0184160f9dc16a24c3befb8a470d",
+          "adapter": "AdapterInfo { name: \"Apple Paravirtual device\", vendor: 0, device: 0, device_type: IntegratedGpu, driver: \"\", driver_info: \"\", backend: Metal }"
+        },
+        {
+          "test": "app::gpu_surface_tests::surface_error_submits_pending_uploads_without_a_present",
+          "passed": true,
+          "log_sha256": "f4bb1803657678a995ed24318dd88347284f791acbce679263cfdd81d2f058c6",
+          "adapter": "AdapterInfo { name: \"Apple Paravirtual device\", vendor: 0, device: 0, device_type: IntegratedGpu, driver: \"\", driver_info: \"\", backend: Metal }"
+        }
+      ],
+      "screenshots_visually_inspected": 6,
+      "passed": true
+    },
+    {
+      "target": "x86_64-apple-darwin",
+      "source_commit": "554e86a52123a964e1d65a11b50a5daa23455fba",
+      "job_url": "https://github.com/bugs1111/LevelEditor/actions/runs/44036707023/job/133881216752",
+      "artifact": {
+        "artifact_id": 14308327751,
+        "sha256": "1f8e5e6ac83251ead186b7551b4390a9c194912235a977d45d31897f0415094b",
+        "size": 39508884
+      },
+      "local_evidence": ".tools/final-gui-artifacts/x86_64-apple-darwin",
+      "scenarios": [
+        {
+          "adapter": "AdapterInfo { name: \"Apple Paravirtual device\", vendor: 0, device: 0, device_type: DiscreteGpu, driver: \"\", driver_info: \"\", backend: Metal }",
+          "adapter_kind": "virtual",
+          "viewport": {
+            "logicalSize": [
+              1440.0,
+              900.0
+            ],
+            "pixelsPerPoint": 1.0
+          },
+          "image_size": [
+            1440,
+            900
+          ],
+          "surface_errors": [
+            {
+              "Timeout": 0,
+              "Outdated": 0,
+              "Lost": 0,
+              "OutOfMemory": 0,
+              "Other": 0
+            }
+          ],
+          "name": "home",
+          "passed": true,
+          "screenshot_sha256": "4ddf1d34f1070917bf66f1f6d33838d3fa6fc94615891c29e52b45ae2732aa6b",
+          "log_sha256": "ead69cf5a4419a5681eb57fc8696ffda22902f2f835bfd3d7df691e378943459"
+        },
+        {
+          "adapter": "AdapterInfo { name: \"Apple Paravirtual device\", vendor: 0, device: 0, device_type: DiscreteGpu, driver: \"\", driver_info: \"\", backend: Metal }",
+          "adapter_kind": "virtual",
+          "viewport": {
+            "logicalSize": [
+              1440.0,
+              900.0
+            ],
+            "pixelsPerPoint": 1.0
+          },
+          "image_size": [
+            1440,
+            900
+          ],
+          "surface_errors": [
+            {
+              "Timeout": 0,
+              "Outdated": 0,
+              "Lost": 0,
+              "OutOfMemory": 0,
+              "Other": 0
+            }
+          ],
+          "name": "entities",
+          "passed": true,
+          "screenshot_sha256": "02e7695a02463bf8a0fa6c26d8e51e80aab3b51c99b370e452f643969fe1b819",
+          "log_sha256": "9e433761519c2bb7aa914a4cf32f42c17ee053a66a426aa92d732a7e97dab085"
+        },
+        {
+          "adapter": "AdapterInfo { name: \"Apple Paravirtual device\", vendor: 0, device: 0, device_type: DiscreteGpu, driver: \"\", driver_info: \"\", backend: Metal }",
+          "adapter_kind": "virtual",
+          "viewport": {
+            "logicalSize": [
+              1440.0,
+              900.0
+            ],
+            "pixelsPerPoint": 1.0
+          },
+          "image_size": [
+            1440,
+            900
+          ],
+          "surface_errors": [
+            {
+              "Timeout": 0,
+              "Outdated": 0,
+              "Lost": 0,
+              "OutOfMemory": 0,
+              "Other": 0
+            }
+          ],
+          "name": "entity-form",
+          "passed": true,
+          "screenshot_sha256": "d903bd03ffa6b0f4b9b675d598e759ec97d080e7cf443c293519906147671d38",
+          "log_sha256": "0571e919d8caeafec3692369666be16483896bf2cba62a88cf1c29e8505e1a7b"
+        },
+        {
+          "adapter": "AdapterInfo { name: \"Apple Paravirtual device\", vendor: 0, device: 0, device_type: DiscreteGpu, driver: \"\", driver_info: \"\", backend: Metal }",
+          "adapter_kind": "virtual",
+          "viewport": {
+            "logicalSize": [
+              1440.0,
+              900.0
+            ],
+            "pixelsPerPoint": 1.0
+          },
+          "image_size": [
+            1440,
+            900
+          ],
+          "surface_errors": [
+            {
+              "Timeout": 0,
+              "Outdated": 0,
+              "Lost": 0,
+              "OutOfMemory": 0,
+              "Other": 0
+            }
+          ],
+          "name": "entity-drag",
+          "passed": true,
+          "screenshot_sha256": "90de86934066785885ea4965a3d5f756562a65eb19c6cd0f5226cb265b1fe568",
+          "log_sha256": "d3fce2dc2e9a825c69a2711a9d38dd44ae876977e7fbf74ce48c249928ed7a04",
+          "held_drag": {
+            "gesture": "EntityMove",
+            "stroke": true,
+            "panel": "Entity",
+            "entityCount": 9,
+            "dirty": false
+          }
+        },
+        {
+          "adapter": "AdapterInfo { name: \"Apple Paravirtual device\", vendor: 0, device: 0, device_type: DiscreteGpu, driver: \"\", driver_info: \"\", backend: Metal }",
+          "adapter_kind": "virtual",
+          "viewport": {
+            "logicalSize": [
+              1440.0,
+              900.0
+            ],
+            "pixelsPerPoint": 1.0
+          },
+          "image_size": [
+            1440,
+            900
+          ],
+          "surface_errors": [
+            {
+              "Timeout": 0,
+              "Outdated": 0,
+              "Lost": 0,
+              "OutOfMemory": 0,
+              "Other": 0
+            }
+          ],
+          "name": "world",
+          "passed": true,
+          "screenshot_sha256": "4e57e6a92ef1968ae8477ca5046b0619da9ce427e2bc0a09edf4b7c4564e2caa",
+          "log_sha256": "009175d9b5f2c7740cbf2648e281c4b76ed137c0261e42a941e38a6bdc039d90"
+        },
+        {
+          "adapter": "AdapterInfo { name: \"Apple Paravirtual device\", vendor: 0, device: 0, device_type: DiscreteGpu, driver: \"\", driver_info: \"\", backend: Metal }",
+          "adapter_kind": "virtual",
+          "viewport": {
+            "logicalSize": [
+              1440.0,
+              900.0
+            ],
+            "pixelsPerPoint": 1.0
+          },
+          "image_size": [
+            1440,
+            900
+          ],
+          "surface_errors": [
+            {
+              "Timeout": 0,
+              "Outdated": 0,
+              "Lost": 0,
+              "OutOfMemory": 0,
+              "Other": 0
+            }
+          ],
+          "name": "paint",
+          "passed": true,
+          "screenshot_sha256": "51bc87a6cfaeaf5e75c6ce61cae553674e81fa34bc9502269cfbf403908fe369",
+          "log_sha256": "8729b46144badf965feb48c907e36e76544cf347dc7c08727ea1a19e31b8c40e",
+          "paint": {
+            "before": 484,
+            "after": 497,
+            "checksum": "d13146f10a0c8f"
+          }
+        }
+      ],
+      "gpu_tests": [
+        {
+          "test": "canvas::blur::gpu_tests::gaussian_composites_original_layer_then_blurs_on_gpu",
+          "passed": true,
+          "log_sha256": "2afa964b47006c9e9ef4e9822bb3c514344350bf7314bddfd47ca8a9f2f797d5",
+          "adapter": "AdapterInfo { name: \"Apple Paravirtual device\", vendor: 0, device: 0, device_type: DiscreteGpu, driver: \"\", driver_info: \"\", backend: Metal }"
+        },
+        {
+          "test": "canvas::outline::tests::field_outline_uses_two_sixty_sample_passes_and_reuses_cached_flow",
+          "passed": true,
+          "log_sha256": "be91bb09f813bfe4ea7174f7ab5b2042980ee89c1decab94ae8cb87c642174b6",
+          "adapter": "AdapterInfo { name: \"Apple Paravirtual device\", vendor: 0, device: 0, device_type: DiscreteGpu, driver: \"\", driver_info: \"\", backend: Metal }"
+        },
+        {
+          "test": "app::gpu_surface_tests::surface_error_submits_pending_uploads_without_a_present",
+          "passed": true,
+          "log_sha256": "c63c62260996d8d4fc640ebfb7b5e2992cb5af153122709e7db2b39f006c942f",
+          "adapter": "AdapterInfo { name: \"Apple Paravirtual device\", vendor: 0, device: 0, device_type: DiscreteGpu, driver: \"\", driver_info: \"\", backend: Metal }"
+        }
+      ],
+      "screenshots_visually_inspected": 6,
+      "passed": true
+    },
+    {
+      "target": "x86_64-pc-windows-msvc",
+      "source_commit": "554e86a52123a964e1d65a11b50a5daa23455fba",
+      "job_url": "https://github.com/bugs1111/LevelEditor/actions/runs/44036707023/job/133881216784",
+      "artifact": {
+        "artifact_id": 14308960511,
+        "sha256": "9e84406dc8e87c4d458877fd030ea0e78d29675ab47878a7e5f0052151636e86",
+        "size": 38820516
+      },
+      "local_evidence": ".tools/final-gui-artifacts/x86_64-pc-windows-msvc",
+      "scenarios": [
+        {
+          "adapter": "AdapterInfo { name: \"Microsoft Basic Render Driver\", vendor: 5140, device: 140, device_type: Cpu, driver: \"10.0.26100.33648\", driver_info: \"\", backend: Dx12 }",
+          "adapter_kind": "software",
+          "viewport": {
+            "logicalSize": [
+              1024.0,
+              768.0
+            ],
+            "pixelsPerPoint": 1.0
+          },
+          "image_size": [
+            1024,
+            768
+          ],
+          "surface_errors": [
+            {
+              "Timeout": 0,
+              "Outdated": 0,
+              "Lost": 0,
+              "OutOfMemory": 0,
+              "Other": 0
+            }
+          ],
+          "name": "home",
+          "passed": true,
+          "screenshot_sha256": "99d6e6f6dbb7635c8bc0d9e2b3852b0014c52abc9f85984279cb8af365af519d",
+          "log_sha256": "8b08a2e93e7bbeacf184bb0da685a92519fa31fef34a06289b774df14d01e83b"
+        },
+        {
+          "adapter": "AdapterInfo { name: \"Microsoft Basic Render Driver\", vendor: 5140, device: 140, device_type: Cpu, driver: \"10.0.26100.33648\", driver_info: \"\", backend: Dx12 }",
+          "adapter_kind": "software",
+          "viewport": {
+            "logicalSize": [
+              1024.0,
+              768.0
+            ],
+            "pixelsPerPoint": 1.0
+          },
+          "image_size": [
+            1024,
+            768
+          ],
+          "surface_errors": [
+            {
+              "Timeout": 0,
+              "Outdated": 0,
+              "Lost": 0,
+              "OutOfMemory": 0,
+              "Other": 0
+            }
+          ],
+          "name": "entities",
+          "passed": true,
+          "screenshot_sha256": "efeb7b4192ca09bb9dce69a05c35652b72c28f6d105f3dcb5f2687c7baea1a03",
+          "log_sha256": "ac667ee665ccaec4c7fb2ead6767388c41781d109cd865e867245ba1b7c24d5e"
+        },
+        {
+          "adapter": "AdapterInfo { name: \"Microsoft Basic Render Driver\", vendor: 5140, device: 140, device_type: Cpu, driver: \"10.0.26100.33648\", driver_info: \"\", backend: Dx12 }",
+          "adapter_kind": "software",
+          "viewport": {
+            "logicalSize": [
+              1024.0,
+              768.0
+            ],
+            "pixelsPerPoint": 1.0
+          },
+          "image_size": [
+            1024,
+            768
+          ],
+          "surface_errors": [
+            {
+              "Timeout": 0,
+              "Outdated": 0,
+              "Lost": 0,
+              "OutOfMemory": 0,
+              "Other": 0
+            }
+          ],
+          "name": "entity-form",
+          "passed": true,
+          "screenshot_sha256": "15e5748809b4647f068c6a54c8b948f14854218f6209c535f5fe1fd09570ccbc",
+          "log_sha256": "5661301d40dc32aad7e2ae133ca79937ea6bc9b5408d9f6cd517d38565370d60"
+        },
+        {
+          "adapter": "AdapterInfo { name: \"Microsoft Basic Render Driver\", vendor: 5140, device: 140, device_type: Cpu, driver: \"10.0.26100.33648\", driver_info: \"\", backend: Dx12 }",
+          "adapter_kind": "software",
+          "viewport": {
+            "logicalSize": [
+              1024.0,
+              768.0
+            ],
+            "pixelsPerPoint": 1.0
+          },
+          "image_size": [
+            1024,
+            768
+          ],
+          "surface_errors": [
+            {
+              "Timeout": 0,
+              "Outdated": 0,
+              "Lost": 0,
+              "OutOfMemory": 0,
+              "Other": 0
+            }
+          ],
+          "name": "entity-drag",
+          "passed": true,
+          "screenshot_sha256": "45857d2b28563a2a1c92ae15a9108646e7ae4d6d91648b0222c54446e236d066",
+          "log_sha256": "981a1cd5a7556a40c177e4a995d09385d1251430896448822f44171c559aa187",
+          "held_drag": {
+            "gesture": "EntityMove",
+            "stroke": true,
+            "panel": "Entity",
+            "entityCount": 9,
+            "dirty": false
+          }
+        },
+        {
+          "adapter": "AdapterInfo { name: \"Microsoft Basic Render Driver\", vendor: 5140, device: 140, device_type: Cpu, driver: \"10.0.26100.33648\", driver_info: \"\", backend: Dx12 }",
+          "adapter_kind": "software",
+          "viewport": {
+            "logicalSize": [
+              1024.0,
+              768.0
+            ],
+            "pixelsPerPoint": 1.0
+          },
+          "image_size": [
+            1024,
+            768
+          ],
+          "surface_errors": [
+            {
+              "Timeout": 0,
+              "Outdated": 0,
+              "Lost": 0,
+              "OutOfMemory": 0,
+              "Other": 0
+            }
+          ],
+          "name": "world",
+          "passed": true,
+          "screenshot_sha256": "29b38138a90398b50bf7527a4bab09bcc1e7d766f619019b04e99bda8afaf57f",
+          "log_sha256": "daabd7683d1300345069a548a2f545d6c6d21e0802eb0fa2cd57061a048368a7"
+        },
+        {
+          "adapter": "AdapterInfo { name: \"Microsoft Basic Render Driver\", vendor: 5140, device: 140, device_type: Cpu, driver: \"10.0.26100.33648\", driver_info: \"\", backend: Dx12 }",
+          "adapter_kind": "software",
+          "viewport": {
+            "logicalSize": [
+              1024.0,
+              768.0
+            ],
+            "pixelsPerPoint": 1.0
+          },
+          "image_size": [
+            1024,
+            768
+          ],
+          "surface_errors": [
+            {
+              "Timeout": 0,
+              "Outdated": 0,
+              "Lost": 0,
+              "OutOfMemory": 0,
+              "Other": 0
+            }
+          ],
+          "name": "paint",
+          "passed": true,
+          "screenshot_sha256": "7a99e0ffe4806e8ffdeaec842f7842d3c02fa8ac1ad33573501f88f837cb2ea3",
+          "log_sha256": "9806a712741035155797ad7d3a2828e9966901846dc683a750ecb30f26293d8f",
+          "paint": {
+            "before": 484,
+            "after": 497,
+            "checksum": "d13146f10a0c8f"
+          }
+        }
+      ],
+      "gpu_tests": [
+        {
+          "test": "canvas::blur::gpu_tests::gaussian_composites_original_layer_then_blurs_on_gpu",
+          "passed": true,
+          "log_sha256": "ee0bebc645b920d25c1538dbd30dad49e0b13cdddf0aacfd9d56f8295b63a5e0",
+          "adapter": "AdapterInfo { name: \"Microsoft Basic Render Driver\", vendor: 5140, device: 140, device_type: Cpu, driver: \"10.0.26100.33648\", driver_info: \"\", backend: Dx12 }"
+        },
+        {
+          "test": "canvas::outline::tests::field_outline_uses_two_sixty_sample_passes_and_reuses_cached_flow",
+          "passed": true,
+          "log_sha256": "3ba009380c1ac499da0f9231a10a7bb32a49818878d89c486afc8446d12dbba0",
+          "adapter": "AdapterInfo { name: \"Microsoft Basic Render Driver\", vendor: 5140, device: 140, device_type: Cpu, driver: \"10.0.26100.33648\", driver_info: \"\", backend: Dx12 }"
+        },
+        {
+          "test": "app::gpu_surface_tests::surface_error_submits_pending_uploads_without_a_present",
+          "passed": true,
+          "log_sha256": "64495859a6459d263a88ce0c213fbcbc685a1e527827b8a466be4eaa51615a02",
+          "adapter": "AdapterInfo { name: \"Microsoft Basic Render Driver\", vendor: 5140, device: 140, device_type: Cpu, driver: \"10.0.26100.33648\", driver_info: \"\", backend: Dx12 }"
+        }
+      ],
+      "screenshots_visually_inspected": 6,
+      "passed": true
+    },
+    {
+      "target": "x86_64-unknown-linux-gnu",
+      "source_commit": "2d55ca2f1afd96d33914b0ad2e8b22eb064c9790",
+      "job_url": "https://github.com/bugs1111/LevelEditor/actions/runs/44039332275/job/133889816967",
+      "artifact": {
+        "artifact_id": 14309570281,
+        "sha256": "9dca6dcccc16eb9662a135d192f6668bab38e117ad49c2d412712b74a5644bb5",
+        "size": 42621537
+      },
+      "local_evidence": ".tools/final-gui-artifacts/x86_64-unknown-linux-gnu",
+      "scenarios": [
+        {
+          "adapter": "AdapterInfo { name: \"llvmpipe (LLVM 20.1.2, 256 bits)\", vendor: 65541, device: 0, device_type: Cpu, driver: \"llvmpipe\", driver_info: \"Mesa 25.2.8-0ubuntu0.24.04.4 (LLVM 20.1.2)\", backend: Vulkan }",
+          "adapter_kind": "software",
+          "viewport": {
+            "logicalSize": [
+              1440.0,
+              900.0
+            ],
+            "pixelsPerPoint": 1.0
+          },
+          "image_size": [
+            1440,
+            900
+          ],
+          "surface_errors": [
+            {
+              "Timeout": 0,
+              "Outdated": 0,
+              "Lost": 0,
+              "OutOfMemory": 0,
+              "Other": 0
+            }
+          ],
+          "name": "home",
+          "passed": true,
+          "screenshot_sha256": "acee5213a9a4122617aeb2a3a9fab7194c06e55b22295068690cad04f25c36ac",
+          "log_sha256": "702a41cd9f36467c16a72af4cb1cf9e5257ad612d02cff98e43c47971086b108"
+        },
+        {
+          "adapter": "AdapterInfo { name: \"llvmpipe (LLVM 20.1.2, 256 bits)\", vendor: 65541, device: 0, device_type: Cpu, driver: \"llvmpipe\", driver_info: \"Mesa 25.2.8-0ubuntu0.24.04.4 (LLVM 20.1.2)\", backend: Vulkan }",
+          "adapter_kind": "software",
+          "viewport": {
+            "logicalSize": [
+              1440.0,
+              900.0
+            ],
+            "pixelsPerPoint": 1.0
+          },
+          "image_size": [
+            1440,
+            900
+          ],
+          "surface_errors": [
+            {
+              "Timeout": 0,
+              "Outdated": 0,
+              "Lost": 0,
+              "OutOfMemory": 0,
+              "Other": 0
+            }
+          ],
+          "name": "entities",
+          "passed": true,
+          "screenshot_sha256": "772c4e5cd32b5c7e63ece59c3d7e22848e12cf96e6b67a9ae6a728474fd13a26",
+          "log_sha256": "f3dfb381c6fba3bab82896cc5cf540929ee121f90d32b1762a4813c022a87aba"
+        },
+        {
+          "adapter": "AdapterInfo { name: \"llvmpipe (LLVM 20.1.2, 256 bits)\", vendor: 65541, device: 0, device_type: Cpu, driver: \"llvmpipe\", driver_info: \"Mesa 25.2.8-0ubuntu0.24.04.4 (LLVM 20.1.2)\", backend: Vulkan }",
+          "adapter_kind": "software",
+          "viewport": {
+            "logicalSize": [
+              1440.0,
+              900.0
+            ],
+            "pixelsPerPoint": 1.0
+          },
+          "image_size": [
+            1440,
+            900
+          ],
+          "surface_errors": [
+            {
+              "Timeout": 0,
+              "Outdated": 0,
+              "Lost": 0,
+              "OutOfMemory": 0,
+              "Other": 0
+            }
+          ],
+          "name": "entity-form",
+          "passed": true,
+          "screenshot_sha256": "5ab10e9485f419989ce2b3ab86f2af541f60006411ea760dc81564de46c46b19",
+          "log_sha256": "a8a86597fa3dc5bdde8538268f1b24966b9aeebdf2f73bb24ec665ec5d38e74a"
+        },
+        {
+          "adapter": "AdapterInfo { name: \"llvmpipe (LLVM 20.1.2, 256 bits)\", vendor: 65541, device: 0, device_type: Cpu, driver: \"llvmpipe\", driver_info: \"Mesa 25.2.8-0ubuntu0.24.04.4 (LLVM 20.1.2)\", backend: Vulkan }",
+          "adapter_kind": "software",
+          "viewport": {
+            "logicalSize": [
+              1440.0,
+              900.0
+            ],
+            "pixelsPerPoint": 1.0
+          },
+          "image_size": [
+            1440,
+            900
+          ],
+          "surface_errors": [
+            {
+              "Timeout": 0,
+              "Outdated": 0,
+              "Lost": 0,
+              "OutOfMemory": 0,
+              "Other": 0
+            }
+          ],
+          "name": "entity-drag",
+          "passed": true,
+          "screenshot_sha256": "d6a94cb572b83ded00ee58bb4a0448cbf129f4a0157d7fe07141ef77031952a5",
+          "log_sha256": "32925d5530588b9e3703ce7f38bb3157e16a3e93995fc6224bf8d09f3986af60",
+          "held_drag": {
+            "gesture": "EntityMove",
+            "stroke": true,
+            "panel": "Entity",
+            "entityCount": 9,
+            "dirty": false
+          }
+        },
+        {
+          "adapter": "AdapterInfo { name: \"llvmpipe (LLVM 20.1.2, 256 bits)\", vendor: 65541, device: 0, device_type: Cpu, driver: \"llvmpipe\", driver_info: \"Mesa 25.2.8-0ubuntu0.24.04.4 (LLVM 20.1.2)\", backend: Vulkan }",
+          "adapter_kind": "software",
+          "viewport": {
+            "logicalSize": [
+              1440.0,
+              900.0
+            ],
+            "pixelsPerPoint": 1.0
+          },
+          "image_size": [
+            1440,
+            900
+          ],
+          "surface_errors": [
+            {
+              "Timeout": 0,
+              "Outdated": 0,
+              "Lost": 0,
+              "OutOfMemory": 0,
+              "Other": 0
+            }
+          ],
+          "name": "world",
+          "passed": true,
+          "screenshot_sha256": "6c77bbaccf723cb29d80180194cc6fc0a84c437be5b848054a7c2fba4c08831f",
+          "log_sha256": "ae46718a4f3dfd2e4b3be14332ff9406fe4875507b44d34472bf988fc6556f40"
+        },
+        {
+          "adapter": "AdapterInfo { name: \"llvmpipe (LLVM 20.1.2, 256 bits)\", vendor: 65541, device: 0, device_type: Cpu, driver: \"llvmpipe\", driver_info: \"Mesa 25.2.8-0ubuntu0.24.04.4 (LLVM 20.1.2)\", backend: Vulkan }",
+          "adapter_kind": "software",
+          "viewport": {
+            "logicalSize": [
+              1440.0,
+              900.0
+            ],
+            "pixelsPerPoint": 1.0
+          },
+          "image_size": [
+            1440,
+            900
+          ],
+          "surface_errors": [
+            {
+              "Timeout": 0,
+              "Outdated": 0,
+              "Lost": 0,
+              "OutOfMemory": 0,
+              "Other": 0
+            }
+          ],
+          "name": "paint",
+          "passed": true,
+          "screenshot_sha256": "220ec969440ced684eb59dcab52cc2dfc99d5a7e37565ca9c914b53636d360ed",
+          "log_sha256": "31a5753558182d2f06e3eb16ea82e30af83d1e74577cfa08607bd426103a4ce8",
+          "paint": {
+            "before": 484,
+            "after": 497,
+            "checksum": "d13146f10a0c8f"
+          }
+        }
+      ],
+      "gpu_tests": [
+        {
+          "test": "canvas::blur::gpu_tests::gaussian_composites_original_layer_then_blurs_on_gpu",
+          "passed": true,
+          "log_sha256": "0a868889ba938241299305dec54ecb1b5966a94277c95e88405832a7ddb5e6e6",
+          "adapter": "AdapterInfo { name: \"llvmpipe (LLVM 20.1.2, 256 bits)\", vendor: 65541, device: 0, device_type: Cpu, driver: \"llvmpipe\", driver_info: \"Mesa 25.2.8-0ubuntu0.24.04.4 (LLVM 20.1.2)\", backend: Vulkan }"
+        },
+        {
+          "test": "canvas::outline::tests::field_outline_uses_two_sixty_sample_passes_and_reuses_cached_flow",
+          "passed": true,
+          "log_sha256": "545e276fed03f4dcf720bb92c9fba6f5d214b9b48f58d3e0a04174ac4d877b65",
+          "adapter": "AdapterInfo { name: \"llvmpipe (LLVM 20.1.2, 256 bits)\", vendor: 65541, device: 0, device_type: Cpu, driver: \"llvmpipe\", driver_info: \"Mesa 25.2.8-0ubuntu0.24.04.4 (LLVM 20.1.2)\", backend: Vulkan }"
+        },
+        {
+          "test": "app::gpu_surface_tests::surface_error_submits_pending_uploads_without_a_present",
+          "passed": true,
+          "log_sha256": "fc3bd04e6360d757b225452d0ee672701c8ecad1c301509327828417231c615d",
+          "adapter": "AdapterInfo { name: \"llvmpipe (LLVM 20.1.2, 256 bits)\", vendor: 65541, device: 0, device_type: Cpu, driver: \"llvmpipe\", driver_info: \"Mesa 25.2.8-0ubuntu0.24.04.4 (LLVM 20.1.2)\", backend: Vulkan }"
+        }
+      ],
+      "screenshots_visually_inspected": 6,
+      "passed": true
+    }
+  ],
+  "physical_m6": {
+    "local_evidence": ".tools/physical-m6-final",
+    "scenarios": [
+      {
+        "adapter": "AdapterInfo { name: \"Apple M6\", vendor: 0, device: 0, device_type: IntegratedGpu, driver: \"\", driver_info: \"\", backend: Metal }",
+        "adapter_kind": "hardware",
+        "viewport": {
+          "logicalSize": [
+            1440.0,
+            900.0
+          ],
+          "pixelsPerPoint": 2.0
+        },
+        "image_size": [
+          2880,
+          1800
+        ],
+        "surface_errors": [
+          {
+            "Timeout": 0,
+            "Outdated": 0,
+            "Lost": 0,
+            "OutOfMemory": 0,
+            "Other": 0
+          }
+        ],
+        "name": "home",
+        "passed": true,
+        "screenshot_sha256": "e20f60fc03d3405c758d9d311b563203becd33f62f0d901b2b7cd2221c20c6c2",
+        "log_sha256": "f9fc331437ecd9e39a07aaeba405ab53922061ec3be2c4988ad31ea462bcbe53"
+      },
+      {
+        "adapter": "AdapterInfo { name: \"Apple M6\", vendor: 0, device: 0, device_type: IntegratedGpu, driver: \"\", driver_info: \"\", backend: Metal }",
+        "adapter_kind": "hardware",
+        "viewport": {
+          "logicalSize": [
+            1440.0,
+            900.0
+          ],
+          "pixelsPerPoint": 2.0
+        },
+        "image_size": [
+          2880,
+          1800
+        ],
+        "surface_errors": [
+          {
+            "Timeout": 0,
+            "Outdated": 0,
+            "Lost": 0,
+            "OutOfMemory": 0,
+            "Other": 0
+          }
+        ],
+        "name": "entities",
+        "passed": true,
+        "screenshot_sha256": "bf51fd2ff0c26cf3d879e6c8a6ebb05ef276bfac73253cbd025d8b9051b1e03a",
+        "log_sha256": "d419cc99d48abe464274fcfdb98287e33143fadd0264d20c3f5140261a2e3131"
+      },
+      {
+        "adapter": "AdapterInfo { name: \"Apple M6\", vendor: 0, device: 0, device_type: IntegratedGpu, driver: \"\", driver_info: \"\", backend: Metal }",
+        "adapter_kind": "hardware",
+        "viewport": {
+          "logicalSize": [
+            1440.0,
+            900.0
+          ],
+          "pixelsPerPoint": 2.0
+        },
+        "image_size": [
+          2880,
+          1800
+        ],
+        "surface_errors": [
+          {
+            "Timeout": 0,
+            "Outdated": 0,
+            "Lost": 0,
+            "OutOfMemory": 0,
+            "Other": 0
+          }
+        ],
+        "name": "entity-form",
+        "passed": true,
+        "screenshot_sha256": "6097e0abc9d1c40fa965bb25ce464f66c5dd86997b4ccecab6f2645f666e837b",
+        "log_sha256": "aaed2e9f991ea815446b3d0afeac60840324f29935480c8db83772b788cf8d52"
+      },
+      {
+        "adapter": "AdapterInfo { name: \"Apple M6\", vendor: 0, device: 0, device_type: IntegratedGpu, driver: \"\", driver_info: \"\", backend: Metal }",
+        "adapter_kind": "hardware",
+        "viewport": {
+          "logicalSize": [
+            1440.0,
+            900.0
+          ],
+          "pixelsPerPoint": 2.0
+        },
+        "image_size": [
+          2880,
+          1800
+        ],
+        "surface_errors": [
+          {
+            "Timeout": 0,
+            "Outdated": 0,
+            "Lost": 0,
+            "OutOfMemory": 0,
+            "Other": 0
+          }
+        ],
+        "name": "entity-drag",
+        "passed": true,
+        "screenshot_sha256": "bd94755501cb9f2e877fa19b9ad9a0101e638d68b295b85a73bbd6323ebcc7dc",
+        "log_sha256": "b3ece8ebef806401f990d0446fa90f5e75c0d75d46d16f7b2a66bb5951c1fd57",
+        "held_drag": {
+          "gesture": "EntityMove",
+          "stroke": true,
+          "panel": "Entity",
+          "entityCount": 9,
+          "dirty": false
+        }
+      },
+      {
+        "adapter": "AdapterInfo { name: \"Apple M6\", vendor: 0, device: 0, device_type: IntegratedGpu, driver: \"\", driver_info: \"\", backend: Metal }",
+        "adapter_kind": "hardware",
+        "viewport": {
+          "logicalSize": [
+            1440.0,
+            900.0
+          ],
+          "pixelsPerPoint": 2.0
+        },
+        "image_size": [
+          2880,
+          1800
+        ],
+        "surface_errors": [
+          {
+            "Timeout": 0,
+            "Outdated": 0,
+            "Lost": 0,
+            "OutOfMemory": 0,
+            "Other": 0
+          }
+        ],
+        "name": "world",
+        "passed": true,
+        "screenshot_sha256": "cf25b749f0227e6104f9458ec2ec28bba264ee0385dbb51f20436a90b81f99a2",
+        "log_sha256": "c50ec393f30a97516ffbab098cb3980225161b4bd0dd47f00d460fb2956ddd01"
+      },
+      {
+        "adapter": "AdapterInfo { name: \"Apple M6\", vendor: 0, device: 0, device_type: IntegratedGpu, driver: \"\", driver_info: \"\", backend: Metal }",
+        "adapter_kind": "hardware",
+        "viewport": {
+          "logicalSize": [
+            1440.0,
+            900.0
+          ],
+          "pixelsPerPoint": 2.0
+        },
+        "image_size": [
+          2880,
+          1800
+        ],
+        "surface_errors": [
+          {
+            "Timeout": 0,
+            "Outdated": 0,
+            "Lost": 0,
+            "OutOfMemory": 0,
+            "Other": 0
+          }
+        ],
+        "name": "paint",
+        "passed": true,
+        "screenshot_sha256": "4197c15b9b344c7c6cf01d8f2b9ef13ab85bc5979249bf3b1ee6fd3c2ab816f7",
+        "log_sha256": "caeecb639ae346d8d8956dfbdaebc606da2905b3ba1e6040f1977e36bcf65608",
+        "paint": {
+          "before": 484,
+          "after": 497,
+          "checksum": "d13146f10a0c8f"
+        }
+      }
+    ],
+    "gpu": {
+      "source_commit": "554e86a52123a964e1d65a11b50a5daa23455fba",
+      "archive_sha256": "ab340cdf86afe635b76c338da4201e7ee4280257b61819a6142a80f55982beb0",
+      "test_binary_sha256": "a57ad9f3057345785eae17d63a129277909b1bfd9545827b8d4076680d930f57",
+      "tests": [
+        {
+          "name": "blur",
+          "test": "canvas::blur::gpu_tests::gaussian_composites_original_layer_then_blurs_on_gpu",
+          "passed": true,
+          "adapter": "AdapterInfo { name: \"Apple M6\", vendor: 0, device: 0, device_type: IntegratedGpu, driver: \"\", driver_info: \"\", backend: Metal }"
+        },
+        {
+          "name": "outline",
+          "test": "canvas::outline::tests::field_outline_uses_two_sixty_sample_passes_and_reuses_cached_flow",
+          "passed": true,
+          "adapter": "AdapterInfo { name: \"Apple M6\", vendor: 0, device: 0, device_type: IntegratedGpu, driver: \"\", driver_info: \"\", backend: Metal }"
+        },
+        {
+          "name": "surface-error",
+          "test": "app::gpu_surface_tests::surface_error_submits_pending_uploads_without_a_present",
+          "passed": true,
+          "adapter": "AdapterInfo { name: \"Apple M6\", vendor: 0, device: 0, device_type: IntegratedGpu, driver: \"\", driver_info: \"\", backend: Metal }"
+        }
+      ],
+      "passed": true
+    },
+    "passed": true,
+    "screenshots_visually_inspected": 6
+  },
+  "physical_rtx2060_offscreen": {
+    "source_commit": "554e86a52123a964e1d65a11b50a5daa23455fba",
+    "archive_sha256": "d11d6935853866a9b5b4e81de8959e21384b2282313225f0cedfb3a3e6e5318c",
+    "test_binary_sha256": "43a57744bcffa8e7283279029c7dc56e1fd271ccabf03f9e7832077a229bf448",
+    "icd": "/usr/share/vulkan/icd.d/nvidia_icd.json",
+    "started_utc": "2026-11-17T07:29:24.656496+00:00",
+    "display_used": false,
+    "tests": [
+      {
+        "name": "blur",
+        "test": "canvas::blur::gpu_tests::gaussian_composites_original_layer_then_blurs_on_gpu",
+        "exit": 0,
+        "passed": true,
+        "seconds": 0.308,
+        "adapter": "AdapterInfo { name: \"NVIDIA GeForce RTX 2060\", vendor: 4318, device: 7944, device_type: DiscreteGpu, driver: \"NVIDIA\", driver_info: \"595.99.02\", backend: Vulkan }"
+      },
+      {
+        "name": "outline",
+        "test": "canvas::outline::tests::field_outline_uses_two_sixty_sample_passes_and_reuses_cached_flow",
+        "exit": 0,
+        "passed": true,
+        "seconds": 0.25,
+        "adapter": "AdapterInfo { name: \"NVIDIA GeForce RTX 2060\", vendor: 4318, device: 7944, device_type: DiscreteGpu, driver: \"NVIDIA\", driver_info: \"595.99.02\", backend: Vulkan }"
+      },
+      {
+        "name": "surface-error",
+        "test": "app::gpu_surface_tests::surface_error_submits_pending_uploads_without_a_present",
+        "exit": 0,
+        "passed": true,
+        "seconds": 0.227,
+        "adapter": "AdapterInfo { name: \"NVIDIA GeForce RTX 2060\", vendor: 4318, device: 7944, device_type: DiscreteGpu, driver: \"NVIDIA\", driver_info: \"595.99.02\", backend: Vulkan }"
+      }
+    ],
+    "vulkan-summary_exit": 0,
+    "nvidia-driver_exit": 0,
+    "passed": true
+  },
+  "home_memory_evidence": "home-memory-followup.json",
+  "limits": [
+    "Native scene input is injected through the application hook; OS input delivery and input-to-photon latency are outside this check.",
+    "Held drag is captured before release and does not assert committed coordinates.",
+    "CI virtual/software drivers do not establish presentation on every physical GPU.",
+    "RTX 2060 tests were offscreen; no native-window presentation or GUI input on RTX is claimed.",
+    "Screenshots establish these rendered states, not complete pixel parity with upstream."
+  ],
+  "passed": true
+}

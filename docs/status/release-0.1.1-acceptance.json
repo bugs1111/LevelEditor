@@ -1,0 +1,178 @@
+{
+  "date": "2026-11-17",
+  "version": "0.1.1",
+  "source_commit": "554e86a52123a964e1d65a11b50a5daa23455fba",
+  "build_run_url": "https://github.com/bugs1111/LevelEditor/actions/runs/44036712278",
+  "build_jobs": [
+    {
+      "id": 133881234228,
+      "name": "build (macos-15-intel, x86_64-apple-darwin)",
+      "status": "completed",
+      "conclusion": "success"
+    },
+    {
+      "id": 133881234382,
+      "name": "build (windows-latest, x86_64-pc-windows-msvc)",
+      "status": "completed",
+      "conclusion": "success"
+    },
+    {
+      "id": 133881234427,
+      "name": "build (macos-15, aarch64-apple-darwin)",
+      "status": "completed",
+      "conclusion": "success"
+    },
+    {
+      "id": 133881234509,
+      "name": "build (ubuntu-24.04, x86_64-unknown-linux-gnu)",
+      "status": "completed",
+      "conclusion": "success"
+    },
+    {
+      "id": 133891319683,
+      "name": "publish",
+      "status": "completed",
+      "conclusion": "skipped"
+    }
+  ],
+  "app_test_results": [
+    {
+      "target": "x86_64-apple-darwin",
+      "app_result": "test result: ok. 316 passed; 0 failed; 6 ignored; 0 measured; 0 filtered out;"
+    },
+    {
+      "target": "x86_64-pc-windows-msvc",
+      "app_result": "test result: ok. 313 passed; 0 failed; 6 ignored; 0 measured; 0 filtered out;"
+    },
+    {
+      "target": "aarch64-apple-darwin",
+      "app_result": "test result: ok. 316 passed; 0 failed; 6 ignored; 0 measured; 0 filtered out;"
+    },
+    {
+      "target": "x86_64-unknown-linux-gnu",
+      "app_result": "test result: ok. 315 passed; 0 failed; 6 ignored; 0 measured; 0 filtered out;"
+    }
+  ],
+  "package_audit": {
+    "version": "0.1.1",
+    "targets": [
+      {
+        "target": "aarch64-apple-darwin",
+        "asset": "ldtk-rs-v0.1.1-aarch64-apple-darwin.zip",
+        "sha256": "fdb1540c225a4617dbacbcc9b911ebba62c2c7e7db10eea77a6f161d50484be0",
+        "size": 25129559,
+        "zip_crc": "passed",
+        "layout": "passed",
+        "resources_checked": 253,
+        "text_line_ending_only_differences": [],
+        "binary_mode": "0o100755",
+        "binary": "Mach-O 64-bit executable arm64"
+      },
+      {
+        "target": "x86_64-apple-darwin",
+        "asset": "ldtk-rs-v0.1.1-x86_64-apple-darwin.zip",
+        "sha256": "568b6422687a38b8af67ef30ba32769d709dd5ddaa7f2135fe89aee2ecfd34f0",
+        "size": 25828019,
+        "zip_crc": "passed",
+        "layout": "passed",
+        "resources_checked": 253,
+        "text_line_ending_only_differences": [],
+        "binary_mode": "0o100755",
+        "binary": "Mach-O 64-bit executable x86_64"
+      },
+      {
+        "target": "x86_64-pc-windows-msvc",
+        "asset": "ldtk-rs-v0.1.1-x86_64-pc-windows-msvc.zip",
+        "sha256": "1dcdc022dd25b4740b9fbfa22ca107083cadf09bba8aaf147150a71b7b15c4ee",
+        "size": 25450273,
+        "zip_crc": "passed",
+        "layout": "passed",
+        "resources_checked": 253,
+        "text_line_ending_only_differences": [
+          "ldtk-rs/resources/assets/CHANGELOG.md",
+          "ldtk-rs/resources/assets/forms/source-help.json",
+          "ldtk-rs/resources/assets/bitmap_fonts/pixel_berry.xml",
+          "ldtk-rs/resources/assets/bitmap_fonts/noto_sans_display_semicondensed_extralight_90.xml",
+          "ldtk-rs/resources/assets/bitmap_fonts/notes.txt",
+          "ldtk-rs/resources/assets/bitmap_fonts/noto_sans_display_semicondensed_medium_19.xml",
+          "ldtk-rs/resources/assets/bitmap_fonts/noto_sans_display_semicondensed_semibold_15.xml",
+          "ldtk-rs/resources/assets/bitmap_fonts/noto_sans_display_semicondensed_medium_12.xml",
+          "ldtk-rs/resources/assets/bitmap_fonts/NotoSansDisplay-OFL.txt",
+          "ldtk-rs/resources/assets/bitmap_fonts/noto_sans_display_semicondensed_light_30.xml",
+          "ldtk-rs/resources/assets/img/LDtk.svg",
+          "ldtk-rs/resources/assets/img/LDtk-simple.svg",
+          "ldtk-rs/resources/assets/icons/collapsed.svg",
+          "ldtk-rs/resources/assets/icons/ghost.svg",
+          "ldtk-rs/resources/assets/icons/checker.svg",
+          "ldtk-rs/resources/assets/icons/dragAlpha.svg",
+          "ldtk-rs/resources/assets/icons/worldLayer_below.svg",
+          "ldtk-rs/resources/assets/icons/worldLayer_top.svg",
+          "ldtk-rs/resources/assets/syntax/TTCNConfig.sublime-syntax",
+          "ldtk-rs/resources/assets/syntax/Haxe.sublime-syntax",
+          "ldtk-rs/resources/assets/fonts/LICENSE.txt",
+          "ldtk-rs/resources/examples/original/Entities.ldtk",
+          "ldtk-rs/resources/examples/original/WorldMap_Free_layout.ldtk",
+          "ldtk-rs/resources/examples/original/Typical_2D_platformer_example.ldtk",
+          "ldtk-rs/resources/examples/original/AutoLayers_6_OptionalRules.ldtk",
+          "ldtk-rs/resources/examples/original/Test_file_for_API_showing_all_features.ldtk",
+          "ldtk-rs/resources/examples/original/AutoLayers_5_Advanced.ldtk",
+          "ldtk-rs/resources/examples/original/README.md",
+          "ldtk-rs/resources/examples/original/AutoLayers_7_Biomes.ldtk",
+          "ldtk-rs/resources/examples/original/AutoLayers_4_Assistant.ldtk",
+          "ldtk-rs/resources/examples/original/AutoLayers_1_basic.ldtk",
+          "ldtk-rs/resources/examples/original/AutoLayers_3_Mosaic.ldtk",
+          "ldtk-rs/resources/examples/original/SeparateLevelFiles.ldtk",
+          "ldtk-rs/resources/examples/original/AutoLayers_2_stamps.ldtk",
+          "ldtk-rs/resources/examples/original/WorldMap_GridVania_layout.ldtk",
+          "ldtk-rs/resources/examples/original/Typical_TopDown_example.ldtk",
+          "ldtk-rs/resources/examples/original/SeparateLevelFiles/World_Level_0.ldtkl",
+          "ldtk-rs/resources/examples/original/SeparateLevelFiles/World_Level_2.ldtkl",
+          "ldtk-rs/resources/examples/original/SeparateLevelFiles/World_Level_1.ldtkl"
+        ],
+        "binary_mode": "0o100777",
+        "binary": "PE32+ executable (console) x86-64, for MS Windows"
+      },
+      {
+        "target": "x86_64-unknown-linux-gnu",
+        "asset": "ldtk-rs-v0.1.1-x86_64-unknown-linux-gnu.zip",
+        "sha256": "c5ea188b17c05eba00d04edac0b9540791b875bb5dee7759896614cf759dac32",
+        "size": 27894949,
+        "zip_crc": "passed",
+        "layout": "passed",
+        "resources_checked": 253,
+        "text_line_ending_only_differences": [],
+        "binary_mode": "0o100755",
+        "binary": "ELF 64-bit LSB pie executable, x86-64, version 1 (SYSV), dynamically linked, interpreter /lib64/ld-linux-x86-64.so.2, for GNU/Linux 3.2.0, BuildID[sha1]=c89d5f3b6dcf4c47d805fe0b3f9f9bbb6dcf6ef4, not stripped"
+      }
+    ]
+  },
+  "manifest_sha256": "e9f4140170acb001d273193cd104b05e0ea88cb8f918dda936a4fb390ed8dcad",
+  "macos_signatures": [
+    {
+      "target": "aarch64-apple-darwin",
+      "version": "0.1.1",
+      "signature": "strict ad-hoc validation passed"
+    },
+    {
+      "target": "x86_64-apple-darwin",
+      "version": "0.1.1",
+      "signature": "strict ad-hoc validation passed"
+    }
+  ],
+  "arm_bundle_cold_warm": {
+    "cold_open": true,
+    "unicode_path": true,
+    "warm_open": true,
+    "same_process": true,
+    "bundle": "/Users/bugs/Projects/LevelEditor/.tools/final-release-artifacts/aarch64-apple-darwin/extracted/LDtk Rust.app",
+    "evidence": "/var/folders/h8/vlvlng4x0s95xn1lwnhh8h_h0000gn/T/ldtk-bundle-smoke-t89qihyb"
+  },
+  "publication": {
+    "status": "pending_explicit_current_user_approval",
+    "latest_published": "v0.1.0",
+    "reason": "Automatic approval review rejected uploading the four packages and manifest and creating a stable GitHub release, including after prior-thread authorization was supplied.",
+    "v0_1_1_published_feed_acceptance": "pending publication"
+  },
+  "local_packages": ".tools/release-v0.1.1",
+  "gui_evidence": "gui-platform-acceptance-results.json"
+}

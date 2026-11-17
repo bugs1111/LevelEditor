@@ -5,7 +5,7 @@ The manually dispatched **Native GUI and GPU acceptance** workflow runs native
 windows on `macos-15` (ARM), `macos-15-intel`, `windows-latest` and `ubuntu-24.04`.
 The `linux_only` dispatch input defaults to false; selecting it reruns only
 Linux after a CI dependency correction while preserving the normal four-target
-matrix. Creating the workflow does not establish that those GUI runs have passed.
+matrix. The completed 0.1.1 results are recorded below, separately from the workflow definition.
 
 Each runner builds the release `native_smoke` example and application test
 binary, then runs six sequential native-window scenarios:
@@ -78,7 +78,8 @@ on a user's physical Windows/Linux/Intel Mac hardware. Missing graphics/display
 capability is a failed CI result to investigate, not a platform success.
 Windows RSS may be unavailable because the current harness samples with `ps`;
 RSS is preserved as an observation and is not a GUI pass criterion. These short
-captures also do not resolve the separate long forced-redraw Home memory issue.
+captures are separate from the controlled surface-timeout stress that reproduced
+and verified the Home memory fix in [home-memory-investigation.md](home-memory-investigation.md).
 
 Run locally after building, with no other acceptance/editor process active:
 
@@ -135,7 +136,56 @@ Each command must report exactly one passed test. Passing these tests proves
 GPU execution/readback and the tested effects, while native-window presentation
 and GUI input still require their separate successful scene captures.
 
-## Recorded local validation — 2026-11-17
+## Completed 0.1.1 native matrix — 2026-11-17
+
+Application source: `554e86a52123a964e1d65a11b50a5daa23455fba`.
+All four targets passed six native-window scenarios and each of the three exact
+GPU tests. Every GPU step ran exactly one test, with zero failures or ignored
+tests. All 24 native PNGs were visually inspected. All scenes had zero surface
+errors and matching logical viewport/DPI/PNG dimensions.
+
+| Target | Job | Actual adapter | GUI / GPU |
+| --- | --- | --- | --- |
+| ARM macOS | [133881216916](https://github.com/bugs1111/LevelEditor/actions/runs/44036707023/job/133881216916) | Apple Paravirtual / Metal, virtual | 6/6; 3/3 |
+| Intel macOS | [133881216752](https://github.com/bugs1111/LevelEditor/actions/runs/44036707023/job/133881216752) | Apple Paravirtual / Metal, virtual | 6/6; 3/3 |
+| Windows MSVC | [133881216784](https://github.com/bugs1111/LevelEditor/actions/runs/44036707023/job/133881216784) | Microsoft Basic Render Driver / DX12, software | 6/6; 3/3 |
+| Linux GNU | [133889816967](https://github.com/bugs1111/LevelEditor/actions/runs/44039332275/job/133889816967) | Mesa llvmpipe/lavapipe / Vulkan, software, Xvfb | 6/6; 3/3 |
+
+The successful Linux runtime-dependency rerun uses `2d55ca2`; its application
+sources, Cargo inputs and assets/examples were verified identical to `554e86a`.
+The original failed Linux run is retained as a failure, not relabeled as passed.
+All four paint results added 13 cells (484 → 497), with final checksum
+`d13146f10a0c8f`. Held drag preserved nine entities and `dirty=false` while
+showing `EntityMove`, an active stroke and the Entity inspector. It remained
+held and does not assert released/committed coordinates.
+
+The Windows run uses its actual 1024×768 logical viewport. ARM hosted macOS
+provided 1024×653 Home and 1024×656 project windows; Intel macOS and Linux
+provided 1440×900. These hosted captures use one pixel per point. The raw Mac
+artifacts predate the `paravirtual` classifier correction and label those
+adapters `hardware`; the consolidated report correctly records `virtual` from
+their actual adapter names, without changing the original artifacts.
+
+Machine-readable evidence, screenshot/log hashes and job/artifact links are in
+[gui-platform-acceptance-results.json](gui-platform-acceptance-results.json).
+Local copies are under `.tools/final-gui-artifacts/<target>/`. Running the current
+validator over every downloaded log/PNG passed again. Screenshot inspection and
+these state gates establish the listed scenes, not complete upstream pixel parity
+or physical hardware/OS input coverage.
+
+### Physical M6 acceptance from the exact CI artifact
+
+The CI ARM portable harness from `554e86a` was extracted and run directly on
+the physical Apple M6/Metal. All six native scenes passed at logical 1440×900,
+DPI 2 with matching 2880×1800 PNGs; all six images were visually inspected.
+The three exact GPU tests also passed independently, each reporting one pass,
+no failures or ignored tests and `Apple M6` / `Metal`.
+Evidence: `.tools/physical-m6-final/results/results.json`, six PNG/log pairs,
+`gpu-results.json` and three GPU logs. Portable ZIP SHA-256:
+`ab340cdf86afe635b76c338da4201e7ee4280257b61819a6142a80f55982beb0`.
+This final run avoids relying on the earlier working-tree captures' HEAD labels.
+
+## Historical local validation — 2026-11-17
 
 Source `7b2ef29a9eb09793001c9cc8a6fbf874ba613d6d`, macOS 27.2.1 ARM64,
 Apple M6 integrated GPU, Metal: all five native scenarios passed with 2880×1800
@@ -144,7 +194,7 @@ captures and zero surface acquisition errors. The paint scene added 13 cells
 `1 passed; 0 failed; 0 ignored`. The integration owner visually inspected all
 five screenshots. Local evidence is `.tools/gui-acceptance-local/results.json`,
 its five PNG/log pairs and `gpu-blur.log` / `gpu-outline.log`. This is local
-Apple ARM/Metal evidence; the other CI and physical platforms remain pending.
+Apple ARM/Metal evidence; other platforms were pending at that earlier stage.
 
 ### Six-scene v0.1.1 follow-up
 
@@ -180,8 +230,9 @@ tests, but its six native windows exited before capture because
 `xkbcommon-dl` could not load `libxkbcommon-x11.so`. The GUI workflow now installs
 `libxkbcommon-x11-0` alongside the existing X11/Wayland build dependencies.
 This is a runner runtime dependency correction; product source, Cargo inputs
-and assets remain those of `554e86a`. The Linux native-window result requires
-its successful rerun and must not be inferred from the offscreen GPU tests.
+and assets remain those of `554e86a`. The subsequent Linux-only run
+`44039332275` passed all six native scenes and all three GPU tests. Its six PNGs
+were visually inspected; the GUI result comes from that actual rerun.
 
 ### Physical NVIDIA Vulkan offscreen validation
 
