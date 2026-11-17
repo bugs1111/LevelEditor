@@ -1,6 +1,8 @@
 # Home release memory investigation — 2026-11-17
 
-The high-RSS Home run was reproduced, but its native trigger remains unresolved. The observed increase was dominated by graphics allocations. Later runs of the **same unchanged binary** returned to approximately 120 updates/s and about 252 MiB RSS at screenshot capture. No production renderer change was made, and neither frame pacing nor `device.poll(Wait)` is claimed as a fix.
+Follow-up confirmed and fixed an acquisition-error staging-buffer accumulation in the installed egui-wgpu 0.33.3. A controlled Metal surface fault reproduced high memory, and the production recovery passed repeated real-timeout stress tests. See the follow-up section below and [machine-readable evidence](home-memory-followup.json). The exact OS event in the initial historical run was not recorded and cannot be reconstructed from its memory samples alone.
+
+The original observations and controls below are retained as history: later runs of the **same unchanged binary** returned to approximately 120 updates/s and about 252 MiB RSS at screenshot capture. Those lower readings were not a fix. The eventual fix does not introduce frame pacing or `device.poll(Wait)`.
 
 All runs used the Apple M6 / Metal backend, the isolated profile `/private/tmp/ldtk-acceptance-settings`, UI scale 1, and a 1440×900 logical viewport. The recent list retained the 13 MB `world1.ldtk` project and the many-entity fixture. Capture state remained Home, with no project loaded, no gesture, and `dirty=false`.
 
@@ -72,10 +74,41 @@ scripts/cargo build --manifest-path /private/tmp/ldtk-home-rss-probe/Cargo.toml 
 
 Its executable is `target/release/ldtk-home-rss-probe`. `LDTK_RSS_BLANK=1` selects blank UI; `LDTK_RSS_WAIT=1` waits for prior GPU submissions. These diagnostic switches are absent from production source. Build log: `.tools/home-rss-exact-probe-build.log`.
 
-## Remaining diagnostic boundary
+## Original diagnostic boundary
 
 Source review found a concrete mechanism to instrument if the high-update-rate regime returns: egui-wgpu 0.33.3 uploads buffers **before** acquiring the surface. A surface-acquisition error returns before queue submission. wgpu's pending staging writes are drained by submission; polling completed work is not a replacement for that submission. Repeated acquisition failures could therefore retain pending allocations. No surface-error counter was collected in the high-RSS run, so this remains a hypothesis for that run, not its established cause. The active default error handler returns `SkipFrame`; repeated surface reconfiguration is not an established path in this configuration.
 
 The next discriminating capture should record surface-acquisition error counts, successful submissions/presents, OS activation/visibility, and memory categories during the **same** high-update-rate interval. A subsequent harness-only counter in `examples/native_smoke.rs` now prints `Surface acquire errors (all frames)` while preserving the configured error action; the runs above predate that instrumentation. The existing observations do not justify changing the production frame policy or asserting a Home leak has been fixed.
 
 All diagnostic native processes had exited at the final check; exact executable-path matches were zero. Evidence: `.tools/home-rss-process-cleanup-check.log`. The actual release app inspected for the idle comparison was explicitly terminated after sampling. Temporary probes and helpers remain outside tracked source; no diagnostic probe is part of the release.
+
+## Controlled reproduction and production fix — 2026-11-17
+
+Three unchanged-binary Home rechecks remained near 195 MiB before capture, about 120 updates/s, and zero acquisition errors. Explicit FIFO/immediate configuration, an optional GPU-wait control, hiding, minimizing and off-screen placement also failed to reproduce the high-memory regime. These negative controls did not justify a pacing or cache-size change.
+
+Source inspection identified the pending-write lifetime: the installed `egui-wgpu 0.33.3` painter calls `update_texture` / `update_buffers` before `get_current_texture`; `SurfaceErrorAction::SkipFrame` returns without queue submission. `wgpu` retains staging buffers for those writes until submission. The upstream [egui fix #7928](https://github.com/emilk/egui/pull/7928) likewise uses an empty queue submission on painter exits without a normal submit. That fix is absent from the installed version.
+
+To make this path repeatable without modifying another application or the display, a disposable full native Home probe temporarily cleared only its own `CAMetalLayer` device, then restored it. This produced actual `SurfaceError::Timeout` results. The same probe measured GPU buffer object counts, queue completion callbacks, acquisition errors and external `ps` RSS. The fault is deliberate; it does not identify the original historical OS event.
+
+| Case | Timeout count | Maximum sampled GPU buffers | Maximum sampled RSS KiB | Recovery capture |
+| --- | ---: | ---: | ---: | --- |
+| Original error handler, 1 s fault | 9,435 | 18,881 | 1,878,000 | Passed after restoring the surface |
+| Diagnostic empty-submit control, 1 s | 7,011 | 8 | 245,536 | Passed |
+| Production fix, 1 s | 6,975 | 8 | 197,312 | Passed |
+| Production fix, 5 s | 36,637 | 10 | 197,040 | Passed |
+| Production fix, 10 s | 73,388 | 10 | 198,624 | Passed |
+
+The fixed production runs used the application callback itself, with the diagnostic flush override unset. Texture counts stayed at 40. Metal's byte counters returned zero in this probe; they are not used as memory evidence. RSS sampling and screenshot-time allocations are separate: fixed capture RSS was 258,976–260,064 KiB. The transient two additional buffers reflect outstanding writes, rather than an allocation growing with every failed frame.
+
+The production change is limited to `app::native_gpu_config` and the existing canvas GPU state: on acquisition errors, submit pending queue writes before returning the original error handler's action. Successful frames add no submission, wait, sleep or frame cap. This avoids a renderer fork or broad dependency upgrade. The existing eframe painter keeps one render state across its viewports; `EditorApp::new` configures that state before rendering.
+
+The regression `app::gpu_surface_tests::surface_error_submits_pending_uploads_without_a_present` performs actual GPU readback through the production error callback. It failed before the fix with `[0,0,0,0]` instead of the queued `[1,2,3,4]`, and passed after the fix. Polling without submission did not make the failing test pass. The default SkipFrame result is asserted. Run explicitly with a GPU:
+
+```sh
+scripts/cargo test --bin ldtk-rs gpu_surface_tests::surface_error_submits_pending_uploads_without_a_present \
+  --locked -- --ignored --nocapture --test-threads=1
+```
+
+Full workspace tests passed (native app 316 passed, 6 ignored); the native example target passed 320 tests, 6 ignored. Strict all-target Clippy and formatting passed. The newly ignored GPU regression was run separately and passed, and is an explicit step in the four-platform GUI/GPU workflow. A read-only independent review found no blocking defect in the queue ownership or error policy.
+
+Raw reproduction, controls, readback RED/GREEN results and stress samples are under `.tools/home-memory-followup/`; the disposable probe source remains `/private/tmp/ldtk-home-memory-followup/probe.rs`. [home-memory-followup.json](home-memory-followup.json) records the measurements and limits. This establishes and fixes the repeatable acquisition-error memory defect; it is not a universal assertion that every cause of high memory or every physical display transition has been tested.

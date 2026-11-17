@@ -3,6 +3,11 @@ mod blur;
 pub fn configure_gpu(state: Option<&eframe::egui_wgpu::RenderState>) {
     blur::configure(state);
 }
+pub fn submit_pending_gpu_uploads() {
+    if let Some(state) = blur::gpu() {
+        state.queue.submit(std::iter::empty());
+    }
+}
 #[path = "bitmap_font.rs"]
 mod bitmap_font;
 #[path = "render_entities.rs"]

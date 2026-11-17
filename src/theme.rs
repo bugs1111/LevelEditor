@@ -8,6 +8,7 @@ pub const TEXT: Color32 = Color32::from_rgb(0xc1, 0xcf, 0xeb);
 pub const ACCENT: Color32 = Color32::from_rgb(0xff, 0xcc, 0x00);
 
 pub fn configure(ctx: &egui::Context) {
+    ctx.set_theme(egui::Theme::Dark);
     let mut fonts = FontDefinitions::default();
     fonts.font_data.insert(
         "ldtk-light".into(),
@@ -131,4 +132,34 @@ pub fn color(value: &str) -> Color32 {
     u32::from_str_radix(hex, 16)
         .map(|n| Color32::from_rgb((n >> 16) as u8, (n >> 8) as u8, n as u8))
         .unwrap_or(LIGHT)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn system_light_theme_does_not_replace_the_source_dark_editor_style() {
+        let ctx = egui::Context::default();
+        let _ = ctx.run(
+            egui::RawInput {
+                system_theme: Some(egui::Theme::Dark),
+                ..Default::default()
+            },
+            |_| {},
+        );
+        configure(&ctx);
+        let _ = ctx.run(
+            egui::RawInput {
+                system_theme: Some(egui::Theme::Light),
+                ..Default::default()
+            },
+            |ctx| {
+                let style = ctx.style();
+                assert!(style.visuals.dark_mode);
+                assert_eq!(style.visuals.extreme_bg_color, DARK);
+                assert_eq!(style.visuals.widgets.inactive.bg_fill, MEDIUM);
+            },
+        );
+    }
 }

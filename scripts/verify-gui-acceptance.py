@@ -3,6 +3,7 @@
 import argparse
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import platform
@@ -80,7 +81,7 @@ def validate_capture(name, text, screenshot, returncode):
             kind = "hardware"
     states, surface_errors = {}, []
     for line in text.splitlines():
-        for label in ("Capture initialized", "Workflow before", "Input before", "Input after", "Capture final", "Surface acquire errors (all frames)"):
+        for label in ("Capture initialized", "Workflow before", "Input before", "Input after", "Capture final", "Capture viewport", "Surface acquire errors (all frames)"):
             if line.startswith(label + ": "):
                 try:
                     value = json.loads(line[len(label) + 2:])
@@ -90,6 +91,14 @@ def validate_capture(name, text, screenshot, returncode):
                         states[label] = value
                 except json.JSONDecodeError:
                     errors.append(f"invalid JSON: {label}")
+    viewport = states.get("Capture viewport", {})
+    logical_size = viewport.get("logicalSize")
+    ppp = viewport.get("pixelsPerPoint")
+    if (not isinstance(logical_size, list) or len(logical_size) != 2
+            or any(not isinstance(value, (int, float)) or isinstance(value, bool)
+                   or not math.isfinite(value) or value <= 0 for value in logical_size + [ppp])):
+        errors.append("missing or invalid logical viewport/DPI metadata")
+        viewport = None
     final = states.get("Capture final", {})
     if not final or final.get("clicktrap") is not False:
         errors.append("missing capture state or active focus mask")
@@ -101,6 +110,15 @@ def validate_capture(name, text, screenshot, returncode):
         errors.append("Entities layer not rendered")
     if name == "entity-form" and final.get("panel") != "Entities":
         errors.append("E shortcut did not open the Entities form")
+    if name == "entity-drag":
+        before = states.get("Workflow before", {})
+        if (not before or before.get("gesture") is not None or before.get("stroke") is not False
+                or final.get("gesture") != "EntityMove" or final.get("stroke") is not True
+                or final.get("panel") != "Entity" or final.get("layerType") != "Entities"
+                or not (before.get("entityCount") or 0) > 0
+                or final.get("entityCount") != before.get("entityCount")
+                or final.get("dirty") != before.get("dirty")):
+            errors.append("held entity drag did not start or changed the document")
     if name == "world" and final.get("world") is not True:
         errors.append("world view not active")
     if name == "paint":
@@ -117,13 +135,15 @@ def validate_capture(name, text, screenshot, returncode):
     image_size = None
     try:
         image_size, colors = png_size_and_colors(screenshot)
+        if viewport and any(abs(image_size[i] - logical_size[i] * ppp) > 1 for i in range(2)):
+            errors.append("logical viewport/DPI disagrees with screenshot dimensions")
         if min(image_size) < 600 or colors < 32:
             errors.append("screenshot is too small or blank")
     except (OSError, ValueError, struct.error, zlib.error) as error:
         errors.append(f"invalid screenshot: {error}")
     metrics = [line for line in text.splitlines() if line.startswith(("Ready ", "Injected input ", "RSS KiB:", "Native smoke:"))]
     return {"errors": errors, "adapter": adapter, "adapter_kind": kind, "state": final,
-            "states": states, "surface_errors": surface_errors, "image_size": image_size, "metrics": metrics}
+            "states": states, "surface_errors": surface_errors, "image_size": image_size, "viewport": viewport, "metrics": metrics}
 
 
 def main():
@@ -139,6 +159,10 @@ def main():
         ("home", None, {}),
         ("entities", "Entities.ldtk", {"VIEW": [408, 232, 1, False]}),
         ("entity-form", "Entities.ldtk", {"VIEW": [408, 232, 1, False], "KEY": "E"}),
+        # Same PlayerStart and world delta as the recorded entity_move scenario.
+        ("entity-drag", "Entities.ldtk", {"VIEW": [72, 360, 1, False], "ACTIONS": [
+            {"frame": 0, "pointer": [870, 450], "button": "primary", "pressed": True},
+            {"frame": 10, "pointer": [934, 418]}]}),
         ("world", "WorldMap_Free_layout.ldtk", {"VIEW": [256, -144, 0.5, True]}),
         ("paint", "AutoLayers_1_basic.ldtk", {"VIEW": [148, 104, 2, False], "KEY": "F1",
          "STROKE": [[x, 330] for x in range(750, 951, 8)]}),
@@ -155,7 +179,16 @@ def main():
               "run_url": run_url,
               "driver_environment": {key: os.environ[key] for key in ("DISPLAY", "WGPU_BACKEND", "VK_DRIVER_FILES", "LIBGL_ALWAYS_SOFTWARE") if key in os.environ},
               "scenarios": []}
+    home_size = [1440, 900]
     for name, fixture, controls in scenarios:
+        if name in ("entity-drag", "paint"):
+            dx, dy = (home_size[0] - 1440) / 2, (home_size[1] - 900) / 2
+            if name == "paint":
+                controls["STROKE"] = [[x + dx, y + dy] for x, y in controls["STROKE"]]
+            else:
+                for action in controls["ACTIONS"]:
+                    x, y = action["pointer"]
+                    action["pointer"] = [x + dx, y + dy]
         screenshot = output / f"{name}.png"
         screenshot.unlink(missing_ok=True)
         config = output / f"{name}-config"
@@ -179,9 +212,11 @@ def main():
             text, returncode = str(error), "launch failed"
         (output / f"{name}.log").write_text(text, encoding="utf-8")
         result = validate_capture(name, text, screenshot, returncode)
+        if name == "home" and result["viewport"]:
+            home_size = result["viewport"]["logicalSize"]
         if path and hashlib.sha256(path.read_bytes()).hexdigest() != before:
             result["errors"].append("source fixture was modified")
-        result.update({"name": name, "seconds": round(time.monotonic() - started, 3), "fixture": fixture, "fixture_sha256": before, "screenshot": screenshot.name, "log": f"{name}.log", "passed": not result["errors"]})
+        result.update({"name": name, "seconds": round(time.monotonic() - started, 3), "fixture": fixture, "fixture_sha256": before, "inputs": controls, "screenshot": screenshot.name, "log": f"{name}.log", "passed": not result["errors"]})
         report["scenarios"].append(result)
         report["passed"] = all(item["passed"] for item in report["scenarios"])
         (output / "results.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")

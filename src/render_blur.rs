@@ -564,6 +564,7 @@ mod gpu_tests {
         let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
         let adapter =
             block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).unwrap();
+        eprintln!("GPU adapter: {:?}", adapter.get_info());
         let (device, queue) =
             block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).unwrap();
         let texture = device.create_texture(&wgpu::TextureDescriptor {
@@ -673,7 +674,7 @@ mod gpu_tests {
             "blur must cross the original sprite boundary"
         );
         image::save_buffer(
-            "/private/tmp/ldtk-gaussian-gpu.png",
+            std::env::temp_dir().join("ldtk-gaussian-gpu.png"),
             &bytes,
             64,
             64,

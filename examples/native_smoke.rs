@@ -315,6 +315,11 @@ impl eframe::App for Smoke {
                     Ok(()) => {
                         self.captured = true;
                         CAPTURED.store(true, Ordering::Relaxed);
+                        let size = ctx.viewport_rect().size();
+                        eprintln!(
+                            "Capture viewport: {}",
+                            serde_json::json!({"logicalSize":[size.x,size.y],"pixelsPerPoint":ctx.pixels_per_point()})
+                        );
                         timing("Ready app.update CPU", &mut self.ready_update_times);
                         timing(
                             "Ready eframe CPU (previous frame update + CPU rendering)",

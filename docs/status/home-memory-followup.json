@@ -1,0 +1,121 @@
+{
+  "date": "2026-11-17",
+  "platform": "Apple M6 / macOS / Metal",
+  "mechanism": "egui-wgpu 0.33.3 queues upload buffers before acquiring the surface, then skips Queue::submit on acquisition failure. Pending staging buffers accumulate until submission.",
+  "upstream_fix": "https://github.com/emilk/egui/pull/7928",
+  "controlled_fault": "Only the disposable probe process CAMetalLayer device is temporarily cleared and then restored; acquisition returns actual SurfaceError::Timeout. This is explicit fault injection, not a claim that the historical OS event was reconstructed.",
+  "fix": "Production native_gpu_config submits pending uploads on acquisition errors through the existing renderer queue, then delegates to the original error callback. No waiting or normal-frame pacing change.",
+  "experiments": [
+    {
+      "case": "surface-fault-baseline",
+      "fault_seconds": 1,
+      "exit": 0,
+      "sampled_peak_rss_kib": 1878000,
+      "ready_rss_kib": 194240,
+      "capture_rss_kib": 283312,
+      "sampled_gpu_buffer_min": 8,
+      "sampled_gpu_buffer_max": 18881,
+      "surface_errors": {
+        "Timeout": 9435,
+        "Outdated": 0,
+        "Lost": 0,
+        "OutOfMemory": 0,
+        "Other": 0
+      },
+      "screenshot_recovered": true,
+      "log": ".tools/home-memory-followup/surface-fault-baseline.log",
+      "probe_sha256": null
+    },
+    {
+      "case": "surface-fault-flush",
+      "fault_seconds": 1,
+      "exit": 0,
+      "sampled_peak_rss_kib": 245536,
+      "ready_rss_kib": 196032,
+      "capture_rss_kib": 238400,
+      "sampled_gpu_buffer_min": 8,
+      "sampled_gpu_buffer_max": 8,
+      "surface_errors": {
+        "Timeout": 7011,
+        "Outdated": 0,
+        "Lost": 0,
+        "OutOfMemory": 0,
+        "Other": 0
+      },
+      "screenshot_recovered": true,
+      "log": ".tools/home-memory-followup/surface-fault-flush.log",
+      "probe_sha256": null
+    },
+    {
+      "case": "production-fix-fault-1s",
+      "fault_seconds": 1,
+      "exit": 0,
+      "sampled_peak_rss_kib": 197312,
+      "ready_rss_kib": 195152,
+      "capture_rss_kib": 259328,
+      "sampled_gpu_buffer_min": 8,
+      "sampled_gpu_buffer_max": 8,
+      "surface_errors": {
+        "Timeout": 6975,
+        "Outdated": 0,
+        "Lost": 0,
+        "OutOfMemory": 0,
+        "Other": 0
+      },
+      "screenshot_recovered": true,
+      "log": ".tools/home-memory-followup/production-fix-fault-1s.log",
+      "probe_sha256": "ca04c7aa94cea4619e1c6ff38619502646c30dda349281e052e955222c2ef9c0"
+    },
+    {
+      "case": "production-fix-fault-5s",
+      "fault_seconds": 5,
+      "exit": 0,
+      "sampled_peak_rss_kib": 197040,
+      "ready_rss_kib": 195600,
+      "capture_rss_kib": 258976,
+      "sampled_gpu_buffer_min": 8,
+      "sampled_gpu_buffer_max": 10,
+      "surface_errors": {
+        "Timeout": 36637,
+        "Outdated": 0,
+        "Lost": 0,
+        "OutOfMemory": 0,
+        "Other": 0
+      },
+      "screenshot_recovered": true,
+      "log": ".tools/home-memory-followup/production-fix-fault-5s.log",
+      "probe_sha256": "ca04c7aa94cea4619e1c6ff38619502646c30dda349281e052e955222c2ef9c0"
+    },
+    {
+      "case": "production-fix-fault-10s",
+      "fault_seconds": 10,
+      "exit": 0,
+      "sampled_peak_rss_kib": 198624,
+      "ready_rss_kib": 195584,
+      "capture_rss_kib": 260064,
+      "sampled_gpu_buffer_min": 8,
+      "sampled_gpu_buffer_max": 10,
+      "surface_errors": {
+        "Timeout": 73388,
+        "Outdated": 0,
+        "Lost": 0,
+        "OutOfMemory": 0,
+        "Other": 0
+      },
+      "screenshot_recovered": true,
+      "log": ".tools/home-memory-followup/production-fix-fault-10s.log",
+      "probe_sha256": "ca04c7aa94cea4619e1c6ff38619502646c30dda349281e052e955222c2ef9c0"
+    }
+  ],
+  "gpu_regression": {
+    "test": "app::gpu_surface_tests::surface_error_submits_pending_uploads_without_a_present",
+    "before": "failed: readback [0,0,0,0]",
+    "after": "passed: readback [1,2,3,4]"
+  },
+  "limits": [
+    "RSS samples are external ps measurements, separate from capture-time RSS.",
+    "Metal exposes buffer object counts in this probe but reports zero for buffer/texture byte counters; those zero byte values are not memory measurements.",
+    "The initial historical run did not record surface-error counts, so its exact OS trigger cannot be identified retroactively.",
+    "These bounded tests do not establish the absence of every possible memory leak."
+  ]
+}

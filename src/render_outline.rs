@@ -537,6 +537,7 @@ mod tests {
         let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
         let adapter =
             block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).unwrap();
+        eprintln!("GPU adapter: {:?}", adapter.get_info());
         let (device, queue) =
             block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).unwrap();
         let tex = device.create_texture(&wgpu::TextureDescriptor {
@@ -660,7 +661,7 @@ mod tests {
         assert_eq!(pixel(21, 32), [0; 4]);
         assert!(pixel(22, 22)[3] > 0 && pixel(22, 22)[3] < 255);
         image::save_buffer(
-            "/private/tmp/ldtk-outline-gpu.png",
+            std::env::temp_dir().join("ldtk-outline-gpu.png"),
             &bytes,
             64,
             64,

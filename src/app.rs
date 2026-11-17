@@ -24,6 +24,9 @@ mod entity_tools;
 mod field_tools;
 #[path = "editor/focus.rs"]
 mod focus;
+#[cfg(test)]
+#[path = "gpu_surface_tests.rs"]
+mod gpu_surface_tests;
 #[path = "editor/help.rs"]
 mod help;
 #[path = "editor/home_files.rs"]
@@ -131,11 +134,19 @@ pub fn native_gpu_config() -> eframe::egui_wgpu::WgpuConfiguration {
         },
         ..Default::default()
     };
-    eframe::egui_wgpu::WgpuConfiguration {
+    let mut config = eframe::egui_wgpu::WgpuConfiguration {
         desired_maximum_frame_latency: Some(1),
         wgpu_setup: setup.into(),
         ..Default::default()
-    }
+    };
+    let original = config.on_surface_error.clone();
+    config.on_surface_error = std::sync::Arc::new(move |error| {
+        // egui-wgpu 0.33 uploads before acquiring the surface. Skipping a
+        // failed frame must still submit those writes to release staging buffers.
+        canvas::submit_pending_gpu_uploads();
+        original(error)
+    });
+    config
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
