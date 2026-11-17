@@ -1,0 +1,103 @@
+name: Native GUI and GPU acceptance
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  gui:
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            target: aarch64-apple-darwin
+          - runner: macos-15-intel
+            target: x86_64-apple-darwin
+          - runner: windows-latest
+            target: x86_64-pc-windows-msvc
+          - runner: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+    runs-on: ${{ matrix.runner }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/cache@v6.1.0
+        with:
+          path: ~/.cargo/registry
+          key: cargo-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: cargo-${{ runner.os }}-${{ runner.arch }}-
+      - name: Linux virtual display and software Vulkan
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libxkbcommon-dev libwayland-dev libxrandr-dev libxi-dev libxcursor-dev libxinerama-dev xvfb xauth mesa-vulkan-drivers vulkan-tools
+          mkdir -p "$RUNNER_TEMP/xdg-runtime"
+          chmod 700 "$RUNNER_TEMP/xdg-runtime"
+          echo "XDG_RUNTIME_DIR=$RUNNER_TEMP/xdg-runtime" >> "$GITHUB_ENV"
+          echo 'VK_DRIVER_FILES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json' >> "$GITHUB_ENV"
+          echo 'LIBGL_ALWAYS_SOFTWARE=1' >> "$GITHUB_ENV"
+          test -f /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
+      - name: Rust toolchain
+        run: |
+          rustup update stable --no-self-update
+          rustup default stable
+          rustc -vV
+      - name: Build native harness and GPU tests
+        id: build
+        run: |
+          mkdir -p dist/gui-acceptance
+          cargo build --release --example native_smoke --locked
+          cargo test --release --bin ldtk-rs --no-run --locked --message-format=json > dist/gui-acceptance/gpu-test-build.jsonl
+      - name: Portable harness for physical-platform follow-up
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import os
+          import json
+          import zipfile
+          binary = "native_smoke.exe" if os.name == "nt" else "native_smoke"
+          with zipfile.ZipFile("dist/gui-acceptance/native-harness.zip", "w", zipfile.ZIP_DEFLATED) as archive:
+              archive.write(Path("target/release/examples") / binary, binary)
+              tests = [event["executable"] for line in Path("dist/gui-acceptance/gpu-test-build.jsonl").read_text().splitlines()
+                       if (event := json.loads(line)).get("reason") == "compiler-artifact"
+                       and event.get("target", {}).get("name") == "ldtk-rs"
+                       and event.get("profile", {}).get("test") and event.get("executable")]
+              assert len(tests) == 1, tests
+              archive.write(tests[0], "gpu-tests.exe" if os.name == "nt" else "gpu-tests")
+              archive.write("scripts/verify-gui-acceptance.py", "scripts/verify-gui-acceptance.py")
+              archive.writestr("source-commit.txt", os.environ["GITHUB_SHA"] + "\n")
+              for source in (Path("assets"), Path("examples/original")):
+                  for path in source.rglob("*"):
+                      if path.is_file():
+                          archive.write(path, Path("resources") / path)
+          PY
+      - name: Real native windows, forms, world view and paint input
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        timeout-minutes: 10
+        run: |
+          if [[ "$RUNNER_OS" == Linux ]]; then
+            xvfb-run -a -s '-screen 0 1600x1000x24' python scripts/verify-gui-acceptance.py
+          else
+            python scripts/verify-gui-acceptance.py
+          fi
+      - name: GPU blur readback
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        timeout-minutes: 3
+        run: |
+          cargo test --release --bin ldtk-rs --locked canvas::blur::gpu_tests::gaussian_composites_original_layer_then_blurs_on_gpu -- --ignored --exact --nocapture --test-threads=1 2>&1 | tee dist/gui-acceptance/gpu-blur.log
+          python -c 'from pathlib import Path; assert "test result: ok. 1 passed; 0 failed; 0 ignored;" in Path("dist/gui-acceptance/gpu-blur.log").read_text()'
+      - name: GPU outline passes and cache reuse
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        timeout-minutes: 3
+        run: |
+          cargo test --release --bin ldtk-rs --locked canvas::outline::tests::field_outline_uses_two_sixty_sample_passes_and_reuses_cached_flow -- --ignored --exact --nocapture --test-threads=1 2>&1 | tee dist/gui-acceptance/gpu-outline.log
+          python -c 'from pathlib import Path; assert "test result: ok. 1 passed; 0 failed; 0 ignored;" in Path("dist/gui-acceptance/gpu-outline.log").read_text()'
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: gui-acceptance-${{ matrix.target }}
+          path: dist/gui-acceptance/
+          if-no-files-found: warn
