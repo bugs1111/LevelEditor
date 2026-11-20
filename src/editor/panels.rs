@@ -35,6 +35,8 @@ use super::*;
 use definition_clipboard::ClipTarget;
 use serde_json::json;
 const TILESET_MIN_LABEL_WIDTH: f32 = 110.;
+const EMBEDDED_TILESET_DESCRIPTION: &str = "This tileset is using an embedded image from LDtk and cannot be modified. The tileset was added to your project because an element (an Entity or an Enum) uses it.";
+const EMBEDDED_TILESET_LICENSE: &str = "LICENSING: this image is only meant to be used inside LDtk and cannot be redistributed in any way. Please contact the author (FinalBossBlues) if you want to license this image for your own use in your game.";
 const ENUM_VALUE_SIZE: f32 = 32.;
 const ENUM_VALUE_SPACING: f32 = 3.;
 
@@ -56,6 +58,78 @@ fn tileset_has_marked_tiles(tileset: &Value) -> bool {
             tag["tileIds"].as_array().is_some_and(|ids| !ids.is_empty())
         })
     })
+}
+
+fn embedded_tileset_notice(ui: &mut egui::Ui) {
+    const WEBSITE: &str = "https://finalbossblues.itch.io/icons";
+    const PATREON: &str = "https://www.patreon.com/finalbossblues";
+    let spacing = ui.spacing().item_spacing.y;
+    ui.add_space(6.);
+    ui.spacing_mut().item_spacing.y = 0.;
+    let card = egui::Frame::new().inner_margin(17).show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        ui.spacing_mut().item_spacing.y = 8.;
+        ui.allocate_ui_with_layout(
+            egui::vec2(ui.available_width(), 32.),
+            egui::Layout::right_to_left(egui::Align::Center),
+            |ui| {
+                let support = source_controls::add_sized_button(
+                    ui,
+                    [99., 32.],
+                    egui::Button::image_and_text(
+                        egui::Image::new(egui::include_image!("../../assets/icons/love.svg"))
+                            .fit_to_exact_size(egui::Vec2::splat(20.))
+                            .tint(Color32::from_white_alpha(128)),
+                        RichText::new("Patreon").color(Color32::WHITE),
+                    )
+                    .fill(Color32::from_rgb(42, 114, 165))
+                    .corner_radius(0.),
+                )
+                .on_hover_cursor(egui::CursorIcon::PointingHand)
+                .on_hover_text(PATREON);
+                support.widget_info(|| {
+                    egui::WidgetInfo::labeled(egui::WidgetType::Link, true, "Patreon")
+                });
+                if support.clicked() {
+                    ui.ctx().open_url(egui::OpenUrl::new_tab(PATREON));
+                }
+                ui.allocate_ui_with_layout(
+                    egui::vec2(ui.available_width(), 32.),
+                    egui::Layout::left_to_right(egui::Align::Center),
+                    |ui| {
+                        ui.spacing_mut().item_spacing.x = 4.;
+                        ui.label(RichText::new(locale::tr(ui, "Image by")).size(15.));
+                        ui.label(
+                            RichText::new("FinalBossBlues")
+                                .font(FontId::new(15., egui::FontFamily::Name("body-bold".into()))),
+                        );
+                        ui.visuals_mut().hyperlink_color = theme::ACCENT;
+                        ui.hyperlink_to(locale::tr(ui, "website"), WEBSITE);
+                    },
+                );
+            },
+        );
+        let (_, line) = ui.allocate_space(egui::vec2(ui.available_width(), 1.));
+        ui.painter().rect_filled(line, 0., theme::LIGHT);
+        ui.label(
+            RichText::new(locale::tr(ui, EMBEDDED_TILESET_DESCRIPTION))
+                .size(15.)
+                .color(Color32::WHITE),
+        );
+        ui.label(
+            RichText::new(locale::tr(ui, EMBEDDED_TILESET_LICENSE))
+                .size(15.)
+                .color(theme::ACCENT),
+        );
+    });
+    ui.spacing_mut().item_spacing.y = spacing;
+    let rect = card.response.rect.shrink(0.5);
+    ui.painter().extend(egui::Shape::dashed_line(
+        &[rect.left_top(), rect.right_top(), rect.right_bottom(), rect.left_bottom(), rect.left_top()],
+        Stroke::new(1., Color32::from_rgb(115, 127, 157)),
+        3.,
+        2.,
+    ));
 }
 
 pub(super) fn enum_value_removal_open(ctx: &egui::Context) -> bool {
@@ -2194,7 +2268,8 @@ impl EditorApp {
     }
 
     fn tileset_properties(&mut self, ui: &mut egui::Ui) {
-        if !self.source_panel_active(ui) {
+        let in_definition_panel = self.source_panel_active(ui);
+        if !in_definition_panel {
             ui.horizontal(|ui| {
                 ui.label(locale::tr(ui, "Grid"));
                 ui.add(egui::DragValue::new(&mut self.new_grid).range(1..=1024));
@@ -2237,21 +2312,7 @@ impl EditorApp {
         let label_width = std::iter::once(("Tags", "tags"))
             .chain(editable_rows.into_iter().filter(|_| !embedded))
             .map(|(label, key)| source_controls::property_label_intrinsic_width(ui, label, key))
-            .fold(TILESET_MIN_LABEL_WIDTH, f32::max);
-        let options = if embedded {
-            RemapOptions {
-                mode: ldtk_core::TilesetRemap::AtlasCoordinates,
-                allow_loss: false,
-                clear_overrides: false,
-            }
-        } else {
-            remap_options(
-                ui,
-                ("tileset", uid),
-                false,
-                ldtk_core::TilesetRemap::AtlasCoordinates,
-            )
-        };
+            .fold(if embedded { 122. } else { TILESET_MIN_LABEL_WIDTH }, f32::max);
         let mut patch = json!({});
         if !embedded {
             source_controls::form_row(ui, "Source image", "relPath", label_width, |ui| {
@@ -2263,7 +2324,12 @@ impl EditorApp {
             });
             if let Some(identifier) =
                 source_controls::form_row(ui, "Identifier", "identifier", label_width, |ui| {
-                    ui_fields::buffered_text(ui, "identifier", text(&def, "identifier", ""))
+                    ui_fields::buffered_text_sized(
+                        ui,
+                        "identifier",
+                        text(&def, "identifier", ""),
+                        egui::vec2(ui.available_width(), 33.),
+                    )
                 })
             {
                 patch["identifier"] = json!(identifier);
@@ -2356,16 +2422,7 @@ impl EditorApp {
             });
         }
         if embedded {
-            ui.label(locale::tr(
-                ui,
-                "This tileset uses an embedded LDtk image and cannot be modified.",
-            ));
-            ui.horizontal(|ui| {
-                ui.label(locale::tr(ui, "Image by"));
-                ui.hyperlink_to("FinalBossBlues", "https://finalbossblues.itch.io/icons");
-                ui.hyperlink_to("Patreon", "https://www.patreon.com/finalbossblues");
-            });
-            ui.label(locale::tr(ui, "LICENSING: This image is only meant to be used inside LDtk and cannot be redistributed. Contact the author to license it for your game."));
+            embedded_tileset_notice(ui);
         }
         let current = def["tagsSourceEnumUid"].as_i64();
         let pending_id = egui::Id::new((
@@ -2436,12 +2493,22 @@ impl EditorApp {
                 .collect::<Vec<_>>();
             patch["enumTags"] = json!(tags);
         }
-        if changed(&patch) {
-            self.apply_tileset_form_patch(ui.ctx(), &def, patch, options);
+        if in_definition_panel {
+            self.definition_atlas_picker(&ui.ctx().clone(), ui, uid);
+        } else {
+            self.atlas_picker(&ui.ctx().clone(), ui, uid);
         }
-        self.atlas_picker(&ui.ctx().clone(), ui, uid);
         if embedded {
             return;
+        }
+        let options = remap_options(
+            ui,
+            ("tileset", uid),
+            false,
+            ldtk_core::TilesetRemap::AtlasCoordinates,
+        );
+        if changed(&patch) {
+            self.apply_tileset_form_patch(ui.ctx(), &def, patch, options);
         }
         collapsing(ui, "Saved tile selections", |ui| {
             let mut selections = def["savedSelections"]
@@ -2581,22 +2648,7 @@ impl EditorApp {
                         })
                     });
                     if ui.checkbox(&mut enabled, id).changed() {
-                        let mut entries = def["enumTags"].as_array().cloned().unwrap_or_default();
-                        let pos = entries
-                            .iter()
-                            .position(|v| v["enumValueId"] == id)
-                            .unwrap_or_else(|| {
-                                entries.push(json!({"enumValueId":id,"tileIds":[]}));
-                                entries.len() - 1
-                            });
-                        let ids = entries[pos]["tileIds"].as_array_mut().unwrap();
-                        ids.retain(|v| *v != self.tile_id);
-                        if enabled {
-                            ids.push(json!(self.tile_id));
-                        }
-                        self.edit("Tile tag changed", |p| {
-                            p.update_tileset_definition(uid, &json!({"enumTags":entries}))
-                        });
+                        self.mark_tileset_tiles(uid, id, &[self.tile_id], enabled);
                     }
                 }
             }
@@ -3140,7 +3192,7 @@ fn enum_value_name(
     .inner
 }
 
-fn enum_color(value: &Value) -> [u8; 3] {
+pub(super) fn enum_color(value: &Value) -> [u8; 3] {
     let color = value["color"].as_u64().unwrap_or_else(|| {
         u64::from_str_radix(
             value["color"]
@@ -3288,6 +3340,178 @@ mod tests {
         assert_eq!(app.project.as_ref().unwrap().tileset(uid).unwrap(), &def);
     }
     #[test]
+    fn tileset_definition_atlas_fills_the_panel_and_zooms_without_scrolling_it() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("Atlas.png");
+        image::RgbaImage::from_pixel(320, 320, image::Rgba([255, 255, 255, 255]))
+            .save(&path)
+            .unwrap();
+        let mut project = Project::new();
+        let uid = project.add_tileset(&path, 16, 320, 320).unwrap();
+        let mut app = EditorApp::empty();
+        app.set_project(project);
+        app.definition_uid = Some(uid);
+        let ctx = egui::Context::default();
+        theme::configure(&ctx);
+        ctx.style_mut(|style| style.animation_time = 0.);
+        let texture = (0..100)
+            .find_map(|_| {
+                app.assets.poll(&ctx);
+                let texture = app.assets.texture(&ctx, &path);
+                if texture.is_none() {
+                    std::thread::sleep(std::time::Duration::from_millis(2));
+                }
+                texture
+            })
+            .expect("atlas loaded");
+        let mut time = 0.;
+        let mut draw = |events| {
+            time += 0.05;
+            ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1440., 900.),
+                    )),
+                    time: Some(time),
+                    events,
+                    ..Default::default()
+                },
+                |ctx| assert!(app.source_panel(ctx, Panel::Tilesets)),
+            )
+        };
+        let atlas = |out: &egui::FullOutput| {
+            out.shapes
+                .iter()
+                .find_map(|shape| match &shape.shape {
+                    egui::Shape::Mesh(mesh) if mesh.texture_id == texture.id() => {
+                        Some((mesh.calc_bounds(), shape.clip_rect))
+                    }
+                    _ => None,
+                })
+                .expect("atlas paint")
+        };
+        draw(vec![]);
+        let (initial, view) = atlas(&draw(vec![]));
+        assert!((initial.width() / 320. - 3.).abs() < 0.001);
+        let pointer = view.center();
+        draw(vec![egui::Event::PointerMoved(pointer)]);
+        draw(vec![egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Line,
+            delta: egui::vec2(0., -1.),
+            modifiers: egui::Modifiers::NONE,
+        }]);
+        draw(vec![egui::Event::PointerMoved(egui::pos2(160., 520.))]);
+        for _ in 0..12 {
+            draw(vec![]);
+        }
+        let (scaled, zoomed_view) = atlas(&draw(vec![]));
+        let zoom = scaled.width() / 320.;
+        assert!((zoom - 2.64).abs() < 0.001, "{zoom}");
+        assert_eq!(view, zoomed_view);
+        assert!(((pointer - initial.min) / 3. - (pointer - scaled.min) / zoom).length() < 0.1);
+        assert_eq!(view.bottom(), 879.);
+        draw(vec![egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Line,
+            delta: egui::vec2(0., -1.),
+            modifiers: egui::Modifiers::NONE,
+        }]);
+        for _ in 0..12 {
+            draw(vec![]);
+        }
+        let (scrolled, scrolled_view) = atlas(&draw(vec![]));
+        assert!((scrolled.width() - scaled.width()).abs() < 0.1);
+        assert!(scrolled_view.top() < view.top());
+    }
+
+    #[test]
+    fn tileset_enum_marking_paints_and_erases_rectangles_through_the_atlas() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("Marks.png");
+        image::RgbaImage::from_pixel(96, 64, image::Rgba([255, 255, 255, 255]))
+            .save(&path)
+            .unwrap();
+        let mut project = Project::new();
+        let uid = project.add_tileset(&path, 16, 96, 64).unwrap();
+        let kind = project.add_enum_definition("TerrainKind", &["Water", "Ground"]).unwrap();
+        project.update_tileset_definition(uid, &json!({"tagsSourceEnumUid":kind})).unwrap();
+        let mut app = EditorApp::empty();
+        app.set_project(project);
+        app.panel = Some(Panel::Tilesets);
+        app.definition_uid = Some(uid);
+        let ctx = egui::Context::default();
+        theme::configure(&ctx);
+        ctx.style_mut(|style| style.animation_time = 0.);
+        let mut time = 0.;
+        let mut draw = |app: &mut EditorApp, events| {
+            time += 0.05;
+            ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1440., 900.))),
+                    time: Some(time),
+                    events,
+                    ..Default::default()
+                },
+                |ctx| {
+                    app.assets.poll(ctx);
+                    assert!(app.source_panel(ctx, Panel::Tilesets));
+                },
+            )
+        };
+        draw(&mut app, vec![]);
+        let texture = (0..100)
+            .find_map(|_| {
+                app.assets.poll(&ctx);
+                let texture = app.assets.texture(&ctx, &path);
+                if texture.is_none() {
+                    std::thread::sleep(std::time::Duration::from_millis(2));
+                }
+                texture
+            })
+            .expect("atlas loaded");
+        fn text_position(shape: &egui::Shape, expected: &str) -> Option<egui::Pos2> {
+            match shape {
+                egui::Shape::Text(text) if text.galley.job.text == expected => {
+                    Some(text.pos + text.galley.size() * 0.5)
+                }
+                egui::Shape::Vec(shapes) => shapes.iter().find_map(|s| text_position(s, expected)),
+                _ => None,
+            }
+        }
+        draw(&mut app, vec![]);
+        let output = draw(&mut app, vec![]);
+        let water = output.shapes.iter().find_map(|s| text_position(&s.shape, "Water"))
+            .expect("Water is selectable next to the atlas");
+        let atlas = output.shapes.iter().find_map(|s| match &s.shape {
+            egui::Shape::Mesh(mesh) if mesh.texture_id == texture.id() => Some(mesh.calc_bounds()),
+            _ => None,
+        }).unwrap();
+        let stroke = |app: &mut EditorApp, draw: &mut dyn FnMut(&mut EditorApp, Vec<egui::Event>) -> egui::FullOutput, from, to, button| {
+            let event = |pos, pressed| egui::Event::PointerButton {
+                pos,
+                button,
+                pressed,
+                modifiers: egui::Modifiers::NONE,
+            };
+            draw(app, vec![egui::Event::PointerMoved(from)]);
+            draw(app, vec![event(from, true)]);
+            draw(app, vec![egui::Event::PointerMoved(to)]);
+            draw(app, vec![event(to, false)]);
+        };
+        stroke(&mut app, &mut draw, water, water, egui::PointerButton::Primary);
+        let cell = |x: f32, y: f32| atlas.min + egui::vec2(24. + 48. * x, 24. + 48. * y);
+        let marked = |app: &EditorApp| {
+            app.project.as_ref().unwrap().tileset(uid).unwrap()["enumTags"][0]["tileIds"].clone()
+        };
+        stroke(&mut app, &mut draw, cell(0., 0.), cell(1., 1.), egui::PointerButton::Primary);
+        assert_eq!(marked(&app), json!([0,1,6,7]));
+        stroke(&mut app, &mut draw, cell(1., 0.), cell(1., 1.), egui::PointerButton::Secondary);
+        assert_eq!(marked(&app), json!([0,6]));
+        assert!(app.history.undo(app.project.as_mut().unwrap()));
+        assert_eq!(marked(&app), json!([0,1,6,7]));
+    }
+
+    #[test]
     fn tileset_form_uses_source_row_order_and_restricts_embedded_atlases() {
         fn label<'a>(shape: &'a egui::Shape, name: &str) -> Option<&'a egui::epaint::TextShape> {
             match shape {
@@ -3327,6 +3551,7 @@ mod tests {
         app.definition_uid = Some(13);
         let ctx = egui::Context::default();
         theme::configure(&ctx);
+        ctx.style_mut(|style| style.animation_time = 0.);
         for width in [1000., 900.] {
             draw(&mut app, &ctx, width);
             let out = draw(&mut app, &ctx, width);
@@ -3394,12 +3619,26 @@ mod tests {
                 .iter()
                 .any(|shape| label(&shape.shape, "Tags").is_some())
         );
+        for text in ["Image by", "FinalBossBlues", "website", "Patreon"] {
+            assert!(
+                out.shapes.iter().any(|shape| label(&shape.shape, text).is_some()),
+                "missing embedded tileset credit {text}"
+            );
+        }
+        let notice_border = out.shapes.iter().find_map(|shape| match &shape.shape {
+            egui::Shape::LineSegment { points, stroke }
+                if stroke.color == Color32::from_rgb(115, 127, 157) => Some(points[0]),
+            _ => None,
+        }).expect("the notice has a dashed border");
+        assert!(
+            (notice_border.x - 336.5).abs() < 0.5 && (notice_border.y - 153.5).abs() <= 3.,
+            "notice starts at {notice_border:?}"
+        );
         assert!(out.shapes.iter().any(|shape| {
-            label(
-                &shape.shape,
-                "This tileset uses an embedded LDtk image and cannot be modified.",
-            )
-            .is_some()
+            label(&shape.shape, EMBEDDED_TILESET_DESCRIPTION).is_some()
+        }));
+        assert!(out.shapes.iter().any(|shape| {
+            label(&shape.shape, EMBEDDED_TILESET_LICENSE).is_some()
         }));
         for name in [
             "Saved tile selections",
@@ -3413,6 +3652,11 @@ mod tests {
                 "embedded atlas must hide {name}"
             );
         }
+        let original = app.project.as_ref().unwrap().json.clone();
+        let target = ClipTarget::Definition { kind: "tilesets".into(), uid: Some(13) };
+        app.clipboard_copy(&ctx, &target, true);
+        app.clipboard_duplicate(&target);
+        assert_eq!(app.project.as_ref().unwrap().json, original);
     }
     #[test]
     fn tileset_layout_row_commits_grid_edit_and_undoes_it() {

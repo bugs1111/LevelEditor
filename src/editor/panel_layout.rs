@@ -61,6 +61,15 @@ fn image(panel: Panel) -> egui::ImageSource<'static> {
         _ => egui::include_image!("../../assets/icons/projectSettings.png"),
     }
 }
+fn definition_scroll_style() -> egui::style::ScrollStyle {
+    egui::style::ScrollStyle {
+        bar_width: 10.,
+        bar_inner_margin: 0.,
+        bar_outer_margin: 0.,
+        ..egui::style::ScrollStyle::solid()
+    }
+}
+
 fn source_panel_header(
     ui: &mut egui::Ui,
     panel: Panel,
@@ -134,14 +143,30 @@ fn orange(ui: &mut egui::Ui, label: &str, size: Vec2) -> egui::Response {
     )
 }
 fn source_menu(ui: &mut egui::Ui, body: impl FnOnce(&mut egui::Ui)) {
+    source_menu_sized(ui, None, body);
+}
+
+fn source_menu_sized(ui: &mut egui::Ui, size: Option<Vec2>, body: impl FnOnce(&mut egui::Ui)) {
     ui.scope(|ui| {
         ui.spacing_mut().button_padding = egui::vec2(5., 6.);
         ui.spacing_mut().interact_size.x = 18.;
-        ui.visuals_mut().widgets.inactive.weak_bg_fill = Color32::TRANSPARENT;
-        ui.visuals_mut().widgets.inactive.bg_fill = Color32::TRANSPARENT;
+        let fill = if size.is_some() {
+            ui.spacing_mut().button_padding.y = 0.;
+            Color32::from_black_alpha(25)
+        } else {
+            Color32::TRANSPARENT
+        };
+        ui.visuals_mut().widgets.inactive.weak_bg_fill = fill;
+        ui.visuals_mut().widgets.inactive.bg_fill = fill;
         ui.visuals_mut().widgets.inactive.bg_stroke =
             Stroke::new(1_f32, Color32::from_black_alpha(45));
-        let response = ui.menu_button(" ", body).response;
+        let response = if let Some(size) = size {
+            egui::containers::menu::MenuButton::from_button(egui::Button::new(" ").min_size(size))
+                .ui(ui, body)
+                .0
+        } else {
+            ui.menu_button(" ", body).response
+        };
         for y in [-4., 0., 4.] {
             ui.painter()
                 .circle_filled(response.rect.center() + egui::vec2(0., y), 1., theme::TEXT);
@@ -385,6 +410,12 @@ impl EditorApp {
         }
         let screen = ctx.content_rect();
         let width = source_panel_width(panel).min(screen.width());
+        let scroll_panel = matches!(panel, Panel::Layers | Panel::Tilesets);
+        let panel_width = if scroll_panel {
+            (width + 10.).min(screen.width())
+        } else {
+            width
+        };
         let rules = panel == Panel::Rules;
         let heading = if rules {
             self.project
@@ -408,7 +439,7 @@ impl EditorApp {
         } else {
             16
         };
-        let bottom_margin = if panel == Panel::Enums { 20 } else { 0 };
+        let bottom_margin = if scroll_panel || panel == Panel::Enums { 20 } else { 0 };
         let body_height =
             (height - header_height - f32::from(body_top) - f32::from(bottom_margin)).max(40.);
         let outside_click = ctx.input(|input| {
@@ -418,25 +449,10 @@ impl EditorApp {
                 .then(|| input.pointer.interact_pos())
                 .flatten()
         });
-        let mut close = !rules
-            && panel != Panel::World
-            && !(panel == Panel::Level && level_point_picker_was_open)
-            && outside_click.is_some_and(|pos| {
-                pos.x > width
-                    && pos.y >= 34.
-                    && ctx
-                        .layer_id_at(pos)
-                        .is_none_or(|layer| layer.order == egui::Order::Background)
-            });
+        let mut close = false;
         let panel_id = egui::Id::new("source-definition-panel");
         let dimmer = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, panel_id));
-        if !rules && panel != Panel::World {
-            dimmer.rect_filled(
-                Rect::from_min_max(egui::pos2(width, 34.), screen.max),
-                0.,
-                Color32::from_black_alpha(100),
-            );
-        }
+        let shade = (!rules && panel != Panel::World).then(|| dimmer.add(egui::Shape::Noop));
         let active_button = match panel {
             Panel::Project => Some(0),
             Panel::World => Some(1),
@@ -457,7 +473,7 @@ impl EditorApp {
                 );
             }
         }
-        egui::Area::new(panel_id)
+        let area = egui::Area::new(panel_id)
             .order(egui::Order::Foreground)
             .fixed_pos(egui::pos2(0., 34.))
             .constrain(false)
@@ -468,8 +484,10 @@ impl EditorApp {
                 ui.style_mut()
                     .text_styles
                     .insert(egui::TextStyle::Button, FontId::proportional(14.));
-                ui.set_width(width);
-                ui.set_max_width(width);
+                if !scroll_panel {
+                    ui.set_width(width);
+                }
+                ui.set_max_width(panel_width);
                 ui.set_min_height(height);
                 ui.spacing_mut().item_spacing = egui::vec2(0., 0.);
                 egui::Frame::new()
@@ -479,12 +497,16 @@ impl EditorApp {
                         theme::MEDIUM
                     })
                     .corner_radius(4.)
-                    .shadow(if rules || panel == Panel::Help {
+                    .shadow(if scroll_panel || rules || panel == Panel::Help {
                         egui::epaint::Shadow {
                             offset: [8, 0],
                             blur: 0,
                             spread: 0,
-                            color: theme::DARK,
+                            color: if scroll_panel {
+                                Color32::from_black_alpha(128)
+                            } else {
+                                theme::DARK
+                            },
                         }
                     } else {
                         egui::epaint::Shadow::NONE
@@ -492,12 +514,7 @@ impl EditorApp {
                     .show(ui, |ui| {
                         if panel == Panel::Help {
                             ui.set_height(height);
-                            ui.spacing_mut().scroll = egui::style::ScrollStyle {
-                                bar_width: 10.,
-                                bar_inner_margin: 0.,
-                                bar_outer_margin: 0.,
-                                ..egui::style::ScrollStyle::solid()
-                            };
+                            ui.spacing_mut().scroll = definition_scroll_style();
                             egui::ScrollArea::vertical()
                                 .id_salt("source-help-panel")
                                 .max_height(height)
@@ -526,83 +543,79 @@ impl EditorApp {
                                 });
                             return;
                         }
-                        close |= source_panel_header(ui, panel, width, header_height, &heading);
-                        let world_panel = panel == Panel::World;
-                        egui::Frame::new()
-                            .inner_margin(if world_panel {
-                                egui::Margin::ZERO
-                            } else {
-                                egui::Margin {
-                                    left: if rules { 8 } else { 20 },
-                                    right: if rules { 8 } else { 20 },
-                                    top: body_top,
-                                    bottom: bottom_margin,
-                                }
-                            })
-                            .show(ui, |ui| {
-                                if rules {
-                                    ui.set_width((width - 16.).max(0.));
-                                    self.rule_list(ui, body_height);
-                                    return;
-                                }
-                                if single_column {
-                                    let inner_width = width - if world_panel { 0. } else { 40. };
-                                    ui.set_width(inner_width);
-                                    ui.set_max_width(inner_width);
-                                    let scroll_height = if world_panel {
-                                        ui.spacing_mut().scroll = egui::style::ScrollStyle {
-                                            bar_width: 10.,
-                                            bar_inner_margin: 0.,
-                                            bar_outer_margin: 0.,
-                                            ..egui::style::ScrollStyle::solid()
+                        let mut contents = |ui: &mut egui::Ui, width: f32| {
+                            close |= source_panel_header(ui, panel, width, header_height, &heading);
+                            let world_panel = panel == Panel::World;
+                            egui::Frame::new()
+                                .inner_margin(if world_panel {
+                                    egui::Margin::ZERO
+                                } else {
+                                    egui::Margin {
+                                        left: if rules { 8 } else { 20 },
+                                        right: if rules { 8 } else { 20 },
+                                        top: body_top,
+                                        bottom: bottom_margin,
+                                    }
+                                })
+                                .show(ui, |ui| {
+                                    if rules {
+                                        ui.set_width((width - 16.).max(0.));
+                                        self.rule_list(ui, body_height);
+                                        return;
+                                    }
+                                    if single_column {
+                                        let inner_width = width - if world_panel { 0. } else { 40. };
+                                        ui.set_width(inner_width);
+                                        ui.set_max_width(inner_width);
+                                        let scroll_height = if world_panel {
+                                            ui.spacing_mut().scroll = definition_scroll_style();
+                                            ui.visuals_mut().clip_rect_margin = 0.;
+                                            height - 53.
+                                        } else {
+                                            body_height
                                         };
-                                        ui.visuals_mut().clip_rect_margin = 0.;
-                                        height - 53.
-                                    } else {
-                                        body_height
-                                    };
-                                    let mut world_viewport = world_panel.then(|| {
-                                        // Keep animated scrollbar width inside the fixed panel.
-                                        let (_, rect) = ui
-                                            .allocate_space(egui::vec2(inner_width, scroll_height));
-                                        let mut viewport =
-                                            ui.new_child(egui::UiBuilder::new().max_rect(rect));
-                                        viewport
-                                            .set_clip_rect(rect.intersect(viewport.clip_rect()));
-                                        viewport
-                                    });
-                                    let ui = world_viewport.as_mut().unwrap_or(ui);
-                                    ui.ctx()
-                                        .data_mut(|data| data.insert_temp(active_id(), true));
-                                    egui::ScrollArea::vertical()
-                                        .id_salt(("source-panel-body", title(panel)))
-                                        .max_height(scroll_height)
-                                        .auto_shrink([false, false])
-                                        .show(ui, |ui| {
-                                            let mut body = |ui: &mut egui::Ui| {
-                                                let content_width = ui.available_width();
-                                                ui.set_width(content_width);
-                                                ui.set_max_width(content_width);
-                                                match panel {
-                                                    Panel::World => self.source_world_form(ui),
-                                                    Panel::Level => self.source_level_form(ui),
-                                                    Panel::Project => self.source_project_form(ui),
-                                                    _ => unreachable!(),
-                                                }
-                                            };
-                                            if world_panel {
-                                                egui::Frame::new().inner_margin(16).show(ui, body);
-                                            } else {
-                                                body(ui);
-                                            }
+                                        let mut world_viewport = world_panel.then(|| {
+                                            // Keep animated scrollbar width inside the fixed panel.
+                                            let (_, rect) = ui
+                                                .allocate_space(egui::vec2(inner_width, scroll_height));
+                                            let mut viewport =
+                                                ui.new_child(egui::UiBuilder::new().max_rect(rect));
+                                            viewport
+                                                .set_clip_rect(rect.intersect(viewport.clip_rect()));
+                                            viewport
                                         });
-                                    ui.ctx()
-                                        .data_mut(|data| data.insert_temp(active_id(), false));
-                                    return;
-                                }
-                                ui.horizontal_top(|ui| {
+                                        let ui = world_viewport.as_mut().unwrap_or(ui);
+                                        ui.ctx()
+                                            .data_mut(|data| data.insert_temp(active_id(), true));
+                                        egui::ScrollArea::vertical()
+                                            .id_salt(("source-panel-body", title(panel)))
+                                            .max_height(scroll_height)
+                                            .auto_shrink([false, false])
+                                            .show(ui, |ui| {
+                                                let mut body = |ui: &mut egui::Ui| {
+                                                    let content_width = ui.available_width();
+                                                    ui.set_width(content_width);
+                                                    ui.set_max_width(content_width);
+                                                    match panel {
+                                                        Panel::World => self.source_world_form(ui),
+                                                        Panel::Level => self.source_level_form(ui),
+                                                        Panel::Project => self.source_project_form(ui),
+                                                        _ => unreachable!(),
+                                                    }
+                                                };
+                                                if world_panel {
+                                                    egui::Frame::new().inner_margin(16).show(ui, body);
+                                                } else {
+                                                    body(ui);
+                                                }
+                                            });
+                                        ui.ctx()
+                                            .data_mut(|data| data.insert_temp(active_id(), false));
+                                        return;
+                                    }
                                     let (list_width, gap) = match panel {
                                         Panel::Enums => (LIST_WIDTH.min(width * 0.4), 16.),
+                                        Panel::Layers => (LIST_WIDTH.min(width * 0.3), 16.),
                                         Panel::Tilesets => {
                                             (TILESET_LIST_WIDTH.min(width * 0.35), 16.)
                                         }
@@ -611,50 +624,130 @@ impl EditorApp {
                                         }
                                         _ => (LIST_WIDTH.min(width * 0.28), 16.),
                                     };
-                                    ui.allocate_ui_with_layout(
-                                        egui::vec2(list_width, body_height),
-                                        egui::Layout::top_down(egui::Align::Min),
-                                        |ui| {
-                                            ui.set_width(list_width);
-                                            ui.set_max_width(list_width);
-                                            ui.set_min_height(body_height);
-                                            self.source_sidebar(ui, panel, body_height);
-                                        },
-                                    );
-                                    ui.add_space(gap);
                                     let right = (width - 40. - list_width - gap).max(80.);
-                                    ui.allocate_ui_with_layout(
-                                        egui::vec2(right, body_height),
-                                        egui::Layout::top_down(egui::Align::Min),
-                                        |ui| {
-                                            ui.set_width(right);
-                                            ui.set_max_width(right);
-                                            ui.spacing_mut().item_spacing = egui::vec2(6., 8.);
-                                            ui.ctx().data_mut(|d| d.insert_temp(active_id(), true));
-                                            if panel == Panel::Enums {
-                                                self.source_enum_form(ui);
-                                            } else {
-                                                egui::ScrollArea::vertical()
-                                                    .id_salt(("source-panel-body", title(panel)))
-                                                    .max_height(body_height)
-                                                    .auto_shrink([false, false])
-                                                    .show(ui, |ui| {
-                                                        ui.set_width((right - 10.).max(60.));
-                                                        if panel == Panel::Entities {
-                                                            self.source_entity_form(ui);
-                                                        } else {
-                                                            self.properties(ui, panel);
-                                                        }
-                                                    });
-                                            }
-                                            ui.ctx()
-                                                .data_mut(|d| d.insert_temp(active_id(), false));
-                                        },
-                                    );
+                                    let sidebar = |app: &mut Self, ui: &mut egui::Ui, height| {
+                                        ui.allocate_ui_with_layout(
+                                            egui::vec2(list_width, height),
+                                            egui::Layout::top_down(egui::Align::Min),
+                                            |ui| {
+                                                ui.set_width(list_width);
+                                                ui.set_min_height(height);
+                                                app.source_sidebar(ui, panel, height);
+                                            },
+                                        );
+                                    };
+                                    let form = |app: &mut Self, ui: &mut egui::Ui| {
+                                        ui.allocate_ui_with_layout(
+                                            egui::vec2(right, body_height),
+                                            egui::Layout::top_down(egui::Align::Min),
+                                            |ui| {
+                                                ui.set_width(right);
+                                                ui.spacing_mut().item_spacing = egui::vec2(6., 8.);
+                                                ui.ctx().data_mut(|d| d.insert_temp(active_id(), true));
+                                                if scroll_panel {
+                                                    app.properties(ui, panel);
+                                                } else if panel == Panel::Enums {
+                                                    app.source_enum_form(ui);
+                                                } else {
+                                                    egui::ScrollArea::vertical()
+                                                        .id_salt(("source-panel-body", title(panel)))
+                                                        .max_height(body_height)
+                                                        .auto_shrink([false, false])
+                                                        .show(ui, |ui| {
+                                                            ui.set_width((right - 10.).max(60.));
+                                                            if panel == Panel::Entities {
+                                                                app.source_entity_form(ui);
+                                                            } else {
+                                                                app.properties(ui, panel);
+                                                            }
+                                                        });
+                                                }
+                                                ui.ctx().data_mut(|d| d.insert_temp(active_id(), false));
+                                            },
+                                        ).response.rect.height()
+                                    };
+                                    if scroll_panel {
+                                        ui.set_width(width - 40.);
+                                        ui.with_layout(egui::Layout::right_to_left(egui::Align::TOP), |ui| {
+                                            let form_height = form(self, ui);
+                                            ui.add_space(gap);
+                                            sidebar(self, ui, form_height.max(body_height));
+                                        });
+                                    } else {
+                                        ui.horizontal_top(|ui| {
+                                            sidebar(self, ui, body_height);
+                                            ui.add_space(gap);
+                                            form(self, ui);
+                                        });
+                                    }
                                 });
+                        };
+                        if scroll_panel {
+                            ui.spacing_mut().scroll = definition_scroll_style();
+                            let content_visuals = ui.visuals().clone();
+                            let visuals = ui.visuals_mut();
+                            visuals.clip_rect_margin = 0.;
+                            visuals.extreme_bg_color = theme::MEDIUM;
+                            visuals.widgets.inactive.bg_fill = Color32::from_rgb(115, 127, 157);
+                            visuals.widgets.hovered.bg_fill = theme::TEXT;
+                            visuals.widgets.active.bg_fill = theme::TEXT;
+                            visuals.widgets.inactive.corner_radius = 0.into();
+                            visuals.widgets.hovered.corner_radius = 0.into();
+                            visuals.widgets.active.corner_radius = 0.into();
+
+                            let frame_id = ui.make_persistent_id(("definition-panel-frame", title(panel)));
+                            let frame = ui.ctx().cumulative_frame_nr();
+                            let reopened = ui.data_mut(|data| {
+                                let previous = data.get_temp::<u64>(frame_id);
+                                data.insert_temp(frame_id, frame);
+                                previous.is_none_or(|previous| frame.saturating_sub(previous) > 1)
                             });
+                            let mut scroll = egui::ScrollArea::vertical()
+                                .id_salt(("definition-panel-scroll", title(panel)))
+                                .max_height(height)
+                                .auto_shrink([true, false])
+                                .scroll_source(egui::scroll_area::ScrollSource {
+                                    scroll_bar: true,
+                                    drag: false,
+                                    mouse_wheel: true,
+                                });
+                            if reopened {
+                                scroll = scroll.vertical_scroll_offset(0.);
+                            }
+                            scroll.show(ui, |ui| {
+                                *ui.visuals_mut() = content_visuals;
+                                let width = width.min(ui.available_width());
+                                ui.set_width(width);
+                                contents(ui, width);
+                            });
+                        } else {
+                            contents(ui, width);
+                        }
                     });
             });
+        let right = if scroll_panel {
+            area.response.rect.right().min(screen.right())
+        } else {
+            width
+        };
+        if let Some(shade) = shade {
+            dimmer.set(
+                shade,
+                egui::Shape::rect_filled(
+                    Rect::from_min_max(egui::pos2(right, 34.), screen.max),
+                    0.,
+                    Color32::from_black_alpha(100),
+                ),
+            );
+            close |= !(panel == Panel::Level && level_point_picker_was_open)
+                && outside_click.is_some_and(|pos| {
+                    pos.x > right
+                        && pos.y >= 34.
+                        && ctx
+                            .layer_id_at(pos)
+                            .is_none_or(|layer| layer.order == egui::Order::Background)
+                });
+        }
         self.rule_wizard(ctx);
         if rules {
             self.rule_detail_dialog(ctx);
@@ -675,7 +768,8 @@ impl EditorApp {
             Panel::Fields => FIELD_LIST_WIDTH,
             _ => LIST_WIDTH,
         };
-        ui.set_width(width.min(ui.available_width()));
+        let width = width.min(ui.available_width());
+        ui.set_width(width);
         ui.set_max_width(width);
         ui.spacing_mut().item_spacing = egui::vec2(4., 4.);
         if panel == Panel::Rules {
@@ -683,16 +777,22 @@ impl EditorApp {
             return;
         }
         if let Some(kind) = panel_kind(panel) {
-            if panel == Panel::Enums {
-                ui.add_space(2.);
+            let tilesets = panel == Panel::Tilesets;
+            let compact = matches!(panel, Panel::Layers | Panel::Tilesets);
+            if compact || panel == Panel::Enums {
+                ui.add_space(if compact { 3. } else { 2. });
             }
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 2.;
-                let create = if panel == Panel::Enums {
-                    let width = ui.available_width() - 72.;
+                let create = if compact || panel == Panel::Enums {
+                    let size = if compact {
+                        [ui.available_width(), 41.]
+                    } else {
+                        [ui.available_width() - 72., 43.]
+                    };
                     source_controls::add_sized_button(
                         ui,
-                        [width, 43.],
+                        size,
                         egui::Button::image(
                             egui::Image::new(egui::include_image!("../../assets/icons/add.svg"))
                                 .fit_to_exact_size(Vec2::splat(20.)),
@@ -782,6 +882,7 @@ impl EditorApp {
                 .and_then(|p| p.json["defs"][kind].as_array())
                 .cloned()
                 .unwrap_or_default();
+            let no_tilesets = tilesets && definitions.is_empty();
             let mut groups = BTreeMap::<String, Vec<Value>>::new();
             for def in definitions {
                 if !text(&def, "identifier", "")
@@ -804,7 +905,9 @@ impl EditorApp {
                     .unwrap_or_default();
                 if tags.is_empty() {
                     groups
-                        .entry(if matches!(panel, Panel::Entities | Panel::Enums) {
+                        .entry(if tilesets {
+                            String::new()
+                        } else if matches!(panel, Panel::Entities | Panel::Enums) {
                             "Other".into()
                         } else {
                             kind.to_owned()
@@ -817,7 +920,11 @@ impl EditorApp {
                     }
                 }
             }
-            let frame = if panel == Panel::Enums {
+            let mut groups = groups.into_iter().collect::<Vec<_>>();
+            if tilesets {
+                groups.sort_by_cached_key(|(name, _)| name.to_lowercase());
+            }
+            let frame = if compact || panel == Panel::Enums {
                 egui::Frame::new()
                     .fill(theme::DARK)
                     .stroke(Stroke::new(1., theme::LIGHT))
@@ -825,16 +932,37 @@ impl EditorApp {
             } else {
                 egui::Frame::NONE
             };
+            let list_height = (height
+                - match panel {
+                    Panel::Layers | Panel::Tilesets => 100.,
+                    Panel::Enums => 98.,
+                    _ => 88.,
+                })
+            .max(40.);
             frame.show(ui, |ui| {
+                if compact {
+                    ui.set_width((width - 10.).max(1.));
+                }
                 egui::ScrollArea::vertical()
                     .id_salt(("source-definition-list", kind))
-                    .max_height((height - if panel == Panel::Enums { 98. } else { 88. }).max(40.))
+                    .max_height(list_height)
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
+                        if compact {
+                            ui.set_min_height(list_height);
+                        }
+                        if no_tilesets {
+                            ui.add_space(26.);
+                            ui.vertical_centered(|ui| {
+                                ui.label(RichText::new(locale::tr(ui, "No tileset")).italics());
+                            });
+                        }
                         let multiple_groups = groups.len() > 1;
                         for (name, definitions) in groups {
                             ui.set_width(width.min(ui.available_width()));
-                            let show_header = if panel == Panel::Enums {
+                            let show_header = if tilesets {
+                                multiple_groups && filter.is_empty()
+                            } else if panel == Panel::Enums {
                                 multiple_groups
                             } else {
                                 kind != "layers" || name != kind
@@ -935,14 +1063,25 @@ impl EditorApp {
     ) {
         ui.set_width(ui.available_width());
         let enums = kind == "enums";
+        let layers = kind == "layers";
+        let tilesets = kind == "tilesets";
+        let compact = layers || tilesets;
+        let grouped_tilesets = tilesets && show_header;
+        let row_height = if tilesets { 27. } else { 28. };
+        let menu_width = if tilesets { 18. } else { 26. };
+        let shared_frame = enums || compact;
         egui::Frame::new()
-            .fill(if enums { Color32::TRANSPARENT } else { theme::DARK })
-            .stroke(if enums {
+            .fill(if shared_frame {
+                Color32::TRANSPARENT
+            } else {
+                theme::DARK
+            })
+            .stroke(if shared_frame {
                 Stroke::NONE
             } else {
                 Stroke::new(1., theme::LIGHT)
             })
-            .inner_margin(if enums { 0 } else { 4 })
+            .inner_margin(if shared_frame { 0 } else { 4 })
             .show(ui, |ui| {
                 let source_kind = match kind {
                     "entities" => "entity",
@@ -957,12 +1096,18 @@ impl EditorApp {
                         .map(|p| text(&p.json, "iid", ""))
                         .unwrap_or(""),
                     source_kind,
-                    if name == "Other" { "null" } else { name }
+                    if name == "Other" || tilesets && name.is_empty() { "null" } else { name }
                 );
                 let mut open = !show_header || self.settings.ui_state_int(&key, None, 1) != 0;
                 if show_header {
+                    if grouped_tilesets {
+                        ui.add_space(2.);
+                    }
                     let (rect, response) = ui
-                        .allocate_exact_size(egui::vec2(ui.available_width(), 20.), Sense::click());
+                        .allocate_exact_size(
+                            egui::vec2(ui.available_width(), if grouped_tilesets { 18. } else { 20. }),
+                            Sense::click(),
+                        );
                     ui.painter().rect_filled(rect, 0., GROUP_BAR);
                     let points = if open {
                         [
@@ -979,7 +1124,9 @@ impl EditorApp {
                             Stroke::new(2_f32, Color32::WHITE),
                         );
                     }
-                    let heading = if name == "Other"
+                    let heading = if tilesets && name.is_empty() {
+                        locale::tr(ui, "Untagged")
+                    } else if name == "Other"
                         && definitions.iter().all(|def| {
                             def["tags"]
                                 .as_array()
@@ -1002,45 +1149,113 @@ impl EditorApp {
                     }
                 }
                 if open {
+                    let margin = if grouped_tilesets {
+                        egui::Margin {
+                            left: 13,
+                            right: 13,
+                            top: 9,
+                            bottom: 12,
+                        }
+                    } else {
+                        egui::Margin::same(if layers { 0 } else { 4 })
+                    };
                     egui::Frame::new()
-                        .inner_margin(egui::Margin::symmetric(4, 4))
+                        .inner_margin(margin)
                         .show(ui, |ui| {
+                            if compact {
+                                ui.spacing_mut().item_spacing = egui::vec2(8., 1.);
+                            }
+                            let drag_group = tilesets.then(|| name.to_owned());
                             for def in definitions {
                                 let uid = def["uid"].as_i64().unwrap_or(-1);
                                 let selected = self.definition_uid == Some(uid);
                                 let color_key = if kind == "layers" { "uiColor" } else { "color" };
                                 let color = theme::color(text(def, color_key, "#687487"));
-                                let fill = if enums {
+                                let layer_color = def["uiColor"].as_str().map(theme::color);
+                                let fill = if layers {
+                                    match (selected, layer_color) {
+                                        (true, Some(color)) => color,
+                                        (false, Some(color)) => tint(theme::DARK, color, 0.5),
+                                        (true, None) => theme::ACCENT,
+                                        (false, None) => theme::MEDIUM,
+                                    }
+                                } else if enums || tilesets {
                                     if selected { theme::ACCENT } else { theme::MEDIUM }
                                 } else if selected {
-                                    if kind == "layers" {
-                                        def["uiColor"]
-                                            .as_str()
-                                            .map(theme::color)
-                                            .unwrap_or(theme::ACCENT)
-                                    } else {
-                                        tint(color, Color32::WHITE, 0.65)
-                                    }
+                                    tint(color, Color32::WHITE, 0.65)
                                 } else {
                                     tint(theme::MEDIUM, color, 0.22)
                                 };
                                 let item = egui::Frame::new()
                                     .fill(fill)
-                                    .inner_margin(egui::Margin::symmetric(4, 0))
+                                    .inner_margin(egui::Margin::symmetric(4, if compact { 3 } else { 0 }))
                                     .show(ui, |ui| {
                                         ui.horizontal(|ui| {
                                             let grip = egui::Label::new(
                                                 RichText::new("≡").color(theme::TEXT),
                                             )
                                             .sense(Sense::drag());
-                                            let handle = if enums {
+                                            let handle = if compact {
+                                                let (rect, response) = ui.allocate_exact_size(
+                                                    egui::vec2(16., row_height),
+                                                    Sense::drag(),
+                                                );
+                                                egui::Image::new(egui::include_image!("../../assets/icons/dragAlpha.svg"))
+                                                    .paint_at(ui, Rect::from_center_size(rect.center(), Vec2::splat(18.)));
+                                                response
+                                            } else if enums {
                                                 ui.add_sized([19., 33.], grip)
                                             } else {
                                                 ui.add(grip)
                                             };
-                                            handle.dnd_set_drag_payload((kind.to_owned(), uid));
+                                            handle.dnd_set_drag_payload((kind.to_owned(), uid, drag_group.clone()));
                                             let label = text(def, "identifier", "Definition");
-                                            let response = if enums {
+                                            let response = if compact {
+                                                let (rect, response) = ui.allocate_exact_size(
+                                                    egui::vec2((ui.available_width() - menu_width - 8.).max(32.), row_height),
+                                                    Sense::click(),
+                                                );
+                                                let label_offset = if layers {
+                                                    self.source_definition_thumbnail(
+                                                        ui, def, kind,
+                                                        Rect::from_center_size(rect.left_center() + egui::vec2(12., 0.), Vec2::splat(24.)),
+                                                        color,
+                                                    );
+                                                    32.
+                                                } else if !def["embedAtlas"].is_null() {
+                                                    let icon = egui::Image::new(egui::include_image!("../../assets/icons/embed.svg"));
+                                                    let icon = if selected { icon.tint(Color32::BLACK) } else { icon };
+                                                    icon.paint_at(ui, Rect::from_center_size(
+                                                        rect.left_center() + egui::vec2(8., 0.), Vec2::splat(16.),
+                                                    ));
+                                                    20.
+                                                } else {
+                                                    0.
+                                                };
+                                                let ink = if selected {
+                                                    Color32::BLACK
+                                                } else if let Some(color) = layer_color {
+                                                    tint(color, Color32::WHITE, 0.3)
+                                                } else {
+                                                    theme::TEXT
+                                                };
+                                                let name = egui::WidgetText::from(RichText::new(label).color(ink));
+                                                let galley = name.into_galley(
+                                                    ui,
+                                                    Some(egui::TextWrapMode::Truncate),
+                                                    (rect.width() - label_offset).max(0.),
+                                                    FontId::proportional(14.),
+                                                );
+                                                ui.painter().galley(
+                                                    rect.left_center() + egui::vec2(label_offset, -galley.size().y / 2.),
+                                                    galley,
+                                                    ink,
+                                                );
+                                                response.widget_info(|| egui::WidgetInfo::selected(
+                                                    egui::WidgetType::SelectableLabel, true, selected, label,
+                                                ));
+                                                response
+                                            } else if enums {
                                                 let (rect, response) = ui.allocate_exact_size(
                                                     egui::vec2((ui.available_width() - 21.).max(20.), 33.),
                                                     Sense::click(),
@@ -1091,7 +1306,7 @@ impl EditorApp {
                                                     self.field_uid = None;
                                                 }
                                             }
-                                            source_menu(ui, |ui| {
+                                            source_menu_sized(ui, compact.then_some(egui::vec2(menu_width, row_height)), |ui| {
                                                 self.clipboard_menu(
                                                     ui,
                                                     ClipTarget::Definition {
@@ -1103,6 +1318,7 @@ impl EditorApp {
                                                 {
                                                     let index = self.definition_index(kind, uid);
                                                     self.source_reorder_definition(
+                                                        ui.ctx(),
                                                         kind,
                                                         uid,
                                                         index.saturating_sub(1),
@@ -1118,6 +1334,7 @@ impl EditorApp {
                                                         .as_array()
                                                         .map_or(0, Vec::len);
                                                     self.source_reorder_definition(
+                                                        ui.ctx(),
                                                         kind,
                                                         uid,
                                                         (index + 1).min(count.saturating_sub(1)),
@@ -1127,10 +1344,27 @@ impl EditorApp {
                                             });
                                         });
                                     });
+                                if compact {
+                                    let rect = item.response.rect;
+                                    if let Some(color) = layer_color {
+                                        ui.painter().rect_filled(
+                                            Rect::from_min_max(egui::pos2(rect.right() - 4., rect.top()), rect.max),
+                                            0.,
+                                            if selected { Color32::WHITE } else { color },
+                                        );
+                                    }
+                                    if !selected && item.response.contains_pointer() {
+                                        ui.painter().rect_stroke(
+                                            rect, 0., Stroke::new(2., Color32::from_white_alpha(166)),
+                                            StrokeKind::Inside,
+                                        );
+                                    }
+                                }
                                 if let Some(payload) =
-                                    item.response.dnd_hover_payload::<(String, i64)>()
+                                    item.response.dnd_hover_payload::<(String, i64, Option<String>)>()
                                     && payload.0 == kind
                                     && payload.1 != uid
+                                    && payload.2 == drag_group
                                 {
                                     ui.painter().hline(
                                         item.response.rect.x_range(),
@@ -1139,27 +1373,39 @@ impl EditorApp {
                                     );
                                 }
                                 if let Some(payload) =
-                                    item.response.dnd_release_payload::<(String, i64)>()
+                                    item.response.dnd_release_payload::<(String, i64, Option<String>)>()
                                     && payload.0 == kind
                                     && payload.1 != uid
+                                    && payload.2 == drag_group
                                 {
                                     self.source_reorder_definition(
+                                        ui.ctx(),
                                         kind,
                                         payload.1,
                                         self.definition_index(kind, uid),
                                     );
                                 }
-                                ui.add_space(3.);
+                                if !compact {
+                                    ui.add_space(3.);
+                                }
                             }
                         });
                 }
             });
-        ui.add_space(8.);
+        if !tilesets {
+            ui.add_space(8.);
+        } else if show_header {
+            ui.add_space(3.);
+        }
     }
-    fn source_reorder_definition(&mut self, kind: &str, uid: i64, index: usize) {
-        self.edit("Definition reordered", |p| {
+    fn source_reorder_definition(&mut self, ctx: &egui::Context, kind: &str, uid: i64, index: usize) {
+        let reordered = self.edit("Definition reordered", |p| {
             p.reorder_definition(kind, uid, index)
         });
+        if reordered.is_some() && matches!(kind, "layers" | "tilesets") {
+            self.definition_uid = Some(uid);
+            self.clipboard_focus(ctx, ClipTarget::Definition { kind: kind.to_owned(), uid: Some(uid) });
+        }
     }
     pub(super) fn source_definition_thumbnail(
         &mut self,
@@ -2924,6 +3170,180 @@ impl EditorApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tileset_sidebar_uses_compact_rows_and_orders_untagged_before_named_groups() {
+        let ctx = egui::Context::default();
+        theme::configure(&ctx);
+        ctx.style_mut(|style| style.animation_time = 0.);
+        let mut project = Project::new();
+        let builtin = project.ensure_embedded_icons().unwrap();
+        let mut app = EditorApp::empty();
+        app.set_project(project);
+        app.definition_uid = Some(builtin);
+        let draw = |app: &mut EditorApp| {
+            ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1440., 900.),
+                    )),
+                    ..Default::default()
+                },
+                |ctx| assert!(app.source_panel(ctx, Panel::Tilesets)),
+            )
+        };
+        let center = |out: &egui::FullOutput, label| {
+            out.shapes
+                .iter()
+                .find_map(|shape| text_center(&shape.shape, label))
+        };
+        draw(&mut app);
+        let single = draw(&mut app);
+        assert!(center(&single, "TILESETS").is_none());
+        let row = single.shapes.iter().find_map(|shape| match &shape.shape {
+            egui::Shape::Rect(row) if row.fill == theme::ACCENT && row.rect.width() > 200. => {
+                Some(row.rect)
+            }
+            _ => None,
+        }).expect("selected tileset row");
+        assert_eq!(row.x_range(), egui::Rangef::new(29., 311.));
+        assert!((row.top() - 198.).abs() <= 1.);
+        assert!((row.height() - 33.).abs() <= 1.);
+        let project = app.project.as_mut().unwrap();
+        for (image, tag) in [("Canopy.png", "Forest"), ("Road.png", "city")] {
+            let uid = project.add_tileset(Path::new(image), 16, 32, 32).unwrap();
+            project.update_tileset_definition(uid, &json!({"tags":[tag]})).unwrap();
+        }
+        let tagged = draw(&mut app);
+        let headings = ["UNTAGGED", "CITY", "FOREST"].map(|name| {
+            center(&tagged, name).unwrap_or_else(|| panic!("missing group {name}")).y
+        });
+        assert!(headings[0] < headings[1] && headings[1] < headings[2]);
+    }
+
+    #[test]
+    fn source_layer_form_keeps_the_outer_scrollbar_out_of_the_column_grid() {
+        let ctx = egui::Context::default();
+        theme::configure(&ctx);
+        ctx.style_mut(|style| style.animation_time = 0.);
+        let mut app = EditorApp::empty();
+        let mut project = Project::new();
+        project.add_layer("Ground", "IntGrid", 16).unwrap();
+        app.set_project(project);
+        let mut time = 0.;
+        let mut draw = |visible, events| {
+            time += 0.05;
+            ctx.run(
+                egui::RawInput {
+                    time: Some(time),
+                    screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1440., 620.))),
+                    events,
+                    ..Default::default()
+                },
+                |ctx| {
+                    if visible {
+                        assert!(app.source_panel(ctx, Panel::Layers));
+                    }
+                },
+            )
+        };
+        draw(true, vec![]);
+        let initial = draw(true, vec![]);
+        let form = initial.shapes.iter().find_map(|shape| match &shape.shape {
+            egui::Shape::Rect(rect) if rect.fill == GROUP_BAR && rect.rect.top() == 104. => {
+                Some(rect.rect)
+            }
+            _ => None,
+        });
+        assert_eq!(form.unwrap().x_range(), egui::Rangef::new(287., 979.));
+        let title_visible = |output: &egui::FullOutput| {
+            output.shapes.iter().any(|shape| {
+                text_center(&shape.shape, "PROJECT LAYERS")
+                    .is_some_and(|center| center.y >= 34. && shape.clip_rect.contains(center))
+            })
+        };
+        assert!(title_visible(&initial));
+        draw(true, vec![egui::Event::PointerMoved(egui::pos2(750., 305.))]);
+        draw(true, vec![egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Point,
+            delta: egui::vec2(0., -360.),
+            modifiers: egui::Modifiers::NONE,
+        }]);
+        for _ in 0..5 {
+            draw(true, vec![]);
+        }
+        assert!(!title_visible(&draw(true, vec![])));
+        draw(false, vec![]);
+        draw(true, vec![]);
+        assert!(title_visible(&draw(true, vec![])));
+    }
+
+    #[test]
+    fn source_layer_sidebar_keeps_full_width_compact_rows_and_selects_by_icon() {
+        let ctx = egui::Context::default();
+        theme::configure(&ctx);
+        ctx.style_mut(|style| style.animation_time = 0.);
+        let mut project = Project::new();
+        let lower = project.add_layer("Road", "Tiles", 16).unwrap();
+        let upper = project.add_layer("Landscape_Collision", "IntGrid", 16).unwrap();
+        let mut app = EditorApp::empty();
+        app.set_project(project);
+        app.definition_uid = Some(upper);
+        let mut time = 0.;
+        let mut draw = |app: &mut EditorApp, events| {
+            time += 0.05;
+            ctx.run(
+                egui::RawInput {
+                    time: Some(time),
+                    screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1440., 900.))),
+                    events,
+                    ..Default::default()
+                },
+                |ctx| assert!(app.source_panel(ctx, Panel::Layers)),
+            )
+        };
+        draw(&mut app, vec![]);
+        let output = draw(&mut app, vec![]);
+        let selected = output.shapes.iter().find_map(|shape| match &shape.shape {
+            egui::Shape::Rect(rect) if rect.fill == theme::ACCENT && rect.rect.width() > 100. => {
+                Some(rect.rect)
+            }
+            _ => None,
+        });
+        assert_eq!(
+            selected,
+            Some(Rect::from_min_size(egui::pos2(25., 194.), egui::vec2(240., 34.)))
+        );
+        let list = output.shapes.iter().find_map(|shape| match &shape.shape {
+            egui::Shape::Rect(rect) if rect.fill == theme::DARK && rect.rect.height() > 500. => {
+                Some(rect.rect)
+            }
+            _ => None,
+        });
+        let list = list.expect("full-height layer list");
+        assert_eq!(list.x_range(), egui::Rangef::new(20., 270.));
+        assert!((list.top() - 189.).abs() < 0.5, "{list:?}");
+        assert!(list.bottom() >= 875.5, "{list:?}");
+
+        let pos = egui::pos2(65., 246.);
+        for pressed in [true, false] {
+            draw(&mut app, vec![
+                egui::Event::PointerMoved(pos),
+                egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ]);
+        }
+        assert_eq!(app.definition_uid, Some(lower));
+        app.source_reorder_definition(&ctx, "layers", upper, 1);
+        assert_eq!(app.definition_uid, Some(upper));
+        assert_eq!(app.definition_index("layers", upper), 1);
+    }
+
     fn draw_section(
         ctx: &egui::Context,
         open: &mut bool,

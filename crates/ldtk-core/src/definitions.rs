@@ -977,6 +977,14 @@ impl Project {
                 }
                 *custom = out;
             }
+            // Enum marking edits metadata without changing atlas geometry or generated tiles.
+            if mode == TilesetRemap::AtlasCoordinates
+                && !allow_loss
+                && fields.len() == 1
+                && fields.contains_key("enumTags")
+            {
+                return Ok(removed);
+            }
             let layer_defs = p.json["defs"]["layers"]
                 .as_array()
                 .cloned()

@@ -266,14 +266,36 @@ fn intgrid_palette_and_auto_tiles_share_the_same_section() {
 }
 
 #[test]
-fn painted_intgrid_value_requires_confirmation_and_undo_restores_cells() {
+fn painted_intgrid_value_removal_refreshes_current_linked_layer_and_can_be_undone() {
     let (mut app, ctx, uid) = editor("IntGrid");
-    let key = app.project.as_ref().unwrap().level_keys()[0];
-    app.project
-        .as_mut()
-        .unwrap()
-        .paint_int_grid(key, 0, 0, 0, 1)
+    let key = app.selected.unwrap();
+    let project = app.project.as_mut().unwrap();
+    let linked = project.add_layer("Linked", "AutoLayer", 16).unwrap();
+    let atlas = project
+        .add_tileset(std::path::Path::new("Atlas.png"), 16, 16, 16)
         .unwrap();
+    project
+        .update_layer_properties(
+            linked,
+            &json!({
+                "autoSourceLayerDefUid":uid,"tilesetDefUid":atlas,
+                "autoRuleGroups":[{"uid":80,"active":true,"rules":[
+                    {"uid":81,"active":true,"size":1,"pattern":[1],"tileRectsIds":[[0]],"chance":1}
+                ]}]
+            }),
+        )
+        .unwrap();
+    let other = project.add_level(None, "Other", 32, 32).unwrap();
+    for level in [key, other] {
+        project.paint_int_grid(level, 1, 0, 0, 1).unwrap();
+        assert_eq!(
+            project.layer(level, 0).unwrap()["autoLayerTiles"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+    }
     frame(&mut app, &ctx, vec![]);
     let out = frame(&mut app, &ctx, vec![]);
     fn delete_button(shape: &egui::Shape) -> Option<egui::Pos2> {
@@ -304,14 +326,85 @@ fn painted_intgrid_value_requires_confirmation_and_undo_restores_cells() {
     let confirm = frame(&mut app, &ctx, vec![]);
     click(&mut app, &ctx, label(&confirm, "CONFIRM").center());
     assert_eq!(layer(&app, uid)["intGridValues"], json!([]));
+    let project = app.project.as_ref().unwrap();
+    assert_eq!(project.layer(key, 1).unwrap()["intGridCsv"][0], 0);
+    assert_eq!(project.layer(other, 1).unwrap()["intGridCsv"][0], 0);
+    assert_eq!(project.layer(key, 0).unwrap()["autoLayerTiles"], json!([]));
     assert_eq!(
-        app.project.as_ref().unwrap().layer(key, 0).unwrap()["intGridCsv"][0],
-        0
+        project.layer(other, 0).unwrap()["autoLayerTiles"],
+        before["levels"][other.level]["layerInstances"][0]["autoLayerTiles"]
     );
     assert!(app.last_chance.is_some());
     app.restore_last_chance();
     assert_eq!(app.project.as_ref().unwrap().json, before);
 }
+#[test]
+fn deleting_intgrid_group_updates_own_and_linked_rules_in_current_level() {
+    let (mut app, ctx, source) = editor("IntGrid");
+    let key = app.selected.unwrap();
+    let project = app.project.as_mut().unwrap();
+    let linked = project.add_layer("Linked", "AutoLayer", 16).unwrap();
+    let atlas = project
+        .add_tileset(std::path::Path::new("Atlas.png"), 16, 32, 16)
+        .unwrap();
+    project
+        .update_layer_properties(
+            source,
+            &json!({
+                "intGridValuesGroups":[{"uid":1,"identifier":"Terrain"}],
+                "intGridValues":[{"value":1,"color":"#263D45","groupUid":1}]
+            }),
+        )
+        .unwrap();
+    for (uid, group) in [(source, 80), (linked, 90)] {
+        project
+            .update_layer_properties(
+                uid,
+                &json!({
+                    "autoSourceLayerDefUid": (uid == linked).then_some(source),
+                    "tilesetDefUid":atlas,
+                    "autoRuleGroups":[{"uid":group,"active":true,"rules":[
+                        {"uid":group+1,"active":true,"size":1,"pattern":[2000],"tileRectsIds":[[0]],"chance":1},
+                        {"uid":group+2,"active":true,"size":1,"pattern":[1000],"tileRectsIds":[[1]],"chance":1}
+                    ]}]
+                }),
+            )
+            .unwrap();
+    }
+    let other = project.add_level(None, "Other", 32, 32).unwrap();
+    let tiles = |project: &Project, key: LevelKey| {
+        [0, 1].map(|index| project.layer(key, index).unwrap()["autoLayerTiles"][0]["t"].clone())
+    };
+    for level in [key, other] {
+        project.paint_int_grid(level, 1, 0, 0, 1).unwrap();
+        assert_eq!(tiles(project, level), [0, 0]);
+    }
+    let before = project.json.clone();
+    let action = IntGridRemoval::Group(1);
+    frame(&mut app, &ctx, vec![]);
+    app.int_grid_removal = Some((source, action));
+    frame(&mut app, &ctx, vec![]);
+    let confirm = frame(&mut app, &ctx, vec![]);
+    click(&mut app, &ctx, label(&confirm, "CANCEL").center());
+    assert_eq!(app.project.as_ref().unwrap().json, before);
+
+    app.int_grid_removal = Some((source, action));
+    frame(&mut app, &ctx, vec![]);
+    let confirm = frame(&mut app, &ctx, vec![]);
+    click(&mut app, &ctx, label(&confirm, "CONFIRM").center());
+    assert_eq!(layer(&app, source)["intGridValuesGroups"], json!([]));
+    assert_eq!(layer(&app, source)["intGridValues"][0]["groupUid"], 0);
+    let project = app.project.as_ref().unwrap();
+    for level in [key, other] {
+        assert_eq!(project.layer(level, 1).unwrap()["intGridCsv"][0], 1);
+    }
+    assert_eq!(tiles(project, key), [1, 1]);
+    assert_eq!(tiles(project, other), [0, 0]);
+    assert!(!app.pending_auto_layer_rebuild);
+    assert!(app.history.undo(app.project.as_mut().unwrap()));
+    assert_eq!(app.project.as_ref().unwrap().json, before);
+}
+
 #[test]
 fn source_layer_groups_and_type_options_do_not_mutate_on_open() {
     for kind in ["Tiles", "IntGrid", "AutoLayer", "Entities"] {

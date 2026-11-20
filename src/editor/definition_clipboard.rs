@@ -145,7 +145,20 @@ impl EditorApp {
             _ => return None,
         })
     }
+    fn clipboard_is_embedded_tileset(&self, target: &ClipTarget) -> bool {
+        matches!(
+            target,
+            ClipTarget::Definition { kind, uid: Some(uid) }
+                if kind == "tilesets"
+                    && self.project.as_ref().and_then(|p| p.tileset(*uid))
+                        .is_some_and(|tileset| !tileset["embedAtlas"].is_null())
+        )
+    }
+
     pub(super) fn clipboard_copy(&mut self, ctx: &egui::Context, target: &ClipTarget, cut: bool) {
+        if self.clipboard_is_embedded_tileset(target) {
+            return;
+        }
         let Some(p) = self.project.as_ref() else {
             return;
         };
@@ -276,6 +289,9 @@ impl EditorApp {
         }
     }
     pub(super) fn clipboard_duplicate(&mut self, target: &ClipTarget) {
+        if self.clipboard_is_embedded_tileset(target) {
+            return;
+        }
         let Some(p) = self.project.as_ref() else {
             return;
         };
@@ -297,11 +313,12 @@ impl EditorApp {
             self.rule_clipboard_menu(ui, &target, rule.is_none());
             return;
         }
-        if source_controls::button(ui, "Copy  ⌘C").clicked() {
+        let can_copy = !self.clipboard_is_embedded_tileset(&target);
+        if can_copy && source_controls::button(ui, "Copy  ⌘C").clicked() {
             self.clipboard_copy(ui.ctx(), &target, false);
             ui.close();
         }
-        if source_controls::button(ui, "Cut  ⌘X").clicked() {
+        if can_copy && source_controls::button(ui, "Cut  ⌘X").clicked() {
             self.clipboard_copy(ui.ctx(), &target, true);
             ui.close();
         }
@@ -309,7 +326,7 @@ impl EditorApp {
             self.clipboard_request_paste(ui.ctx(), target.clone());
             ui.close();
         }
-        if source_controls::button(ui, "Duplicate  ⌘D").clicked() {
+        if can_copy && source_controls::button(ui, "Duplicate  ⌘D").clicked() {
             self.clipboard_duplicate(&target);
             ui.close();
         }

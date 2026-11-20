@@ -376,7 +376,7 @@ impl EditorApp {
                 + 1;
             groups.push(json!({"uid":uid,"identifier":null,"color":null}));
         }
-        let mut recoverable = false;
+        let mut confirmed_removal = false;
         if let Some(action) = remove {
             if self.int_grid_removal_needs_confirmation(layer, action, &values) {
                 self.int_grid_removal = Some((layer, action));
@@ -391,7 +391,7 @@ impl EditorApp {
                     self.int_grid_removal = None;
                     if confirm {
                         remove = Some(action);
-                        recoverable = matches!(action, IntGridRemoval::Value(..));
+                        confirmed_removal = true;
                     }
                 }
                 None => {}
@@ -409,6 +409,7 @@ impl EditorApp {
             }
             None => {}
         }
+        let recoverable = confirmed_removal && matches!(remove, Some(IntGridRemoval::Value(..)));
         let same =
             |key, items: &[Value]| def[key].as_array().map(Vec::as_slice).unwrap_or(&[]) == items;
         let contents_changed =
@@ -416,6 +417,7 @@ impl EditorApp {
         let create_icons = selected_atlas == Some(NEW_EMBEDDED_ICONS);
         let applied = if contents_changed || create_icons {
             let patch = json!({"intGridValues":values,"intGridValuesGroups":groups});
+            let current_level = self.selected;
             let edit = |p: &mut Project| {
                 let atlas = if create_icons {
                     Some(p.ensure_embedded_icons()?)
@@ -424,6 +426,27 @@ impl EditorApp {
                 };
                 if contents_changed {
                     p.update_layer_properties(layer, &patch)?;
+                }
+                // LDtk updates rules that read this IntGrid in the current level.
+                if confirmed_removal
+                    && let Some(key) = current_level
+                {
+                    // Cell removal already rebuilt the IntGrid's own rules.
+                    if matches!(remove, Some(IntGridRemoval::Group(_))) {
+                        p.rebuild_auto_layer(key, layer)?;
+                    }
+                    let linked: Vec<_> = p.json["defs"]["layers"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .filter(|def| {
+                            def["type"] == "AutoLayer" && def["autoSourceLayerDefUid"] == layer
+                        })
+                        .filter_map(|def| def["uid"].as_i64())
+                        .collect();
+                    for uid in linked {
+                        p.rebuild_auto_layer(key, uid)?;
+                    }
                 }
                 Ok(atlas)
             };

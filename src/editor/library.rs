@@ -1,4 +1,5 @@
 use super::*;
+use serde_json::json;
 mod home_layout;
 
 fn palette_search(ui: &mut egui::Ui, search: &mut String, columns: &mut usize) {
@@ -277,6 +278,7 @@ struct AtlasDrag {
 }
 enum AtlasPickerMode {
     Tiles,
+    Definition,
     Rectangle,
     EnumIcon,
     RuleOutput { stamp: bool, opening: bool },
@@ -971,6 +973,128 @@ impl EditorApp {
     pub(super) fn atlas_picker(&mut self, ctx: &egui::Context, ui: &mut egui::Ui, uid: i64) {
         self.atlas_picker_mode(ctx, ui, uid, AtlasPickerMode::Tiles);
     }
+    pub(super) fn definition_atlas_picker(
+        &mut self,
+        ctx: &egui::Context,
+        ui: &mut egui::Ui,
+        uid: i64,
+    ) {
+        self.atlas_picker_mode(ctx, ui, uid, AtlasPickerMode::Definition);
+    }
+    fn tileset_enum_tools(
+        &mut self,
+        ui: &mut egui::Ui,
+        rect: Rect,
+        definition: &Value,
+        active: &mut Option<String>,
+    ) {
+        ui.painter().rect_filled(rect, 0., theme::DARK);
+        let area = rect.shrink(5.);
+        let mut tools = ui.new_child(
+            egui::UiBuilder::new()
+                .id_salt("tileset-enum-tools")
+                .max_rect(area),
+        );
+        tools.set_clip_rect(rect.intersect(ui.clip_rect()));
+        tools.set_width(area.width());
+        tools.spacing_mut().item_spacing.y = 1.;
+        egui::ScrollArea::vertical()
+            .max_height(area.height())
+            .auto_shrink([false, true])
+            .show(&mut tools, |ui| {
+                let values = definition["values"].as_array().into_iter().flatten();
+                for value in std::iter::once(None).chain(values.map(Some)) {
+                    let name = value.and_then(|value| value["id"].as_str());
+                    let label = name.unwrap_or_else(|| locale::tr(ui, "Custom data"));
+                    let (row, response) =
+                        ui.allocate_exact_size(egui::vec2(ui.available_width(), 27.), Sense::click());
+                    let color = value.map(|value| {
+                        let [r, g, b] = panels::enum_color(value);
+                        Color32::from_rgb(r, g, b)
+                    });
+                    ui.painter().rect_filled(
+                        row, 0.,
+                        color.map_or(theme::MEDIUM, |color| mix_color(color, Color32::BLACK, 0.4)),
+                    );
+                    let mut label_x = row.left() + 8.;
+                    if let Some(color) = color {
+                        ui.painter().rect_filled(
+                            Rect::from_min_size(row.min, egui::vec2(5., row.height())), 0., color,
+                        );
+                        label_x += 5.;
+                    }
+                    if let Some(value) = value
+                        && let Some(icon_atlas) = definition["iconTilesetUid"].as_i64()
+                        && value["tileRect"].is_object()
+                    {
+                        let mut icon = value["tileRect"].clone();
+                        icon["tilesetUid"] = json!(icon_atlas);
+                        let box_rect = Rect::from_min_size(
+                            egui::pos2(label_x, row.center().y - 8.),
+                            Vec2::splat(16.),
+                        );
+                        if let Some(project) = self.project.as_ref()
+                            && paint_tile(ui.ctx(), ui.painter(), box_rect, project, &icon, &mut self.assets)
+                        {
+                            label_x += 20.;
+                        }
+                    }
+                    let ink = if name.is_some() { Color32::WHITE } else { theme::TEXT };
+                    let text = egui::WidgetText::from(RichText::new(label).color(ink));
+                    let text = text.into_galley(
+                        ui, Some(egui::TextWrapMode::Truncate),
+                        (row.right() - label_x - 4.).max(0.),
+                        FontId::proportional(14.),
+                    );
+                    ui.painter().galley(egui::pos2(label_x, row.center().y - text.size().y / 2.), text, ink);
+                    let selected = active.as_deref() == name;
+                    if selected || response.hovered() {
+                        ui.painter().rect_stroke(
+                            row, 0., Stroke::new(2., Color32::from_white_alpha(if selected { 255 } else { 166 })),
+                            StrokeKind::Inside,
+                        );
+                    }
+                    response.widget_info(|| egui::WidgetInfo::selected(
+                        egui::WidgetType::SelectableLabel, true, selected, label,
+                    ));
+                    if response.clicked() {
+                        *active = name.map(str::to_owned);
+                    }
+                }
+            });
+    }
+
+    pub(super) fn mark_tileset_tiles(&mut self, uid: i64, value: &str, tiles: &[i32], add: bool) {
+        let Some(tileset) = self.project.as_ref().and_then(|project| project.tileset(uid)) else {
+            return;
+        };
+        let mut entries = tileset["enumTags"].as_array().cloned().unwrap_or_default();
+        let index = entries.iter().position(|entry| entry["enumValueId"] == value);
+        let before = index.into_iter()
+            .flat_map(|index| entries[index]["tileIds"].as_array().into_iter().flatten())
+            .filter_map(Value::as_i64)
+            .collect::<std::collections::BTreeSet<_>>();
+        let mut marked = before.clone();
+        if add {
+            marked.extend(tiles.iter().copied().map(i64::from));
+        } else {
+            for &id in tiles {
+                marked.remove(&i64::from(id));
+            }
+        }
+        if marked == before {
+            return;
+        }
+        let entry = json!({"enumValueId":value,"tileIds":marked});
+        if let Some(index) = index {
+            entries[index] = entry;
+        } else {
+            entries.push(entry);
+        }
+        self.edit("Tile tag changed", |project| {
+            project.update_tileset_definition(uid, &json!({"enumTags":entries}))
+        });
+    }
     pub(super) fn atlas_rect_picker(&mut self, ctx: &egui::Context, ui: &mut egui::Ui, uid: i64) {
         self.atlas_picker_mode(ctx, ui, uid, AtlasPickerMode::Rectangle);
     }
@@ -1000,9 +1124,12 @@ impl EditorApp {
         mode: AtlasPickerMode,
     ) -> bool {
         let rule_picker = matches!(mode, AtlasPickerMode::RuleOutput { .. });
+        let definition_preview = matches!(mode, AtlasPickerMode::Definition);
         let rectangle_only = !matches!(
             mode,
-            AtlasPickerMode::Tiles | AtlasPickerMode::RuleOutput { stamp: false, .. }
+            AtlasPickerMode::Tiles
+                | AtlasPickerMode::Definition
+                | AtlasPickerMode::RuleOutput { stamp: false, .. }
         );
         let modal_picker = rule_picker || matches!(mode, AtlasPickerMode::EnumIcon);
         let focus_id = ui.make_persistent_id(("rule-atlas-focus", uid));
@@ -1016,8 +1143,17 @@ impl EditorApp {
             ui.weak(locale::tr(ui, "Choose a tileset"));
             return false;
         };
+        let read_only_preview = definition_preview && !def["embedAtlas"].is_null();
+        let marking_enum = def["tagsSourceEnumUid"]
+            .as_i64()
+            .filter(|_| definition_preview && !read_only_preview)
+            .and_then(|uid| {
+                ["enums", "externalEnums"].into_iter()
+                    .flat_map(|kind| project.json["defs"][kind].as_array().into_iter().flatten())
+                    .find(|definition| definition["uid"] == uid)
+            }).cloned();
         let canvas = palette_popout::canvas_view(ctx);
-        if canvas.is_none() && !modal_picker {
+        if canvas.is_none() && !modal_picker && !definition_preview {
             ui.label(text(&def, "identifier", locale::tr(ui, "Tileset")));
         }
         let texture = if let Some(path) = def["relPath"].as_str() {
@@ -1053,9 +1189,44 @@ impl EditorApp {
         }
         let scroll_id = ui.make_persistent_id(egui::Id::new(("atlas-picker", uid)));
         let viewport_id = zoom_id.with("viewport");
+        let marking_id = zoom_id.with(("enum-marking", text(&project.json, "iid", ""), def["tagsSourceEnumUid"].as_i64()));
+        let mut active_mark = marking_enum.as_ref().and_then(|definition| {
+            ui.data_mut(|data| data.get_temp::<String>(marking_id)).filter(|value| {
+                definition["values"].as_array().into_iter().flatten().any(|item| item["id"] == *value)
+            })
+        });
         let pan_id = zoom_id.with("pan");
         let mut pan = ui.data_mut(|d| d.get_temp::<egui::PointerButton>(pan_id));
-        let viewport = ui.data_mut(|d| d.get_temp::<Rect>(viewport_id));
+        let preview = definition_preview.then(|| {
+            let size = egui::vec2(ui.available_width(), ui.available_height().max(80.));
+            let (_, frame) = ui.allocate_space(size);
+            ui.painter().rect(
+                frame,
+                0.,
+                theme::DARK,
+                Stroke::new(1., Color32::WHITE),
+                StrokeKind::Inside,
+            );
+            let mut view = frame.shrink(1.);
+            if let Some(definition) = &marking_enum {
+                let tools = Rect::from_min_max(egui::pos2(view.right() - 130., view.top()), view.max);
+                view.max.x = tools.left();
+                self.tileset_enum_tools(ui, tools, definition, &mut active_mark);
+                ui.data_mut(|data| {
+                    if let Some(mark) = &active_mark {
+                        data.insert_temp(marking_id, mark.clone());
+                    } else {
+                        data.remove::<String>(marking_id);
+                    }
+                });
+            }
+            let response = ui.interact(view, viewport_id, Sense::click_and_drag());
+            (view, response)
+        });
+        let viewport = preview
+            .as_ref()
+            .map(|(rect, _)| *rect)
+            .or_else(|| ui.data_mut(|d| d.get_temp::<Rect>(viewport_id)));
         let pointer = ui.input(|i| i.pointer.hover_pos());
         let mut state = egui::scroll_area::State::load(ctx, scroll_id).unwrap_or_default();
         // The rule picker can center selections right up to the edges of the image.
@@ -1080,23 +1251,62 @@ impl EditorApp {
                 };
             }
         }
-        if let Some(viewport) = viewport
-            && let Some(pointer) = pointer.filter(|p| viewport.contains(*p))
-        {
-            let delta = ui.input(|i| i.raw_scroll_delta.y);
-            if delta != 0. {
-                if canvas != Some(true) {
-                    let previous = zoom;
-                    zoom = (zoom * (1. + delta * 0.001)).clamp(0.5, 6.);
-                    let anchor = pointer - viewport.min;
-                    state.offset = (state.offset + anchor) * (zoom / previous) - anchor;
+        let hovered = viewport.zip(pointer).filter(|(rect, pointer)| {
+            rect.contains(*pointer)
+                && ui.clip_rect().contains(*pointer)
+                && (!definition_preview || ui.rect_contains_pointer(*rect))
+        });
+        let mut consume_wheel = false;
+        if definition_preview {
+            let wheel_id = zoom_id.with("wheel-captured");
+            let wheel_event = ui.input(|input| {
+                input.events.iter().any(|event| {
+                    matches!(event, egui::Event::MouseWheel { delta, .. } if delta.y != 0.)
+                })
+            });
+            consume_wheel = ui.data_mut(|data| {
+                if wheel_event {
+                    data.insert_temp(wheel_id, hovered.is_some());
                 }
-                ui.input_mut(|i| {
-                    i.smooth_scroll_delta = Vec2::ZERO;
-                    i.raw_scroll_delta = Vec2::ZERO;
+                data.get_temp::<bool>(wheel_id).unwrap_or(false)
+            });
+        }
+        if let Some((viewport, pointer)) = hovered {
+            let mut zoom_at_pointer = |delta: f32| {
+                let previous = zoom;
+                zoom = (zoom * (1. + delta * 0.001)).clamp(0.5, 6.);
+                let anchor = pointer - viewport.min;
+                state.offset = (state.offset + anchor) * (zoom / previous) - anchor;
+            };
+            let delta = ui.input(|i| i.raw_scroll_delta.y);
+            if definition_preview {
+                ui.input(|input| {
+                    for event in &input.events {
+                        if let egui::Event::MouseWheel { unit, delta, .. } = event {
+                            // Chromium reports one discrete wheel step as 120 logical pixels.
+                            let factor = if *unit == egui::MouseWheelUnit::Line {
+                                120.
+                            } else {
+                                1.
+                            };
+                            zoom_at_pointer(delta.y * factor);
+                        }
+                    }
                 });
+            } else if delta != 0. && canvas != Some(true) {
+                zoom_at_pointer(delta);
             }
-            if ui.input(|i| i.pointer.button_pressed(egui::PointerButton::Middle))
+            consume_wheel |= delta != 0.;
+            let preview_pan = read_only_preview.then(|| {
+                ui.input(|i| {
+                    [egui::PointerButton::Primary, egui::PointerButton::Secondary]
+                        .into_iter()
+                        .find(|button| i.pointer.button_pressed(*button))
+                })
+            }).flatten();
+            if let Some(button) = preview_pan {
+                pan = Some(button);
+            } else if ui.input(|i| i.pointer.button_pressed(egui::PointerButton::Middle))
                 && canvas != Some(true)
             {
                 pan = Some(egui::PointerButton::Middle);
@@ -1107,6 +1317,13 @@ impl EditorApp {
                     }
                 }
             }
+        }
+        if consume_wheel {
+            // Keep the smoothed tail with the widget that received the wheel event.
+            ui.input_mut(|i| {
+                i.smooth_scroll_delta = Vec2::ZERO;
+                i.raw_scroll_delta = Vec2::ZERO;
+            });
         }
         let panning = pan.is_some();
         if let Some(button) = pan {
@@ -1131,244 +1348,320 @@ impl EditorApp {
             600.
         };
         let mut picked = false;
-        let scroll = egui::ScrollArea::both()
-            .scroll_source(egui::scroll_area::ScrollSource {
-                scroll_bar: true,
-                drag: false,
-                mouse_wheel: false,
-            })
-            .id_salt(("atlas-picker", uid))
-            .max_height(max_height)
-            .auto_shrink([!modal_picker, !modal_picker])
-            .scroll_bar_visibility(if rule_picker {
-                egui::scroll_area::ScrollBarVisibility::AlwaysHidden
+        let mut paint_atlas = |ui: &mut egui::Ui, rect: Rect, response: egui::Response| {
+            if active_mark.is_some() {
+                response.clone().on_hover_cursor(egui::CursorIcon::Crosshair);
+            }
+            let (background, repeat) = if rule_picker || definition_preview {
+                ui.painter().rect_filled(rect, 0., theme::MEDIUM);
+                (
+                    egui::include_image!("../../assets/img/transparency.png"),
+                    natural / 8.,
+                )
             } else {
-                egui::scroll_area::ScrollBarVisibility::VisibleWhenNeeded
-            })
-            .show(ui, |ui| {
-                let (content, response) =
-                    ui.allocate_exact_size(natural * zoom + viewport_size, Sense::click_and_drag());
-                let rect = Rect::from_min_size(content.min + image_margin, natural * zoom);
-                let (background, repeat) = if rule_picker {
-                    ui.painter().rect_filled(rect, 0., theme::MEDIUM);
-                    (
-                        egui::include_image!("../../assets/img/transparency.png"),
-                        natural / 8.,
-                    )
-                } else {
-                    (
-                        egui::include_image!("../../assets/img/stripes.png"),
-                        rect.size() / 8.,
-                    )
+                (
+                    egui::include_image!("../../assets/img/stripes.png"),
+                    rect.size() / 8.,
+                )
+            };
+            egui::Image::new(background)
+                .texture_options(egui::TextureOptions::NEAREST_REPEAT)
+                .uv(Rect::from_min_size(egui::Pos2::ZERO, repeat))
+                .paint_at(ui, rect);
+            ui.painter().image(
+                texture.id(),
+                rect,
+                Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1., 1.)),
+                Color32::WHITE,
+            );
+            if let Some(definition) = &marking_enum
+                && grid.columns > 0
+                && grid.rows > 0
+            {
+                let tile_rect = |x, y| {
+                    let source = grid.rectangle([x, y, 1, 1]);
+                    Rect::from_min_size(rect.min + source.min.to_vec2() * zoom, source.size() * zoom)
                 };
-                egui::Image::new(background)
-                    .texture_options(egui::TextureOptions::NEAREST_REPEAT)
-                    .uv(Rect::from_min_size(egui::Pos2::ZERO, repeat))
-                    .paint_at(ui, rect);
-                ui.painter().image(
-                    texture.id(),
-                    rect,
-                    Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1., 1.)),
-                    Color32::WHITE,
+                let tags = def["enumTags"].as_array().map(Vec::as_slice).unwrap_or(&[]);
+                if let Some(mark) = &active_mark {
+                    let marked: std::collections::HashSet<_> = tags
+                        .iter()
+                        .filter(|tag| tag["enumValueId"] == *mark)
+                        .flat_map(|tag| tag["tileIds"].as_array().into_iter().flatten())
+                        .filter_map(Value::as_i64)
+                        .collect();
+                    let visible = ui.clip_rect().intersect(rect);
+                    let stride = grid.grid + grid.spacing;
+                    let min = ((visible.min - rect.min) / zoom - Vec2::splat(grid.padding)) / stride;
+                    let max = ((visible.max - rect.min) / zoom - Vec2::splat(grid.padding)) / stride;
+                    let left = (min.x.floor() as i32).clamp(0, grid.columns);
+                    let right = (max.x.ceil() as i32).clamp(0, grid.columns);
+                    let top = (min.y.floor() as i32).clamp(0, grid.rows);
+                    let bottom = (max.y.ceil() as i32).clamp(0, grid.rows);
+                    for y in top..bottom {
+                        for x in left..right {
+                            let id = i64::from(y) * i64::from(grid.columns) + i64::from(x);
+                            if !marked.contains(&id) {
+                                ui.painter().rect_filled(tile_rect(x, y), 0., Color32::from_black_alpha(76));
+                            }
+                        }
+                    }
+                }
+                let tile_count = i64::from(grid.columns) * i64::from(grid.rows);
+                let width = (grid.grid / 16.).floor().max(1.) * zoom;
+                for value in definition["values"].as_array().into_iter().flatten() {
+                    if active_mark.as_ref().is_some_and(|mark| value["id"] != *mark) {
+                        continue;
+                    }
+                    let [r, g, b] = panels::enum_color(value);
+                    let color = Color32::from_rgb(r, g, b);
+                    let ids = tags
+                        .iter()
+                        .filter(|tag| tag["enumValueId"] == value["id"])
+                        .flat_map(|tag| tag["tileIds"].as_array().into_iter().flatten())
+                        .filter_map(Value::as_i64);
+                    for id in ids.filter(|id| (0..tile_count).contains(id)) {
+                        let columns = i64::from(grid.columns);
+                        let tile = tile_rect((id % columns) as i32, (id / columns) as i32);
+                        if ui.is_rect_visible(tile) {
+                            ui.painter().rect_stroke(tile, 0., Stroke::new(width * 2., Color32::BLACK), StrokeKind::Inside);
+                            ui.painter().rect_stroke(tile, 0., Stroke::new(width, color), StrokeKind::Inside);
+                        }
+                    }
+                }
+            }
+            let drag_id = ui.make_persistent_id(("atlas-selection-drag", uid));
+            let mut drag = ui.data_mut(|d| d.get_temp::<AtlasDrag>(drag_id));
+            if panning {
+                drag = None;
+            }
+            if rule_picker
+                && !panning
+                && response.contains_pointer()
+                && let Some(pos) = pointer
+                && !rect.contains(pos)
+                && ui.input(|i| i.pointer.primary_pressed())
+            {
+                ui.close();
+            }
+            if !read_only_preview
+                && !panning
+                && response.contains_pointer()
+                && let Some(pos) = ui.input(|i| i.pointer.latest_pos())
+                && let Some(cell) = grid.cell((pos - rect.min) / zoom)
+            {
+                for button in [egui::PointerButton::Primary, egui::PointerButton::Secondary] {
+                    if ui.input(|i| i.pointer.button_pressed(button)) {
+                        let secondary_rectangle =
+                            rectangle_only && button == egui::PointerButton::Secondary;
+                        if secondary_rectangle {
+                            self.atlas_selection = Some((uid, vec![]));
+                        }
+                        // TileRectAndClose still selects the dragged rectangle on release.
+                        drag = if secondary_rectangle
+                            && matches!(mode, AtlasPickerMode::Rectangle)
+                        {
+                            None
+                        } else {
+                            Some(AtlasDrag {
+                                start: cell,
+                                button,
+                            })
+                        };
+                    }
+                }
+            }
+            if let Some(active) = &drag
+                && let Some(pos) = ui.input(|i| i.pointer.latest_pos())
+                && grid.columns > 0
+                && grid.rows > 0
+            {
+                let local = (pos - rect.min) / zoom - Vec2::splat(grid.padding);
+                let stride = grid.grid + grid.spacing;
+                let cell = [
+                    ((local.x / stride).floor() as i32).clamp(0, grid.columns - 1),
+                    ((local.y / stride).floor() as i32).clamp(0, grid.rows - 1),
+                ];
+                let selection = selection_between(active.start, cell);
+                let source = grid.rectangle(selection);
+                let target = Rect::from_min_size(
+                    rect.min + source.min.to_vec2() * zoom,
+                    source.size() * zoom,
                 );
-                let drag_id = ui.make_persistent_id(("atlas-selection-drag", uid));
-                let mut drag = ui.data_mut(|d| d.get_temp::<AtlasDrag>(drag_id));
-                if panning {
+                ui.painter().rect_stroke(
+                    target,
+                    0.,
+                    Stroke::new(
+                        1_f32,
+                        if active.button == egui::PointerButton::Secondary {
+                            Color32::LIGHT_RED
+                        } else {
+                            Color32::WHITE
+                        },
+                    ),
+                    StrokeKind::Inside,
+                );
+                if ui.input(|i| i.pointer.button_released(active.button)) {
+                    let ids: Vec<_> = (selection[0]..selection[0] + selection[2])
+                        .flat_map(|x| {
+                            (selection[1]..selection[1] + selection[3])
+                                .map(move |y| x + y * grid.columns)
+                        })
+                        .collect();
+                    let modifiers = ui.input(|i| i.modifiers);
+                    if let Some(value) = &active_mark {
+                        self.mark_tileset_tiles(uid, value, &ids, active.button == egui::PointerButton::Primary);
+                        ui.ctx().request_repaint();
+                    } else if rectangle_only {
+                        picked = self.set_atlas_selection(uid, ids);
+                    } else {
+                        self.apply_atlas_mouse_selection(
+                            uid,
+                            ids,
+                            active.button == egui::PointerButton::Secondary,
+                            modifiers,
+                            self.panel.is_none() && !rule_picker,
+                        );
+                    }
+                    drag = None;
+                } else if !ui.input(|i| i.pointer.button_down(active.button)) {
                     drag = None;
                 }
-                if rule_picker
-                    && !panning
-                    && response.contains_pointer()
-                    && let Some(pos) = pointer
-                    && !rect.contains(pos)
-                    && ui.input(|i| i.pointer.primary_pressed())
-                {
-                    ui.close();
-                }
-                if !panning
-                    && response.contains_pointer()
-                    && let Some(pos) = ui.input(|i| i.pointer.latest_pos())
-                    && let Some(cell) = grid.cell((pos - rect.min) / zoom)
-                {
-                    for button in [egui::PointerButton::Primary, egui::PointerButton::Secondary] {
-                        if ui.input(|i| i.pointer.button_pressed(button)) {
-                            let secondary_rectangle =
-                                rectangle_only && button == egui::PointerButton::Secondary;
-                            if secondary_rectangle {
-                                self.atlas_selection = Some((uid, vec![]));
-                            }
-                            // TileRectAndClose still selects the dragged rectangle on release.
-                            drag = if secondary_rectangle
-                                && matches!(mode, AtlasPickerMode::Rectangle)
-                            {
-                                None
-                            } else {
-                                Some(AtlasDrag {
-                                    start: cell,
-                                    button,
-                                })
-                            };
+            }
+            if let Some(drag) = drag {
+                ui.data_mut(|d| d.insert_temp(drag_id, drag));
+            } else {
+                ui.data_mut(|d| d.remove::<AtlasDrag>(drag_id));
+            }
+            if self.tile_tags && marking_enum.is_none() {
+                for tag in def["enumTags"].as_array().map(Vec::as_slice).unwrap_or(&[]) {
+                    let label = text(tag, "enumValueId", "");
+                    for id in tag["tileIds"]
+                        .as_array()
+                        .map(Vec::as_slice)
+                        .unwrap_or(&[])
+                        .iter()
+                        .filter_map(Value::as_i64)
+                    {
+                        if grid.columns == 0 {
+                            continue;
                         }
-                    }
-                }
-                if let Some(active) = &drag
-                    && let Some(pos) = ui.input(|i| i.pointer.latest_pos())
-                    && grid.columns > 0
-                    && grid.rows > 0
-                {
-                    let local = (pos - rect.min) / zoom - Vec2::splat(grid.padding);
-                    let stride = grid.grid + grid.spacing;
-                    let cell = [
-                        ((local.x / stride).floor() as i32).clamp(0, grid.columns - 1),
-                        ((local.y / stride).floor() as i32).clamp(0, grid.rows - 1),
-                    ];
-                    let selection = selection_between(active.start, cell);
-                    let source = grid.rectangle(selection);
-                    let target = Rect::from_min_size(
-                        rect.min + source.min.to_vec2() * zoom,
-                        source.size() * zoom,
-                    );
-                    ui.painter().rect_stroke(
-                        target,
-                        0.,
-                        Stroke::new(
-                            1_f32,
-                            if active.button == egui::PointerButton::Secondary {
-                                Color32::LIGHT_RED
-                            } else {
-                                Color32::WHITE
-                            },
-                        ),
-                        StrokeKind::Inside,
-                    );
-                    if ui.input(|i| i.pointer.button_released(active.button)) {
-                        let ids = (selection[0]..selection[0] + selection[2])
-                            .flat_map(|x| {
-                                (selection[1]..selection[1] + selection[3])
-                                    .map(move |y| x + y * grid.columns)
-                            })
-                            .collect();
-                        let modifiers = ui.input(|i| i.modifiers);
-                        if rectangle_only {
-                            picked = self.set_atlas_selection(uid, ids);
-                        } else {
-                            self.apply_atlas_mouse_selection(
-                                uid,
-                                ids,
-                                active.button == egui::PointerButton::Secondary,
-                                modifiers,
-                                self.panel.is_none() && !rule_picker,
+                        let source = grid.rectangle([
+                            id as i32 % grid.columns,
+                            id as i32 / grid.columns,
+                            1,
+                            1,
+                        ]);
+                        let target = Rect::from_min_size(
+                            rect.min + source.min.to_vec2() * zoom,
+                            source.size() * zoom,
+                        );
+                        if ui.is_rect_visible(target) {
+                            ui.painter().rect_stroke(
+                                target,
+                                0.,
+                                Stroke::new(1.0_f32, theme::ACCENT),
+                                StrokeKind::Inside,
                             );
-                        }
-                        drag = None;
-                    } else if !ui.input(|i| i.pointer.button_down(active.button)) {
-                        drag = None;
-                    }
-                }
-                if let Some(drag) = drag {
-                    ui.data_mut(|d| d.insert_temp(drag_id, drag));
-                } else {
-                    ui.data_mut(|d| d.remove::<AtlasDrag>(drag_id));
-                }
-                if self.tile_tags {
-                    for tag in def["enumTags"].as_array().map(Vec::as_slice).unwrap_or(&[]) {
-                        let label = text(tag, "enumValueId", "");
-                        for id in tag["tileIds"]
-                            .as_array()
-                            .map(Vec::as_slice)
-                            .unwrap_or(&[])
-                            .iter()
-                            .filter_map(Value::as_i64)
-                        {
-                            if grid.columns == 0 {
-                                continue;
-                            }
-                            let source = grid.rectangle([
-                                id as i32 % grid.columns,
-                                id as i32 / grid.columns,
-                                1,
-                                1,
-                            ]);
-                            let target = Rect::from_min_size(
-                                rect.min + source.min.to_vec2() * zoom,
-                                source.size() * zoom,
-                            );
-                            if ui.is_rect_visible(target) {
-                                ui.painter().rect_stroke(
-                                    target,
-                                    0.,
-                                    Stroke::new(1.0_f32, theme::ACCENT),
-                                    StrokeKind::Inside,
+                            if target.width() >= 32. {
+                                ui.painter().text(
+                                    target.center(),
+                                    Align2::CENTER_CENTER,
+                                    label,
+                                    FontId::proportional(9.),
+                                    theme::ACCENT,
                                 );
-                                if target.width() >= 32. {
-                                    ui.painter().text(
-                                        target.center(),
-                                        Align2::CENTER_CENTER,
-                                        label,
-                                        FontId::proportional(9.),
-                                        theme::ACCENT,
-                                    );
-                                }
                             }
                         }
                     }
                 }
-                let selections = if let Some((selected_uid, ids)) = &self.atlas_selection
-                    && *selected_uid == uid
-                {
-                    if rule_picker && rectangle_only && !ids.is_empty() {
-                        vec![self.tile_rect]
-                    } else {
-                        ids.iter()
-                            .filter(|id| **id >= 0 && **id < grid.columns * grid.rows)
-                            .map(|id| [*id % grid.columns.max(1), *id / grid.columns.max(1), 1, 1])
-                            .collect::<Vec<_>>()
-                    }
-                } else {
+            }
+            let selections = if read_only_preview || active_mark.is_some() {
+                Vec::new()
+            } else if let Some((selected_uid, ids)) = &self.atlas_selection
+                && *selected_uid == uid
+            {
+                if rule_picker && rectangle_only && !ids.is_empty() {
                     vec![self.tile_rect]
-                };
-                for selection in selections {
-                    let source = grid.rectangle(selection);
-                    let target = Rect::from_min_size(
-                        rect.min + source.min.to_vec2() * zoom,
-                        source.size() * zoom,
-                    );
-                    ui.painter().rect_stroke(
-                        target,
-                        0.,
-                        Stroke::new(3_f32, Color32::BLACK),
-                        StrokeKind::Outside,
-                    );
-                    ui.painter().rect_stroke(
-                        target,
-                        0.,
-                        Stroke::new(
-                            if rule_picker { 3. } else { 2. },
-                            if rule_picker {
-                                Color32::from_rgb(153, 255, 153)
-                            } else {
-                                theme::ACCENT
-                            },
-                        ),
-                        StrokeKind::Inside,
-                    );
+                } else {
+                    ids.iter()
+                        .filter(|id| **id >= 0 && **id < grid.columns * grid.rows)
+                        .map(|id| [*id % grid.columns.max(1), *id / grid.columns.max(1), 1, 1])
+                        .collect::<Vec<_>>()
                 }
-                if let Some(pos) = response.hover_pos()
-                    && let Some(cell) = grid.cell((pos - rect.min) / zoom)
-                {
-                    response.clone().on_hover_text(locale::format(
-                        ui,
-                        "Tile #{id}  ({x}, {y})",
-                        &[
-                            ("id", &(cell[0] + cell[1] * grid.columns).to_string()),
-                            ("x", &cell[0].to_string()),
-                            ("y", &cell[1].to_string()),
-                        ],
-                    ));
-                }
-            });
-        ui.data_mut(|d| d.insert_temp(viewport_id, scroll.inner_rect));
-        if canvas.is_none() && !modal_picker {
+            } else {
+                vec![self.tile_rect]
+            };
+            for selection in selections {
+                let source = grid.rectangle(selection);
+                let target = Rect::from_min_size(
+                    rect.min + source.min.to_vec2() * zoom,
+                    source.size() * zoom,
+                );
+                ui.painter().rect_stroke(
+                    target,
+                    0.,
+                    Stroke::new(3_f32, Color32::BLACK),
+                    StrokeKind::Outside,
+                );
+                ui.painter().rect_stroke(
+                    target,
+                    0.,
+                    Stroke::new(
+                        if rule_picker { 3. } else { 2. },
+                        if rule_picker {
+                            Color32::from_rgb(153, 255, 153)
+                        } else {
+                            theme::ACCENT
+                        },
+                    ),
+                    StrokeKind::Inside,
+                );
+            }
+            if !read_only_preview
+                && let Some(pos) = response.hover_pos()
+                && let Some(cell) = grid.cell((pos - rect.min) / zoom)
+            {
+                response.clone().on_hover_text(locale::format(
+                    ui,
+                    "Tile #{id}  ({x}, {y})",
+                    &[
+                        ("id", &(cell[0] + cell[1] * grid.columns).to_string()),
+                        ("x", &cell[0].to_string()),
+                        ("y", &cell[1].to_string()),
+                    ],
+                ));
+            }
+        };
+        if let Some((viewport, response)) = preview {
+            let mut content = ui.new_child(egui::UiBuilder::new().max_rect(viewport));
+            content.set_clip_rect(viewport.intersect(ui.clip_rect()));
+            let rect = Rect::from_min_size(viewport.min - state.offset, natural * zoom);
+            paint_atlas(&mut content, rect, response);
+        } else {
+            let scroll = egui::ScrollArea::both()
+                .scroll_source(egui::scroll_area::ScrollSource {
+                    scroll_bar: true,
+                    drag: false,
+                    mouse_wheel: false,
+                })
+                .id_salt(("atlas-picker", uid))
+                .max_height(max_height)
+                .auto_shrink([!modal_picker, !modal_picker])
+                .scroll_bar_visibility(if rule_picker {
+                    egui::scroll_area::ScrollBarVisibility::AlwaysHidden
+                } else {
+                    egui::scroll_area::ScrollBarVisibility::VisibleWhenNeeded
+                })
+                .show(ui, |ui| {
+                    let (content, response) =
+                        ui.allocate_exact_size(natural * zoom + viewport_size, Sense::click_and_drag());
+                    let rect = Rect::from_min_size(content.min + image_margin, natural * zoom);
+                    paint_atlas(ui, rect, response);
+                });
+            ui.data_mut(|d| d.insert_temp(viewport_id, scroll.inner_rect));
+        }
+        if canvas.is_none() && !modal_picker && !definition_preview {
             ui.small(locale::format(
                 ui,
                 "Tile #{id} · {width} × {height} tiles",
