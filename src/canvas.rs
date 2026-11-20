@@ -347,6 +347,42 @@ pub fn world_to_layer(
         ]
     })
 }
+fn pointer_transform(
+    project: &Project,
+    key: LevelKey,
+    index: usize,
+    view: &Viewport,
+) -> Option<Transform> {
+    editing_transform(project, key, index, view).map(|mut transform| {
+        transform.origin = transform.origin.map(f32::round);
+        transform
+    })
+}
+
+pub fn pointer_to_layer(
+    project: &Project,
+    key: LevelKey,
+    index: usize,
+    view: &Viewport,
+    level_pixel: [f32; 2],
+) -> [f32; 2] {
+    // Coords uses the layer's rounded parallax origin and then truncates
+    // after undoing its scale. Drawing uses the unsnapped translation.
+    pointer_transform(project, key, index, view).map_or(level_pixel, |t| {
+        std::array::from_fn(|axis| ((level_pixel[axis] - t.origin[axis]) / t.scale).trunc())
+    })
+}
+
+pub fn layer_to_pointer_world(
+    project: &Project,
+    key: LevelKey,
+    index: usize,
+    view: &Viewport,
+    local: [f32; 2],
+) -> [f32; 2] {
+    pointer_transform(project, key, index, view).map_or(local, |t| t.point(local))
+}
+
 pub fn layer_to_world(
     project: &Project,
     key: LevelKey,
@@ -1704,7 +1740,12 @@ pub fn draw_group_ghost(
         let def = project
             .layer_def(layer["layerDefUid"].as_i64().unwrap_or(-1))
             .unwrap_or(&Value::Null);
-        let transform = editing_transform(project, key, index, view).unwrap_or(Transform {
+        let transform = if matches!(mode, GhostMode::Brush | GhostMode::EntityHover { .. }) {
+            pointer_transform(project, key, index, view)
+        } else {
+            editing_transform(project, key, index, view)
+        };
+        let transform = transform.unwrap_or(Transform {
             origin: [0.; 2],
             scale: 1.,
         });

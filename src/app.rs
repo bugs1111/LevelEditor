@@ -6,6 +6,8 @@ mod bake_dialog;
 pub(crate) mod bleep;
 #[path = "editor/brush.rs"]
 mod brush;
+#[path = "editor/canvas_status.rs"]
+mod canvas_status;
 #[path = "editor/chrome.rs"]
 mod chrome;
 #[path = "editor/command_args.rs"]
@@ -939,9 +941,18 @@ impl EditorApp {
             self.animate_camera_fit();
         }
         self.keyboard_zoom(ctx, rect);
+        let level_origin = if self.world && self.camera_motion.is_active() {
+            self.project
+                .as_ref()
+                .zip(self.selected)
+                .map_or([0.; 2], |(project, key)| navigation::level_world_origin(project, key))
+        } else {
+            [0.; 2]
+        };
         if self.camera_motion.tick(
             &mut self.viewport,
-            rect.size().into(),
+            rect,
+            level_origin,
             ctx.pixels_per_point(),
             ctx.cumulative_frame_nr(),
             ctx.input(|i| i.unstable_dt),
@@ -1338,23 +1349,7 @@ impl EditorApp {
                         if self.panel != Some(Panel::Rules) {
                             self.canvas_toolbar(ctx, self.uncovered_canvas_rect(rect));
                         }
-                        if response.hovered()
-                            && !self.world
-                            && let Some(pointer) = response.hover_pos()
-                        {
-                            let p = self.viewport.to_world(
-                                pointer.into(),
-                                rect.min.into(),
-                                rect.size().into(),
-                            );
-                            ui.painter().text(
-                                rect.right_bottom() - egui::vec2(12.0, 12.0),
-                                Align2::RIGHT_BOTTOM,
-                                format!("{}, {} px", p[0].floor(), p[1].floor()),
-                                FontId::monospace(12.0),
-                                theme::TEXT,
-                            );
-                        }
+                        self.draw_canvas_status(ui, rect, &response, key);
                     }
                     self.world_context_overlay(ui, rect);
                 } else {
@@ -1676,6 +1671,98 @@ mod tests {
             });
         });
         app.finish_stroke();
+    }
+
+    #[test]
+    fn canvas_status_reports_hovered_cell_and_all_three_coordinate_spaces() {
+        let mut app = editor();
+        let project = app.project.as_mut().unwrap();
+        let key = app.selected.unwrap();
+        project.level_mut(key).unwrap()["worldX"] = 160.into();
+        project.level_mut(key).unwrap()["worldY"] = (-48).into();
+        project.json["defs"]["layers"][0]["intGridValues"][0]["identifier"] = "Wall".into();
+        project.paint_int_grid(key, 0, 8, 8, 1).unwrap();
+        let ctx = egui::Context::default();
+        theme::configure(&ctx);
+        let update = |app: &mut EditorApp, pointer: egui::Pos2, pressed: Option<bool>| {
+            let mut events = vec![egui::Event::PointerMoved(pointer)];
+            if let Some(pressed) = pressed {
+                events.push(egui::Event::PointerButton {
+                    pos: pointer,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: egui::Modifiers::NONE,
+                });
+            }
+            ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_max(
+                        egui::Pos2::ZERO,
+                        egui::pos2(1440., 900.),
+                    )),
+                    events,
+                    ..Default::default()
+                },
+                |ctx| app.update_frame(ctx, &mut eframe::Frame::_new_kittest()),
+            )
+        };
+        let contains = |output: &egui::FullOutput, label: &str| {
+            output.shapes.iter().any(|shape| {
+                matches!(&shape.shape, egui::Shape::Text(text) if text.galley.text() == label)
+            })
+        };
+        update(&mut app, egui::pos2(870., 450.), None);
+        let output = update(&mut app, egui::pos2(870., 450.), None);
+        for label in [
+            "Wall (1) (IntGrid)",
+            "Grid = 8,8",
+            "Level = 128,128",
+            "World = 288,80",
+        ] {
+            assert!(contains(&output, label), "missing canvas status label {label}");
+        }
+        app.viewport.zoom = 900. / 336.;
+        let output = update(&mut app, egui::pos2(743., 343.), None);
+        assert!(contains(&output, "Level = 80,88"));
+        assert!(contains(&output, "World = 240,40"));
+        let edge = egui::pos2(741., 450.);
+        let output = update(&mut app, edge, None);
+        assert!(contains(&output, "Grid = 5,8"));
+        update(&mut app, edge, Some(true));
+        update(&mut app, edge, Some(false));
+        let layer = app.project.as_ref().unwrap().layer(key, 0).unwrap();
+        assert_eq!(layer["intGridCsv"][8 * 16 + 4], 0);
+        assert_eq!(layer["intGridCsv"][8 * 16 + 5], 1);
+
+        let project = app.project.as_mut().unwrap();
+        project.json["defs"]["layers"][0]["parallaxFactorY"] = serde_json::json!(0.25);
+        project.json["defs"]["layers"][0]["parallaxScaling"] = false.into();
+        let layer = project.layer_mut(key, 0).unwrap();
+        layer["pxOffsetY"] = (-6).into();
+        layer["__pxTotalOffsetY"] = (-6).into();
+        let offset_edge = egui::pos2(870., 131.);
+        let output = update(&mut app, offset_edge, None);
+        assert!(contains(&output, "Level = 128,9"));
+        assert!(contains(&output, "Grid = 8,1"));
+        update(&mut app, offset_edge, Some(true));
+        update(&mut app, offset_edge, Some(false));
+        let layer = app.project.as_ref().unwrap().layer(key, 0).unwrap();
+        assert_eq!(layer["intGridCsv"][8], 0);
+        assert_eq!(layer["intGridCsv"][16 + 8], 1);
+
+        let output = update(&mut app, egui::pos2(160., 330.), None);
+        assert!(!contains(&output, "World = 288,80"));
+
+        app.show_panel(Some(Panel::World));
+        assert_eq!(app.panel, Some(Panel::World));
+        let output = update(&mut app, egui::pos2(870., 450.), None);
+        let status = output.shapes.iter().find_map(|shape| match &shape.shape {
+            egui::Shape::Text(text) if text.galley.text().starts_with("World = ") => {
+                Some(text.galley.text())
+            }
+            _ => None,
+        });
+        assert_eq!(status, None, "World panel must hide canvas status");
     }
 
     #[test]

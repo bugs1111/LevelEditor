@@ -957,6 +957,9 @@ impl EditorApp {
     }
 
     pub(super) fn canvas_toolbar(&mut self, ctx: &egui::Context, rect: Rect) {
+        if self.world {
+            self.world_layers_hud(ctx);
+        }
         if self.project.is_none() || self.zen && (!self.zen_sidebar.revealed || self.world) {
             return;
         }
@@ -1052,7 +1055,10 @@ impl EditorApp {
                     .clicked()
                     {
                         match action {
-                            0 => self.toggle_zen_mode(ctx),
+                            0 => {
+                                self.toggle_zen_mode(ctx);
+                                self.zen_sidebar.revealed = self.zen;
+                            }
                             1 => self.grid = !self.grid,
                             2 => self.set_details(!self.details),
                             3 => self.set_single_layer_mode(!self.single_layer),
@@ -1105,14 +1111,10 @@ impl EditorApp {
                     self.tile_stacking = !self.tile_stacking;
                 }
             });
-        self.world_layers_hud(ctx, rect);
     }
 
-    fn world_layers_hud(&mut self, ctx: &egui::Context, canvas: Rect) {
-        let Some((min, max)) = self
-            .world_depth_bounds()
-            .filter(|(min, max)| self.world && min < max)
-        else {
+    fn world_layers_hud(&mut self, ctx: &egui::Context) {
+        let Some((min, max)) = self.world_depth_bounds().filter(|(min, max)| min < max) else {
             return;
         };
         const TITLE_HEIGHT: f32 = 27.;
@@ -1123,8 +1125,9 @@ impl EditorApp {
         let panning = self.camera_drag.is_some();
         let mut next_depth = None;
         // The source World wrapper contributes its one-pixel seam before the 40px offset.
+        let left = panels::source_panel_width(Panel::World) + 41.;
         egui::Area::new(egui::Id::new("world-depths"))
-            .fixed_pos(canvas.left_top() + egui::vec2(41., 46.))
+            .fixed_pos(ctx.content_rect().left_top() + egui::vec2(left, 46.))
             .constrain(false)
             .order(egui::Order::Foreground)
             .interactable(!panning)
@@ -1314,6 +1317,44 @@ mod tests {
         assert!(visible(&frame(&mut app, 1.33, None)));
         frame(&mut app, 1.4, Some(egui::pos2(730., 400.)));
         assert!(!visible(&frame(&mut app, 1.7, None)));
+    }
+
+    #[test]
+    fn zen_toolbar_keeps_the_sidebar_revealed_so_the_button_can_turn_it_off() {
+        let ctx = egui::Context::default();
+        theme::configure(&ctx);
+        let mut app = EditorApp::empty();
+        app.set_project(Project::new());
+        let button = egui::pos2(317., 81.);
+        app_frame(&mut app, &ctx, vec![egui::Event::PointerMoved(button)]);
+        app_frame(&mut app, &ctx, vec![]);
+        app_click(&mut app, &ctx, button);
+        app_frame(&mut app, &ctx, vec![]);
+        assert!(app.zen);
+        assert!(app.zen_sidebar.revealed);
+        assert_eq!(app.settings.value["zenMode"], true);
+
+        app_click(&mut app, &ctx, button);
+        assert!(!app.zen);
+        assert!(!app.zen_sidebar.revealed);
+        assert_eq!(app.settings.value["zenMode"], false);
+    }
+
+    #[test]
+    fn losing_window_focus_collapses_the_revealed_zen_sidebar() {
+        let ctx = egui::Context::default();
+        theme::configure(&ctx);
+        let mut app = EditorApp::empty();
+        app.set_project(Project::new());
+        app.zen = true;
+        app_frame(&mut app, &ctx, vec![egui::Event::PointerMoved(egui::pos2(8., 20.))]);
+        assert!(app.zen_sidebar.revealed);
+
+        app_frame(&mut app, &ctx, vec![egui::Event::PointerGone]);
+        assert!(app.zen_sidebar.revealed);
+        app_frame(&mut app, &ctx, vec![egui::Event::WindowFocused(false)]);
+        assert!(app.zen);
+        assert!(!app.zen_sidebar.revealed);
     }
 
     #[test]
@@ -1790,6 +1831,43 @@ mod tests {
     }
 
     #[test]
+    fn revealed_zen_world_panel_covers_the_world_tabs() {
+        let ctx = egui::Context::default();
+        theme::configure(&ctx);
+        let mut app = EditorApp::empty();
+        app.repaint = Some(ctx.clone());
+        let mut project = Project::new();
+        let away = project.add_world("Away").unwrap();
+        project.add_level(Some(away), "Remote", 256, 256).unwrap();
+        app.set_project(project);
+        app.zen = true;
+        app_frame(&mut app, &ctx, vec![]);
+        app_frame(&mut app, &ctx, vec![]);
+        app_click(&mut app, &ctx, egui::pos2(369., 19.));
+        assert!(app.world);
+
+        app_frame(
+            &mut app,
+            &ctx,
+            vec![egui::Event::PointerMoved(egui::pos2(8., 20.))],
+        );
+        app_frame(&mut app, &ctx, vec![]);
+        let panel = egui::AreaState::load(&ctx, egui::Id::new("source-definition-panel"))
+            .expect("hovering the Zen edge reveals the World panel")
+            .rect();
+        assert_eq!(panel.top(), 0.);
+        assert_eq!(panel.bottom(), 900.);
+        app_click(&mut app, &ctx, egui::pos2(325., 19.));
+        assert_eq!(app.active_world, Some(away));
+        assert!(app.world);
+
+        app_click(&mut app, &ctx, egui::pos2(369., 19.));
+        assert_eq!(app.active_world, Some(away));
+        assert!(!app.world);
+        assert!(app.panel.is_none());
+    }
+
+    #[test]
     fn world_toolbar_opens_a_floating_form_over_the_existing_layer_sidebar() {
         let ctx = egui::Context::default();
         theme::configure(&ctx);
@@ -1819,6 +1897,52 @@ mod tests {
         app_click(&mut app, &ctx, egui::pos2(45., 18.));
         app_frame(&mut app, &ctx, vec![]);
         assert!(app.panel.is_none() && !app.world);
+    }
+
+    #[test]
+    fn zen_world_layers_hud_stays_at_the_source_position_when_the_panel_is_hidden() {
+        let ctx = egui::Context::default();
+        theme::configure(&ctx);
+        let mut project = Project::new();
+        let far = project.add_level(None, "Behind", 256, 256).unwrap();
+        project.level_mut(far).unwrap()["worldDepth"] = 2.into();
+        let original = project.json.clone();
+        let mut app = EditorApp::empty();
+        app.set_project(project);
+        app.zen = true;
+        app.show_panel(Some(Panel::World));
+
+        app_frame(&mut app, &ctx, vec![]);
+        let output = app_frame(&mut app, &ctx, vec![]);
+        assert!(!app.zen_sidebar.revealed);
+        assert!(output.shapes.iter().any(|shape| {
+            matches!(&shape.shape, egui::Shape::Text(text) if text.galley.text() == "World layers")
+        }));
+        let hud = || {
+            egui::AreaState::load(&ctx, egui::Id::new("world-depths"))
+                .unwrap()
+                .rect()
+        };
+        let depth_one = egui::pos2(473., 110.);
+        let depth_two = egui::pos2(473., 90.);
+        let expected = Rect::from_min_size(egui::pos2(441., 46.), egui::vec2(109., 101.));
+        assert_eq!(hud(), expected);
+        app_click(&mut app, &ctx, depth_one);
+        assert_eq!(app.world_depth, 1);
+
+        app_frame(
+            &mut app,
+            &ctx,
+            vec![egui::Event::PointerMoved(egui::pos2(8., 20.))],
+        );
+        app_frame(&mut app, &ctx, vec![]);
+        assert!(app.zen_sidebar.revealed);
+        assert_eq!(hud(), expected);
+        app_click(&mut app, &ctx, depth_two);
+        assert_eq!(app.world_depth, 2);
+        assert!(app.world);
+        assert_eq!(app.project.as_ref().unwrap().json, original);
+        assert!(!app.dirty);
     }
 
     #[test]

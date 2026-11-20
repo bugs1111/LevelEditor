@@ -415,11 +415,18 @@ pub(super) struct FieldPick {
     layer: usize,
     empty_world_preview: bool,
     point_held: bool,
+    point_waits_for_move: bool,
     point_origin: Option<([i32; 2], Color32)>,
     point_target: Option<[i32; 2]>,
 }
 
 impl FieldPick {
+    fn point_cell(&self, project: &Project, view: &Viewport, position: [f32; 2]) -> [i32; 2] {
+        let grid = self.point_grid(project);
+        canvas::pointer_to_layer(project, self.key, self.layer, view, position)
+            .map(|axis| (axis / grid).floor() as i32)
+    }
+
     fn point_grid(&self, project: &Project) -> f32 {
         project
             .layer(self.key, self.layer)
@@ -596,7 +603,7 @@ impl EditorApp {
             if let (Some((origin, color)), Some(target)) = (pick.point_origin, pick.point_target) {
                 let points = [origin, target].map(|cell| {
                     let local = cell.map(|coord| (coord as f32 + 0.5) * pick.point_grid(project));
-                    let world = canvas::layer_to_world(
+                    let world = canvas::layer_to_pointer_world(
                         project,
                         pick.key,
                         pick.layer,
@@ -626,10 +633,15 @@ impl EditorApp {
                 .level(key)
                 .and_then(|l| l["layerInstances"].as_array())
         {
-            for (index, layer) in layers.iter().enumerate() {
-                if !self.layer_visible(key, index) || layer["__type"] != "Entities" {
+            // Source hint circles include valid targets on hidden layers.
+            for layer in layers {
+                if layer["__type"] != "Entities" {
                     continue;
                 }
+                let offset = [
+                    number(layer, "__pxTotalOffsetX", 0.),
+                    number(layer, "__pxTotalOffsetY", 0.),
+                ];
                 for entity in layer["entityInstances"]
                     .as_array()
                     .into_iter()
@@ -639,19 +651,12 @@ impl EditorApp {
                     count += 1;
                     let width = number(entity, "width", 16.);
                     let height = number(entity, "height", 16.);
-                    let local = [
-                        entity["px"][0].as_f64().unwrap_or(0.) as f32
-                            + (0.5 - entity["__pivot"][0].as_f64().unwrap_or(0.) as f32) * width,
-                        entity["px"][1].as_f64().unwrap_or(0.) as f32
-                            + (0.5 - entity["__pivot"][1].as_f64().unwrap_or(0.) as f32) * height,
-                    ];
-                    let origin =
-                        canvas::layer_to_world(project, key, index, &self.viewport, [0., 0.]);
-                    let unit =
-                        canvas::layer_to_world(project, key, index, &self.viewport, [1., 0.]);
-                    let scale = (unit[0] - origin[0]).abs();
-                    let position =
-                        canvas::layer_to_world(project, key, index, &self.viewport, local);
+                    let position = std::array::from_fn(|axis| {
+                        let size = [width, height][axis];
+                        let px = entity["px"][axis].as_f64().unwrap_or(0.) as f32;
+                        let pivot = entity["__pivot"][axis].as_f64().unwrap_or(0.) as f32;
+                        (px + (0.5 - pivot) * size).round() + offset[axis]
+                    });
                     let center = self
                         .viewport
                         .to_screen(position, rect.min.into(), rect.size().into())
@@ -659,7 +664,7 @@ impl EditorApp {
                     for (padding, opacity) in [(8., 1.), (12., 0.33)] {
                         painter.circle_stroke(
                             center,
-                            (width.max(height) * 0.5 + padding) * scale * self.viewport.zoom,
+                            (width.max(height) * 0.5 + padding) * self.viewport.zoom,
                             Stroke::new(
                                 self.viewport.zoom,
                                 Color32::from_rgba_unmultiplied(
@@ -747,7 +752,7 @@ impl EditorApp {
         else {
             return false;
         };
-        let local = canvas::world_to_layer(project, key, self.layer, &self.viewport, world);
+        let local = canvas::pointer_to_layer(project, key, self.layer, &self.viewport, world);
         canvas::values(&layer["entityInstances"])
             .iter()
             .any(|entity| selection_click::entity_is_over(project, entity, local))
@@ -758,6 +763,9 @@ impl EditorApp {
             return;
         };
         pick.point_target = None;
+        if ctx.input(|input| input.pointer.delta() != Vec2::ZERO) {
+            pick.point_waits_for_move = false;
+        }
         if self.selected != Some(pick.key)
             || self.layer != pick.layer
             || self.world && self.panel == Some(Panel::Level) && pick.owner.is_none()
@@ -886,7 +894,7 @@ impl EditorApp {
         if array && inner == "Point" {
             let group = array_field_frame(values.is_empty())
                 .show(ui, |ui| {
-                    ui.spacing_mut().item_spacing.y = 2.;
+                    ui.spacing_mut().item_spacing.y = 0.;
                     let compact = matches!(
                         text(definition, "editorDisplayMode", ""),
                         "Points" | "PointPath" | "PointStar"
@@ -900,7 +908,18 @@ impl EditorApp {
                             })
                             .collect::<Vec<_>>()
                             .join(", ");
-                        ui.add(egui::Label::new(summary).wrap());
+                        let (row, _) = ui.allocate_exact_size(
+                            egui::vec2(ui.available_width(), 37.),
+                            Sense::hover(),
+                        );
+                        let color = Color32::from_rgb(115, 127, 157);
+                        let text = ui.painter().layout(
+                            summary,
+                            FontId::proportional(12.),
+                            color,
+                            row.width(),
+                        );
+                        ui.painter().with_clip_rect(row).galley(row.min, text, color);
                     } else {
                         for (index, value) in values.iter().enumerate() {
                             ui.push_id(index, |ui| {
@@ -960,6 +979,9 @@ impl EditorApp {
                         }
                     }
                     if can_add {
+                        if !values.is_empty() {
+                            ui.add_space(2.);
+                        }
                         let response = array_field_add(ui, "Add from canvas");
                         pick_rect = Some(response.rect);
                         if response.clicked() {
@@ -1201,6 +1223,7 @@ impl EditorApp {
                 layer: self.layer,
                 empty_world_preview: false,
                 point_held: false,
+                point_waits_for_move: false,
                 point_origin: None,
                 point_target: None,
             };
@@ -1289,6 +1312,8 @@ impl EditorApp {
     ) -> Option<egui::Pos2> {
         let pick = self.field_pick.as_ref()?;
         let key = pick.key;
+        let project = self.project.as_ref()?;
+        let density = ctx.pixels_per_point();
         let mut held = pick.point_held;
         let in_level_panel = self.picking_point_in_level_panel();
         let (release, moved, cancel) = ctx.input(|i| {
@@ -1315,11 +1340,7 @@ impl EditorApp {
                         }
                     }
                     egui::Event::PointerMoved(pos) if held && rect.contains(*pos) => {
-                        let world = self.viewport.to_world(
-                            (*pos).into(),
-                            rect.min.into(),
-                            rect.size().into(),
-                        );
+                        let (world, _) = self.canvas_pointer_pixels(project, key, rect, *pos, density);
                         moved |= self.selected_entity_resize_handle(world).is_none()
                             && !self.point_selection_has_priority(world, i.modifiers.alt);
                     }
@@ -1364,7 +1385,7 @@ impl EditorApp {
                     position[1] - number(layer, "__pxTotalOffsetY", 0.),
                 ]
             } else {
-                canvas::world_to_layer(project, key, index, &self.viewport, position)
+                canvas::pointer_to_layer(project, key, index, &self.viewport, position)
             };
             if let Some(entity) = canvas::values(&layer["entityInstances"])
                 .iter()
@@ -1392,10 +1413,12 @@ impl EditorApp {
         if point && self.world {
             return false;
         }
-        if point && let Some(pointer) = response.hover_pos() {
-            let world = self
-                .viewport
-                .to_world(pointer.into(), rect.min.into(), rect.size().into());
+        if point
+            && let (Some(pointer), Some(project), Some(key)) =
+                (response.hover_pos(), &self.project, self.selected)
+        {
+            let (world, _) =
+                self.canvas_pointer_pixels(project, key, rect, pointer, ctx.pixels_per_point());
             let in_level_panel = self.picking_point_in_level_panel();
             if !in_level_panel
                 && let Some((_, _, _, handle)) = self.selected_entity_resize_handle(world)
@@ -1403,16 +1426,11 @@ impl EditorApp {
                 ctx.set_cursor_icon(level_resize::cursor(handle));
             } else if (in_level_panel
                 || !self.point_selection_has_priority(world, ctx.input(|i| i.modifiers.alt)))
-                && self
-                    .selected
-                    .is_some_and(|key| self.layer_visible(key, self.layer))
-                && let Some(project) = &self.project
+                && self.layer_visible(key, self.layer)
                 && let Some(pick) = &mut self.field_pick
+                && !pick.point_waits_for_move
             {
-                let local =
-                    canvas::world_to_layer(project, pick.key, pick.layer, &self.viewport, world);
-                let grid = pick.point_grid(project);
-                pick.point_target = Some(local.map(|coord| (coord / grid).floor() as i32));
+                pick.point_target = Some(pick.point_cell(project, &self.viewport, world));
                 ctx.set_cursor_icon(egui::CursorIcon::Default);
             }
         }
@@ -1432,15 +1450,12 @@ impl EditorApp {
         let Some(project) = &self.project else {
             return true;
         };
-        let position = self
-            .viewport
-            .to_world(pointer.into(), rect.min.into(), rect.size().into());
         let value = if pick.kind == "Point" {
             let grid = pick.point_grid(project);
             let layer = project.layer(pick.key, pick.layer);
-            let local =
-                canvas::world_to_layer(project, pick.key, pick.layer, &self.viewport, position);
-            let cell = local.map(|v| (v / grid).floor() as i32);
+            let (position, _) =
+                self.canvas_pointer_pixels(project, pick.key, rect, pointer, ctx.pixels_per_point());
+            let cell = pick.point_cell(project, &self.viewport, position);
             let width = layer
                 .map(|l| number(l, "__cWid", 0.0))
                 .unwrap_or_else(|| number(project.level(pick.key).unwrap(), "pxWid", 0.0) / grid)
@@ -1457,6 +1472,8 @@ impl EditorApp {
             let Some(key) = self.selected else {
                 return !self.world;
             };
+            let (position, _) =
+                self.canvas_pointer_pixels(project, key, rect, pointer, ctx.pixels_per_point());
             let level_bounds = if self.world {
                 reference_level_bounds(project, key)
             } else {
@@ -1574,6 +1591,8 @@ impl EditorApp {
             && let Some(pick) = &mut self.field_pick
         {
             pick.index = None;
+            pick.point_target = None;
+            pick.point_waits_for_move = true;
             if let Some(project) = &self.project
                 && pick.previous_path_point(project).is_some()
             {

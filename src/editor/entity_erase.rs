@@ -25,6 +25,9 @@ impl EditorApp {
                     {
                         if *pressed {
                             down = true;
+                            // The source entity tool runs one useAt sample
+                            // before its own press-time removal.
+                            positions.push(*pos);
                         }
                         if down {
                             positions.push(*pos);
@@ -45,10 +48,14 @@ impl EditorApp {
                 let (Some(project), Some(key)) = (&self.project, self.selected) else {
                     return;
                 };
-                let world =
-                    self.viewport
-                        .to_world(position.into(), rect.min.into(), rect.size().into());
-                let local = canvas::world_to_layer(project, key, self.layer, &self.viewport, world);
+                let (world, _) = self.canvas_pointer_pixels(
+                    project,
+                    key,
+                    rect,
+                    position,
+                    ctx.pixels_per_point(),
+                );
+                let local = canvas::pointer_to_layer(project, key, self.layer, &self.viewport, world);
                 self.erase_entity_or_point_at(local);
             }
         }
@@ -264,6 +271,77 @@ mod tests {
             before
         );
     }
+    #[test]
+    fn point_eraser_uses_the_rounded_cell_for_press_and_release() {
+        let (mut app, key) = setup(true);
+        let ctx = egui::Context::default();
+        app.viewport.zoom = 2.;
+        frame(&mut app, &ctx, vec![]);
+        let edge = egui::pos2(31., 16.);
+        frame(
+            &mut app,
+            &ctx,
+            vec![
+                egui::Event::PointerMoved(edge),
+                button(edge.x, edge.y, true),
+            ],
+        );
+        frame(&mut app, &ctx, vec![button(edge.x, edge.y, false)]);
+        let entities = &app.project.as_ref().unwrap().layer(key, 0).unwrap()["entityInstances"];
+        assert_eq!(entities.as_array().unwrap().len(), 1);
+        assert_eq!(
+            entities[0]["fieldInstances"][0]["__value"],
+            serde_json::json!([{"cx":1,"cy":4},{"cx":3,"cy":4}]),
+        );
+    }
+
+    #[test]
+    fn point_eraser_respects_entity_display_order_when_a_body_overlaps_a_point() {
+        let (mut app, key) = setup(true);
+        let project = app.project.as_mut().unwrap();
+        let layer_uid = project.layer(key, 0).unwrap()["layerDefUid"]
+            .as_i64()
+            .unwrap();
+        project
+            .update_layer_properties(
+                layer_uid,
+                &serde_json::json!({
+                    "entityDepthSorting":"YDescending"
+                }),
+            )
+            .unwrap();
+        project
+            .add_entity(key, 0, app.entity_uid.unwrap(), 88, 80)
+            .unwrap();
+        let layer = project.layer(key, 0).unwrap();
+        let hit = point_tools::hit_point(project, layer, [88., 72.]).unwrap();
+        assert_eq!((hit.0, hit.2), (0, 2));
+        let ctx = egui::Context::default();
+        frame(&mut app, &ctx, vec![]);
+        frame(
+            &mut app,
+            &ctx,
+            vec![
+                egui::Event::PointerMoved(egui::pos2(88., 72.)),
+                button(88., 72., true),
+            ],
+        );
+        let entities = &app.project.as_ref().unwrap().layer(key, 0).unwrap()["entityInstances"];
+        assert_eq!(entities.as_array().unwrap().len(), 1);
+        assert_eq!(
+            entities[0]["fieldInstances"][0]["__value"],
+            serde_json::json!([{"cx":1,"cy":4},{"cx":3,"cy":4}]),
+        );
+        frame(&mut app, &ctx, vec![button(120., 120., false)]);
+        app.undo_action(false);
+        let entities = &app.project.as_ref().unwrap().layer(key, 0).unwrap()["entityInstances"];
+        assert_eq!(entities.as_array().unwrap().len(), 2);
+        assert_eq!(
+            entities[0]["fieldInstances"][0]["__value"],
+            serde_json::json!([{"cx":1,"cy":4},{"cx":3,"cy":4},{"cx":5,"cy":4}]),
+        );
+    }
+
     #[test]
     fn a_point_array_eraser_stroke_is_one_undo_and_never_deletes_its_owner() {
         let (mut app, key) = setup(true);

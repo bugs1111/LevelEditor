@@ -38,7 +38,49 @@ fn level_distance(bounds: [f32; 4], point: [f32; 2]) -> f32 {
         .fold(f32::INFINITY, f32::min)
 }
 
+pub(super) fn level_world_origin(project: &Project, key: LevelKey) -> [f32; 2] {
+    let world = key
+        .world
+        .and_then(|index| project.json["worlds"].get(index))
+        .unwrap_or(&project.json);
+    if matches!(
+        world["worldLayout"].as_str(),
+        Some("LinearHorizontal" | "LinearVertical")
+    ) {
+        canvas::placements(project, key)
+            .into_iter()
+            .find(|(candidate, _)| *candidate == key)
+            .map_or([0.; 2], |(_, [x, y, ..])| [x, y])
+    } else {
+        let level = project.level(key).unwrap_or(&Value::Null);
+        [number(level, "worldX", 0.), number(level, "worldY", 0.)]
+    }
+}
+
 impl EditorApp {
+    pub(super) fn canvas_pointer_pixels(
+        &self,
+        project: &Project,
+        key: LevelKey,
+        rect: Rect,
+        pointer: egui::Pos2,
+        pixels_per_point: f32,
+    ) -> ([f32; 2], [f32; 2]) {
+        let offset = if self.world {
+            [0.; 2]
+        } else {
+            level_world_origin(project, key)
+        };
+        let world_pixel = self.viewport.pointer_pixel(
+            pointer.into(),
+            rect.min.into(),
+            rect.size().into(),
+            offset,
+            pixels_per_point,
+        );
+        ([world_pixel[0] - offset[0], world_pixel[1] - offset[1]], world_pixel)
+    }
+
     pub(super) fn wheel_zoom(&mut self, ctx: &egui::Context, rect: Rect, pointer: egui::Pos2) {
         // winit reports wheel ticks separately from smooth pixel scrolling.
         // Chromium delivers a discrete tick as 120 pixels on Linux and Windows
@@ -143,19 +185,17 @@ impl EditorApp {
             // The source publishes the new zoom to the world renderer before
             // applying the cursor's center adjustment. Coords uses that
             // pixel-snapped render origin when it scores the levels.
-            let density = f64::from(pixels_per_point);
-            let physical_zoom = f64::from(zoom) * density;
-            let world_coordinate = |axis: usize, page: f32, min: f32, size: f32| {
-                let origin = (f64::from(size) * density * 0.5
-                    - f64::from(center_before_zoom[axis]) * physical_zoom)
-                    .round();
-                let pixel = ((f64::from(page).trunc() - f64::from(min)) * density).round();
-                ((pixel - origin) / physical_zoom).round() as f32
-            };
-            let point = [
-                world_coordinate(0, pointer.x, rect.left(), rect.width()),
-                world_coordinate(1, pointer.y, rect.top(), rect.height()),
-            ];
+            let point = Viewport {
+                center: center_before_zoom,
+                zoom,
+            }
+            .pointer_pixel(
+                pointer.into(),
+                rect.min.into(),
+                rect.size().into(),
+                [0.; 2],
+                pixels_per_point,
+            );
             let score = |bounds| {
                 let contained_bonus = if contains(bounds, point, 0.) {
                     100.

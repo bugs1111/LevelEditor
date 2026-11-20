@@ -92,7 +92,7 @@ impl EditorApp {
                 )
         });
         let end = if let Some((layer, _, selection_click::Element::Entity(index))) =
-            self.generic_element_at(world)
+            self.generic_element_at(world, false)
         {
             let layer = project.layer(key, layer)?;
             let target = &layer["entityInstances"][index];
@@ -120,9 +120,8 @@ impl EditorApp {
                     )
             })
         } else {
-            let rounded = world.map(|v| (v + 0.5).floor());
-            let local = canvas::world_to_layer(project, key, self.layer, &self.viewport, rounded)
-                .map(f32::trunc);
+            let rounded = world.map(f32::round);
+            let local = canvas::pointer_to_layer(project, key, self.layer, &self.viewport, rounded);
             let grid = number(active, "__gridSize", 16.).max(1.);
             std::array::from_fn(|axis| {
                 let pos = if self.grid {

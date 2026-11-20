@@ -310,6 +310,12 @@ mod tests {
         assert!((actual - expected).abs() < 0.001, "{actual} != {expected}");
     }
 
+    fn near_zoom_anchor(view: &Viewport, expected: [f32; 2]) {
+        for (actual, expected) in view.center.into_iter().zip(expected) {
+            assert!((actual - expected).abs() * view.zoom <= 1.01);
+        }
+    }
+
     #[test]
     fn manual_world_entry_animates_only_zoom_at_backing_density_and_exit_fits_the_level() {
         let (mut app, ctx) = camera_editor(2.);
@@ -324,21 +330,22 @@ mod tests {
         };
         frame(&mut app, &ctx, vec![key(Key::PageUp, true)]);
         assert!(app.world);
-        assert_eq!(app.viewport.center, [1080., 2112.]);
+        near_zoom_anchor(&app.viewport, [1080., 2112.]);
         let target = (1140. / (256. * 1.1 + 300. * 2.) * 0.8_f32).max(0.30 / 2.) * 0.5;
         near(app.viewport.zoom, 2. + (target - 2.) * 0.22 * 2. * 2.);
         for _ in 0..114 {
+            let center = app.viewport.center;
             frame(&mut app, &ctx, vec![]);
+            near_zoom_anchor(&app.viewport, center);
         }
-        assert_eq!(app.viewport.center, [1080., 2112.]);
         assert!((app.viewport.zoom - target).abs() <= 0.04 * app.viewport.zoom);
         assert_ne!(app.viewport.zoom, target);
 
         let zoom = app.viewport.zoom;
+        let local = [app.viewport.center[0] - 1000., app.viewport.center[1] - 2000.];
         frame(&mut app, &ctx, vec![key(Key::Backtick, true)]);
         assert!(!app.world);
-        near(app.viewport.center[0], 80. + (128. - 80.) * 0.15);
-        near(app.viewport.center[1], 112. + (128. - 112.) * 0.15);
+        near_zoom_anchor(&app.viewport, local.map(|axis| axis + (128. - axis) * 0.15));
         let level_target = 900. / (256. + 80. * 2.);
         near(
             app.viewport.zoom,
@@ -394,7 +401,7 @@ mod tests {
                 modifiers: egui::Modifiers::NONE,
             }],
         );
-        assert_eq!(app.viewport.center, center_after_pan);
+        near_zoom_anchor(&app.viewport, center_after_pan);
         assert_ne!(app.viewport.zoom, zoom_after_pan);
     }
 
@@ -455,7 +462,7 @@ mod tests {
         let center = app.viewport.center;
         let zoom = app.viewport.zoom;
         frame(&mut app, &ctx, vec![]);
-        assert_eq!(app.viewport.center, center);
+        near_zoom_anchor(&app.viewport, center);
         assert!(app.viewport.zoom > zoom);
     }
 
@@ -497,7 +504,11 @@ mod tests {
             let center = app.viewport.center;
             let zoom = app.viewport.zoom;
             frame(&mut app, &ctx, vec![]);
-            assert_eq!(app.viewport.center, center, "{button:?}");
+            if secondary {
+                assert_eq!(app.viewport.center, center, "{button:?}");
+            } else {
+                near_zoom_anchor(&app.viewport, center);
+            }
             assert_eq!(app.viewport.zoom == zoom, secondary, "{button:?}");
         }
     }
@@ -549,6 +560,7 @@ mod tests {
         app.set_project(p);
         frame(&mut app, &ctx, vec![]);
         press(&mut app, &ctx, Key::Backtick, egui::Modifiers::NONE);
+        app.camera_motion.cancel();
         app.world_toggle_selection(first);
         let selected_levels = app.world_selection.clone();
         let center = app.viewport.center;

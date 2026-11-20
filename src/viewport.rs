@@ -1,3 +1,9 @@
+use eframe::egui::Rect;
+
+fn backing_pixel(page: f64, origin: f64, density: f64) -> f64 {
+    ((page.trunc() - origin) * density).round()
+}
+
 #[derive(Clone, Debug)]
 pub struct Viewport {
     pub center: [f32; 2],
@@ -25,6 +31,54 @@ impl Viewport {
             (screen[0] - origin[0] - size[0] * 0.5) / self.zoom + self.center[0],
             (screen[1] - origin[1] - size[1] * 0.5) / self.zoom + self.center[1],
         ]
+    }
+    pub fn pointer_pixel(
+        &self,
+        page: [f32; 2],
+        canvas_origin: [f32; 2],
+        canvas_size: [f32; 2],
+        world_offset: [f32; 2],
+        pixels_per_point: f32,
+    ) -> [f32; 2] {
+        // Coords.hx uses the snapped physical-pixel origin of WorldRender.
+        let density = f64::from(pixels_per_point);
+        let zoom = f64::from(self.zoom) * density;
+        std::array::from_fn(|axis| {
+            let center = f64::from(self.center[axis]) + f64::from(world_offset[axis]);
+            let root = (f64::from(canvas_size[axis]) * density * 0.5 - center * zoom).round();
+            let pixel = backing_pixel(
+                f64::from(page[axis]),
+                f64::from(canvas_origin[axis]),
+                density,
+            );
+            ((pixel - root) / zoom).round() as f32
+        })
+    }
+    fn zoom_at_level_center(
+        &mut self,
+        zoom: f32,
+        canvas: Rect,
+        level_origin: [f32; 2],
+        pixels_per_point: f32,
+    ) {
+        let density = f64::from(pixels_per_point);
+        let origin: [f32; 2] = canvas.min.into();
+        let size: [f32; 2] = canvas.size().into();
+        for axis in 0..2 {
+            let center = f64::from(self.center[axis]) - f64::from(level_origin[axis]);
+            let middle = f64::from(size[axis]) * density * 0.5;
+            let origin = f64::from(origin[axis]);
+            let project = |zoom: f32| {
+                let focus = center * f64::from(zoom) * density;
+                let level_root = (middle - focus).round();
+                backing_pixel((level_root + focus) / density + origin, origin, density)
+            };
+            // Camera.deltaZoomTo compares both page coordinates at the new
+            // backing zoom. The world render origin cancels in the difference.
+            let delta = (project(zoom) - project(self.zoom)) / (f64::from(zoom) * density);
+            self.center[axis] += delta as f32;
+        }
+        self.zoom = zoom;
     }
     pub fn zoom_to_at(&mut self, zoom: f32, cursor: [f32; 2], origin: [f32; 2], size: [f32; 2]) {
         let before = self.to_world(cursor, origin, size);
@@ -155,7 +209,8 @@ impl CameraMotion {
     pub fn tick(
         &mut self,
         view: &mut Viewport,
-        size: [f32; 2],
+        canvas: Rect,
+        level_origin: [f32; 2],
         pixels_per_point: f32,
         frame: u64,
         dt: f32,
@@ -165,6 +220,7 @@ impl CameraMotion {
         };
         self.last_frame = Some(frame);
         self.last_tmod = Some(tmod);
+        let size = canvas.size().into();
         if let Some(request) = self.zoom_request.take() {
             let target = match request {
                 ZoomRequest::Fit { bounds, world } => {
@@ -189,8 +245,9 @@ impl CameraMotion {
         }
         if let Some((target, remaining)) = &mut self.zoom {
             let step = (0.22 * view.zoom * pixels_per_point).max(0.1) * tmod;
-            view.zoom = (view.zoom + (*target - view.zoom) * step.min(1.0))
+            let zoom = (view.zoom + (*target - view.zoom) * step.min(1.0))
                 .clamp(0.03 / pixels_per_point, 32.0 / pixels_per_point);
+            view.zoom_at_level_center(zoom, canvas, level_origin, pixels_per_point);
             *remaining -= tmod;
             if (*target - view.zoom).abs() <= 0.04 * view.zoom || *remaining <= 0.0 {
                 self.zoom = None;
@@ -288,6 +345,23 @@ mod tests {
     }
 
     #[test]
+    fn source_pointer_rounds_negative_half_pixels_away_from_zero() {
+        let view = Viewport {
+            center: [25.25, 25.],
+            zoom: 2.,
+        };
+        let canvas = [100.; 2];
+        assert_eq!(
+            view.pointer_pixel([0., -1.], [0.; 2], canvas, [0.; 2], 1.),
+            [1., -1.]
+        );
+        assert_eq!(
+            view.pointer_pixel([0., -1.], [0.; 2], canvas, [0.; 2], 2.),
+            [0., -1.]
+        );
+    }
+
+    #[test]
     fn zoom_keeps_cursor_world_point_stationary() {
         let mut v = Viewport {
             center: [100.0, 200.0],
@@ -317,6 +391,24 @@ mod tests {
     }
 
     #[test]
+    fn animated_world_entry_reanchors_the_level_focus_to_the_backing_pixel() {
+        let mut view = Viewport {
+            center: [288., 80.],
+            zoom: 900. / 336.,
+        };
+        let mut motion = CameraMotion::default();
+        motion.enter_world([160., -48., 896., 256.], false);
+        let canvas = Rect::from_min_size(
+            eframe::egui::pos2(300., 0.),
+            eframe::egui::vec2(1140., 900.),
+        );
+        motion.tick(&mut view, canvas, [160., -48.], 1., 1, 0.05);
+        // The original projects the center at page pixel (869,449) before
+        // zooming and at (870,450) afterward.
+        near(view.center, [289.21667, 81.21667]);
+    }
+
+    #[test]
     fn world_entry_uses_backing_zoom_floor_before_halving_and_only_ticks_once_per_frame() {
         let mut view = Viewport {
             zoom: 0.1,
@@ -324,12 +416,12 @@ mod tests {
         };
         let mut motion = CameraMotion::default();
         motion.enter_world([0.0, 0.0, 100_000.0, 100_000.0], true);
-        let size = [350.0, 300.0];
-        assert!(motion.tick(&mut view, size, 2.0, 1, 1.0 / 30.0));
+        let canvas = Rect::from_min_size(eframe::egui::Pos2::ZERO, eframe::egui::vec2(350., 300.));
+        assert!(motion.tick(&mut view, canvas, [0.; 2], 2.0, 1, 1.0 / 30.0));
         assert!((view.zoom - 0.095).abs() < 0.0001);
-        assert!(motion.tick(&mut view, size, 2.0, 1, 1.0 / 60.0));
+        assert!(motion.tick(&mut view, canvas, [0.; 2], 2.0, 1, 1.0 / 60.0));
         assert!((view.zoom - 0.095).abs() < 0.0001);
-        assert!(motion.tick(&mut view, size, 2.0, 2, 0.5));
+        assert!(motion.tick(&mut view, canvas, [0.; 2], 2.0, 2, 0.5));
         assert!((view.zoom - 0.091).abs() < 0.0001);
     }
 
@@ -338,9 +430,13 @@ mod tests {
         let mut view = Viewport::default();
         let mut motion = CameraMotion::default();
         motion.fit([0.0, 0.0, 16.0, 16.0], false);
+        let canvas = Rect::from_min_size(
+            eframe::egui::Pos2::ZERO,
+            eframe::egui::vec2(10_000., 10_000.),
+        );
         for frame in 1..=54 {
             assert_eq!(
-                motion.tick(&mut view, [10_000.0, 10_000.0], 2.0, frame, 1.0 / 30.0),
+                motion.tick(&mut view, canvas, [0.; 2], 2.0, frame, 1.0 / 30.0),
                 frame < 54,
             );
             assert_eq!(view.zoom, 16.0);

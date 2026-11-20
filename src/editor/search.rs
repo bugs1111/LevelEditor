@@ -872,7 +872,14 @@ mod tests {
             assert_eq!(app.viewport.zoom, 1.25);
             assert!(
                 app.camera_motion
-                    .tick(&mut app.viewport, [1140.0, 900.0], 1.0, 1, 1.0 / 60.0,)
+                    .tick(
+                        &mut app.viewport,
+                        Rect::from_min_max(egui::pos2(300., 0.), egui::pos2(1440., 900.)),
+                        [0.; 2],
+                        1.0,
+                        1,
+                        1.0 / 60.0,
+                    )
             );
             assert!(app.viewport.center[0] > -208.0 && app.viewport.center[0] < 128.0);
             assert!(app.viewport.zoom > 1.25 && app.viewport.zoom < 900.0 / 336.0);
@@ -899,7 +906,14 @@ mod tests {
         assert!(!app.fit);
         assert!(
             app.camera_motion
-                .tick(&mut app.viewport, [1140.0, 900.0], 1.0, 1, 0.0)
+                .tick(
+                    &mut app.viewport,
+                    Rect::from_min_max(egui::pos2(300., 0.), egui::pos2(1440., 900.)),
+                    [0.; 2],
+                    1.0,
+                    1,
+                    0.0,
+                )
         );
         assert_eq!(app.viewport.center, [-160.0, 3.0]);
         assert!((app.viewport.zoom - 1140.0 / (832.0 * 1.1 + 300.0)).abs() < 0.001);

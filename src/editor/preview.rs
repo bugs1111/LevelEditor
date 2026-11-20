@@ -24,16 +24,15 @@ impl EditorApp {
         let Some(layer) = project.layer(key, self.layer) else {
             return;
         };
-        let world = self
-            .viewport
-            .to_world(pointer.into(), rect.min.into(), rect.size().into());
+        let (world, _) =
+            self.canvas_pointer_pixels(project, key, rect, pointer, ui.ctx().pixels_per_point());
         if layer["__type"] == "AutoLayer"
             && self
                 .stamp
                 .as_ref()
                 .is_none_or(|stamp| stamp["type"] != "SelectionGroup")
         {
-            let [x, y] = world.map(f32::round);
+            let [x, y] = world;
             let [left, top, right, bottom] = canvas::bounds(project, key, false);
             let ctx = ui.ctx();
             if (left..right).contains(&x)
@@ -46,7 +45,7 @@ impl EditorApp {
             }
             return;
         }
-        let local = canvas::world_to_layer(project, key, self.layer, &self.viewport, world);
+        let local = canvas::pointer_to_layer(project, key, self.layer, &self.viewport, world);
         let grid = number(layer, "__gridSize", 16.0).max(1.0);
         let cell = local.map(|v| (v / grid).floor() as i32);
         if cell[0] < 0

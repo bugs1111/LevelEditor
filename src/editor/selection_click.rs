@@ -59,7 +59,24 @@ pub(super) enum Element {
         index: usize,
     },
 }
-fn layer_hit(project: &Project, layer: &Value, local: [f32; 2], cell: [i32; 2]) -> Option<Element> {
+pub(super) fn tiles_at_cell(layer: &Value, cell: [i32; 2]) -> impl Iterator<Item = &Value> {
+    let grid = number(layer, "__gridSize", 16.) as i64;
+    let px = cell.map(|axis| i64::from(axis) * grid);
+    layer["gridTiles"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(move |tile| {
+            tile["px"][0].as_i64() == Some(px[0]) && tile["px"][1].as_i64() == Some(px[1])
+        })
+}
+
+pub(super) fn layer_hit(
+    project: &Project,
+    layer: &Value,
+    local: [f32; 2],
+    cell: [i32; 2],
+) -> Option<Element> {
     match text(layer, "__type", "") {
         "IntGrid" => {
             let width = number(layer, "__cWid", 0.) as i32;
@@ -74,18 +91,7 @@ fn layer_hit(project: &Project, layer: &Value, local: [f32; 2], cell: [i32; 2]) 
                     > 0)
             .then_some(Element::Grid)
         }
-        "Tiles" => {
-            let g = number(layer, "__gridSize", 16.) as i64;
-            layer["gridTiles"]
-                .as_array()
-                .is_some_and(|tiles| {
-                    tiles.iter().any(|t| {
-                        t["px"][0].as_i64() == Some(i64::from(cell[0]) * g)
-                            && t["px"][1].as_i64() == Some(i64::from(cell[1]) * g)
-                    })
-                })
-                .then_some(Element::Grid)
-        }
+        "Tiles" => tiles_at_cell(layer, cell).next().map(|_| Element::Grid),
         "Entities" => {
             let mut hit = None;
             let def = layer["layerDefUid"]
@@ -128,7 +134,11 @@ fn layer_hit(project: &Project, layer: &Value, local: [f32; 2], cell: [i32; 2]) 
 }
 
 impl EditorApp {
-    pub(super) fn generic_element_at(&self, world: [f32; 2]) -> Option<(usize, [i32; 2], Element)> {
+    pub(super) fn generic_element_at(
+        &self,
+        world: [f32; 2],
+        active_only: bool,
+    ) -> Option<(usize, [i32; 2], Element)> {
         let key = self.selected?;
         let project = self.project.as_ref()?;
         let layers = project.level(key)?["layerInstances"].as_array()?;
@@ -137,6 +147,7 @@ impl EditorApp {
             .into_iter()
             .flatten()
             .filter_map(|d| layers.iter().position(|l| l["layerDefUid"] == d["uid"]))
+            .filter(|index| !active_only || *index == self.layer)
             .collect::<Vec<_>>();
         if self.single_layer
             && let Some(pos) = order.iter().position(|i| *i == self.layer)
@@ -159,14 +170,13 @@ impl EditorApp {
             {
                 return None;
             }
-            let local = canvas::world_to_layer(
+            let local = canvas::pointer_to_layer(
                 project,
                 key,
                 index,
                 &self.viewport,
-                world.map(|v| (v + 0.5).floor()),
-            )
-            .map(f32::trunc);
+                world.map(f32::round),
+            );
             let grid = number(layer, "__gridSize", 16.).max(1.);
             let cell = local.map(|v| (v / grid).floor() as i32);
             layer_hit(project, layer, local, cell).map(|element| (index, cell, element))
@@ -273,7 +283,7 @@ impl EditorApp {
         else {
             return false;
         };
-        let Some((layer_index, cell, element)) = self.generic_element_at(world) else {
+        let Some((layer_index, cell, element)) = self.generic_element_at(world, false) else {
             self.selection = None;
             self.selection_group = None;
             self.entity_index = None;

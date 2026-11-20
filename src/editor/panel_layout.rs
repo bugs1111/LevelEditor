@@ -431,7 +431,12 @@ impl EditorApp {
         };
         let header_height = if rules { 46. } else { 53. };
         let single_column = matches!(panel, Panel::Project | Panel::World | Panel::Level);
-        let height = (screen.height() - 34.).max(100.);
+        let top = if panel == Panel::World && self.zen {
+            0.
+        } else {
+            34.
+        };
+        let height = (screen.height() - top).max(100.);
         let body_top = if rules {
             17
         } else if panel == Panel::Level {
@@ -475,7 +480,7 @@ impl EditorApp {
         }
         let area = egui::Area::new(panel_id)
             .order(egui::Order::Foreground)
-            .fixed_pos(egui::pos2(0., 34.))
+            .fixed_pos(egui::pos2(0., top))
             .constrain(false)
             .show(ctx, |ui| {
                 ui.style_mut()

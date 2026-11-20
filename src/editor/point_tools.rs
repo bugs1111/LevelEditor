@@ -7,39 +7,15 @@ pub(super) fn hit_point(
     local: [f32; 2],
 ) -> Option<(usize, i64, usize)> {
     let grid = number(layer, "__gridSize", 16.0).max(1.0);
-    let cell = local.map(|v| (v / grid).floor() as i64);
-    let mut hit = None;
-    for (index, entity) in layer["entityInstances"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .enumerate()
-    {
-        if selection_click::entity_is_over(project, entity, local) {
-            hit = None;
-            continue;
-        }
-        for field in entity["fieldInstances"].as_array().into_iter().flatten() {
-            let kind = text(field, "__type", "");
-            if !matches!(kind, "Point" | "Array<Point>") {
-                continue;
-            }
-            let points = if kind == "Point" {
-                std::slice::from_ref(&field["__value"])
-            } else {
-                field["__value"]
-                    .as_array()
-                    .map(Vec::as_slice)
-                    .unwrap_or_default()
-            };
-            for (i, point) in points.iter().enumerate() {
-                if point["cx"].as_i64() == Some(cell[0]) && point["cy"].as_i64() == Some(cell[1]) {
-                    hit = field["defUid"].as_i64().map(|uid| (index, uid, i));
-                }
-            }
-        }
+    let cell = local.map(|axis| (axis.trunc() / grid).floor() as i32);
+    match selection_click::layer_hit(project, layer, local, cell) {
+        Some(selection_click::Element::Point {
+            entity,
+            field,
+            index,
+        }) => Some((entity, field, index)),
+        _ => None,
     }
-    hit
 }
 
 impl EditorApp {

@@ -645,6 +645,7 @@ impl EditorApp {
             {
                 self.clicktrap = true;
                 self.focus_frames = None;
+                self.zen_sidebar = chrome::ZenSidebar::default();
                 self.space_pressed = None;
                 self.space_fit_pending = false;
                 if let Some(Gesture::WorldGroupMove {
@@ -876,7 +877,7 @@ impl EditorApp {
             return None;
         }
         let project = self.project.as_ref()?;
-        let local = canvas::world_to_layer(project, key, self.layer, &self.viewport, world);
+        let local = canvas::pointer_to_layer(project, key, self.layer, &self.viewport, world);
         let handle = self.resize_handle_at(key, self.layer, index, local, self.viewport.zoom)?;
         Some((key, index, local, handle))
     }
@@ -937,9 +938,10 @@ impl EditorApp {
         let Some((pos, button, modifiers)) = press else {
             return false;
         };
-        let world = self
-            .viewport
-            .to_world(pos.into(), rect.min.into(), rect.size().into());
+        let (Some(project), Some(key)) = (&self.project, self.selected) else {
+            return false;
+        };
+        let (world, _) = self.canvas_pointer_pixels(project, key, rect, pos, ctx.pixels_per_point());
         if let Some((key, index, local, handle)) = self.selected_entity_resize_handle(world) {
             self.begin_entity_resize(key, index, local, handle);
             return true;
@@ -969,7 +971,7 @@ impl EditorApp {
             && let Some(layer) = project.layer(key, self.layer)
         {
             let grid = number(layer, "__gridSize", 16.).max(1.);
-            let local = canvas::world_to_layer(project, key, self.layer, &self.viewport, world);
+            let local = canvas::pointer_to_layer(project, key, self.layer, &self.viewport, world);
             let cell = local.map(|v| (v / grid).floor() as i32);
             if modifiers.shift {
                 self.history.begin(project, key);
@@ -1134,27 +1136,30 @@ impl EditorApp {
         true
     }
 
+    pub(super) fn canvas_input_blocked(&self, ctx: &egui::Context) -> bool {
+        self.project.is_none()
+        || self.pending.is_some()
+        || self.suggest_backups
+        || self.is_busy()
+        || self.command_palette
+        || ui_fields::enum_picker::is_open(ctx)
+        || self.command_open
+        || !self.resource_missing.is_empty()
+        || self.crash.is_some()
+        || self.clicktrap
+        || text_editor::is_open(ctx)
+        || world_form_dialog::is_open(ctx)
+        || panels::enum_value_removal_open(ctx)
+        || help::changelog_is_open(ctx)
+    }
+
     fn canvas_controls_frame(
         &mut self,
         ctx: &egui::Context,
         rect: Rect,
         response: &egui::Response,
     ) {
-        if self.project.is_none()
-            || self.pending.is_some()
-            || self.suggest_backups
-            || self.is_busy()
-            || self.command_palette
-            || ui_fields::enum_picker::is_open(ctx)
-            || self.command_open
-            || !self.resource_missing.is_empty()
-            || self.crash.is_some()
-            || self.clicktrap
-            || text_editor::is_open(ctx)
-            || world_form_dialog::is_open(ctx)
-            || panels::enum_value_removal_open(ctx)
-            || help::changelog_is_open(ctx)
-        {
+        if self.canvas_input_blocked(ctx) {
             self.camera_drag = None;
             return;
         }
@@ -1345,7 +1350,9 @@ impl EditorApp {
             return;
         }
         let grid = number(layer, "__gridSize", 16.0).max(1.0);
-        let local = canvas::world_to_layer(project, key, self.layer, &self.viewport, local_world);
+        let (local_world, _) =
+            self.canvas_pointer_pixels(project, key, rect, pointer, ctx.pixels_per_point());
+        let local = canvas::pointer_to_layer(project, key, self.layer, &self.viewport, local_world);
         let cell = [
             (local[0] / grid).floor() as i32,
             (local[1] / grid).floor() as i32,

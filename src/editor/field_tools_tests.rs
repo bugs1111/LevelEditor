@@ -484,7 +484,7 @@ fn same_level_reference_pick_keeps_the_inspector_and_camera() {
 }
 
 #[test]
-fn reference_target_hints_and_clicks_obey_visibility_tags_specific_type_and_level_limit() {
+fn reference_target_hints_and_clicks_match_layer_visibility_and_field_restrictions() {
     for restriction in ["OnlyTags", "OnlySpecificEntity", "same-level", "hidden"] {
         let mut f = fixture(false);
         let ctx = egui::Context::default();
@@ -514,16 +514,18 @@ fn reference_target_hints_and_clicks_obey_visibility_tags_specific_type_and_leve
         f.app.navigate_level(f.target, false);
         frame(&mut f, &ctx, vec![], false);
         let (_, labels) = frame(&mut f, &ctx, vec![], false);
-        assert!(
-            labels
-                .iter()
-                .any(|(s, _)| s == "No valid target in this level."
-                    || s == "You can only pick a reference in the same level for this value."),
+        let has_error = labels
+            .iter()
+            .any(|(s, _)| s == "No valid target in this level."
+                || s == "You can only pick a reference in the same level for this value.");
+        assert_eq!(
+            has_error,
+            restriction != "hidden",
             "{restriction}: {labels:?}"
         );
         assert_eq!(
             ctx.data(|d| d.get_temp::<usize>(egui::Id::new("target-circles"))),
-            Some(0)
+            Some(if restriction == "hidden" { 2 } else { 0 })
         );
         click_entity(&mut f, &ctx, [96., 96.]);
         assert!(value(&f).is_null(), "{restriction}");
@@ -636,6 +638,9 @@ fn point_path_cursor_draws_the_source_line_from_the_last_accepted_point() {
         ["entityInstances"][0]["fieldInstances"][0];
     assert_eq!(field["__value"], json!([{"cx":4,"cy":4},{"cx":8,"cy":9}]));
     assert_eq!(field["realEditorValues"][0], first_wrapper);
+    assert!(f.app.field_pick.as_ref().unwrap().point_target.is_none());
+    frame(&mut f, &ctx, vec![], false);
+    assert!(f.app.field_pick.as_ref().unwrap().point_target.is_none());
     let next = draw(&mut f, screen([178., 146.]));
     assert!(line_at(&next, screen([136., 152.]), screen([184., 152.])));
     assert!(!line_at(
@@ -880,6 +885,34 @@ fn point_picker_routes_primary_press_to_selection_only_when_started_over_an_enti
 }
 
 #[test]
+fn point_picker_preview_and_release_use_the_rounded_cell_at_a_boundary() {
+    let mut f = fixture(false);
+    let ctx = egui::Context::default();
+    theme::configure(&ctx);
+    let project = f.app.project.as_mut().unwrap();
+    let actor = project.json["defs"]["entities"][0]["uid"].as_i64().unwrap();
+    project.remove_field_definition(f.uid).unwrap();
+    f.uid = project
+        .add_field_definition(Some(actor), "Target", "Point", false)
+        .unwrap();
+    f.app.viewport.zoom = 2.;
+    let (_, labels) = frame(&mut f, &ctx, vec![], true);
+    click(
+        &mut f,
+        &ctx,
+        labels.iter().find(|(s, _)| s == "Canvas pick").unwrap().1,
+        true,
+    );
+    let (rect, _) = frame(&mut f, &ctx, vec![], false);
+    let edge = egui::pos2(rect.center().x - 97., rect.center().y - 112.);
+    frame(&mut f, &ctx, vec![egui::Event::PointerMoved(edge)], false);
+    let target = f.app.field_pick.as_ref().unwrap().point_target;
+    assert_eq!(target, Some([5, 4]));
+    click(&mut f, &ctx, edge, false);
+    assert_eq!(value(&f), json!({"cx":5,"cy":4}));
+}
+
+#[test]
 fn point_picker_releases_at_final_cell_with_the_last_held_move_deadline() {
     let mut f = fixture(false);
     let ctx = egui::Context::default();
@@ -1036,6 +1069,44 @@ fn single_point_picker_can_be_cancelled_in_the_entity_inspector() {
     let (_, labels) = frame(&mut f, &ctx, vec![], true);
     assert!(labels.iter().any(|(label, _)| label == "<NO POINT>"));
     assert!(!labels.iter().any(|(label, _)| label == "X"));
+}
+
+#[test]
+fn point_array_pick_button_reserves_the_source_summary_and_row_heights() {
+    let mut f = fixture(false);
+    let ctx = egui::Context::default();
+    theme::configure(&ctx);
+    let project = f.app.project.as_mut().unwrap();
+    let actor = project.json["defs"]["entities"][0]["uid"].as_i64().unwrap();
+    project.remove_field_definition(f.uid).unwrap();
+    f.uid = project
+        .add_field_definition(Some(actor), "Target", "Point", true)
+        .unwrap();
+    project
+        .set_field_editor_value(
+            f.source,
+            Some(&f.owner),
+            f.uid,
+            json!([{"cx":4,"cy":6},{"cx":10,"cy":8}]),
+        )
+        .unwrap();
+    for style in ["Points", "PointPathLoop"] {
+        f.app.project.as_mut().unwrap()
+            .update_field_definition(f.uid, &json!({"editorDisplayMode":style}))
+            .unwrap();
+        let (_, labels) = frame(&mut f, &ctx, vec![], true);
+        let center_y = |label| labels.iter().find(|(s, _)| s == label).unwrap().1.y;
+        let button_top = center_y("Canvas pick") - 11.5;
+        if style == "Points" {
+            let gap = button_top - center_y("<4,6>, <10,8>");
+            assert!((30. ..=34.).contains(&gap), "compact summary: {gap}");
+        } else {
+            let row_height = center_y("10,8") - center_y("4,6");
+            assert_eq!(row_height, 28., "point rows have no intervening gap");
+            let gap = button_top - center_y("10,8");
+            assert!((15. ..=17.).contains(&gap), "last point row: {gap}");
+        }
+    }
 }
 
 #[test]
