@@ -788,6 +788,9 @@ impl Project {
         enums.retain(|e| s(e, "externalRelPath") != rel);
         enums.extend(replacements);
         candidate.refresh_derived_data()?;
+        candidate
+            .external_levels
+            .reuse_equal_documents(&self.external_levels);
         *self = candidate;
         report.applied = true;
         Ok(report)

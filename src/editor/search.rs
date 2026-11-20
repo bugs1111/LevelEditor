@@ -76,7 +76,7 @@ impl Category {
 }
 
 #[derive(Clone)]
-pub(super) struct Entry {
+struct Entry {
     category: Category,
     title: String,
     context: String,
@@ -97,9 +97,9 @@ fn keywords(raw: &str) -> String {
         .collect()
 }
 
-fn matching<'a>(entries: &'a [Entry], query: &str) -> impl Iterator<Item = &'a Entry> {
+fn matching<'a>(entries: &'a [Entry], query: &str) -> impl Iterator<Item = (usize, &'a Entry)> {
     let query = keywords(query);
-    entries.iter().filter(move |entry| {
+    entries.iter().enumerate().filter(move |(_, entry)| {
         !query.is_empty()
             && query
                 .split_whitespace()
@@ -114,7 +114,16 @@ fn values(value: &Value) -> &[Value] {
 fn field_display(project: &Project, kind: &str, value: &Value, def: &Value) -> String {
     match kind {
         "String" | "Text" | "Multilines" | "FilePath" => {
-            format!("\"{}\"", value.as_str().unwrap_or(""))
+            let decoded = value
+                .as_str()
+                .unwrap_or("")
+                .replace("\\\\", "\\")
+                .replace("\\n", "\n");
+            // The browser collapses whitespace when displaying field values.
+            format!("\"{decoded}\"")
+                .split_ascii_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ")
         }
         "Int" | "Float" => {
             let number = value
@@ -330,10 +339,113 @@ fn search_index(project: &Project) -> Vec<Entry> {
 
 const PREVIEW_ROWS: usize = 21;
 const ROW_HEIGHT: f32 = 23.333;
+const RESULTS_PADDING: f32 = 8.;
 
-fn result_row(ui: &mut egui::Ui, entry: &Entry, selected: bool) -> egui::Response {
+#[derive(Default)]
+pub(super) struct SearchIndex {
+    entries: Vec<Entry>,
+    query: String,
+    width: f32,
+    pixels_per_point: f32,
+    expanded: bool,
+    rows: Vec<SearchRow>,
+}
+
+struct SearchRow {
+    entry: usize,
+    top: f32,
+    height: f32,
+}
+
+impl SearchIndex {
+    fn layout(&mut self, ui: &egui::Ui, query: &str, expanded: bool, width: f32) {
+        let pixels_per_point = ui.pixels_per_point();
+        if self.query == query
+            && self.width == width
+            && self.pixels_per_point == pixels_per_point
+            && self.expanded == expanded
+        {
+            return;
+        }
+        self.query.clear();
+        self.query.push_str(query);
+        self.width = width;
+        self.pixels_per_point = pixels_per_point;
+        self.expanded = expanded;
+        self.rows.clear();
+        let limit = if expanded { usize::MAX } else { PREVIEW_ROWS };
+        let mut top = 0.;
+        for (entry, result) in matching(&self.entries, query).take(limit) {
+            let (title, _) = result_labels(ui, result, width);
+            let height = ROW_HEIGHT.max(title.size().y + 6.);
+            self.rows.push(SearchRow { entry, top, height });
+            top += height;
+        }
+    }
+}
+
+fn result_labels(
+    ui: &egui::Ui,
+    entry: &Entry,
+    width: f32,
+) -> (Arc<egui::Galley>, Arc<egui::Galley>) {
+    let context = match entry.destination {
+        Destination::Definition(..) => locale::tr(ui, "Definition"),
+        Destination::Level(LevelKey { world: None, .. }) => locale::tr(ui, "World"),
+        _ => entry.context.as_str(),
+    };
+    let context = ui.painter().layout_no_wrap(
+        context.into(),
+        FontId::proportional(12.),
+        Color32::PLACEHOLDER,
+    );
+    let title = match entry.destination {
+        Destination::World(None) => locale::tr(ui, "World").to_owned(),
+        Destination::Level(_) => locale::format(ui, "Level {name}", &[("name", &entry.title)]),
+        Destination::Layer(..) => locale::format(ui, "Layer {name}", &[("name", &entry.title)]),
+        _ => entry.title.clone(),
+    };
+    let mut job = egui::text::LayoutJob::single_section(
+        title,
+        egui::TextFormat {
+            font_id: FontId::proportional(13.333),
+            color: Color32::PLACEHOLDER,
+            line_height: Some(15.),
+            ..Default::default()
+        },
+    );
+    let available_width = width - 114. - context.size().x;
+    if available_width > 0. {
+        job.wrap.max_width = available_width;
+    }
+    let mut layout = ui.painter().layout_job(job);
+    if layout.rows.len() > 1 && layout.text().contains(' ') {
+        // Browser wrapping excludes the space that breaks a line.
+        let mut job = (*layout.job).clone();
+        let space = ui.fonts_mut(|fonts| fonts.glyph_width(&job.sections[0].format.font_id, ' '));
+        job.wrap.max_width += space;
+        let candidate = ui.painter().layout_job(job);
+        if candidate.rows.iter().all(|row| {
+            row.glyphs
+                .iter()
+                .rfind(|glyph| glyph.chr != ' ')
+                .is_none_or(|glyph| row.pos.x + glyph.max_x() <= available_width)
+        }) {
+            layout = candidate;
+        }
+    }
+    (layout, context)
+}
+
+fn result_row(
+    ui: &mut egui::Ui,
+    entry: &Entry,
+    selected: bool,
+    height: f32,
+    width: f32,
+) -> egui::Response {
     let (rect, response) =
-        ui.allocate_exact_size(egui::vec2(ui.available_width(), ROW_HEIGHT), Sense::click());
+        ui.allocate_exact_size(egui::vec2(ui.available_width(), height), Sense::click());
     if !ui.is_rect_visible(rect) {
         return response;
     }
@@ -358,43 +470,22 @@ fn result_row(ui: &mut egui::Ui, entry: &Entry, selected: bool) -> egui::Respons
         Color32::from_white_alpha(204),
     );
 
-    let context = match entry.destination {
-        Destination::Definition(..) => locale::tr(ui, "Definition"),
-        Destination::Level(LevelKey { world: None, .. }) => locale::tr(ui, "World"),
-        _ => entry.context.as_str(),
-    };
-    let context = ui.painter().layout_no_wrap(
-        context.into(),
-        FontId::proportional(12.),
-        foreground.gamma_multiply(0.5),
-    );
+    let (title, context) = result_labels(ui, entry, width);
     let right = rect.right() - 16.;
     let context_left = right - context.size().x;
     ui.painter().galley(
         egui::pos2(context_left, rect.center().y - context.size().y / 2.),
         context,
-        foreground,
+        foreground.gamma_multiply(0.5),
     );
     let left = rect.left() + 90.;
     let title_clip = Rect::from_min_max(
         egui::pos2(left, rect.top()),
         egui::pos2((context_left - 8.).max(left), rect.bottom()),
     );
-    let title: std::borrow::Cow<'_, str> = match entry.destination {
-        Destination::World(None) => locale::tr(ui, "World").into(),
-        Destination::Level(_) => {
-            locale::format(ui, "Level {name}", &[("name", &entry.title)]).into()
-        }
-        Destination::Layer(..) => {
-            locale::format(ui, "Layer {name}", &[("name", &entry.title)]).into()
-        }
-        _ => std::borrow::Cow::Borrowed(entry.title.as_str()),
-    };
-    ui.painter().with_clip_rect(title_clip).text(
-        egui::pos2(left, rect.center().y),
-        Align2::LEFT_CENTER,
-        title.as_ref(),
-        FontId::proportional(13.333),
+    ui.painter().with_clip_rect(title_clip).galley(
+        egui::pos2(left, rect.center().y - title.size().y * 0.5),
+        title,
         foreground,
     );
     response
@@ -489,7 +580,9 @@ impl EditorApp {
     #[cfg(test)]
     fn search_results(&self, query: &str) -> Vec<Entry> {
         let index = self.project.as_ref().map(search_index).unwrap_or_default();
-        matching(&index, query).cloned().collect()
+        matching(&index, query)
+            .map(|(_, entry)| entry.clone())
+            .collect()
     }
 
     pub(super) fn palette_dialog(&mut self, ctx: &egui::Context) {
@@ -505,7 +598,10 @@ impl EditorApp {
         let opening = self.search_entries.is_none();
         let index = self
             .search_entries
-            .get_or_insert_with(|| self.project.as_ref().map(search_index).unwrap_or_default());
+            .get_or_insert_with(|| SearchIndex {
+                entries: self.project.as_ref().map(search_index).unwrap_or_default(),
+                ..Default::default()
+            });
         let id = egui::Id::new("command-palette");
         let width = 733.333_f32.min(ctx.content_rect().width() - 16.).max(1.);
         let modal = egui::Modal::new(id)
@@ -543,17 +639,13 @@ impl EditorApp {
                     self.search_index = 0;
                     self.search_show_all = false;
                 }
-                let limit = if self.search_show_all {
-                    usize::MAX
-                } else {
-                    PREVIEW_ROWS
-                };
-                let rows = matching(index, &self.search)
-                    .take(limit)
-                    .collect::<Vec<_>>();
-                if rows.is_empty() {
+                let layout_width = ui.available_width() - ui.spacing().scroll.allocated_width();
+                index.layout(ui, &self.search, self.search_show_all, layout_width);
+                let rows = &index.rows;
+                let Some(last) = rows.last() else {
                     return None;
-                }
+                };
+                let rows_height = last.top + last.height;
 
                 let down = ctx.input(|i| i.key_pressed(Key::ArrowDown));
                 let up = ctx.input(|i| i.key_pressed(Key::ArrowUp));
@@ -562,7 +654,7 @@ impl EditorApp {
                     .min(rows.len() - 1);
                 let more = !self.search_show_all && rows.len() == PREVIEW_ROWS;
                 let content_height =
-                    rows.len() as f32 * ROW_HEIGHT + 16. + if more { 37. } else { 0. };
+                    rows_height + 2. * RESULTS_PADDING + if more { 37. } else { 0. };
                 let height = content_height.min(ctx.content_rect().height() * 0.85);
                 let mut selected = ctx
                     .input(|i| i.key_pressed(Key::Enter))
@@ -582,21 +674,47 @@ impl EditorApp {
                             .id_salt(scroll_id)
                             .max_height(height)
                             .auto_shrink([false, false]);
-                        scroll.show(ui, |ui| {
-                            ui.add_space(8.);
-                            for (row, entry) in rows.iter().enumerate() {
-                                let response = result_row(ui, entry, row == self.search_index);
+                        scroll.show_viewport(ui, |ui, viewport| {
+                            // Keep the entire list scrollable while only building visible rows.
+                            ui.set_min_height(content_height);
+                            ui.add_space(RESULTS_PADDING);
+                            if up || down {
+                                let current = &rows[self.search_index];
+                                let y = ui.next_widget_position().y + current.top;
+                                let row = Rect::from_min_size(
+                                    egui::pos2(ui.min_rect().left(), y),
+                                    egui::vec2(ui.available_width(), current.height),
+                                );
+                                ui.scroll_to_rect(row, None);
+                            }
+
+                            let first = rows.partition_point(|row| {
+                                row.top + row.height <= viewport.min.y - RESULTS_PADDING
+                            });
+                            let end = rows
+                                .partition_point(|row| row.top < viewport.max.y - RESULTS_PADDING)
+                                .max(first);
+                            let offset = |row: usize| rows.get(row).map_or(rows_height, |r| r.top);
+                            let moving = ctx.input(|i| i.pointer.is_moving());
+                            ui.add_space(offset(first));
+                            ui.skip_ahead_auto_ids(first);
+                            for (row, layout) in rows.iter().enumerate().take(end).skip(first) {
+                                let response = result_row(
+                                    ui,
+                                    &index.entries[layout.entry],
+                                    row == self.search_index,
+                                    layout.height,
+                                    layout_width,
+                                );
                                 if response.clicked() {
                                     selected = Some(row);
                                 }
-                                if response.hovered() && ctx.input(|i| i.pointer.is_moving()) {
+                                if response.hovered() && moving {
                                     self.search_index = row;
                                     ctx.request_repaint();
                                 }
-                                if row == self.search_index && (up || down) {
-                                    response.scroll_to_me(None);
-                                }
                             }
+                            ui.add_space(rows_height - offset(end));
                             if more {
                                 ui.add_space(2.);
                                 let orange = Color32::from_rgb(227, 77, 0);
@@ -614,10 +732,10 @@ impl EditorApp {
                                     ctx.request_repaint();
                                 }
                             }
-                            ui.add_space(8.);
+                            ui.add_space(RESULTS_PADDING);
                         });
                     });
-                selected.map(|row| rows[row].destination.clone())
+                selected.map(|row| index.entries[rows[row].entry].destination.clone())
             });
         let close = modal.should_close();
         if close || modal.inner.is_some() {
@@ -857,6 +975,80 @@ mod tests {
     }
 
     #[test]
+    fn preview_154_search_decodes_and_wraps_multiline_field_matches() {
+        let mut project = Project::new();
+        let key = project.level_keys()[0];
+        project.json["levels"][0]["identifier"] = "Entrance".into();
+        project.json["levels"][0]["useAutoIdentifier"] = false.into();
+        let field = project
+            .add_field_definition(None, "PortNotes", "Multilines", false)
+            .unwrap();
+        project
+            .update_field_definition(field, &json!({"searchable": true}))
+            .unwrap();
+        let note = concat!(
+            "NorthLift\nHarbormaster keeps the gate open when fog covers the breakwater. ",
+            "Follow the warm lanterns along the river and find the little stone bridge. ",
+            "The last waypoint is MeadowVault beyond the orchard and the abandoned mill."
+        );
+        project
+            .set_field_value(key, None, field, note.into())
+            .unwrap();
+        let mut app = EditorApp::empty();
+        app.set_project(project);
+        assert!(app.search_results("nharbormaster").is_empty());
+        let matches = app.search_results("Harbormaster MeadowVault");
+        assert_eq!(matches.len(), 1);
+        assert!(matches[0].title.contains("NorthLift Harbormaster"));
+
+        app.search = "MeadowVault".into();
+        app.command_palette = true;
+        let ctx = egui::Context::default();
+        theme::configure(&ctx);
+        let draw = |app: &mut EditorApp, events| {
+            ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1100., 700.),
+                    )),
+                    events,
+                    ..Default::default()
+                },
+                |ctx| app.palette_dialog(ctx),
+            )
+        };
+        draw(&mut app, vec![]);
+        let output = draw(&mut app, vec![]);
+        let title = output
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) if text.galley.text().contains("NorthLift") => Some(text),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(title.galley.rows.len(), 3);
+        let pos = title.pos + egui::vec2(10., title.galley.rect.bottom() - 4.);
+        for pressed in [true, false] {
+            draw(
+                &mut app,
+                vec![
+                    egui::Event::PointerMoved(pos),
+                    egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: Default::default(),
+                    },
+                ],
+            );
+        }
+        assert!(!app.command_palette);
+        assert!(app.panel == Some(Panel::Level));
+    }
+
+    #[test]
     fn preview_154_search_finds_level_fields_and_instance_iids() {
         let mut p = Project::new();
         p.add_layer("Actors", "Entities", 16).unwrap();
@@ -927,7 +1119,7 @@ mod tests {
     fn preview_154_show_all_results_and_preserve_last_query() {
         let mut p = Project::new();
         p.json["defs"]["entities"] = serde_json::json!(
-            (0..25)
+            (0..250)
                 .map(|i| serde_json::json!({"uid":100+i,"identifier":format!("Actor{i}")}))
                 .collect::<Vec<_>>()
         );
@@ -935,9 +1127,10 @@ mod tests {
         app.set_project(p);
         app.search = "Actor".into();
         app.command_palette = true;
-        assert_eq!(app.search_results("Actor").len(), 25);
+        assert_eq!(app.search_results("Actor").len(), 250);
         let ctx = egui::Context::default();
         theme::configure(&ctx);
+        ctx.style_mut(|style| style.scroll_animation = egui::style::ScrollAnimation::none());
         let rect = Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1000., 800.));
         let frame = |app: &mut EditorApp, events| {
             ctx.run(
@@ -950,18 +1143,6 @@ mod tests {
             )
         };
         frame(&mut app, vec![]);
-        frame(
-            &mut app,
-            vec![egui::Event::PointerMoved(egui::pos2(500., 250.))],
-        );
-        frame(
-            &mut app,
-            vec![egui::Event::MouseWheel {
-                unit: egui::MouseWheelUnit::Point,
-                delta: egui::vec2(0., -1000.),
-                modifiers: egui::Modifiers::NONE,
-            }],
-        );
         let out = frame(&mut app, vec![]);
         fn find(shape: &egui::Shape, label: &str) -> Option<Rect> {
             match shape {
@@ -1010,8 +1191,41 @@ mod tests {
                 .iter()
                 .any(|s| find(&s.shape, "Actor24").is_some())
         );
-        app.command_palette = false;
-        app.search_focus = false;
+        app.search_index = 248;
+        frame(
+            &mut app,
+            vec![egui::Event::Key {
+                key: Key::ArrowDown,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
+        );
+        assert_eq!(app.search_index, 249);
+        frame(&mut app, vec![]);
+        let scrolled = frame(&mut app, vec![]);
+        let pos = scrolled
+            .shapes
+            .iter()
+            .find_map(|shape| find(&shape.shape, "Actor249"))
+            .expect("keyboard navigation scrolls to a match outside the old viewport")
+            .center();
+        frame(&mut app, vec![egui::Event::PointerMoved(pos)]);
+        for pressed in [true, false] {
+            frame(
+                &mut app,
+                vec![egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: egui::Modifiers::NONE,
+                }],
+            );
+        }
+        assert!(!app.command_palette);
+        assert_eq!(app.definition_uid, Some(349));
+
         let modifiers = egui::Modifiers {
             ctrl: true,
             command: true,

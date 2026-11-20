@@ -1152,6 +1152,7 @@ impl EditorApp {
             || self.clicktrap
             || text_editor::is_open(ctx)
             || world_form_dialog::is_open(ctx)
+            || panels::enum_value_removal_open(ctx)
             || help::changelog_is_open(ctx)
         {
             self.camera_drag = None;

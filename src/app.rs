@@ -282,6 +282,7 @@ pub struct EditorApp {
     exporting: Option<Receiver<Result<ldtk_core::exports::ExportReport, String>>>,
     external_changes: Option<Vec<PathBuf>>,
     status: String,
+    published_window_title: String,
     allow_close: bool,
     frame_time: f32,
     visible_tiles: usize,
@@ -331,7 +332,7 @@ pub struct EditorApp {
     search_index: usize,
     search_focus: bool,
     search_show_all: bool,
-    search_entries: Option<Vec<search::Entry>>,
+    search_entries: Option<search::SearchIndex>,
     space_pressed: Option<Instant>,
     space_dragged: bool,
     space_fit_pending: bool,
@@ -493,6 +494,7 @@ impl EditorApp {
             exporting: None,
             external_changes: None,
             status: "Open a project or create a new one.".into(),
+            published_window_title: String::new(),
             allow_close: false,
             frame_time: 0.0,
             visible_tiles: 0,
@@ -1353,6 +1355,7 @@ impl EditorApp {
         self.command_dialog(ctx);
         self.trust_dialog(ctx);
         self.enum_sync_dialog(ctx);
+        self.enum_value_removal_dialog(ctx);
         self.layer_bake_dialog(ctx);
         self.changelog_dialog(ctx);
         self.update_dialog(ctx);
@@ -1399,7 +1402,13 @@ impl EditorApp {
             Some((path, level))
         });
         let title = window_title(project, self.dirty, progress);
-        ctx.send_viewport_cmd(egui::ViewportCommand::Title(title));
+        if title != self.published_window_title {
+            self.published_window_title = title.clone();
+            ctx.send_viewport_cmd(egui::ViewportCommand::Title(title));
+        }
+        // Keep idle polling alive while input, animations and background jobs can wake us sooner.
+        let foreground = ctx.input(|input| input.focused && input.viewport().minimized != Some(true));
+        ctx.request_repaint_after(std::time::Duration::from_millis(if foreground { 83 } else { 500 }));
         self.frame_time = frame
             .info()
             .cpu_usage
@@ -1514,6 +1523,39 @@ mod tests {
             window_title(project, false, None),
             "冒险  @ Town    --    LevelEditor"
         );
+    }
+
+    #[test]
+    fn preview_154_only_changed_window_titles_request_a_viewport_update() {
+        let mut app = EditorApp::empty();
+        let ctx = egui::Context::default();
+        theme::configure(&ctx);
+        let titles = |app: &mut EditorApp| {
+            ctx.run(egui::RawInput::default(), |ctx| {
+                eframe::App::update(app, ctx, &mut eframe::Frame::_new_kittest());
+            })
+            .viewport_output
+            .remove(&egui::ViewportId::ROOT)
+            .unwrap()
+            .commands
+            .into_iter()
+            .filter_map(|command| match command {
+                egui::ViewportCommand::Title(title) => Some(title),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+        };
+
+        assert_eq!(titles(&mut app), ["LevelEditor"]);
+        assert!(titles(&mut app).is_empty());
+        app.exporting_progress = Some(Arc::new(Mutex::new(Some((2, 10)))));
+        assert_eq!(titles(&mut app), ["▰▱▱▱▱  LevelEditor"]);
+        *app.exporting_progress.as_ref().unwrap().lock().unwrap() = Some((3, 10));
+        assert!(titles(&mut app).is_empty());
+        *app.exporting_progress.as_ref().unwrap().lock().unwrap() = Some((4, 10));
+        assert_eq!(titles(&mut app), ["▰▰▱▱▱  LevelEditor"]);
+        app.exporting_progress = None;
+        assert_eq!(titles(&mut app), ["LevelEditor"]);
     }
 
     #[test]

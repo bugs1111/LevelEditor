@@ -71,6 +71,74 @@ fn castledb_preserves_colors_and_unique_ids() {
     assert_eq!(values[0]["color"], 16711680);
     assert_eq!(values[1]["color"], 255);
 }
+
+#[test]
+fn preview_154_castledb_color_reload_preserves_unaffected_external_level() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("game.ldtk");
+    let source = directory.path().join("items.cdb");
+    let write_source = |red_item_color| {
+        let db = json!({"sheets": [{
+            "name": "Items",
+            "props": {},
+            "columns": [{"name": "id", "typeStr": "0"}, {"name": "tint", "typeStr": "11"}],
+            "lines": [{"id": "Red", "tint": red_item_color}, {"id": "Blue", "tint": 0x0000FF}]
+        }]});
+        fs::write(&source, db.to_string()).unwrap();
+    };
+    write_source(0xFF0000);
+    let mut project = Project::new();
+    project.path = Some(path.clone());
+    project.sync_external_enums(&source).unwrap();
+    project.add_layer("Actors", "Entities", 16).unwrap();
+    let actor = project.add_entity_def("Actor", 16, 16).unwrap();
+    let items = project
+        .add_field_definition(Some(actor), "Items", "ExternEnum.Items", true)
+        .unwrap();
+    let changed = project.level_keys()[0];
+    let unchanged = project.add_level(None, "Other", 128, 128).unwrap();
+    for (level, item) in [(changed, "Red"), (unchanged, "Blue")] {
+        project.add_entity(level, 0, actor, 16, 16).unwrap();
+        let iid = project.layer(level, 0).unwrap()["entityInstances"][0]["iid"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        project
+            .set_field_value(level, Some(&iid), items, json!([item]))
+            .unwrap();
+    }
+    project.set_external_levels(true).unwrap();
+    project.save(&path).unwrap();
+    let unchanged_file = directory.path().join(
+        project.json["levels"][unchanged.level]["externalRelPath"]
+            .as_str()
+            .unwrap(),
+    );
+    let mut original_bytes = fs::read(&unchanged_file).unwrap();
+    original_bytes.extend_from_slice(b" \t\n");
+    fs::write(&unchanged_file, &original_bytes).unwrap();
+    let original_time = fs::metadata(&unchanged_file).unwrap().modified().unwrap();
+
+    let mut project = Project::load(&path).unwrap();
+    project.migrate_to_current().unwrap();
+    write_source(0x00FF00);
+    assert!(project.sync_external_enums(&source).unwrap().applied);
+    project.save(&path).unwrap();
+
+    assert!(fs::read(&unchanged_file).unwrap() == original_bytes);
+    assert_eq!(
+        fs::metadata(&unchanged_file).unwrap().modified().unwrap(),
+        original_time
+    );
+    let reopened = Project::load(&path).unwrap();
+    for (level, color) in [(changed, "#00FF00"), (unchanged, "#0000FF")] {
+        assert_eq!(
+            reopened.layer(level, 0).unwrap()["entityInstances"][0]["__smartColor"],
+            color
+        );
+    }
+}
+
 #[test]
 fn removed_enum_definitions_require_resolution_and_explicit_removal_tidies_fields() {
     let t = tempfile::tempdir().unwrap();

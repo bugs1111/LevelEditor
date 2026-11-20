@@ -1038,6 +1038,7 @@
   "Visual options": "显示选项",
   "Visuals": "显示",
   "WARNING!": "警告",
+  "WARNING! This enum value is USED in one or more entity instances. These values will also be removed!": "警告！此枚举值正在被使用。删除后，使用它的字段及相关引用也会被清除！",
   "WARNING:": "警告：",
   "WORLD": "世界",
   "WORLD SETTINGS: \"{name}\"": "世界设置：「{name}」",

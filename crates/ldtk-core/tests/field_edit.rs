@@ -476,6 +476,8 @@ fn enum_value_rename_updates_biome_requirements_and_tileset_tags() {
     p.json["defs"]["layers"][0]["autoRuleGroups"] = json!([{"uid":100,"active":true,"requiredBiomeValues":["Grass"],"biomeRequirementMode":1,"rules":[]}]);
     p.json["defs"]["tilesets"][0]["tagsSourceEnumUid"] = json!(e);
     p.json["defs"]["tilesets"][0]["enumTags"] = json!([{"enumValueId":"Grass","tileIds":[0]}]);
+    assert!(p.is_enum_value_used(e, "Grass"));
+    assert!(!p.is_enum_value_used(e, "Snow"));
     p.rename_enum_value(e, "Grass", "Forest").unwrap();
     assert_eq!(
         p.layer_def(layer).unwrap()["autoRuleGroups"][0]["requiredBiomeValues"],
@@ -491,6 +493,82 @@ fn enum_value_rename_updates_biome_requirements_and_tileset_tags() {
         json!([])
     );
     assert_eq!(p.tileset(ts).unwrap()["enumTags"], json!([]));
+}
+
+#[test]
+fn enum_panel_rename_normalizes_input_and_updates_explicit_uses() {
+    let mut p = Project::new();
+    let loot = p
+        .add_enum_definition("Loot", &["OldCrown", "Coin"])
+        .unwrap();
+    let explicit = p
+        .add_field_definition(None, "Treasure", "LocalEnum.Loot", false)
+        .unwrap();
+    let inherited = p
+        .add_field_definition(None, "DefaultTreasure", "LocalEnum.Loot", false)
+        .unwrap();
+    p.set_field_value(K, None, explicit, json!("OldCrown"))
+        .unwrap();
+    p.set_field_default(inherited, json!("OldCrown")).unwrap();
+
+    let original = p.json.clone();
+    assert!(
+        p.rename_enum_value_from_editor(loot, "OldCrown", "")
+            .is_err()
+    );
+    assert_eq!(p.json, original);
+    assert_eq!(
+        p.rename_enum_value_from_editor(loot, "OldCrown", "coin")
+            .unwrap(),
+        "Coin2"
+    );
+    let fields = &p.level(K).unwrap()["fieldInstances"];
+    assert_eq!(fields[0]["__value"], "Coin2");
+    assert!(fields[1]["__value"].is_null());
+    assert_eq!(
+        p.json["defs"]["levelFields"][1]["defaultOverride"]["params"][0],
+        "OldCrown"
+    );
+
+    assert_eq!(
+        p.rename_enum_value_from_editor(loot, "Coin2", "storm chest")
+            .unwrap(),
+        "Storm_chest"
+    );
+    assert_eq!(
+        p.level(K).unwrap()["fieldInstances"][0]["__value"],
+        "Storm_chest"
+    );
+}
+
+#[test]
+fn enum_value_usage_includes_effective_defaults_and_entity_arrays() {
+    let mut p = Project::new();
+    let state = p
+        .add_enum_definition("State", &["Idle", "Run", "Unused"])
+        .unwrap();
+    let other = p.add_enum_definition("OtherState", &["Run"]).unwrap();
+    let level_field = p
+        .add_field_definition(None, "Start", "LocalEnum.State", false)
+        .unwrap();
+    p.set_field_default(level_field, json!("Idle")).unwrap();
+    p.add_layer("Actors", "Entities", 16).unwrap();
+    let actor = p.add_entity_def("Actor", 16, 16).unwrap();
+    let moves = p
+        .add_field_definition(Some(actor), "Moves", "LocalEnum.State", true)
+        .unwrap();
+    p.add_entity(K, 0, actor, 0, 0).unwrap();
+    let iid = p.layer(K, 0).unwrap()["entityInstances"][0]["iid"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    p.set_field_value(K, Some(&iid), moves, json!(["Run"]))
+        .unwrap();
+
+    assert!(p.is_enum_value_used(state, "Idle"));
+    assert!(p.is_enum_value_used(state, "Run"));
+    assert!(!p.is_enum_value_used(state, "Unused"));
+    assert!(!p.is_enum_value_used(other, "Run"));
 }
 #[test]
 fn removing_biome_field_clears_layer_biome_gating() {

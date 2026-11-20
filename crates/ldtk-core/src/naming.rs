@@ -61,7 +61,7 @@ pub(crate) fn unique_name(input: &str, style: &str, occupied: &BTreeSet<String>)
         if !occupied.contains(&candidate) {
             return candidate;
         }
-        suffix += 1;
+        suffix = suffix.checked_add(1).unwrap_or(2);
     }
 }
 fn replace_string(value: &mut Value, replacements: &BTreeMap<String, String>) {

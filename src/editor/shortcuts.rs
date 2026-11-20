@@ -662,6 +662,7 @@ impl EditorApp {
             return;
         }
         if self.enum_sync_is_open()
+            || panels::enum_value_removal_open(ctx)
             || self.layer_bake.is_some()
             || self.int_grid_removal.is_some()
             || self.rule_draft.is_some()

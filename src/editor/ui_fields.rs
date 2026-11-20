@@ -717,7 +717,7 @@ fn scalar_editor_inner(
         }
         "Bool" => {
             let mut v = current.as_bool().unwrap_or(false);
-            modified = ui.checkbox(&mut v, "").changed();
+            modified = panels::source_controls::checkbox(ui, &mut v, "").changed();
             current = json!(v);
         }
         "String" => {
@@ -1000,15 +1000,7 @@ pub(super) fn reference_preview<'a>(
         .as_array()?
         .iter()
         .find(|def| def["uid"] == entity["defUid"])?;
-    let valid_tile = |tile: &Value| {
-        number(tile, "w", 0.) > 0.
-            && number(tile, "h", 0.) > 0.
-            && tile["tilesetUid"].as_i64().is_some_and(|uid| project.tileset(uid).is_some())
-    };
-    let tile = canvas::entity_field_tile(project, entity, def)
-        .filter(|tile| *tile != def["tileRect"] && valid_tile(tile))
-        .or_else(|| valid_tile(&def["uiTileRect"]).then(|| def["uiTileRect"].clone()));
-    Some((def, tile))
+    Some((def, canvas::entity_field_tile(project, entity, def)))
 }
 
 #[derive(Clone, Default)]
@@ -1067,26 +1059,31 @@ fn instance_scalar_editor(
         .unwrap_or_default();
     if using_default && !state.active && matches!(kind, "Int" | "Float" | "String" | "Bool") {
         let width = ui.available_width().max(30.);
-        let height = if kind == "Bool" { 28. } else { 33. };
+        let height = if kind == "Bool" { 32. } else { 33. };
         let (rect, response) = ui.allocate_exact_size(egui::vec2(width, height), Sense::click());
+        let hovered = response.contains_pointer();
+        let opacity = if hovered { 1. } else { 0.35 };
+        let mut painter = ui.painter().clone();
+        painter.multiply_opacity(opacity);
         ui.painter().rect_filled(rect, 0., theme::MEDIUM);
         egui::Image::new(egui::include_image!("../../assets/img/stripes.png"))
             .texture_options(egui::TextureOptions::NEAREST_REPEAT)
+            .tint(Color32::WHITE.gamma_multiply(opacity))
             .uv(Rect::from_min_size(egui::Pos2::ZERO, rect.size() / 8.))
             .paint_at(ui, rect);
-        ui.painter().rect_stroke(
-            rect.shrink(0.5),
-            0.,
-            Stroke::new(
-                1_f32,
-                if response.hovered() {
-                    theme::ACCENT
-                } else {
-                    theme::LIGHT
-                },
-            ),
-            StrokeKind::Inside,
-        );
+        let border = rect.shrink(0.5);
+        painter.extend(egui::Shape::dashed_line(
+            &[
+                border.left_top(),
+                border.right_top(),
+                border.right_bottom(),
+                border.left_bottom(),
+                border.left_top(),
+            ],
+            Stroke::new(1., if hovered { theme::ACCENT } else { theme::LIGHT }),
+            2.,
+            1.,
+        ));
         let value_text = if value.is_null() {
             "null".to_owned()
         } else if matches!(kind, "Int" | "Float") {
@@ -1101,21 +1098,14 @@ fn instance_scalar_editor(
         } else {
             value.to_string()
         };
-        if kind == "Bool" {
-            let check = Rect::from_min_size(rect.min + egui::vec2(2., 2.), egui::vec2(24., 24.));
-            ui.painter()
-                .rect_filled(check, 2., Color32::from_white_alpha(80));
-            if value.as_bool() == Some(true) {
-                ui.painter().text(
-                    check.center(),
-                    Align2::CENTER_CENTER,
-                    "✓",
-                    FontId::proportional(20.),
-                    Color32::WHITE,
-                );
-            }
+        let toggled = if kind == "Bool" {
+            let check = Rect::from_min_size(rect.min + egui::vec2(5., 4.), egui::vec2(24., 24.));
+            let mut child = ui.new_child(egui::UiBuilder::new().max_rect(check));
+            child.multiply_opacity(opacity * opacity);
+            let mut checked = value.as_bool().unwrap_or(false);
+            panels::source_controls::checkbox(&mut child, &mut checked, "").changed()
         } else {
-            ui.painter()
+            painter
                 .with_clip_rect(ui.clip_rect().intersect(Rect::from_min_max(
                     rect.min + egui::vec2(8., 0.),
                     rect.max - egui::vec2(58., 0.),
@@ -1127,15 +1117,19 @@ fn instance_scalar_editor(
                     FontId::proportional(14.),
                     theme::TEXT.gamma_multiply(0.5),
                 );
-        }
-        ui.painter().text(
-            rect.right_center() - egui::vec2(8., 0.),
-            Align2::RIGHT_CENTER,
-            locale::tr(ui, "Default"),
-            FontId::proportional(11.),
-            Color32::from_rgb(115, 127, 157),
+            false
+        };
+        let label = RichText::new(locale::tr(ui, "Default"))
+            .italics()
+            .color(Color32::from_rgb(115, 127, 157));
+        let label =
+            egui::WidgetText::from(label).into_galley(ui, None, 58., FontId::proportional(10.));
+        painter.galley(
+            rect.right_center() - egui::vec2(8. + label.size().x, label.size().y * 0.5),
+            label,
+            theme::TEXT,
         );
-        if response.clicked() {
+        if response.clicked() || toggled {
             if kind == "Bool" {
                 return Some(json!(!value.as_bool().unwrap_or(false)));
             }
@@ -1163,11 +1157,24 @@ fn instance_scalar_editor(
         });
     let mut changed = None;
     let mut next_state = None;
-    ui.horizontal(|ui| {
-        let reset_gap = if definition["isArray"] == true { 10. } else { 2. };
+    let scalar_checkbox = kind == "Bool" && definition["isArray"] != true;
+    let draw = |ui: &mut egui::Ui| {
+        let checkbox = kind == "Bool";
+        let reset_gap = if scalar_checkbox {
+            13.
+        } else if checkbox || definition["isArray"] == true {
+            10.
+        } else {
+            2.
+        };
         ui.spacing_mut().item_spacing.x = reset_gap;
         let reserved = if reset { 22. + reset_gap } else { 0. };
-        let width = (ui.available_width() - reserved).max(20.);
+        let width = if checkbox {
+            ui.add_space(if scalar_checkbox { 7. } else { 10. });
+            24.
+        } else {
+            (ui.available_width() - reserved).max(20.)
+        };
         let state = ui.data_mut(|data| data.get_temp::<DefaultEditor>(id));
         let child = ui.allocate_ui_with_layout(
             egui::vec2(width, 24.),
@@ -1200,7 +1207,14 @@ fn instance_scalar_editor(
         {
             changed = Some(Value::Null);
         }
-    });
+    };
+    if scalar_checkbox {
+        egui::Frame::new()
+            .inner_margin(egui::Margin::symmetric(0, 6))
+            .show(ui, |ui| ui.horizontal(draw));
+    } else {
+        ui.horizontal(draw);
+    }
     if let Some(state) = next_state {
         ui.data_mut(|data| data.insert_temp(id, state));
     }
@@ -1233,7 +1247,11 @@ pub(super) fn field_value_editor(
                         && let Some((_, _, entity)) = reference_target(project, item)
                         && let Some((def, tile)) = reference_preview(project, entity)
                     {
-                        let tile = tile.as_ref().unwrap_or(&def["tileRect"]);
+                        let tile = tile.as_ref().unwrap_or(if number(&def["uiTileRect"], "w", 0.) > 0. {
+                            &def["uiTileRect"]
+                        } else {
+                            &def["tileRect"]
+                        });
                         if let Some(icon) = tile["tilesetUid"].as_i64().and_then(|uid| {
                             enum_icon(
                                 project,
@@ -1371,11 +1389,12 @@ mod tests {
             },
             |ctx| {
                 egui::CentralPanel::default().show(ctx, |ui| {
-                    if let Some(v) = field_value_editor(ui, p, &field, &def) {
+                    let shown = ui.scope(|ui| field_value_editor(ui, p, &field, &def));
+                    if let Some(v) = shown.inner {
                         v.apply(p, LEVEL, None, uid).unwrap();
                         changed = true;
                     }
-                    rect = ui.min_rect();
+                    rect = shown.response.rect;
                 });
             },
         );
@@ -1430,7 +1449,7 @@ mod tests {
         frame(ctx, p, uid, vec![]);
     }
     #[test]
-    fn preview_154_reference_array_preview_prefers_instance_tile_then_custom_icon() {
+    fn preview_154_reference_array_preview_distinguishes_instance_tile_from_definition_tile() {
         let mut p = Project::new();
         p.add_layer("Actors", "Entities", 16).unwrap();
         let def = p.add_entity_def("Actor", 16, 16).unwrap();
@@ -1444,16 +1463,17 @@ mod tests {
         let iid = p.layer(LEVEL, 0).unwrap()["entityInstances"][0]["iid"].clone();
         p.json["defs"]["entities"][0]["uiTileRect"] =
             json!({"tilesetUid":atlas,"x":16,"y":0,"w":16,"h":16});
+        let tile = json!({"tilesetUid":atlas,"x":32,"y":0,"w":16,"h":16});
+        p.json["defs"]["entities"][0]["tileRect"] = tile.clone();
         let reference = json!({"entityIid":iid});
-        let preview_x = |project: &Project| {
+        let override_tile = |project: &Project| {
             let (_, _, entity) = reference_target(project, &reference).unwrap();
-            reference_preview(project, entity).unwrap().1.unwrap()["x"].clone()
+            reference_preview(project, entity).unwrap().1
         };
-        assert_eq!(preview_x(&p), 16);
-        p.set_field_editor_value(
-            LEVEL, iid.as_str(), field, json!({"tilesetUid":atlas,"x":32,"y":0,"w":16,"h":16}),
-        ).unwrap();
-        assert_eq!(preview_x(&p), 32);
+        assert_eq!(override_tile(&p), None);
+        p.set_field_editor_value(LEVEL, iid.as_str(), field, tile.clone())
+            .unwrap();
+        assert_eq!(override_tile(&p), Some(tile));
         assert!(reference_target(&p, &json!({"entityIid":"missing"})).is_none());
     }
 
@@ -1680,6 +1700,7 @@ mod tests {
         let original = p.level(LEVEL).unwrap()["fieldInstances"][1].clone();
         frame(&ctx, &mut p, uid, vec![]);
         let (rect, _) = frame(&ctx, &mut p, uid, vec![]);
+        assert_eq!(rect.height(), 32.);
         let pos = rect.min + egui::vec2(10., 10.);
         frame(
             &ctx,
@@ -1694,6 +1715,36 @@ mod tests {
         );
         assert!(!p.level(LEVEL).unwrap()["fieldInstances"][0]["realEditorValues"][0].is_null());
         assert_eq!(p.level(LEVEL).unwrap()["fieldInstances"][1], original);
+
+        let (rect, _) = frame(&ctx, &mut p, uid, vec![]);
+        assert_eq!(rect.height(), 36.);
+        let reset = rect.min + egui::vec2(55., 18.);
+        frame(
+            &ctx,
+            &mut p,
+            uid,
+            vec![egui::Event::PointerMoved(reset), click(reset, true)],
+        );
+        frame(&ctx, &mut p, uid, vec![click(reset, false)]);
+        let field = &p.level(LEVEL).unwrap()["fieldInstances"][0];
+        assert_eq!(field["__value"], true);
+        assert!(field_uses_default(field, 0));
+
+        let (rect, _) = frame(&ctx, &mut p, uid, vec![]);
+        let default_label = rect.right_center() - egui::vec2(16., 0.);
+        frame(
+            &ctx,
+            &mut p,
+            uid,
+            vec![
+                egui::Event::PointerMoved(default_label),
+                click(default_label, true),
+            ],
+        );
+        frame(&ctx, &mut p, uid, vec![click(default_label, false)]);
+        let field = &p.level(LEVEL).unwrap()["fieldInstances"][0];
+        assert_eq!(field["__value"], false);
+        assert!(!field_uses_default(field, 0));
     }
     #[test]
     fn regex_string_can_be_typed_character_by_character_before_commit() {

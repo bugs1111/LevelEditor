@@ -1,5 +1,6 @@
 //! Explicit editor migration; raw project loading deliberately remains lossless.
 use crate::grid_presence::GridPresence;
+use crate::workflow::layer_cell_extent;
 use crate::{Error, Project, Result};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
@@ -532,10 +533,25 @@ impl Project {
                     .get(&n(li, "layerDefUid"))
                     .ok_or_else(|| Error::Invalid("legacy layer definition missing".into()))?;
                 let grid = n(d, "gridSize").max(1);
-                let cw = (w + grid - 1) / grid;
-                let ch = (h + grid - 1) / grid;
                 let ox = n(li, "pxOffsetX");
                 let oy = n(li, "pxOffsetY");
+                let extent = (
+                    layer_cell_extent(w, ox, grid),
+                    layer_cell_extent(h, oy, grid),
+                );
+                let legacy = (layer_cell_extent(w, 0, grid), layer_cell_extent(h, 0, grid));
+                let (cw, ch) = if legacy != extent
+                    && n(li, "__gridSize") == grid
+                    && (n(li, "__cWid"), n(li, "__cHei")) == legacy
+                    && (d["type"] != "IntGrid"
+                        || li["intGridCsv"].as_array().is_some_and(|cells| {
+                            legacy.0.checked_mul(legacy.1) == i64::try_from(cells.len()).ok()
+                        })) {
+                    // Older LevelEditor grid-size edits saved a stride ignoring the offset.
+                    legacy
+                } else {
+                    extent
+                };
                 li["__identifier"] = d["identifier"].clone();
                 li["__type"] = d["type"].clone();
                 li["__cWid"] = json!(cw);
@@ -548,11 +564,16 @@ impl Project {
                 );
                 if li["intGridCsv"].is_null() {
                     let mut presence = GridPresence::empty();
-                    let mut csv = if d["type"] == "IntGrid" {
-                        vec![0; (cw * ch).max(0) as usize]
+                    let count = if d["type"] == "IntGrid" {
+                        cw.checked_mul(ch)
+                            .and_then(|n| usize::try_from(n).ok())
+                            .ok_or_else(|| {
+                                Error::Invalid("legacy IntGrid dimensions overflow".into())
+                            })?
                     } else {
-                        vec![]
+                        0
                     };
+                    let mut csv = vec![0; count];
                     for cell in array(&li["intGrid"]) {
                         let coord = n(cell, "coordId");
                         if coord >= 0 && (coord as usize) < csv.len() {
@@ -591,7 +612,14 @@ impl Project {
                     }
                     defaults(tile, &json!({"f":0,"a":1}));
                 }
-                for tile in li["autoLayerTiles"].as_array_mut().unwrap() {
+                let cached_tiles = &mut li["autoLayerTiles"];
+                if cached_tiles.is_null() {
+                    *cached_tiles = json!([]);
+                }
+                let cached_tiles = cached_tiles
+                    .as_array_mut()
+                    .ok_or_else(|| Error::Invalid("auto-layer tiles must be an array".into()))?;
+                for tile in cached_tiles {
                     if before(&version, 0, 6) {
                         tile["t"] = tile["d"][2].clone();
                     }
@@ -641,6 +669,8 @@ impl Project {
             }
         }
         changed |= std::mem::take(&mut p.repaired_external_paths);
+        p.external_levels
+            .reuse_equal_documents(&self.external_levels);
         *self = p;
         Ok(changed)
     }

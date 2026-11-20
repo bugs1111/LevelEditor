@@ -843,6 +843,85 @@ fn preview_154_multiple_tile_and_intgrid_blockers_update_incrementally() {
 }
 
 #[test]
+fn preview_154_offset_grids_keep_their_cell_stride_through_load_and_grid_edits() {
+    let (mut project, key) = fixture();
+    project.json["defs"]["layers"][0]["identifier"] = json!("Terrain");
+    project.json["defs"]["layers"][0]["layerUidsPreventingAutoTilingHere"] = json!([9, 10]);
+    project.json["defs"]["layers"].as_array_mut().unwrap().extend([
+        json!({"uid":9,"identifier":"TileBlocker","type":"Tiles","gridSize":16}),
+        json!({"uid":10,"identifier":"GridBlocker","type":"IntGrid","gridSize":16,"intGridValues":[{"value":1}]}),
+    ]);
+    let level = project.level_mut(key).unwrap();
+    level["pxWid"] = json!(50);
+    level["pxHei"] = json!(32);
+    let layers = level["layerInstances"].as_array_mut().unwrap();
+    layers[0]["__type"] = json!("IntGrid");
+    layers[0]["__cHei"] = json!(3);
+    layers[0]["pxOffsetX"] = json!(7);
+    layers[0]["pxOffsetY"] = json!(-3);
+    layers[0]["intGridCsv"] = json!([1, 0, 1, 0, 1, 0, 0, 0, 1]);
+    layers.extend([
+        json!({"layerDefUid":9,"__type":"Tiles","__gridSize":16,"__cWid":3,"__cHei":2,"pxOffsetX":3,"gridTiles":[{"px":[32,0],"src":[16,0],"f":0,"t":1,"d":[2],"a":1}]}),
+        json!({"layerDefUid":10,"__type":"IntGrid","__gridSize":16,"__cWid":4,"__cHei":2,"pxOffsetX":-5,"intGridCsv":[1,0,0,0,0,0,0,0]}),
+    ]);
+    let cells = |project: &Project| {
+        tiles(project, key)
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|tile| tile["d"][1].as_i64().unwrap())
+            .collect::<Vec<_>>()
+    };
+    project.rebuild_auto_layers(key).unwrap();
+    assert_eq!(cells(&project), [4, 8]);
+
+    let mut legacy = project.clone();
+    let terrain = legacy.layer_mut(key, 0).unwrap();
+    terrain["__cWid"] = json!(4);
+    terrain["__cHei"] = json!(2);
+    terrain["intGridCsv"] = json!([1, 0, 1, 0, 0, 1, 0, 1]);
+    legacy.migrate_to_current().unwrap();
+    legacy.rebuild_auto_layers(key).unwrap();
+    assert_eq!(cells(&legacy), [5, 7]);
+
+    project.layer_mut(key, 0).unwrap()["autoLayerTiles"] = Value::Null;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("Offset.ldtk");
+    project.save(&path).unwrap();
+    let mut project = Project::load(&path).unwrap();
+    project.migrate_to_current().unwrap();
+    project.rebuild_auto_layers(key).unwrap();
+    let terrain = project.layer(key, 0).unwrap();
+    assert_eq!(
+        (terrain["__cWid"].as_i64(), terrain["__cHei"].as_i64()),
+        (Some(3), Some(3))
+    );
+    assert_eq!(cells(&project), [4, 8]);
+
+    project.paint_int_grid(key, 2, 0, 0, 0).unwrap();
+    assert_eq!(cells(&project), [0, 4, 8]);
+    project
+        .paint_tile(key, 1, 2, 0, 1, [16, 0], 0, true)
+        .unwrap();
+    assert_eq!(cells(&project), [0, 2, 4, 8]);
+    let mut rebuilt = project.clone();
+    rebuilt.rebuild_auto_layers(key).unwrap();
+    assert_eq!(tiles(&project, key), tiles(&rebuilt, key));
+
+    project.change_layer_grid_size(1, 8).unwrap();
+    let terrain = project.layer(key, 0).unwrap();
+    assert_eq!(
+        (terrain["__cWid"].as_i64(), terrain["__cHei"].as_i64()),
+        (Some(6), Some(5))
+    );
+    assert_eq!(cells(&project), [0, 2, 7, 14]);
+    project.save(&path).unwrap();
+    let mut reopened = Project::load(path).unwrap();
+    assert!(!reopened.migrate_to_current().unwrap());
+    assert_eq!(tiles(&reopened, key), tiles(&project, key));
+}
+
+#[test]
 fn deferred_blocker_updates_follow_the_generated_target_flag() {
     let (mut p, k) = fixture();
     p.json["defs"]["layers"][0]["layerUidsPreventingAutoTilingHere"] = json!([9, 10]);

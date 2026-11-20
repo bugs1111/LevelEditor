@@ -818,11 +818,20 @@ impl EditorApp {
         );
         let mut text_x = rect.left() + 26.;
         if show_preview && let Some((def, tile)) = ui_fields::reference_preview(project, entity) {
+            let ctx = ui.ctx();
             let icon = Rect::from_min_size(egui::pos2(text_x, rect.top() + 9.5), Vec2::splat(18.));
-            if let Some(tile) = tile {
-                library::paint_tile(ui.ctx(), &painter, icon, project, &tile, &mut self.assets);
-            } else {
-                canvas::entity_preview(ui.ctx(), &painter, icon, project, def, &mut self.assets);
+            let painted = tile.as_ref().is_some_and(|tile| {
+                library::paint_tile(ctx, &painter, icon, project, tile, &mut self.assets)
+            });
+            if !painted {
+                library::paint_entity_definition_icon(
+                    ctx,
+                    &painter,
+                    icon,
+                    project,
+                    def,
+                    &mut self.assets,
+                );
             }
             text_x += 22.;
         }

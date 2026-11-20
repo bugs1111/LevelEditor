@@ -283,19 +283,28 @@ fn entity_inspector_link_array_paints_the_target_icon_and_location() {
     let owner = f.app.project.as_ref().unwrap().layer(f.source, 0).unwrap()
         ["entityInstances"][0]
         .clone();
-    for (tile, expected_x) in [(tile(32), 32.), (Value::Null, 16.)] {
-        f.app
-            .project
-            .as_mut()
-            .unwrap()
-            .set_field_editor_value(f.target, Some(&f.target_iid), icon, tile)
-            .unwrap();
-        let output = ctx.run(egui::RawInput::default(), |ctx| {
+    let draw = |f: &mut Fixture| {
+        ctx.run(egui::RawInput::default(), |ctx| {
             egui::CentralPanel::default().show(ctx, |ui| {
                 ui.set_width(360.);
                 f.app.instance_fields(ui, f.source, Some(&f.owner), &owner);
             });
-        });
+        })
+    };
+    let atlas_width = texture.size()[0] as i64;
+    for (tile, expected_x) in [
+        (tile(32), 32.),
+        (tile(atlas_width - 16), (atlas_width - 16) as f32),
+        (tile(atlas_width - 8), 16.),
+        (Value::Null, 16.),
+    ] {
+        f.app
+            .project
+            .as_mut()
+            .unwrap()
+            .set_field_editor_value(f.target, Some(&f.target_iid), icon, tile.clone())
+            .unwrap();
+        let output = draw(&mut f);
         assert!(output.shapes.iter().any(|shape| {
             matches!(&shape.shape, egui::Shape::Text(text) if text.galley.text() == "Other")
         }), "the row must show the referenced level");
@@ -305,7 +314,36 @@ fn entity_inspector_link_array_paints_the_target_icon_and_location() {
                     && mesh.calc_bounds().width() == 18.
                     && mesh.vertices.iter().any(|v| v.uv.x == expected_x / texture.size_vec2().x))
         }), "the reference preview must use the correct 18-point atlas rectangle");
+        assert_eq!(
+            f.app.project.as_ref().unwrap().layer(f.target, 0).unwrap()
+                ["entityInstances"][0]["fieldInstances"][1]["__value"],
+            tile
+        );
     }
+
+    f.app
+        .project
+        .as_mut()
+        .unwrap()
+        .update_entity_definition(
+            actor,
+            &json!({
+                "renderMode":"Tile", "uiTileRect":null,
+                "tileRect":{"tilesetUid":atlas,"x":0,"y":0,"w":32,"h":16},
+                "lineOpacity":0.75, "fillOpacity":0.4, "tileOpacity":0.55
+            }),
+        )
+        .unwrap();
+    let output = draw(&mut f);
+    assert!(
+        output.shapes.iter().any(|shape| {
+            matches!(&shape.shape, egui::Shape::Mesh(mesh)
+                if mesh.texture_id == texture.id()
+                    && mesh.calc_bounds().size() == Vec2::splat(16.)
+                    && mesh.vertices.iter().all(|v| v.color == Color32::WHITE.gamma_multiply(0.55)))
+        }),
+        "a non-square definition tile must fill the 16-point interior with its saved opacity"
+    );
 }
 
 #[test]

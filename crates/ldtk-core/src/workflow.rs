@@ -10,6 +10,10 @@ pub(crate) fn invalid(message: &str) -> Error {
 pub(crate) fn iid() -> Value {
     json!(uuid::Uuid::new_v4().to_string())
 }
+pub(crate) fn layer_cell_extent(pixels: i64, offset: i64, grid: i64) -> i64 {
+    let span = pixels.saturating_sub(offset).max(0);
+    span / grid + i64::from(span % grid != 0)
+}
 pub(crate) fn valid_identifier(s: &str) -> bool {
     !s.is_empty()
         && s.chars()
@@ -159,6 +163,9 @@ impl Project {
     pub fn edit_document<T>(&mut self, edit: impl FnOnce(&mut Self) -> Result<T>) -> Result<T> {
         let mut candidate = self.clone();
         let result = edit(&mut candidate)?;
+        candidate
+            .external_levels
+            .reuse_equal_documents(&self.external_levels);
         *self = candidate;
         Ok(result)
     }
@@ -367,8 +374,8 @@ impl Project {
                     let remainder_x = total_x % g;
                     let remainder_y = total_y % g;
                     let ow = layer["__cWid"].as_i64().unwrap_or(0);
-                    let nw = (i64::from(width) - remainder_x + g - 1) / g;
-                    let nh = (i64::from(height) - remainder_y + g - 1) / g;
+                    let nw = layer_cell_extent(i64::from(width), remainder_x, g);
+                    let nh = layer_cell_extent(i64::from(height), remainder_y, g);
                     let count = nw
                         .checked_mul(nh)
                         .filter(|n| *n <= 16_777_216)
@@ -1521,11 +1528,11 @@ impl Project {
                             .ok_or_else(|| invalid("invalid old grid size"))?;
                         let ow = layer["__cWid"].as_i64().unwrap_or(0);
                         let g = i64::from(new_grid);
-                        let nw = (pw + g - 1) / g;
-                        let nh = (ph + g - 1) / g;
+                        let nw = layer_cell_extent(pw, layer["pxOffsetX"].as_i64().unwrap_or(0), g);
+                        let nh = layer_cell_extent(ph, layer["pxOffsetY"].as_i64().unwrap_or(0), g);
                         let cells = nw
                             .checked_mul(nh)
-                            .filter(|n| *n > 0 && *n <= 16_777_216)
+                            .filter(|n| *n <= 16_777_216)
                             .ok_or_else(|| invalid("grid allocation too large"))?;
                         match layer["__type"].as_str() {
                             Some("IntGrid") => {

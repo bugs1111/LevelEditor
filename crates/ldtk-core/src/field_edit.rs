@@ -1079,6 +1079,53 @@ impl Project {
         self.edit_document(|p|{if !valid_identifier(name)||values.iter().any(|s|!valid_identifier(s)){return Err(invalid("invalid enum identifier"));}let mut sorted=values.to_vec();sorted.sort_unstable();sorted.dedup();if sorted.len()!=values.len(){return Err(invalid("duplicate enum value"));}let es=p.json["defs"]["enums"].as_array().ok_or_else(||invalid("enum definitions missing"))?;if es.iter().any(|e|e["identifier"]==name){return Err(invalid("enum identifier already exists"));}let uid=alloc_uid(p)?;p.json["defs"]["enums"].as_array_mut().expect("validated enums").push(json!({"uid":uid,"identifier":name,"iconTilesetUid":null,"externalRelPath":null,"externalFileChecksum":null,"tags":[],"values":values.iter().map(|id|json!({"id":id,"tileRect":null,"color":null})).collect::<Vec<_>>()}));Ok(uid)})
     }
     pub fn rename_enum_value(&mut self, uid: i64, old: &str, new: &str) -> Result<()> {
+        self.rename_enum_value_to(uid, old, new, true)
+    }
+
+    /// Resolve an identifier typed in the enum panel using the project's naming convention.
+    pub fn rename_enum_value_from_editor(
+        &mut self,
+        uid: i64,
+        old: &str,
+        input: &str,
+    ) -> Result<String> {
+        if input.is_empty() {
+            return Err(invalid("invalid enum value identifier"));
+        }
+        let values = self.json["defs"]["enums"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|e| e["uid"] == uid)
+            .and_then(|e| e["values"].as_array())
+            .ok_or_else(|| invalid("enum definition missing"))?;
+        if !values.iter().any(|value| value["id"] == old) {
+            return Err(invalid("enum value missing"));
+        }
+        let occupied = values
+            .iter()
+            .filter_map(|value| value["id"].as_str())
+            .filter(|id| *id != old)
+            .map(str::to_owned)
+            .collect();
+        let style = self.json["identifierStyle"]
+            .as_str()
+            .unwrap_or("Capitalize");
+        let new = crate::naming::unique_name(input, style, &occupied);
+        if new != old {
+            // LDtk's panel rewrites explicit instances and leaves the stored default override.
+            self.rename_enum_value_to(uid, old, &new, false)?;
+        }
+        Ok(new)
+    }
+
+    fn rename_enum_value_to(
+        &mut self,
+        uid: i64,
+        old: &str,
+        new: &str,
+        update_defaults: bool,
+    ) -> Result<()> {
         self.edit_document(|p| {
             if !valid_identifier(new) {
                 return Err(invalid("invalid enum value identifier"));
@@ -1099,15 +1146,24 @@ impl Project {
                 .find(|v| v["id"] == old)
                 .ok_or_else(|| invalid("enum value missing"))?;
             v["id"] = json!(new);
-            let uids: Vec<_> = field_defs(p)
-                .into_iter()
-                .filter(|d| base(d) == format!("LocalEnum.{name}"))
-                .filter_map(|d| d["uid"].as_i64())
-                .collect();
-            for uid in &uids {
-                let d = field_def_mut(p, *uid).expect("found field");
-                if wrapper_value(&d["defaultOverride"], 1) == old {
-                    d["defaultOverride"]["params"][0] = json!(escape(new));
+            let kind = format!("LocalEnum.{name}");
+            let mut uids = Vec::new();
+            let mut preserved_defaults = Vec::new();
+            for mut field in field_defs(p) {
+                let Some(uid) = field["uid"].as_i64() else {
+                    continue;
+                };
+                let field_kind = base(&field);
+                let affected = field_kind == kind;
+                let default = &field["defaultOverride"];
+                if !update_defaults && field_kind.contains("Enum.") && !default.is_null() {
+                    preserved_defaults.push((uid, std::mem::take(&mut field["defaultOverride"])));
+                } else if update_defaults && affected && wrapper_value(default, 1) == old {
+                    field_def_mut(p, uid).expect("found field")["defaultOverride"]["params"][0] =
+                        json!(escape(new));
+                }
+                if affected {
+                    uids.push(uid);
                 }
             }
             for key in p.level_keys() {
@@ -1125,8 +1181,57 @@ impl Project {
                 });
             }
             update_enum_uses(p, uid, &uids, old, Some(new));
-            p.refresh_auto_and_derived()
+            p.refresh_auto_and_derived()?;
+            // The panel leaves the invalid default in the definition until the next tidy.
+            // Derived instance values already reflect its absence.
+            for (uid, default) in preserved_defaults {
+                field_def_mut(p, uid).expect("found field")["defaultOverride"] = default;
+            }
+            Ok(())
         })
+    }
+    /// Whether deleting this local enum value needs confirmation in the editor.
+    pub fn is_enum_value_used(&self, uid: i64, value: &str) -> bool {
+        fn items(value: &Value) -> &[Value] {
+            value.as_array().map_or(&[], Vec::as_slice)
+        }
+
+        let defs = &self.json["defs"];
+        let Some(definition) = items(&defs["enums"]).iter().find(|e| e["uid"] == uid) else {
+            return false;
+        };
+        let kind = format!(
+            "LocalEnum.{}",
+            definition["identifier"].as_str().unwrap_or("")
+        );
+        let fields_use_value = |fields: &Value| {
+            items(fields).iter().any(|field| {
+                let current = &field["__value"];
+                base(field) == kind
+                    && (current == value || items(current).iter().any(|v| v == value))
+            })
+        };
+        self.level_keys()
+            .into_iter()
+            .filter_map(|key| self.level(key))
+            .any(|level| {
+                fields_use_value(&level["fieldInstances"])
+                    || items(&level["layerInstances"])
+                        .iter()
+                        .flat_map(|layer| items(&layer["entityInstances"]))
+                        .any(|entity| fields_use_value(&entity["fieldInstances"]))
+            })
+            || items(&defs["layers"]).iter().any(|layer| {
+                let biome_field = &layer["biomeFieldUid"];
+                biome_field.is_number()
+                    && items(&defs["levelFields"])
+                        .iter()
+                        .any(|field| field["uid"] == *biome_field && base(field) == kind)
+                    && items(&layer["autoRuleGroups"])
+                        .iter()
+                        .flat_map(|group| items(&group["requiredBiomeValues"]))
+                        .any(|v| v == value)
+            })
     }
     pub fn remove_enum_value(&mut self, uid: i64, value: &str) -> Result<()> {
         self.edit_document(|p| {

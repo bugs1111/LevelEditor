@@ -408,7 +408,9 @@ impl EditorApp {
         } else {
             16
         };
-        let body_height = (height - header_height - f32::from(body_top)).max(40.);
+        let bottom_margin = if panel == Panel::Enums { 20 } else { 0 };
+        let body_height =
+            (height - header_height - f32::from(body_top) - f32::from(bottom_margin)).max(40.);
         let outside_click = ctx.input(|input| {
             input
                 .pointer
@@ -534,7 +536,7 @@ impl EditorApp {
                                     left: if rules { 8 } else { 20 },
                                     right: if rules { 8 } else { 20 },
                                     top: body_top,
-                                    bottom: 0,
+                                    bottom: bottom_margin,
                                 }
                             })
                             .show(ui, |ui| {
@@ -600,6 +602,7 @@ impl EditorApp {
                                 }
                                 ui.horizontal_top(|ui| {
                                     let (list_width, gap) = match panel {
+                                        Panel::Enums => (LIST_WIDTH.min(width * 0.4), 16.),
                                         Panel::Tilesets => {
                                             (TILESET_LIST_WIDTH.min(width * 0.35), 16.)
                                         }
@@ -628,20 +631,22 @@ impl EditorApp {
                                             ui.set_max_width(right);
                                             ui.spacing_mut().item_spacing = egui::vec2(6., 8.);
                                             ui.ctx().data_mut(|d| d.insert_temp(active_id(), true));
-                                            egui::ScrollArea::vertical()
-                                                .id_salt(("source-panel-body", title(panel)))
-                                                .max_height(body_height)
-                                                .auto_shrink([false, false])
-                                                .show(ui, |ui| {
-                                                    ui.set_width((right - 10.).max(60.));
-                                                    if panel == Panel::Entities {
-                                                        self.source_entity_form(ui);
-                                                    } else if panel == Panel::Enums {
-                                                        self.source_enum_form(ui);
-                                                    } else {
-                                                        self.properties(ui, panel);
-                                                    }
-                                                });
+                                            if panel == Panel::Enums {
+                                                self.source_enum_form(ui);
+                                            } else {
+                                                egui::ScrollArea::vertical()
+                                                    .id_salt(("source-panel-body", title(panel)))
+                                                    .max_height(body_height)
+                                                    .auto_shrink([false, false])
+                                                    .show(ui, |ui| {
+                                                        ui.set_width((right - 10.).max(60.));
+                                                        if panel == Panel::Entities {
+                                                            self.source_entity_form(ui);
+                                                        } else {
+                                                            self.properties(ui, panel);
+                                                        }
+                                                    });
+                                            }
                                             ui.ctx()
                                                 .data_mut(|d| d.insert_temp(active_id(), false));
                                         },
@@ -799,7 +804,7 @@ impl EditorApp {
                     .unwrap_or_default();
                 if tags.is_empty() {
                     groups
-                        .entry(if panel == Panel::Entities {
+                        .entry(if matches!(panel, Panel::Entities | Panel::Enums) {
                             "Other".into()
                         } else {
                             kind.to_owned()
@@ -826,9 +831,21 @@ impl EditorApp {
                     .max_height((height - if panel == Panel::Enums { 98. } else { 88. }).max(40.))
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
+                        let multiple_groups = groups.len() > 1;
                         for (name, definitions) in groups {
                             ui.set_width(width.min(ui.available_width()));
-                            self.source_definition_group(ui, kind, &name, &definitions);
+                            let show_header = if panel == Panel::Enums {
+                                multiple_groups
+                            } else {
+                                kind != "layers" || name != kind
+                            };
+                            self.source_definition_group(
+                                ui,
+                                kind,
+                                &name,
+                                &definitions,
+                                show_header,
+                            );
                         }
                         if panel == Panel::Enums {
                             let external = self
@@ -914,12 +931,18 @@ impl EditorApp {
         kind: &str,
         name: &str,
         definitions: &[Value],
+        show_header: bool,
     ) {
         ui.set_width(ui.available_width());
+        let enums = kind == "enums";
         egui::Frame::new()
-            .fill(theme::DARK)
-            .stroke(Stroke::new(1_f32, theme::LIGHT))
-            .inner_margin(4)
+            .fill(if enums { Color32::TRANSPARENT } else { theme::DARK })
+            .stroke(if enums {
+                Stroke::NONE
+            } else {
+                Stroke::new(1., theme::LIGHT)
+            })
+            .inner_margin(if enums { 0 } else { 4 })
             .show(ui, |ui| {
                 let source_kind = match kind {
                     "entities" => "entity",
@@ -936,7 +959,6 @@ impl EditorApp {
                     source_kind,
                     if name == "Other" { "null" } else { name }
                 );
-                let show_header = kind != "layers" || name != kind;
                 let mut open = !show_header || self.settings.ui_state_int(&key, None, 1) != 0;
                 if show_header {
                     let (rect, response) = ui
@@ -963,7 +985,7 @@ impl EditorApp {
                                 .as_array()
                                 .is_none_or(|tags| tags.iter().all(|tag| tag != name))
                         }) {
-                        locale::tr(ui, name)
+                        locale::tr(ui, if enums { "Untagged" } else { name })
                     } else {
                         name
                     };
@@ -988,7 +1010,9 @@ impl EditorApp {
                                 let selected = self.definition_uid == Some(uid);
                                 let color_key = if kind == "layers" { "uiColor" } else { "color" };
                                 let color = theme::color(text(def, color_key, "#687487"));
-                                let fill = if selected {
+                                let fill = if enums {
+                                    if selected { theme::ACCENT } else { theme::MEDIUM }
+                                } else if selected {
                                     if kind == "layers" {
                                         def["uiColor"]
                                             .as_str()
@@ -1005,39 +1029,53 @@ impl EditorApp {
                                     .inner_margin(egui::Margin::symmetric(4, 0))
                                     .show(ui, |ui| {
                                         ui.horizontal(|ui| {
-                                            let handle = ui.add(
-                                                egui::Label::new(
-                                                    RichText::new("≡").color(theme::TEXT),
-                                                )
-                                                .sense(Sense::drag()),
-                                            );
+                                            let grip = egui::Label::new(
+                                                RichText::new("≡").color(theme::TEXT),
+                                            )
+                                            .sense(Sense::drag());
+                                            let handle = if enums {
+                                                ui.add_sized([19., 33.], grip)
+                                            } else {
+                                                ui.add(grip)
+                                            };
                                             handle.dnd_set_drag_payload((kind.to_owned(), uid));
-                                            let (rect, _) = ui.allocate_exact_size(
-                                                Vec2::splat(32.),
-                                                Sense::hover(),
-                                            );
-                                            self.source_definition_thumbnail(
-                                                ui, def, kind, rect, color,
-                                            );
-                                            let available = (ui.available_width() - 42.).max(20.);
-                                            let response = source_controls::add_sized_button(
-                                                ui,
-                                                [available, 32.],
-                                                egui::Button::new(
-                                                    RichText::new(text(
-                                                        def,
-                                                        "identifier",
-                                                        "Definition",
-                                                    ))
-                                                    .color(if selected {
-                                                        Color32::BLACK
-                                                    } else {
-                                                        tint(color, Color32::WHITE, 0.4)
-                                                    }),
+                                            let label = text(def, "identifier", "Definition");
+                                            let response = if enums {
+                                                let (rect, response) = ui.allocate_exact_size(
+                                                    egui::vec2((ui.available_width() - 21.).max(20.), 33.),
+                                                    Sense::click(),
+                                                );
+                                                ui.painter_at(rect).text(
+                                                    rect.left_center(),
+                                                    Align2::LEFT_CENTER,
+                                                    label,
+                                                    FontId::proportional(14.),
+                                                    if selected { Color32::BLACK } else { Color32::WHITE },
+                                                );
+                                                response
+                                            } else {
+                                                let (rect, _) = ui.allocate_exact_size(
+                                                    Vec2::splat(32.),
+                                                    Sense::hover(),
+                                                );
+                                                self.source_definition_thumbnail(
+                                                    ui, def, kind, rect, color,
+                                                );
+                                                let available = (ui.available_width() - 42.).max(20.);
+                                                source_controls::add_sized_button(
+                                                    ui,
+                                                    [available, 32.],
+                                                    egui::Button::new(
+                                                        RichText::new(label).color(if selected {
+                                                            Color32::BLACK
+                                                        } else {
+                                                            tint(color, Color32::WHITE, 0.4)
+                                                        }),
+                                                    )
+                                                    .truncate()
+                                                    .frame(false),
                                                 )
-                                                .truncate()
-                                                .frame(false),
-                                            );
+                                            };
                                             if response.clicked() {
                                                 self.clipboard_focus(
                                                     ui.ctx(),

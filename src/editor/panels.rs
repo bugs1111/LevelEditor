@@ -38,6 +38,33 @@ const TILESET_MIN_LABEL_WIDTH: f32 = 110.;
 const ENUM_VALUE_SIZE: f32 = 32.;
 const ENUM_VALUE_SPACING: f32 = 3.;
 
+#[derive(Clone)]
+struct EnumValueRemoval {
+    project_iid: Value,
+    uid: i64,
+    value: String,
+    anchor: Rect,
+}
+
+fn enum_value_removal_id() -> egui::Id {
+    egui::Id::new("enum-value-removal")
+}
+
+fn tileset_has_marked_tiles(tileset: &Value) -> bool {
+    tileset["enumTags"].as_array().is_some_and(|tags| {
+        tags.iter().any(|tag| {
+            tag["tileIds"].as_array().is_some_and(|ids| !ids.is_empty())
+        })
+    })
+}
+
+pub(super) fn enum_value_removal_open(ctx: &egui::Context) -> bool {
+    ctx.data(|data| {
+        data.get_temp::<EnumValueRemoval>(enum_value_removal_id())
+            .is_some()
+    })
+}
+
 #[derive(Clone, Copy)]
 pub(super) enum IntGridRemoval {
     Value(i64, Rect),
@@ -148,7 +175,7 @@ pub(super) fn source_panel_width(panel: Panel) -> f32 {
         Panel::World => 400.,
         Panel::Level => 490.,
         Panel::Fields => 790.,
-        Panel::Project => 840.,
+        Panel::Project | Panel::Enums => 840.,
         Panel::Help => 906.,
         _ => 1000.,
     }
@@ -1627,83 +1654,122 @@ impl EditorApp {
                     } => p.rename_definition_tag("enums", uid, &old, &new, everywhere),
                 });
             }
-            source_controls::form_heading(ui, "All possible enum values");
+            enum_values_heading(ui);
             let add_value = source_controls::add_sized_button(
                 ui,
-                [ui.available_width(), 30.],
-                egui::Button::new(locale::tr(ui, "Add a new value")),
+                [ui.available_width(), 35.],
+                egui::Button::new(locale::tr(ui, "Add a new value").to_uppercase())
+                    .fill(theme::LIGHT),
             )
             .clicked();
+            let focus_id = ui.make_persistent_id((
+                "new-enum-value",
+                self.project.as_ref().unwrap().json["iid"].as_str(),
+                uid,
+            ));
+            let focus_value = ui.data_mut(|data| data.remove_temp::<String>(focus_id));
             let mut values = def["values"].as_array().cloned().unwrap_or_default();
             let mut edited = false;
             let mut remove = None;
             let mut reorder = None;
-            for (index, value) in values.iter_mut().enumerate() {
-                let old = text(value, "id", "").to_owned();
-                let row = ui.push_id((uid, &old), |ui| {
-                    ui.horizontal(|ui| {
-                        ui.spacing_mut().item_spacing.x = ENUM_VALUE_SPACING;
-                        let handle = ui
-                            .add_sized(
-                                [20., ENUM_VALUE_SIZE],
-                                egui::Label::new("≡").sense(Sense::drag()),
-                            )
-                            .on_hover_cursor(egui::CursorIcon::Grab);
-                        if let Some(tile) = self.value_tile_thumbnail(ui, atlas, &value["tileRect"], true, false) {
-                            value["tileRect"] = tile;
-                            edited = true;
-                        }
-                        edited |= enum_value_color(ui, value, true);
-                        let name_width =
-                            (ui.available_width() - ENUM_VALUE_SIZE - ENUM_VALUE_SPACING).max(20.);
-                        if let Some(id) = enum_value_name(ui, value, &old, name_width, true)
-                            && self
-                                .edit("Enum value renamed", |p| {
-                                    p.rename_enum_value(uid, &old, &id)
+            enum_value_list(ui, uid, |ui| {
+                for (index, value) in values.iter_mut().enumerate() {
+                    let old = text(value, "id", "").to_owned();
+                    let row = ui.push_id((uid, &old), |ui| {
+                        ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = ENUM_VALUE_SPACING;
+                            let handle = ui
+                                .add_sized([25., 34.], egui::Label::new("≡").sense(Sense::drag()))
+                                .on_hover_cursor(egui::CursorIcon::Grab);
+                            if let Some(tile) = self.value_tile_thumbnail(
+                                ui,
+                                atlas,
+                                &value["tileRect"],
+                                true,
+                                false,
+                            ) {
+                                value["tileRect"] = tile;
+                                edited = true;
+                            }
+                            edited |= enum_value_color(ui, value, true);
+                            let name_width =
+                                (ui.available_width() - ENUM_VALUE_SIZE - ENUM_VALUE_SPACING)
+                                    .max(20.);
+                            let focus = focus_value.as_deref() == Some(old.as_str());
+                            if let Some(input) =
+                                enum_value_name(ui, value, &old, name_width, true, focus)
+                                && let Some(id) = self.edit("Enum value renamed", |p| {
+                                    p.rename_enum_value_from_editor(uid, &old, &input)
                                 })
-                                .is_some()
-                        {
-                            value["id"] = json!(id);
-                        }
-                        if source_controls::add_sized_button(
-                            ui,
-                            Vec2::splat(ENUM_VALUE_SIZE),
-                            egui::Button::new("×"),
-                        )
-                        .clicked()
-                        {
-                            remove = Some(text(value, "id", "").to_owned());
-                        }
-                        if handle.drag_started() {
-                            handle.dnd_set_drag_payload((uid, text(value, "id", "").to_owned()));
-                        }
-                    })
-                });
-                let item = row.inner.response;
-                if let Some(payload) = item.dnd_hover_payload::<(i64, String)>()
-                    && payload.0 == uid
-                    && value["id"] != payload.1
-                {
-                    ui.painter().rect_stroke(
-                        item.rect,
-                        2.,
-                        egui::Stroke::new(1., theme::ACCENT),
-                        egui::StrokeKind::Inside,
-                    );
+                            {
+                                value["id"] = json!(id);
+                            }
+                            let delete = ui
+                                .scope(|ui| {
+                                    ui.spacing_mut().button_padding = Vec2::splat(4.);
+                                    let icon = egui::Image::new(egui::include_image!(
+                                        "../../assets/icons/delete.svg"
+                                    ))
+                                    .fit_to_exact_size(Vec2::splat(20.));
+                                    source_controls::add_sized_button(
+                                        ui,
+                                        Vec2::splat(ENUM_VALUE_SIZE),
+                                        egui::Button::image(icon),
+                                    )
+                                })
+                                .inner;
+                            if delete.clicked() {
+                                remove = Some((text(value, "id", "").to_owned(), delete.rect));
+                            }
+                            if handle.drag_started() {
+                                handle
+                                    .dnd_set_drag_payload((uid, text(value, "id", "").to_owned()));
+                            }
+                        })
+                    });
+                    let item = row.inner.response;
+                    if focus_value.as_deref() == Some(old.as_str()) {
+                        item.scroll_to_me(Some(egui::Align::BOTTOM));
+                    }
+                    if let Some(payload) = item.dnd_hover_payload::<(i64, String)>()
+                        && payload.0 == uid
+                        && value["id"] != payload.1
+                    {
+                        ui.painter().rect_stroke(
+                            item.rect,
+                            2.,
+                            egui::Stroke::new(1., theme::ACCENT),
+                            egui::StrokeKind::Inside,
+                        );
+                    }
+                    if let Some(payload) = item.dnd_release_payload::<(i64, String)>()
+                        && payload.0 == uid
+                        && value["id"] != payload.1
+                    {
+                        reorder = Some((payload.1.clone(), index));
+                    }
                 }
-                if let Some(payload) = item.dnd_release_payload::<(i64, String)>()
-                    && payload.0 == uid
-                    && value["id"] != payload.1
-                {
-                    reorder = Some((payload.1.clone(), index));
-                }
-            }
-            if let Some(value) = remove
-                && self
-                    .edit_recoverable("Enum value removed", |p| p.remove_enum_value(uid, &value))
+            });
+            if let Some((value, anchor)) = remove {
+                let project = self.project.as_ref().unwrap();
+                if project.is_enum_value_used(uid, &value) {
+                    ui.ctx().data_mut(|data| {
+                        data.insert_temp(
+                            enum_value_removal_id(),
+                            EnumValueRemoval {
+                                project_iid: project.json["iid"].clone(),
+                                uid,
+                                value,
+                                anchor,
+                            },
+                        );
+                    });
+                } else if self
+                    .edit("Enum value removed", |p| p.remove_enum_value(uid, &value))
                     .is_some()
-            {
-                values.retain(|v| v["id"] != value);
+                {
+                    values.retain(|v| v["id"] != value);
+                }
             } else if let Some((id, to)) = reorder
                 && let Some(from) = values.iter().position(|v| v["id"] == id)
             {
@@ -1711,18 +1777,35 @@ impl EditorApp {
                 values.insert(to, value);
                 edited = true;
             }
-            if add_value {
-                let name = unique_name("Value", values.iter().map(|v| text(v, "id", "")));
+            let new_name = if add_value {
+                let project = self.project.as_ref().unwrap();
+                let identifier = text(&def, "identifier", "");
+                let name = (0..=values.len())
+                    .map(|index| project.cleanup_identifier(&format!("{identifier}{index}")))
+                    .find(|name| values.iter().all(|value| value["id"] != *name))
+                    .unwrap();
                 let color = self.suggested_color(&values);
                 values.push(json!({"id":name,"color":color,"tileRect":null}));
                 edited = true;
+                Some(name)
+            } else {
+                None
+            };
+            // The new input can be at the bottom edge, where a status toast would cover it.
+            let notice = if add_value { "" } else { "Enum values changed" };
+            if edited
+                && self
+                    .edit(notice, |p| {
+                        p.update_enum_definition(uid, &json!({"values":values}))
+                    })
+                    .is_some()
+                && let Some(name) = new_name
+            {
+                ui.data_mut(|data| data.insert_temp(focus_id, name));
+                ui.ctx().request_repaint();
             }
-            if edited {
-                self.edit("Enum values changed", |p| {
-                    p.update_enum_definition(uid, &json!({"values":values}))
-                });
-            }
-            if source_controls::button(ui, "Delete enum").clicked() {
+            if !self.source_panel_active(ui) && source_controls::button(ui, "Delete enum").clicked()
+            {
                 self.edit_recoverable("Enum deleted", |p| p.remove_definition("enums", uid));
                 self.definition_uid = None;
             }
@@ -1770,6 +1853,80 @@ impl EditorApp {
         });
     }
 
+    pub(super) fn enum_value_removal_dialog(&mut self, ctx: &egui::Context) {
+        let id = enum_value_removal_id();
+        let Some(pending) = ctx.data(|data| data.get_temp::<EnumValueRemoval>(id)) else {
+            return;
+        };
+        if self.panel != Some(Panel::Enums)
+            || self
+                .project
+                .as_ref()
+                .is_none_or(|p| p.json["iid"] != pending.project_iid)
+        {
+            ctx.data_mut(|data| data.remove::<EnumValueRemoval>(id));
+            return;
+        }
+        let screen = ctx.content_rect();
+        let width = (screen.width() - 42.).clamp(1., 358.);
+        let anchor = pending.anchor;
+        let x = if anchor.left() - screen.left() >= screen.width() * 0.6 {
+            anchor.right() - width
+        } else {
+            anchor.left()
+        };
+        let above = anchor.top() - screen.top() >= screen.height() * 0.7;
+        let area = egui::Area::new(id)
+            .kind(egui::UiKind::Modal)
+            .sense(Sense::hover())
+            .order(egui::Order::Foreground)
+            .pivot(if above {
+                Align2::LEFT_BOTTOM
+            } else {
+                Align2::LEFT_TOP
+            })
+            .fixed_pos(egui::pos2(
+                x.clamp(
+                    screen.left(),
+                    (screen.right() - width - 42.).max(screen.left()),
+                ),
+                if above { anchor.top() } else { anchor.bottom() },
+            ));
+        let warning = "WARNING! This enum value is USED in one or more entity instances. These values will also be removed!";
+        let modal = project_dialogs::form_warning_dialog(id)
+            .area(area)
+            .backdrop_color(Color32::from_black_alpha(204))
+            .show(ctx, |ui| {
+                ui.set_width(width);
+                ui.spacing_mut().item_spacing = egui::vec2(2., 0.);
+                ui.label(
+                    RichText::new(locale::tr(ui, warning))
+                        .size(14.667)
+                        .color(Color32::WHITE),
+                );
+                ui.add_space(16.);
+                ui.horizontal(|ui| {
+                    let size = egui::vec2((width - 2.) * 0.5, 35.);
+                    let confirm = project_dialogs::button(ui, "CONFIRM", size, false, 13.333);
+                    let cancel = project_dialogs::button(ui, "CANCEL", size, true, 13.333);
+                    (confirm.clicked(), cancel.clicked())
+                })
+                .inner
+            });
+        let (confirm, cancel) = modal.inner;
+        let closed = cancel || modal.should_close();
+        let enter = modal.is_top_modal
+            && ctx.input_mut(|input| input.consume_key(egui::Modifiers::NONE, Key::Enter));
+        if closed || confirm || enter {
+            ctx.data_mut(|data| data.remove::<EnumValueRemoval>(id));
+        }
+        if !closed && (confirm || enter) {
+            self.edit_recoverable("Enum value removed", |p| {
+                p.remove_enum_value(pending.uid, &pending.value)
+            });
+        }
+    }
+
     fn enum_icon_tileset(
         &mut self,
         ui: &mut egui::Ui,
@@ -1781,6 +1938,7 @@ impl EditorApp {
         let mut atlas = previous;
         let project = self.project.as_ref().unwrap();
         let picker = |ui: &mut egui::Ui| {
+            let empty = locale::tr(ui, "-- Select a tileset --");
             let response = ui.add_enabled_ui(editable, |ui| {
                 egui::ComboBox::from_id_salt("enum-icon-tileset")
                     .width(ui.available_width())
@@ -1789,19 +1947,10 @@ impl EditorApp {
                         previous
                             .and_then(|uid| project.tileset(uid))
                             .map(|d| text(d, "identifier", "Tileset"))
-                            .unwrap_or_else(|| {
-                                locale::tr(
-                                    ui,
-                                    if external {
-                                        "-- Select a tileset --"
-                                    } else {
-                                        "None"
-                                    },
-                                )
-                            }),
+                            .unwrap_or(empty),
                     )
                     .show_ui(ui, |ui| {
-                        ui.selectable_value(&mut atlas, None, locale::tr(ui, "None"));
+                        ui.selectable_value(&mut atlas, None, empty);
                         for def in project.json["defs"]["tilesets"]
                             .as_array()
                             .into_iter()
@@ -1816,15 +1965,11 @@ impl EditorApp {
                     })
                     .response
             });
-            if !editable {
+            if !editable || previous.is_none() {
                 source_controls::disabled_hatch(ui, response.inner.rect);
             }
         };
-        if external {
-            source_controls::form_row(ui, "Icon tileset", "icons", 110., picker);
-        } else {
-            enum_property_row(ui, "Icon tileset", "icons", picker);
-        }
+        enum_property_row(ui, "Icon tileset", "icons", picker);
         if atlas == previous {
             return previous;
         }
@@ -1860,24 +2005,32 @@ impl EditorApp {
             .extension()
             .is_some_and(|ext| ext.eq_ignore_ascii_case("cdb"));
         let atlas = self.enum_icon_tileset(ui, &mut def, true, editable);
-        source_controls::form_heading(ui, "All possible enum values");
+        enum_values_heading(ui);
         let uid = def["uid"].as_i64().unwrap();
         let mut values = def["values"].as_array().cloned().unwrap_or_default();
         let mut edited = false;
-        for value in &mut values {
-            let id = text(value, "id", "").to_owned();
-            ui.push_id((uid, &id), |ui| {
-                ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = ENUM_VALUE_SPACING;
-                    if let Some(tile) = self.value_tile_thumbnail(ui, atlas, &value["tileRect"], editable, false) {
-                        value["tileRect"] = tile;
-                        edited = true;
-                    }
-                    edited |= enum_value_color(ui, value, editable);
-                    enum_value_name(ui, value, &id, ui.available_width(), false);
+        enum_value_list(ui, uid, |ui| {
+            for value in &mut values {
+                let id = text(value, "id", "").to_owned();
+                ui.push_id((uid, &id), |ui| {
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = ENUM_VALUE_SPACING;
+                        if let Some(tile) = self.value_tile_thumbnail(
+                            ui,
+                            atlas,
+                            &value["tileRect"],
+                            editable,
+                            false,
+                        ) {
+                            value["tileRect"] = tile;
+                            edited = true;
+                        }
+                        edited |= enum_value_color(ui, value, editable);
+                        enum_value_name(ui, value, &id, ui.available_width(), false, false);
+                    });
                 });
-            });
-        }
+            }
+        });
         if edited {
             self.edit("External enum appearance changed", |p| {
                 p.update_external_enum_appearance(uid, atlas, &values)
@@ -1902,9 +2055,10 @@ impl EditorApp {
             Sense::hover()
         };
         let (rect, preview) = ui.allocate_exact_size(Vec2::splat(ENUM_VALUE_SIZE), sense);
-        ui.painter().rect_filled(rect, 4., theme::DARK);
+        let empty = tileset.is_none() || tile.is_null();
+        let mut border = rect;
         let ctx = ui.ctx().clone();
-        if let Some(tileset) = tileset.filter(|_| !tile.is_null()) {
+        if let Some(tileset) = tileset.filter(|_| !empty) {
             let texture = if let Some(path) = tileset["relPath"].as_str() {
                 self.assets
                     .texture(&ctx, &canvas::asset_path(project, path))
@@ -1919,10 +2073,18 @@ impl EditorApp {
                     egui::pos2(number(tile, "x", 0.), number(tile, "y", 0.)),
                     egui::vec2(number(tile, "w", 16.), number(tile, "h", 16.)).max(Vec2::ONE),
                 );
-                let scale = ENUM_VALUE_SIZE / source.size().max_elem();
+                let preview_size = if editable { ENUM_VALUE_SIZE } else { 35. };
+                let image_size = source.size() * (preview_size / source.size().max_elem());
+                let image_rect = if editable {
+                    Rect::from_center_size(rect.center(), image_size)
+                } else {
+                    let image_rect = Rect::from_min_size(rect.min + Vec2::splat(1.), image_size);
+                    border = image_rect.expand(1.);
+                    image_rect
+                };
                 ui.painter().image(
                     texture.id(),
-                    Rect::from_center_size(rect.center(), source.size() * scale),
+                    image_rect,
                     Rect::from_min_max(
                         (source.min.to_vec2() / size).to_pos2(),
                         (source.max.to_vec2() / size).to_pos2(),
@@ -1931,8 +2093,12 @@ impl EditorApp {
                 );
             }
         }
+        if empty {
+            ui.painter().rect_filled(rect, 4., theme::DARK);
+            source_controls::disabled_hatch(ui, rect);
+        }
         ui.painter().rect_stroke(
-            rect,
+            border,
             4.,
             Stroke::new(
                 1.,
@@ -1944,9 +2110,6 @@ impl EditorApp {
             ),
             egui::StrokeKind::Inside,
         );
-        if !editable {
-            source_controls::disabled_hatch(ui, rect);
-        }
         let tileset = tileset.filter(|_| enabled)?;
         let uid = tileset["uid"].as_i64()?;
         let id = ui.make_persistent_id(("enum-icon-picker", text(&project.json, "iid", ""), uid));
@@ -2220,12 +2383,7 @@ impl EditorApp {
                     if let Some(next) =
                         tileset_tag_enum_picker(ui, self.project.as_ref().unwrap(), current)
                     {
-                        let has_tags = def["enumTags"].as_array().is_some_and(|tags| {
-                            tags.iter().any(|tag| {
-                                tag["tileIds"].as_array().is_some_and(|ids| !ids.is_empty())
-                            })
-                        });
-                        if current.is_some() && has_tags {
+                        if current.is_some() && tileset_has_marked_tiles(&def) {
                             ui.ctx().data_mut(|data| data.insert_temp(pending_id, next));
                         } else {
                             patch["tagsSourceEnumUid"] = json!(next);
@@ -2544,7 +2702,7 @@ impl EditorApp {
         let recoverable = image_changed
             || geometry_changed
             || patch.get("tagsSourceEnumUid").is_some()
-                && def["enumTags"].as_array().is_some_and(|a| !a.is_empty());
+                && tileset_has_marked_tiles(def);
         let operation = |p: &mut Project| {
             if remove_image {
                 p.remove_tileset_image(uid)?;
@@ -2873,13 +3031,41 @@ fn enum_property_row<R>(
     key: &str,
     content: impl FnOnce(&mut egui::Ui) -> R,
 ) -> R {
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 0.;
-        source_controls::property_label(ui, label, key);
-        ui.add_space(18.);
-        content(ui)
-    })
-    .inner
+    source_controls::form_row_wrapped(ui, label, key, 110., content)
+}
+
+fn enum_values_heading(ui: &mut egui::Ui) {
+    ui.add_space(8.);
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 38.), Sense::hover());
+    ui.painter().text(
+        rect.left_top(),
+        Align2::LEFT_TOP,
+        locale::tr(ui, "All possible enum values").to_uppercase(),
+        FontId::new(24., egui::FontFamily::Name("panel-title".into())),
+        theme::ACCENT,
+    );
+    ui.painter().hline(
+        rect.x_range(),
+        rect.bottom() - 1.,
+        Stroke::new(1., theme::ACCENT),
+    );
+}
+
+fn enum_value_list(ui: &mut egui::Ui, uid: i64, contents: impl FnOnce(&mut egui::Ui)) {
+    ui.scope(|ui| {
+        ui.spacing_mut().item_spacing.y = 4.;
+        ui.spacing_mut().scroll = egui::style::ScrollStyle {
+            bar_width: 10.,
+            bar_inner_margin: 0.,
+            bar_outer_margin: 0.,
+            ..egui::style::ScrollStyle::solid()
+        };
+        egui::ScrollArea::vertical()
+            .id_salt(("enum-values", uid))
+            .max_height(ui.available_height())
+            .auto_shrink([false, true])
+            .show(ui, contents);
+    });
 }
 
 fn enum_value_color(ui: &mut egui::Ui, value: &mut Value, editable: bool) -> bool {
@@ -2904,6 +3090,7 @@ fn enum_value_name(
     mut name: &str,
     width: f32,
     editable: bool,
+    focus: bool,
 ) -> Option<String> {
     let size = egui::vec2(width, ENUM_VALUE_SIZE);
     ui.scope(|ui| {
@@ -2918,7 +3105,21 @@ fn enum_value_name(
             style.widgets.inactive.bg_stroke.color = color;
         }
         if editable {
-            ui_fields::buffered_text_sized(ui, "enum-value-name", name, size)
+            let key = "enum-value-name";
+            if focus {
+                let id = ui.make_persistent_id(key);
+                let mut state =
+                    egui::text_edit::TextEditState::load(ui.ctx(), id).unwrap_or_default();
+                state
+                    .cursor
+                    .set_char_range(Some(egui::text::CCursorRange::two(
+                        egui::text::CCursor::new(0),
+                        egui::text::CCursor::new(name.chars().count()),
+                    )));
+                state.store(ui.ctx(), id);
+                ui.memory_mut(|memory| memory.request_focus(id));
+            }
+            ui_fields::buffered_text_sized(ui, key, name, size)
         } else {
             let background = ui.painter().add(egui::Shape::Noop);
             let response = ui.add_sized(
@@ -3979,8 +4180,14 @@ mod tests {
                     egui::pos2(name.right(), name.top()),
                     egui::pos2(screen_width, name.bottom()),
                 );
+                let remove = rects.clone().find(|shape| {
+                    let rect = shape.rect;
+                    values.contains(rect.center())
+                        && rect.height() == name.height()
+                        && rect.width() == ENUM_VALUE_SIZE
+                });
                 if uid == local {
-                    let remove = control_rect("×", values);
+                    let remove = remove.expect("remove button is rendered").rect;
                     assert_eq!(remove.size(), Vec2::splat(32.));
                     assert_eq!(remove.left() - name.right(), 3.);
 
@@ -3989,25 +4196,99 @@ mod tests {
                         egui::pos2(screen_width, name.top()),
                     );
                     let identifier = control_rect("State", header);
-                    let atlas = control_rect("None", header);
+                    let atlas = control_rect("-- Select a tileset --", header);
                     let tags = text_pos("(No tag)", header).expect("empty tag label is rendered");
                     assert_eq!(identifier.left(), atlas.left());
                     assert!((tags.x - identifier.left() - 32.5).abs() < 1.);
                     assert_eq!(identifier.right(), atlas.right());
-                    let add = control_rect("Add a new value", header);
+                    let add = control_rect("ADD A NEW VALUE", header);
                     assert!(add.bottom() < name.top());
+                    assert_eq!(add.height(), 35.);
+                    assert_eq!(identifier.left(), 404.);
+                    assert_eq!(identifier.right(), screen_width.min(840.) - 20.);
                 } else {
-                    assert!(text_pos("×", values).is_none());
+                    assert!(remove.is_none());
                 }
                 name.width()
             };
-            let narrow = width_at(&mut app, 760.);
+            let narrow = width_at(&mut app, 700.);
             let wide = width_at(&mut app, 1200.);
             assert!(
                 wide > narrow + 100.,
                 "enum name must absorb the extra width"
             );
         }
+    }
+
+    #[test]
+    fn adding_an_enum_value_selects_the_first_unused_styled_name_for_typing() {
+        let mut project = Project::new();
+        let existing: Vec<_> = (0..24).map(|index| format!("Loot{index}")).collect();
+        let ids: Vec<_> = existing.iter().map(String::as_str).collect();
+        let uid = project.add_enum_definition("Loot", &ids).unwrap();
+        project.apply_identifier_style("Lowercase").unwrap();
+
+        let mut app = EditorApp::empty();
+        app.set_project(project);
+        app.panel = Some(Panel::Enums);
+        app.definition_uid = Some(uid);
+        let ctx = egui::Context::default();
+        theme::configure(&ctx);
+        let frame = |app: &mut EditorApp, events| {
+            ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1100., 760.))),
+                    events,
+                    ..Default::default()
+                },
+                |ctx| {
+                    app.source_panel(ctx, Panel::Enums);
+                },
+            )
+        };
+        frame(&mut app, vec![]);
+        let pos = frame(&mut app, vec![])
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) if text.galley.job.text == "ADD A NEW VALUE" => {
+                    Some(text.pos + text.galley.rect.center().to_vec2())
+                }
+                _ => None,
+            })
+            .expect("add value button is visible");
+        for pressed in [true, false] {
+            frame(&mut app, vec![
+                egui::Event::PointerMoved(pos),
+                egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ]);
+        }
+        frame(&mut app, vec![]);
+        assert_eq!(
+            app.project.as_ref().unwrap().json["defs"]["enums"][0]["values"][24]["id"],
+            "loot24"
+        );
+        let focused = ctx.memory(|memory| memory.focused()).expect("new value has focus");
+        let edit = egui::text_edit::TextEditState::load(&ctx, focused).unwrap();
+        assert_eq!(edit.cursor.char_range().unwrap().as_sorted_char_range(), 0..6);
+
+        frame(&mut app, vec![egui::Event::Text("replacement".into())]);
+        frame(&mut app, vec![egui::Event::Key {
+            key: Key::Tab,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        }]);
+        assert_eq!(
+            app.project.as_ref().unwrap().json["defs"]["enums"][0]["values"][24]["id"],
+            "replacement"
+        );
     }
 
     #[test]

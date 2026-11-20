@@ -1423,37 +1423,122 @@ pub(super) fn paint_tile(
     project: &Project,
     tile: &Value,
     assets: &mut Assets,
-) {
-    let Some(def) = tile["tilesetUid"]
-        .as_i64()
-        .and_then(|id| project.tileset(id))
-    else {
-        return;
+) -> bool {
+    let Some((texture, uv, size)) = preview_tile_texture(ctx, project, tile, assets) else {
+        return false;
     };
+    let scale = (rect.width() / size.x).min(rect.height() / size.y);
+    let dst = Rect::from_center_size(rect.center(), size * scale);
+    painter.image(texture.id(), dst, uv, Color32::WHITE);
+    true
+}
+
+fn preview_tile_texture(
+    ctx: &egui::Context,
+    project: &Project,
+    tile: &Value,
+    assets: &mut Assets,
+) -> Option<(egui::TextureHandle, Rect, Vec2)> {
+    let def = tile["tilesetUid"]
+        .as_i64()
+        .and_then(|id| project.tileset(id))?;
     let texture = if let Some(path) = def["relPath"].as_str() {
         assets.texture(ctx, &canvas::asset_path(project, path))
     } else if !def["embedAtlas"].is_null() {
         assets.embedded(ctx)
     } else {
         None
-    };
-    if let Some(texture) = texture {
-        let size = texture.size_vec2();
-        let src = Rect::from_min_size(
-            egui::pos2(number(tile, "x", 0.), number(tile, "y", 0.)),
-            egui::vec2(number(tile, "w", 16.), number(tile, "h", 16.)),
-        );
-        let scale = (rect.width() / src.width()).min(rect.height() / src.height());
-        let dst = Rect::from_center_size(rect.center(), src.size() * scale);
-        painter.image(
-            texture.id(),
-            dst,
-            Rect::from_min_max(
-                egui::pos2(src.left() / size.x, src.top() / size.y),
-                egui::pos2(src.right() / size.x, src.bottom() / size.y),
-            ),
-            Color32::WHITE,
-        );
+    }?;
+    let size = texture.size_vec2();
+    let src = Rect::from_min_size(
+        egui::pos2(number(tile, "x", 0.), number(tile, "y", 0.)),
+        egui::vec2(number(tile, "w", 16.), number(tile, "h", 16.)),
+    );
+    if !src.is_positive() || !Rect::from_min_size(egui::Pos2::ZERO, size).contains_rect(src) {
+        return None;
+    }
+    let uv = Rect::from_min_max(
+        egui::pos2(src.left() / size.x, src.top() / size.y),
+        egui::pos2(src.right() / size.x, src.bottom() / size.y),
+    );
+    Some((texture, uv, src.size()))
+}
+
+pub(super) fn paint_entity_definition_icon(
+    ctx: &egui::Context,
+    painter: &egui::Painter,
+    rect: Rect,
+    project: &Project,
+    def: &Value,
+    assets: &mut Assets,
+) {
+    use egui::emath::GuiRounding;
+
+    let rect = rect.round_to_pixels(ctx.pixels_per_point());
+    let ui_tile = &def["uiTileRect"];
+    if number(ui_tile, "w", 0.) > 0. {
+        if let Some((texture, uv, _)) = preview_tile_texture(ctx, project, ui_tile, assets) {
+            painter.image(texture.id(), rect, uv, Color32::WHITE);
+        }
+        return;
+    }
+
+    let mode = text(def, "renderMode", "Rectangle");
+    let color = theme::color(text(def, "color", "#ffcc00"));
+    let fill_opacity = number(def, "fillOpacity", 1.);
+    let line_opacity = number(def, "lineOpacity", 1.);
+    let fill = color.gamma_multiply(fill_opacity);
+    let line = color.gamma_multiply(line_opacity);
+    if mode == "Tile" {
+        let tile = &def["tileRect"];
+        if tile.is_null() {
+            return;
+        }
+        painter.rect_filled(rect, 0., fill);
+        let padding = if fill_opacity > 0. || line_opacity > 0. {
+            1.
+        } else {
+            0.
+        };
+        if let Some((texture, uv, _)) = preview_tile_texture(ctx, project, tile, assets) {
+            painter.image(
+                texture.id(),
+                rect.shrink(padding),
+                uv,
+                Color32::WHITE.gamma_multiply(number(def, "tileOpacity", 1.)),
+            );
+        }
+        painter.rect_stroke(rect, 0., Stroke::new(1., line), StrokeKind::Inside);
+        return;
+    }
+
+    let size = egui::vec2(
+        number(def, "width", 16.).max(1.),
+        number(def, "height", 16.).max(1.),
+    );
+    let scale = (rect.width() / size.x).min(rect.height() / size.y) * 0.9;
+    let shape = Rect::from_center_size(rect.center(), size * scale);
+    // The source thumbnail strokes a 32-point preview on a 3× canvas.
+    let unit = rect.width() / 96.;
+    let stroke = Stroke::new(unit * 2. / 3., line);
+    match mode {
+        "Rectangle" => {
+            painter.rect(shape, 0., fill, stroke, StrokeKind::Middle);
+        }
+        "Ellipse" => {
+            painter.add(egui::epaint::EllipseShape {
+                center: shape.center(),
+                radius: shape.size() * 0.5,
+                fill,
+                stroke,
+            });
+        }
+        "Cross" => {
+            let stroke = Stroke::new(3. * unit, line);
+            painter.line_segment([shape.left_top(), shape.right_bottom()], stroke);
+            painter.line_segment([shape.right_top(), shape.left_bottom()], stroke);
+        }
+        _ => {}
     }
 }
 

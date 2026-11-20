@@ -1,6 +1,41 @@
 use ldtk_core::{History, LevelKey, Project};
 use serde_json::json;
 use std::fs;
+
+#[test]
+fn preview_154_save_writes_tileset_tags_in_enum_value_order() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("Tags.ldtk");
+    let mut project = Project::new();
+    project.json["jsonVersion"] = json!("1.5.4");
+    let terrain = project
+        .add_enum_definition("Terrain", &["Stone", "Water", "Grass"])
+        .unwrap();
+    let atlas = project
+        .add_tileset(std::path::Path::new("atlas.png"), 16, 32, 32)
+        .unwrap();
+    let stored = json!([
+        {"enumValueId":"Grass","tileIds":[1],"extension":{"preserve":true}},
+        {"enumValueId":"Stone","tileIds":[0]}
+    ]);
+    project
+        .update_tileset_definition(
+            atlas,
+            &json!({"tagsSourceEnumUid":terrain,"enumTags":stored}),
+        )
+        .unwrap();
+
+    project.save(&path).unwrap();
+    let expected = json!([
+        {"enumValueId":"Stone","tileIds":[0]},
+        {"enumValueId":"Water","tileIds":[]},
+        {"enumValueId":"Grass","tileIds":[1],"extension":{"preserve":true}}
+    ]);
+    let reloaded = Project::load(&path).unwrap();
+    assert_eq!(reloaded.tileset(atlas).unwrap()["enumTags"], expected);
+    assert_eq!(project.tileset(atlas).unwrap()["enumTags"], stored);
+}
+
 #[test]
 fn save_as_copies_external_levels_and_rebases_assets_and_file_defaults() {
     let t = tempfile::tempdir().unwrap();
@@ -213,6 +248,49 @@ fn preview_154_same_path_save_reuses_verified_external_files() {
     let rewritten = fs::read(&targets[0]).unwrap();
     assert_ne!(rewritten, original[0]);
     assert!(String::from_utf8(rewritten).unwrap().contains("\n\t"));
+}
+
+#[test]
+fn preview_154_editing_one_level_field_preserves_other_external_files() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("map.ldtk");
+    let mut project = Project::new();
+    project.json["backupOnSave"] = json!(false);
+    let edited = project.level_keys()[0];
+    let untouched = project.add_level(None, "Other", 128, 128).unwrap();
+    let flag = project
+        .add_field_definition(None, "Visited", "Bool", false)
+        .unwrap();
+    project.set_external_levels(true).unwrap();
+    project.save(&path).unwrap();
+
+    let rel = project.json["levels"][untouched.level]["externalRelPath"]
+        .as_str()
+        .unwrap();
+    let target = directory.path().join(rel);
+    let mut original = fs::read(&target).unwrap();
+    original.extend_from_slice(b" \t\n");
+    fs::write(&target, &original).unwrap();
+    let modified = fs::metadata(&target).unwrap().modified().unwrap();
+    let mut project = Project::load(&path).unwrap();
+    project.migrate_to_current().unwrap();
+
+    project
+        .set_field_editor_value(edited, None, flag, json!(true))
+        .unwrap();
+    project.save(&path).unwrap();
+
+    assert!(fs::read(&target).unwrap() == original);
+    assert_eq!(fs::metadata(&target).unwrap().modified().unwrap(), modified);
+    let reopened = Project::load(path).unwrap();
+    assert_eq!(
+        reopened.level(edited).unwrap()["fieldInstances"][0]["__value"],
+        true
+    );
+    assert_eq!(
+        reopened.level(untouched).unwrap()["fieldInstances"][0]["__value"],
+        false
+    );
 }
 
 #[test]

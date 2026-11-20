@@ -62,6 +62,18 @@ impl ExternalLevels {
     pub fn clear(&mut self) {
         self.0.clear();
     }
+
+    // Keep the saved revision when a refresh leaves the document unchanged.
+    pub(crate) fn reuse_equal_documents(&mut self, previous: &Self) {
+        for (path, level) in &mut self.0 {
+            if let Some(old) = previous.0.get(path)
+                && !Arc::ptr_eq(level, old)
+                && level.as_ref() == old.as_ref()
+            {
+                *level = Arc::clone(old);
+            }
+        }
+    }
 }
 
 impl Index<&str> for ExternalLevels {
@@ -863,7 +875,60 @@ impl OutputCompatibility {
 
     fn project_output(&self, root: &mut Value, presence: &GridPresences) {
         Self::apply_definition_types(root, self.multiline);
+        Self::apply_tileset_enum_tags(root);
         visit_level_documents(root, |level| self.apply_level(level, presence));
+    }
+
+    fn apply_tileset_enum_tags(root: &mut Value) {
+        let Some(defs) = root.get_mut("defs") else {
+            return;
+        };
+        let order: BTreeMap<_, Vec<_>> = ["enums", "externalEnums"]
+            .into_iter()
+            .flat_map(|kind| defs[kind].as_array().into_iter().flatten())
+            .filter_map(|definition| {
+                let uid = definition["uid"].as_i64()?;
+                let values = definition["values"]
+                    .as_array()?
+                    .iter()
+                    .filter_map(|value| value["id"].as_str().map(str::to_owned))
+                    .collect();
+                Some((uid, values))
+            })
+            .collect();
+        for tileset in defs["tilesets"].as_array_mut().into_iter().flatten() {
+            let Some(values) = tileset["tagsSourceEnumUid"]
+                .as_i64()
+                .and_then(|uid| order.get(&uid))
+            else {
+                continue;
+            };
+            let tags = tileset.get_mut("enumTags").and_then(Value::as_array_mut);
+            let mut existing: Vec<_> = tags
+                .into_iter()
+                .flatten()
+                .map(std::mem::take)
+                .map(Some)
+                .collect();
+            let by_id: BTreeMap<_, _> = existing
+                .iter()
+                .enumerate()
+                .filter_map(|(index, tag)| {
+                    Some((tag.as_ref()?["enumValueId"].as_str()?.to_owned(), index))
+                })
+                .collect();
+            let mut ordered: Vec<_> = values
+                .iter()
+                .map(|id| {
+                    by_id
+                        .get(id)
+                        .and_then(|index| existing[*index].take())
+                        .unwrap_or_else(|| serde_json::json!({"enumValueId":id,"tileIds":[]}))
+                })
+                .collect();
+            ordered.extend(existing.into_iter().flatten());
+            tileset["enumTags"] = Value::Array(ordered);
+        }
     }
 
     fn apply_definition_types(root: &mut Value, multiline: bool) {
