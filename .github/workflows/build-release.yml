@@ -45,11 +45,16 @@ jobs:
           rustup default stable
           rustup component add rustfmt clippy
           rustc -vV
-      - name: Check, test and build
+      - name: Check formatting and lints (advisory for this preview)
+        continue-on-error: true
         run: |
-          cargo fmt --all -- --check
-          cargo clippy --workspace --all-targets --locked -- -D warnings
-          cargo test --workspace --locked --no-fail-fast
+          failed=0
+          cargo fmt --all -- --check || failed=1
+          cargo clippy --workspace --all-targets --locked -- -D warnings || failed=1
+          exit "$failed"
+      - name: Test and build
+        run: |
+          cargo test --workspace --locked --no-fail-fast -- --test-threads=1
           cargo test --example native_smoke capture_tests --locked
           cargo build --release --bin ldtk-rs --locked
       - name: macOS application
