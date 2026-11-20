@@ -1774,6 +1774,7 @@ mod tests {
             p.update_field_definition(uid, &json!({"canBeNull":false}))
                 .unwrap();
             let ctx = egui::Context::default();
+            theme::configure(&ctx);
             focus(&ctx, &mut p, uid);
             for text in ["hello", " ", "world"] {
                 assert!(!frame(&ctx, &mut p, uid, vec![egui::Event::Text(text.into())]).1);
@@ -1878,6 +1879,7 @@ mod tests {
         p.update_field_definition(uid, &json!({"canBeNull":false}))
             .unwrap();
         let ctx = egui::Context::default();
+        theme::configure(&ctx);
         focus(&ctx, &mut p, uid);
         frame(&ctx, &mut p, uid, vec![egui::Event::Text("hello".into())]);
         assert!(!frame(&ctx, &mut p, uid, vec![key(Key::Enter)]).1);

@@ -344,6 +344,59 @@ pub(super) fn pivot_grid_sized(ui: &mut egui::Ui, pivot: [f64; 2], cell: f32) ->
     selected
 }
 
+pub(in crate::app) const HELP_GREEN: Color32 = Color32::from_rgb(121, 221, 138);
+
+pub(in crate::app) fn help_paragraph(ui: &mut egui::Ui, message: &str) {
+    ui.add(
+        egui::Label::new(
+            RichText::new(locale::tr(ui, message))
+                .font(FontId::new(16., egui::FontFamily::Name("panel-title".into())))
+                .color(HELP_GREEN),
+        )
+        .wrap(),
+    );
+}
+
+pub(in crate::app) fn help_card(
+    ui: &mut egui::Ui,
+    width: f32,
+    height: f32,
+    content: impl FnOnce(&mut egui::Ui),
+) -> Rect {
+    let rect = egui::Frame::new()
+        .inner_margin(egui::Margin {
+            left: 61,
+            right: 11,
+            top: 11,
+            bottom: 11,
+        })
+        .show(ui, |ui| {
+            ui.set_width(width - 72.);
+            ui.set_min_height((height - 22.).max(0.));
+            content(ui);
+        })
+        .response
+        .rect;
+    let points = [
+        rect.left_top(),
+        rect.right_top(),
+        rect.right_bottom(),
+        rect.left_bottom(),
+        rect.left_top(),
+    ];
+    ui.painter().extend(egui::Shape::dashed_line(
+        &points,
+        Stroke::new(1., HELP_GREEN),
+        2.,
+        2.,
+    ));
+    egui::Image::new(egui::include_image!("../../assets/icons/helpBg.svg")).paint_at(
+        ui,
+        Rect::from_min_size(rect.left_top() + Vec2::splat(6.), Vec2::splat(48.)),
+    );
+    rect
+}
+
 /// Uppercase source form title and its divider.
 pub(in crate::app) fn form_heading(ui: &mut egui::Ui, name: &str) {
     ui.add_space(16.);

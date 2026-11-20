@@ -253,6 +253,7 @@ pub struct EditorApp {
     details: bool,
     single_layer: bool,
     zen: bool,
+    zen_sidebar: chrome::ZenSidebar,
     int_value: i32,
     tile_id: i32,
     entity_uid: Option<i64>,
@@ -465,6 +466,7 @@ impl EditorApp {
             details: true,
             single_layer: false,
             zen: false,
+            zen_sidebar: chrome::ZenSidebar::default(),
             int_value: 1,
             tile_id: 0,
             entity_uid: None,
@@ -593,6 +595,7 @@ impl EditorApp {
     }
 
     fn set_project(&mut self, project: Project) {
+        self.zen_sidebar = chrome::ZenSidebar::default();
         self.command_palette = false;
         self.search_focus = false;
         self.search_entries = None;
@@ -1104,6 +1107,9 @@ impl EditorApp {
         let Some(panel) = self.panel else {
             return;
         };
+        if panel == Panel::World && self.zen && !self.zen_sidebar.revealed {
+            return;
+        }
         if panel == Panel::Entity {
             self.show_entity_inspector(ctx);
             return;
@@ -1218,7 +1224,19 @@ impl EditorApp {
             .join("crash-recovery")
     }
     fn uncovered_canvas_rect(&self, mut rect: Rect) -> Rect {
-        if let Some(panel @ (Panel::World | Panel::Rules)) = self.panel {
+        if self.zen {
+            let inset = if self.zen_sidebar.revealed && !self.world {
+                chrome::SIDEBAR_WIDTH
+            } else if !self.zen_sidebar.revealed {
+                chrome::ZEN_EDGE_WIDTH
+            } else {
+                0.
+            };
+            rect.min.x = (rect.left() + inset).min(rect.right());
+        }
+        if let Some(panel @ (Panel::World | Panel::Rules)) = self.panel
+            && (panel != Panel::World || !self.zen || self.zen_sidebar.revealed)
+        {
             rect.min.x = rect
                 .left()
                 .max(panels::source_panel_width(panel).min(rect.right()));
@@ -2064,10 +2082,11 @@ mod tests {
             .unwrap();
         app.project.as_mut().unwrap().update_layer_properties(uid,&serde_json::json!({"intGridValues":[{"value":1,"identifier":"A","color":"#FFFFFF","groupUid":0},{"value":2,"identifier":"B","color":"#FFFFFF","groupUid":0}]})).unwrap();
         let before = app.viewport.center;
-        app.navigate_palette(0, 1);
+        let ctx = egui::Context::default();
+        app.navigate_palette(&ctx, 0, 1);
         assert_eq!(app.int_value, 2);
         assert_eq!(app.viewport.center, before);
-        app.navigate_palette(-1, 0);
+        app.navigate_palette(&ctx, -1, 0);
         assert_eq!(app.int_value, 1);
     }
 

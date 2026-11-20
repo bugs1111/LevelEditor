@@ -2510,6 +2510,9 @@ impl EditorApp {
         if changed(&patch) {
             self.apply_tileset_form_patch(ui.ctx(), &def, patch, options);
         }
+        if in_definition_panel {
+            return;
+        }
         collapsing(ui, "Saved tile selections", |ui| {
             let mut selections = def["savedSelections"]
                 .as_array()
@@ -2594,31 +2597,15 @@ impl EditorApp {
                 "Tile #{id}",
                 &[("id", &self.tile_id.to_string())],
             ));
-            let existing = def["customData"]
-                .as_array()
-                .and_then(|a| a.iter().find(|v| v["tileId"] == self.tile_id));
-            let mut data = existing
-                .and_then(|v| v["data"].as_str())
-                .unwrap_or("")
-                .to_owned();
             if let Some(next) = text_editor::value_editor(
                 ui,
                 ("tileset-custom-data", uid, self.tile_id),
-                &data,
+                library::tile_custom_data(&def, self.tile_id).unwrap_or_default(),
                 "Tile custom data",
                 "LangJson",
                 false,
             ) {
-                data = next;
-                let tile = self.tile_id;
-                let mut entries = def["customData"].as_array().cloned().unwrap_or_default();
-                entries.retain(|v| v["tileId"] != tile);
-                if !data.is_empty() {
-                    entries.push(json!({"tileId":tile,"data":data}));
-                }
-                self.edit("Tile data changed", |p| {
-                    p.update_tileset_definition(uid, &json!({"customData":entries}))
-                });
+                self.set_tileset_custom_data(uid, self.tile_id, &next);
             }
             let enum_uid = def["tagsSourceEnumUid"].as_i64();
             if let Some(enum_def) = enum_uid
@@ -3425,7 +3412,7 @@ mod tests {
     }
 
     #[test]
-    fn tileset_enum_marking_paints_and_erases_rectangles_through_the_atlas() {
+    fn tileset_metadata_is_edited_through_the_atlas() {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("Marks.png");
         image::RgbaImage::from_pixel(96, 64, image::Rgba([255, 255, 255, 255]))
@@ -3509,6 +3496,44 @@ mod tests {
         assert_eq!(marked(&app), json!([0,6]));
         assert!(app.history.undo(app.project.as_mut().unwrap()));
         assert_eq!(marked(&app), json!([0,1,6,7]));
+
+        app.project.as_mut().unwrap().update_tileset_definition(
+            uid, &json!({"tagsSourceEnumUid":null,"enumTags":[]}),
+        ).unwrap();
+        draw(&mut app, vec![]);
+        stroke(&mut app, &mut draw, cell(2., 0.), cell(2., 0.), egui::PointerButton::Primary);
+        assert!(text_editor::is_open(&ctx), "clicking an atlas tile opens its data editor without an enum");
+        let dialog = draw(&mut app, vec![]);
+        assert!(dialog.shapes.iter().any(|s| text_position(&s.shape, "TILE 2 CUSTOM DATA").is_some()));
+        draw(&mut app, vec![egui::Event::Paste("  {\"cost\":2} \n".into())]);
+        text_editor::request_validate(&ctx);
+        draw(&mut app, vec![]);
+        let data = |app: &EditorApp| {
+            app.project.as_ref().unwrap().tileset(uid).unwrap()["customData"].clone()
+        };
+        let saved = json!([{"tileId":2,"data":"{\"cost\":2}"}]);
+        assert_eq!(data(&app), saved);
+
+        stroke(&mut app, &mut draw, cell(2., 0.), cell(2., 0.), egui::PointerButton::Secondary);
+        let dialog = draw(&mut app, vec![]);
+        assert!(dialog.shapes.iter().any(|s| text_position(&s.shape, "Clear custom data for tile 2?").is_some()));
+        assert_eq!(data(&app), saved);
+        let key = |key| egui::Event::Key {
+            key,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        };
+        draw(&mut app, vec![key(Key::Escape)]);
+        assert_eq!(data(&app), saved);
+        draw(&mut app, vec![]);
+        stroke(&mut app, &mut draw, cell(2., 0.), cell(2., 0.), egui::PointerButton::Secondary);
+        draw(&mut app, vec![]);
+        draw(&mut app, vec![key(Key::Enter)]);
+        assert_eq!(data(&app), json!([]));
+        assert!(app.history.undo(app.project.as_mut().unwrap()));
+        assert_eq!(data(&app), saved);
     }
 
     #[test]
@@ -3571,6 +3596,9 @@ mod tests {
             };
             assert!(position("Source image") < position("Identifier"));
             assert!(position("Identifier") < position("Tiles layout"));
+            for name in ["Saved tile selections", "Selected tile data", "Delete tileset"] {
+                assert!(!out.shapes.iter().any(|shape| label(&shape.shape, name).is_some()));
+            }
             let layout_top = position("Tiles layout");
             let tags_top = position("Tags");
             assert!(layout_top < tags_top);

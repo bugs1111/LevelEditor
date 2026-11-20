@@ -977,11 +977,11 @@ impl Project {
                 }
                 *custom = out;
             }
-            // Enum marking edits metadata without changing atlas geometry or generated tiles.
+            // Editing per-tile metadata leaves atlas geometry and generated tiles intact.
             if mode == TilesetRemap::AtlasCoordinates
                 && !allow_loss
                 && fields.len() == 1
-                && fields.contains_key("enumTags")
+                && (fields.contains_key("enumTags") || fields.contains_key("customData"))
             {
                 return Ok(removed);
             }

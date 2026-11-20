@@ -1,6 +1,7 @@
 use super::*;
+use source_controls::{help_card as card, help_paragraph as paragraph};
 
-pub(super) const GREEN: Color32 = Color32::from_rgb(121, 221, 138);
+pub(super) use source_controls::HELP_GREEN as GREEN;
 pub(super) const GREEN_DARK: Color32 = Color32::from_rgb(60, 97, 72);
 pub(super) const MUTED: Color32 = Color32::from_rgb(115, 127, 157);
 pub(super) const EDITOR_WIDTH: f32 = 662.;
@@ -118,10 +119,6 @@ pub(super) fn show(ui: &mut egui::Ui, editor: impl FnOnce(&mut egui::Ui) -> Guid
     )
 }
 
-fn paragraph(ui: &mut egui::Ui, message: &str) {
-    ui.add(egui::Label::new(guide_text(locale::tr(ui, message), 16.)).wrap());
-}
-
 fn guide_text(message: &str, size: f32) -> RichText {
     RichText::new(message)
         .font(FontId::new(
@@ -129,41 +126,6 @@ fn guide_text(message: &str, size: f32) -> RichText {
             egui::FontFamily::Name("panel-title".into()),
         ))
         .color(GREEN)
-}
-
-fn card(ui: &mut egui::Ui, width: f32, height: f32, content: impl FnOnce(&mut egui::Ui)) -> Rect {
-    let rect = egui::Frame::new()
-        .inner_margin(egui::Margin {
-            left: 61,
-            right: 11,
-            top: 11,
-            bottom: 11,
-        })
-        .show(ui, |ui| {
-            ui.set_width(width - 72.);
-            ui.set_min_height((height - 22.).max(0.));
-            content(ui);
-        })
-        .response
-        .rect;
-    let points = [
-        rect.left_top(),
-        rect.right_top(),
-        rect.right_bottom(),
-        rect.left_bottom(),
-        rect.left_top(),
-    ];
-    ui.painter().extend(egui::Shape::dashed_line(
-        &points,
-        Stroke::new(1., GREEN),
-        2.,
-        2.,
-    ));
-    egui::Image::new(egui::include_image!("../../assets/icons/helpBg.svg")).paint_at(
-        ui,
-        Rect::from_min_size(rect.left_top() + Vec2::splat(6.), Vec2::splat(48.)),
-    );
-    rect
 }
 
 fn output_help(ui: &mut egui::Ui, width: f32, height: f32) {

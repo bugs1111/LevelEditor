@@ -1,6 +1,38 @@
 use super::*;
 
-const SIDEBAR_WIDTH: f32 = 300.;
+pub(super) const SIDEBAR_WIDTH: f32 = 300.;
+pub(super) const ZEN_EDGE_WIDTH: f32 = 17.;
+
+#[derive(Default)]
+pub(super) struct ZenSidebar {
+    pub revealed: bool,
+    hide_after: Option<f64>,
+}
+
+fn show_sidebar(ctx: &egui::Context, overlay: bool, contents: impl FnOnce(&mut egui::Ui)) {
+    let panel = egui::SidePanel::left("main-panel")
+        .exact_width(SIDEBAR_WIDTH)
+        .resizable(false)
+        .frame(egui::Frame::new().fill(theme::DARK));
+    if overlay {
+        let screen = ctx.content_rect();
+        let size = egui::vec2(SIDEBAR_WIDTH.min(screen.width()), screen.height());
+        egui::Area::new(egui::Id::new("zen-sidebar"))
+            .order(egui::Order::Middle)
+            .fixed_pos(screen.min)
+            .default_size(size)
+            .constrain(false)
+            .fade_in(false)
+            .show(ctx, |ui| {
+                ui.set_min_size(size);
+                ui.set_max_size(size);
+                ui.set_clip_rect(Rect::from_min_size(screen.min, size));
+                panel.show_inside(ui, contents);
+            });
+    } else {
+        panel.show(ctx, contents);
+    }
+}
 
 fn short_world_name(name: &str) -> String {
     const MAX_LEN: usize = 6;
@@ -280,15 +312,84 @@ impl EditorApp {
             .collect()
     }
 
-    pub(super) fn sidebar(&mut self, ctx: &egui::Context) {
-        if self.zen || self.project.is_none() {
+    fn update_zen_sidebar(&mut self, ctx: &egui::Context) {
+        if !self.zen || self.project.is_none() {
+            self.zen_sidebar = ZenSidebar::default();
             return;
         }
-        egui::SidePanel::left("main-panel")
-            .exact_width(SIDEBAR_WIDTH)
-            .resizable(false)
-            .frame(egui::Frame::new().fill(theme::DARK))
-            .show(ctx, |ui| {
+        let screen = ctx.content_rect();
+        let edge = Rect::from_min_size(screen.min, egui::vec2(ZEN_EDGE_WIDTH, screen.height()));
+        let edge_id = egui::Id::new("zen-sidebar-edge");
+        let (pointer, moved, now) = ctx.input(|input| {
+            (input.pointer.hover_pos(), input.pointer.delta() != Vec2::ZERO, input.time)
+        });
+        let layer = pointer.and_then(|pointer| ctx.layer_id_at(pointer));
+        let canvas_at_pointer = layer.is_none_or(|layer| layer.order == egui::Order::Background);
+        if self.zen_sidebar.revealed {
+            let canvas_pointer = pointer.filter(|pointer| {
+                canvas_at_pointer && (self.world || pointer.x >= screen.left() + SIDEBAR_WIDTH)
+            });
+            if let Some(pointer) = canvas_pointer {
+                let hide_after = self.zen_sidebar.hide_after.get_or_insert(now + 1.);
+                if moved && pointer.x > screen.left() + SIDEBAR_WIDTH + 200. {
+                    *hide_after = hide_after.min(now + 0.2);
+                }
+                if now >= *hide_after {
+                    self.zen_sidebar = ZenSidebar::default();
+                } else {
+                    ctx.request_repaint_after(std::time::Duration::from_secs_f64(*hide_after - now));
+                }
+            } else {
+                self.zen_sidebar.hide_after = None;
+            }
+        } else if pointer.is_some_and(|pointer| edge.contains(pointer))
+            && (canvas_at_pointer || layer.is_some_and(|layer| layer.id == edge_id))
+        {
+            self.zen_sidebar.revealed = true;
+        }
+
+        if !self.zen_sidebar.revealed {
+            egui::Area::new(edge_id)
+                .order(egui::Order::Middle)
+                .fixed_pos(edge.min)
+                .constrain(false)
+                .fade_in(false)
+                .show(ctx, |ui| {
+                    let (rect, response) = ui.allocate_exact_size(edge.size(), Sense::hover());
+                    response.on_hover_cursor(egui::CursorIcon::ResizeHorizontal);
+                    ui.painter().rect_filled(rect, 0., Color32::from_white_alpha(26));
+                    egui::Image::new(egui::include_image!("../../assets/img/stripes.png"))
+                        .texture_options(egui::TextureOptions::NEAREST_REPEAT)
+                        .uv(Rect::from_min_size(egui::Pos2::ZERO, rect.size() / 8.))
+                        .paint_at(ui, rect);
+                    ui.painter().vline(
+                        rect.right() - 0.5,
+                        rect.y_range(),
+                        Stroke::new(1., Color32::WHITE),
+                    );
+                });
+        }
+    }
+
+    pub(super) fn toggle_zen_mode(&mut self, ctx: &egui::Context) {
+        self.zen = !self.zen;
+        self.zen_sidebar = ZenSidebar::default();
+        self.settings.value["zenMode"] = self.zen.into();
+        if let Err(error) = self.settings.save() {
+            self.status = error.to_string();
+            self.status_error = true;
+        }
+        let label = if self.zen { "Zen mode: ON" } else { "Zen mode: off" };
+        self.quick_notification = Some((locale::tr_ctx(ctx, label).into(), None, Instant::now()));
+    }
+
+    pub(super) fn sidebar(&mut self, ctx: &egui::Context) {
+        self.update_zen_sidebar(ctx);
+        if self.project.is_none() || self.zen && (!self.zen_sidebar.revealed || self.world) {
+            return;
+        }
+        show_sidebar(ctx, self.zen,
+            |ui| {
                 if self.is_busy() || self.pending.is_some() {
                     ui.disable();
                 }
@@ -856,7 +957,7 @@ impl EditorApp {
     }
 
     pub(super) fn canvas_toolbar(&mut self, ctx: &egui::Context, rect: Rect) {
-        if self.project.is_none() {
+        if self.project.is_none() || self.zen && (!self.zen_sidebar.revealed || self.world) {
             return;
         }
         egui::Area::new(egui::Id::new("editing-options"))
@@ -951,7 +1052,7 @@ impl EditorApp {
                     .clicked()
                     {
                         match action {
-                            0 => self.zen = !self.zen,
+                            0 => self.toggle_zen_mode(ctx),
                             1 => self.grid = !self.grid,
                             2 => self.set_details(!self.details),
                             3 => self.set_single_layer_mode(!self.single_layer),
@@ -1167,6 +1268,76 @@ fn paint_world_depth_row(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn zen_mode_reveals_the_sidebar_over_the_canvas_and_hides_it_on_return() {
+        let ctx = egui::Context::default();
+        theme::configure(&ctx);
+        let mut project = Project::new();
+        project.add_layer("Zen_probe", "IntGrid", 16).unwrap();
+        let mut app = EditorApp::empty();
+        app.set_project(project);
+        app.zen = true;
+        let screen = Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1440., 900.));
+        let frame = |app: &mut EditorApp, time, pointer: Option<egui::Pos2>| {
+            ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(screen),
+                    time: Some(time),
+                    events: pointer.into_iter().map(egui::Event::PointerMoved).collect(),
+                    ..Default::default()
+                },
+                |ctx| eframe::App::update(app, ctx, &mut eframe::Frame::_new_kittest()),
+            )
+        };
+        let visible = |output: &egui::FullOutput| {
+            output.shapes.iter().any(|shape| {
+                matches!(&shape.shape, egui::Shape::Text(text) if text.galley.text() == "Zen_probe")
+            })
+        };
+        assert!(!visible(&frame(&mut app, 0., Some(egui::pos2(730., 400.)))));
+        let before = app.viewport.clone();
+        frame(&mut app, 0.05, Some(egui::pos2(8., 20.)));
+        let shown = frame(&mut app, 0.08, None);
+        assert!(visible(&shown), "hovering the left edge reveals the existing sidebar");
+        let canvas = ctx.data(|data| {
+            data.get_temp::<Rect>(egui::Id::new("entity-instance-inspector").with("canvas"))
+        });
+        assert_eq!(canvas, Some(screen));
+        assert_eq!(app.viewport.center, before.center);
+        assert_eq!(app.viewport.zoom, before.zoom);
+
+        frame(&mut app, 0.2, Some(egui::pos2(390., 400.)));
+        assert!(visible(&frame(&mut app, 0.7, None)));
+        assert!(!visible(&frame(&mut app, 1.25, None)));
+        frame(&mut app, 1.3, Some(egui::pos2(8., 20.)));
+        assert!(visible(&frame(&mut app, 1.33, None)));
+        frame(&mut app, 1.4, Some(egui::pos2(730., 400.)));
+        assert!(!visible(&frame(&mut app, 1.7, None)));
+    }
+
+    #[test]
+    fn exiting_zen_mode_with_tab_keeps_editor_shortcuts_available() {
+        let ctx = egui::Context::default();
+        theme::configure(&ctx);
+        let mut project = Project::new();
+        project.add_layer("Ground", "IntGrid", 16).unwrap();
+        let mut app = EditorApp::empty();
+        app.set_project(project);
+        app.zen = true;
+        app_frame(&mut app, &ctx, vec![egui::Event::PointerMoved(egui::pos2(730., 400.))]);
+        let key = |key, pressed| egui::Event::Key {
+            key, physical_key: Some(key), pressed, repeat: false, modifiers: egui::Modifiers::NONE,
+        };
+        app_frame(&mut app, &ctx, vec![key(Key::Tab, true)]);
+        assert!(!app.zen);
+        app_frame(&mut app, &ctx, vec![key(Key::Tab, false)]);
+        app_frame(&mut app, &ctx, vec![key(Key::Backtick, true)]);
+        assert!(app.world, "Tab must not focus a sidebar widget when it toggles Zen mode");
+        app_frame(&mut app, &ctx, vec![key(Key::Tab, true)]);
+        assert!(app.zen);
+        assert_eq!(app.panel, Some(Panel::World));
+    }
 
     fn app_frame(
         app: &mut EditorApp,
@@ -2129,13 +2300,13 @@ mod tests {
         let mut app = EditorApp::empty();
         app.set_project(project);
         assert!(app.set_atlas_selection(atlas, vec![0]));
-        app.navigate_palette(1, 0);
+        let ctx = egui::Context::default();
+        app.navigate_palette(&ctx, 1, 0);
         assert_eq!(app.selected_tile_ids_for(atlas), [0]);
-        app.tile_selection_memory(false);
+        app.tile_selection_memory(&ctx, false);
         assert_eq!(app.project.as_ref().unwrap().json, original);
         assert!(!app.dirty);
 
-        let ctx = egui::Context::default();
         theme::configure(&ctx);
         for key in [Key::R, Key::X, Key::Y] {
             app_frame(

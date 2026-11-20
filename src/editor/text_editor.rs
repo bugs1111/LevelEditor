@@ -1,7 +1,10 @@
 //! Native counterpart of the source TextEditor dialog.
 use super::*;
 use egui::text::{CCursor, CCursorRange, LayoutJob};
-use std::{path::Path, sync::OnceLock};
+use std::{
+    path::Path,
+    sync::{Once, OnceLock},
+};
 use syntect::{
     easy::HighlightLines,
     highlighting::{Color, StyleModifier, Theme, ThemeItem},
@@ -33,7 +36,7 @@ pub(super) fn request_validate(ctx: &egui::Context) {
         ctx.data_mut(|d| d.insert_temp(editor_id(), editor));
     }
 }
-fn open(
+pub(super) fn open(
     ctx: &egui::Context,
     owner: egui::Id,
     source: &str,
@@ -41,6 +44,16 @@ fn open(
     mode: &str,
     read_only: bool,
 ) {
+    if !mode.is_empty() {
+        static LOAD_SYNTAXES: Once = Once::new();
+        LOAD_SYNTAXES.call_once(|| {
+            let ctx = ctx.clone();
+            std::thread::spawn(move || {
+                syntax_set();
+                ctx.request_repaint();
+            });
+        });
+    }
     ctx.data_mut(|d| {
         d.insert_temp(
             editor_id(),
@@ -73,9 +86,10 @@ fn syntax_token(mode: &str) -> &str {
         _ => "txt",
     }
 }
+static SYNTAXES: OnceLock<SyntaxSet> = OnceLock::new();
+
 fn syntax_set() -> &'static SyntaxSet {
-    static SET: OnceLock<SyntaxSet> = OnceLock::new();
-    SET.get_or_init(|| {
+    SYNTAXES.get_or_init(|| {
         let mut builder = SyntaxSet::load_defaults_newlines().into_builder();
         for source in [
             include_str!("../../assets/syntax/Haxe.sublime-syntax"),
@@ -128,7 +142,7 @@ fn lucario() -> &'static Theme {
     })
 }
 fn highlight(source: &str, mode: &str, wrap: f32) -> LayoutJob {
-    if mode.is_empty() {
+    if mode.is_empty() || source.is_empty() {
         return LayoutJob::simple(
             source.to_owned(),
             FontId::monospace(13.),
@@ -366,6 +380,14 @@ fn insert_kinds(ctx: &egui::Context) -> std::collections::VecDeque<bool> {
     })
 }
 fn show(ui: &mut egui::Ui, owner: egui::Id) -> Option<String> {
+    show_with_header(ui, owner, |_| {})
+}
+
+pub(super) fn show_with_header(
+    ui: &mut egui::Ui,
+    owner: egui::Id,
+    header: impl FnOnce(&mut egui::Ui),
+) -> Option<String> {
     let ctx = ui.ctx().clone();
     let mut editor = ctx.data_mut(|d| d.get_temp::<Editor>(editor_id()))?;
     if editor.owner != owner {
@@ -373,82 +395,64 @@ fn show(ui: &mut egui::Ui, owner: egui::Id) -> Option<String> {
     }
     let id = owner.with("code-input");
     let mut close = editor.validate;
-    let modal = egui::Modal::new(owner.with("dialog")).show(&ctx, |ui| {
-        ui.set_width((ctx.content_rect().width() * 0.8).clamp(320., 1000.));
-        ui.heading(&editor.title);
-        ui.separator();
-        let mut layouter = |ui: &egui::Ui, buffer: &dyn egui::TextBuffer, wrap: f32| {
-            let job = cached_highlight(ui, id, buffer.as_str(), &editor.mode, wrap);
-            ui.fonts_mut(|f| f.layout_job(job))
-        };
-        let output = egui::Frame::new()
-            .fill(Color32::from_rgb(17, 32, 47))
-            .inner_margin(8.)
-            .show(ui, |ui| {
-                egui::ScrollArea::vertical()
-                    .max_height(ctx.content_rect().height() * 0.7)
-                    .show(ui, |ui| {
-                        ui.visuals_mut().selection.bg_fill = Color32::from_rgb(36, 52, 67);
-                        ui.visuals_mut().text_cursor.stroke =
-                            Stroke::new(1_f32, Color32::from_rgb(230, 200, 69));
-                        let gutter = 34.;
-                        let top = ui.cursor().min;
-                        ui.add_space(0.);
-                        ui.horizontal_top(|ui| {
-                            ui.add_space(gutter);
-                            let mut buffer = CodeBuffer {
-                                text: &mut editor.draft,
-                                xml: editor.mode == "LangXml",
-                                read_only: editor.read_only,
-                                selected: None,
-                                typed: insert_kinds(&ctx),
-                            };
-                            let out = egui::TextEdit::multiline(&mut buffer)
-                                .id(id)
-                                .font(FontId::monospace(13.))
-                                .desired_width(ui.available_width())
-                                .desired_rows(15)
-                                .frame(false)
-                                .lock_focus(true)
-                                .layouter(&mut layouter)
-                                .show(ui);
-                            // Number logical lines, including wrapped rows at their actual galley y.
-                            let mut number = 1;
-                            for (index, row) in out.galley.rows.iter().enumerate() {
-                                if index == 0 || out.galley.rows[index - 1].ends_with_newline {
-                                    ui.painter().text(
-                                        egui::pos2(
-                                            top.x + gutter - 8.,
-                                            out.galley_pos.y + row.pos.y,
-                                        ),
-                                        Align2::RIGHT_TOP,
-                                        number.to_string(),
-                                        FontId::monospace(13.),
-                                        Color32::from_rgb(95, 131, 153),
-                                    );
-                                    number += 1;
-                                }
+    let screen = ctx.content_rect();
+    let width = (screen.width() * 0.8).min(screen.width() - 48.).max(80.);
+    let modal = egui::Modal::new(owner.with("dialog"))
+        .frame(project_dialogs::dialog_frame(0))
+        .backdrop_color(Color32::from_black_alpha(140))
+        .show(&ctx, |ui| {
+            ui.spacing_mut().item_spacing.y = 0.;
+            project_dialogs::dialog_title(
+                ui,
+                &editor.title.to_uppercase(),
+                width + 40.,
+                theme::LIGHT,
+            );
+            egui::Frame::new()
+                .inner_margin(egui::Margin {
+                    left: 20,
+                    right: 20,
+                    top: 16,
+                    bottom: 22,
+                })
+                .show(ui, |ui| {
+                    ui.set_width(width);
+                    let header_top = ui.cursor().min.y;
+                    header(ui);
+                    let editor_height =
+                        (screen.height() * 0.7 - (ui.cursor().min.y - header_top) - 32.).max(48.);
+                    code_input(ui, &ctx, &mut editor, id, editor_height);
+                    ui.add_space(17.);
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 1.;
+                        let close_width = if editor.read_only { width } else { width - 45. };
+                        close |= project_dialogs::button(
+                            ui,
+                            "CLOSE",
+                            egui::vec2(close_width, 42.),
+                            false,
+                            13.333,
+                        )
+                        .clicked();
+                        if !editor.read_only {
+                            let icon = egui::Image::new(egui::include_image!(
+                                "../../assets/icons/delete.svg"
+                            ))
+                            .fit_to_exact_size(Vec2::splat(17.));
+                            let clear = panels::source_controls::add_sized_button(
+                                ui,
+                                egui::vec2(44., 42.),
+                                egui::Button::image(icon).fill(Color32::from_rgb(121, 17, 5)),
+                            )
+                            .on_hover_text(locale::tr(ui, "Clear"));
+                            if clear.clicked() {
+                                editor.draft.clear();
+                                close = true;
                             }
-                            out
-                        })
-                        .inner
-                    })
-                    .inner
-            })
-            .inner;
-        if editor.focus > 0 {
-            output.response.request_focus();
-            editor.focus -= 1;
-            ctx.request_repaint();
-        }
-        ui.horizontal(|ui| {
-            close |= panels::source_controls::button(ui, "Close").clicked();
-            if !editor.read_only && panels::source_controls::small_button(ui, "Clear").clicked() {
-                editor.draft.clear();
-                close = true;
-            }
+                        }
+                    });
+                });
         });
-    });
     close |= modal.backdrop_response.is_pointer_button_down_on();
     close |= ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::Escape));
     if close {
@@ -458,6 +462,82 @@ fn show(ui: &mut egui::Ui, owner: egui::Id) -> Option<String> {
     } else {
         ctx.data_mut(|d| d.insert_temp(editor_id(), editor));
         None
+    }
+}
+
+fn code_input(
+    ui: &mut egui::Ui,
+    ctx: &egui::Context,
+    editor: &mut Editor,
+    id: egui::Id,
+    height: f32,
+) {
+    let mode = if SYNTAXES.get().is_some() {
+        &editor.mode
+    } else {
+        ""
+    };
+    let mut layouter = |ui: &egui::Ui, buffer: &dyn egui::TextBuffer, wrap: f32| {
+        let job = cached_highlight(ui, id, buffer.as_str(), mode, wrap);
+        ui.fonts_mut(|f| f.layout_job(job))
+    };
+    let output = egui::Frame::new()
+        .fill(Color32::from_rgb(17, 32, 47))
+        .inner_margin(egui::Margin::symmetric(0, 4))
+        .show(ui, |ui| {
+            egui::ScrollArea::vertical()
+                .max_height(height - 8.)
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    ui.visuals_mut().selection.bg_fill = Color32::from_rgb(36, 52, 67);
+                    ui.visuals_mut().text_cursor.stroke =
+                        Stroke::new(1_f32, Color32::from_rgb(230, 200, 69));
+                    let gutter = 33.;
+                    let top = ui.cursor().min;
+                    ui.horizontal_top(|ui| {
+                        ui.spacing_mut().item_spacing.x = 0.;
+                        ui.add_space(gutter);
+                        let mut buffer = CodeBuffer {
+                            text: &mut editor.draft,
+                            xml: editor.mode == "LangXml",
+                            read_only: editor.read_only,
+                            selected: None,
+                            typed: insert_kinds(ctx),
+                        };
+                        let out = egui::TextEdit::multiline(&mut buffer)
+                            .id(id)
+                            .font(FontId::monospace(13.))
+                            .desired_width(ui.available_width())
+                            .min_size(egui::vec2(0., height - 8.))
+                            .frame(false)
+                            .lock_focus(true)
+                            .layouter(&mut layouter)
+                            .show(ui);
+                        // Number logical lines, including wrapped rows at their actual galley y.
+                        let mut number = 1;
+                        for (index, row) in out.galley.rows.iter().enumerate() {
+                            if index == 0 || out.galley.rows[index - 1].ends_with_newline {
+                                ui.painter().text(
+                                    egui::pos2(top.x + gutter - 8., out.galley_pos.y + row.pos.y),
+                                    Align2::RIGHT_TOP,
+                                    number.to_string(),
+                                    FontId::monospace(13.),
+                                    Color32::from_rgb(95, 131, 153),
+                                );
+                                number += 1;
+                            }
+                        }
+                        out
+                    })
+                    .inner
+                })
+                .inner
+        })
+        .inner;
+    if editor.focus > 0 {
+        output.response.request_focus();
+        editor.focus -= 1;
+        ctx.request_repaint();
     }
 }
 pub(super) fn value_editor(

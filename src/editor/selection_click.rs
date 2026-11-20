@@ -312,39 +312,26 @@ impl EditorApp {
                     let uid = layer["__tilesetDefUid"].as_i64().unwrap_or(-1);
                     let id = tile["t"].as_i64().unwrap_or(0) as i32;
                     let flips = tile["f"].as_i64().unwrap_or(0) as i32;
-                    let current = self.selected_tile_ids_for(uid);
-                    let saved = project
-                        .tileset(uid)
-                        .and_then(|d| d["savedSelections"].as_array())
-                        .and_then(|ss| {
-                            ss.iter().find(|s| {
-                                s["ids"]
-                                    .as_array()
-                                    .is_some_and(|ids| ids.contains(&json!(id)))
-                            })
-                        });
-                    let saved =
-                        saved.filter(|s| {
-                            !s["ids"].as_array().unwrap().iter().any(|id| {
-                                id.as_i64().is_some_and(|id| current.contains(&(id as i32)))
-                            })
-                        });
-                    let ids = saved
-                        .map(|s| {
-                            s["ids"]
-                                .as_array()
-                                .unwrap()
-                                .iter()
-                                .filter_map(Value::as_i64)
-                                .map(|id| id as i32)
-                                .collect()
-                        })
-                        .unwrap_or_else(|| vec![id]);
-                    if let Some(saved) = saved {
-                        self.random_tiles = saved["mode"] == "Random";
+                    let ctx = self.repaint.clone();
+                    if let Some(ctx) = &ctx {
+                        self.restore_canvas_atlas_memory(ctx, uid);
                     }
-                    self.set_atlas_selection(uid, ids);
-                    self.flips = flips;
+                    let current = self.selected_tile_ids_for(uid);
+                    let saved = self.project.as_ref().and_then(|project| {
+                        let saved = library::saved_selection_for(project.tileset(uid)?, id)?;
+                        let ids = library::saved_selection_ids(saved);
+                        (!ids.iter().any(|id| current.contains(id)))
+                            .then_some((ids, saved["mode"] == "Random"))
+                    });
+                    let (ids, random) = saved.unwrap_or_else(|| (vec![id], self.random_tiles));
+                    if self.set_atlas_selection(uid, ids) {
+                        self.random_tiles = random;
+                        self.flips = flips;
+                        if let Some(ctx) = &ctx {
+                            self.remember_canvas_atlas_memory(ctx, uid);
+                            palette_popout::request_focus(ctx, uid, false);
+                        }
+                    }
                 }
                 if self.panel == Some(Panel::Entity) {
                     self.panel = None;
@@ -503,6 +490,59 @@ mod tests {
         assert_eq!(entities.as_array().unwrap().len(), 2);
         assert!(entities[1]["fieldInstances"][0]["__value"].is_null());
     }
+    #[test]
+    fn picking_from_another_atlas_preserves_the_sample_when_its_palette_opens() {
+        let mut project = Project::new();
+        let art = project.add_layer("Art", "Tiles", 16).unwrap();
+        let other = project.add_layer("Other", "Tiles", 16).unwrap();
+        let atlas = project
+            .add_tileset(std::path::Path::new("art.png"), 16, 64, 32)
+            .unwrap();
+        let other_atlas = project
+            .add_tileset(std::path::Path::new("other.png"), 16, 64, 32)
+            .unwrap();
+        project.assign_tileset(art, atlas).unwrap();
+        project.assign_tileset(other, other_atlas).unwrap();
+        project
+            .update_tileset_definition(
+                atlas,
+                &json!({"savedSelections":[{"ids":[1,2],"mode":"Random"}]}),
+            )
+            .unwrap();
+        let layers = project.level(K).unwrap()["layerInstances"]
+            .as_array()
+            .unwrap();
+        let art_index = layers
+            .iter()
+            .position(|layer| layer["layerDefUid"] == art)
+            .unwrap();
+        let other_index = layers
+            .iter()
+            .position(|layer| layer["layerDefUid"] == other)
+            .unwrap();
+        project
+            .paint_tile(K, art_index, 0, 0, 1, [16, 0], 3, false)
+            .unwrap();
+        let mut app = app(project);
+        let ctx = egui::Context::default();
+        app.repaint = Some(ctx.clone());
+        app.layer = other_index;
+        app.restore_canvas_atlas_memory(&ctx, other_atlas);
+        assert!(app.set_atlas_selection(other_atlas, vec![1]));
+        app.remember_canvas_atlas_memory(&ctx, other_atlas);
+        assert!(app.select_element_at([4., 4.], false, false));
+        assert_eq!(app.layer, art_index);
+        app.restore_canvas_atlas_memory(&ctx, atlas);
+        assert_eq!(app.selected_tile_ids_for(atlas), [1, 2]);
+        assert!(app.random_tiles);
+        assert_eq!(app.flips, 3);
+        assert_eq!(palette_popout::take_focus(&ctx, atlas), Some(false));
+        app.restore_canvas_atlas_memory(&ctx, other_atlas);
+        assert_eq!(app.selected_tile_ids_for(other_atlas), [1]);
+        app.restore_canvas_atlas_memory(&ctx, atlas);
+        assert_eq!(app.selected_tile_ids_for(atlas), [1, 2]);
+    }
+
     #[test]
     fn tile_pick_restores_saved_brush_mode_flips_and_selects_one_stacked_cell() {
         let mut p = Project::new();

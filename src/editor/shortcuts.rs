@@ -100,7 +100,7 @@ impl EditorApp {
         true
     }
 
-    pub(super) fn navigate_palette(&mut self, dx: i32, dy: i32) {
+    pub(super) fn navigate_palette(&mut self, ctx: &egui::Context, dx: i32, dy: i32) {
         let Some(project) = &self.project else {
             return;
         };
@@ -164,7 +164,9 @@ impl EditorApp {
                     .map(|id| id as i32)
                     .collect();
                 self.random_tiles = saved["mode"] == "Random";
-                self.set_atlas_selection(uid, ids);
+                if self.set_atlas_selection(uid, ids) {
+                    palette_popout::request_focus(ctx, uid, false);
+                }
                 return;
             }
             if saved_for(min).is_some() {
@@ -176,7 +178,8 @@ impl EditorApp {
                     min
                 }];
             }
-            let (mut dx, mut dy) = (dx, dy);
+            let direction = (dx, dy);
+            let (mut dx, mut dy) = direction;
             for id in &ids {
                 let (x, y) = (id % columns, id / columns);
                 if dx != 0 {
@@ -200,10 +203,12 @@ impl EditorApp {
                     }
                 }
             }
-            self.set_atlas_selection(
+            if self.set_atlas_selection(
                 uid,
                 ids.into_iter().map(|id| id + dx + dy * columns).collect(),
-            );
+            ) {
+                palette_popout::request_focus(ctx, uid, direction != (dx, dy));
+            }
             return;
         }
         let mut groups: Vec<Vec<i64>> = Vec::new();
@@ -441,7 +446,7 @@ impl EditorApp {
         }
     }
 
-    pub(super) fn tile_selection_memory(&mut self, load: bool) {
+    pub(super) fn tile_selection_memory(&mut self, ctx: &egui::Context, load: bool) {
         let Some(project) = &self.project else {
             return;
         };
@@ -478,7 +483,9 @@ impl EditorApp {
                     // Keyboard recall selects the tool value directly; unlike
                     // picker navigation, it preserves the brush transform.
                     let flips = self.flips;
-                    self.set_atlas_selection(uid, ids);
+                    if self.set_atlas_selection(uid, ids) {
+                        palette_popout::request_focus(ctx, uid, false);
+                    }
                     self.flips = flips;
                 }
             }
@@ -675,6 +682,12 @@ impl EditorApp {
         }
         if text_editor::is_open(ctx) && ctx.input(|i| i.key_pressed(Key::Escape)) {
             text_editor::request_validate(ctx);
+            return;
+        }
+        if self.panel == Some(Panel::Tilesets)
+            && !text_editor::is_open(ctx)
+            && ctx.memory(|m| m.top_modal_layer().is_some())
+        {
             return;
         }
         if palette_popout::consume_escape(ctx) {
@@ -970,6 +983,7 @@ impl EditorApp {
             };
             if !modifiers.any() && [up, down, left, right].contains(&key) {
                 self.navigate_palette(
+                    ctx,
                     i32::from(key == right) - i32::from(key == left),
                     i32::from(key == down) - i32::from(key == up),
                 );
@@ -981,7 +995,11 @@ impl EditorApp {
                 .is_some_and(|layer| layer["__type"] == "Tiles");
             match key {
                 Key::G => self.grid = !self.grid,
-                Key::Tab => self.zen = !self.zen,
+                Key::Tab if !modifiers.any() => {
+                    ctx.input_mut(|input| input.consume_key(modifiers, Key::Tab));
+                    ctx.memory_mut(|memory| memory.move_focus(egui::FocusDirection::None));
+                    self.toggle_zen_mode(ctx);
+                }
                 Key::R if modifiers.shift => self.render_auto = !self.render_auto,
                 Key::R if tile_tool => self.random_tiles = !self.random_tiles,
                 Key::T if modifiers.shift => self.tile_stacking = !self.tile_stacking,
@@ -999,9 +1017,9 @@ impl EditorApp {
                 Key::H if modifiers.shift && tile_tool => self.flips ^= 1,
                 Key::V if modifiers.shift && tile_tool => self.flips ^= 2,
                 Key::S if modifiers.shift || !save_tile_shortcut_needs_shift(navigation) => {
-                    self.tile_selection_memory(false)
+                    self.tile_selection_memory(ctx, false)
                 }
-                Key::L if modifiers.shift => self.tile_selection_memory(true),
+                Key::L if modifiers.shift => self.tile_selection_memory(ctx, true),
                 Key::PageUp => self.change_depth(1, modifiers.shift),
                 Key::PageDown => self.change_depth(-1, modifiers.shift),
                 Key::Delete | Key::Backspace => self.delete_selection(),
@@ -1324,9 +1342,10 @@ mod tests {
     #[test]
     fn saved_selection_shortcut_preserves_sparse_ids_and_existing_flips() {
         let (mut app, atlas) = atlas_app();
+        let ctx = egui::Context::default();
         app.tile_rect = [0, 0, 3, 1];
         app.atlas_selection = Some((atlas, vec![0, 2]));
-        app.tile_selection_memory(false);
+        app.tile_selection_memory(&ctx, false);
         assert_eq!(
             app.project.as_ref().unwrap().tileset(atlas).unwrap()["savedSelections"][0]["ids"],
             json!([0, 2])
@@ -1335,24 +1354,27 @@ mod tests {
         app.tile_id = 2;
         app.tile_rect = [2, 0, 1, 1];
         app.flips = 3;
-        app.tile_selection_memory(true);
+        app.tile_selection_memory(&ctx, true);
         assert_eq!(app.atlas_selection, Some((atlas, vec![0, 2])));
         assert_eq!(app.tile_rect, [0, 0, 3, 1]);
         assert_eq!(app.flips, 3);
+        assert_eq!(palette_popout::take_focus(&ctx, atlas), Some(false));
         app.random_tiles = true;
-        app.tile_selection_memory(true);
+        app.tile_selection_memory(&ctx, true);
         assert!(app.random_tiles);
+        assert_eq!(palette_popout::take_focus(&ctx, atlas), None);
     }
     #[test]
     fn atlas_navigation_preserves_sparse_mask_and_wraps_as_a_group() {
         let (mut app, atlas) = atlas_app();
+        let ctx = egui::Context::default();
         app.tile_rect = [0, 0, 3, 1];
         app.atlas_selection = Some((atlas, vec![0, 2]));
         app.flips = 1;
-        app.navigate_palette(0, 1);
+        app.navigate_palette(&ctx, 0, 1);
         assert_eq!(app.atlas_selection, Some((atlas, vec![4, 6])));
         assert_eq!(app.flips, 0);
-        app.navigate_palette(0, 1);
+        app.navigate_palette(&ctx, 0, 1);
         assert_eq!(app.atlas_selection, Some((atlas, vec![0, 2])));
         app.project
             .as_mut()
@@ -1362,7 +1384,7 @@ mod tests {
                 &json!({"savedSelections":[{"ids":[3,7],"mode":"Random"}]}),
             )
             .unwrap();
-        app.navigate_palette(1, 0);
+        app.navigate_palette(&ctx, 1, 0);
         assert_eq!(app.atlas_selection, Some((atlas, vec![3, 7])));
         assert!(app.random_tiles);
     }

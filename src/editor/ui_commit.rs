@@ -262,6 +262,7 @@ mod tests {
             p.update_field_definition(uid, &serde_json::json!({"canBeNull":false}))
                 .unwrap();
             let ctx = egui::Context::default();
+            theme::configure(&ctx);
             let mut app = EditorApp::empty();
             app.repaint = Some(ctx.clone());
             app.set_project(p);
