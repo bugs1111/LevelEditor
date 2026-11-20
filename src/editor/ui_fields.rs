@@ -465,6 +465,172 @@ pub(super) fn scalar_editor(
     scalar_editor_inner(ui, project, kind, value, definition, true, false)
 }
 
+fn file_path_editor(
+    ui: &mut egui::Ui,
+    project: &Project,
+    value: &Value,
+    definition: &Value,
+    using_default: bool,
+) -> Option<Value> {
+    let state_id = ui.make_persistent_id("instance-default-editor");
+    let choose_new = ui.data_mut(|data| {
+        data.get_temp::<DefaultEditor>(state_id)
+            .is_some_and(|mut state| {
+                let requested = std::mem::take(&mut state.focus);
+                data.insert_temp(state_id, state);
+                requested
+            })
+    });
+    let path_text = value.as_str().filter(|path| !using_default && !path.is_empty());
+    let path = path_text.and_then(|path| project.make_absolute_file_path(path).ok());
+    let missing = path.as_ref().is_some_and(|path| !path.exists());
+    let required = path_text.is_none() && definition["canBeNull"] != true;
+    let danger = Color32::from_rgb(121, 17, 5);
+    let height = 33.;
+    let mut clear = false;
+    let mut locate = false;
+    let mut edit = false;
+    let choose = ui
+        .with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.set_min_height(height);
+            ui.spacing_mut().item_spacing.x = 1.;
+            ui.spacing_mut().button_padding = egui::vec2(2., 0.);
+            ui.spacing_mut().interact_size.y = 29.;
+            let action = |ui: &mut egui::Ui, icon, fill, tooltip: &str| {
+                super::panels::source_controls::add_sized_button(
+                    ui,
+                    [23., 29.],
+                    egui::Button::new(egui::Image::new(icon).fit_to_exact_size(Vec2::splat(18.)))
+                        .fill(fill)
+                        .stroke(Stroke::NONE)
+                        .corner_radius(2.),
+                )
+                .on_hover_text(locale::tr(ui, tooltip))
+                .clicked()
+            };
+            if path_text.is_some() {
+                clear = action(
+                    ui,
+                    egui::include_image!("../../assets/icons/clear.svg"),
+                    danger,
+                    "Clear field value",
+                );
+                locate = action(
+                    ui,
+                    egui::include_image!("../../assets/icons/locate.svg"),
+                    theme::LIGHT,
+                    "Locate file",
+                );
+                edit = action(
+                    ui,
+                    egui::include_image!("../../assets/icons/edit.svg"),
+                    theme::LIGHT,
+                    "Edit file",
+                );
+            }
+            let (rect, response) = ui.allocate_exact_size(
+                egui::vec2(ui.available_width().max(20.), height),
+                Sense::click(),
+            );
+            let invalid = missing || required;
+            ui.painter().rect_filled(rect, 0., if invalid { danger } else { theme::MEDIUM });
+            if path_text.is_none() {
+                egui::Image::new(egui::include_image!("../../assets/img/stripes.png"))
+                    .texture_options(egui::TextureOptions::NEAREST_REPEAT)
+                    .uv(Rect::from_min_size(egui::Pos2::ZERO, rect.size() / 8.))
+                    .paint_at(ui, rect);
+            }
+            let highlight = invalid || response.hovered() || response.has_focus();
+            ui.painter().rect_stroke(
+                rect,
+                0.,
+                Stroke::new(1., if highlight { theme::ACCENT } else { theme::LIGHT }),
+                StrokeKind::Inside,
+            );
+            let filename = path_text
+                .and_then(|path| path.rsplit(['/', '\\']).next())
+                .unwrap_or("null");
+            let muted = Color32::from_rgb(115, 127, 157);
+            ui.painter()
+                .with_clip_rect(rect.shrink2(egui::vec2(8., 1.)))
+                .text(
+                    rect.left_center() + egui::vec2(9., 0.),
+                    Align2::LEFT_CENTER,
+                    filename,
+                    FontId::proportional(14.),
+                    if invalid { theme::ACCENT } else { muted },
+                );
+            if path_text.is_none() {
+                ui.painter().text(
+                    rect.right_center() - egui::vec2(8., 0.),
+                    Align2::RIGHT_CENTER,
+                    locale::tr(ui, if required { "Required!" } else { "Default" }),
+                    FontId::proportional(11.),
+                    if required { theme::ACCENT } else { muted },
+                );
+            }
+            response.widget_info(|| {
+                egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), filename)
+            });
+            let response = response
+                .on_hover_cursor(egui::CursorIcon::PointingHand)
+                .on_hover_text(path_text.unwrap_or_else(|| locale::tr(ui, "Choose…")));
+            if response.clicked() {
+                response.surrender_focus();
+                return true;
+            }
+            false
+        })
+        .inner;
+    if clear {
+        return Some(Value::Null);
+    }
+    if let Some(path) = &path {
+        let error_id = ui.make_persistent_id(("locate-field-file-error", path));
+        if locate {
+            let target = if missing {
+                path.parent().unwrap_or(path)
+            } else {
+                path
+            };
+            let error = if target.exists() {
+                home_files::locate(target, !missing)
+                    .err()
+                    .map(|error| error.to_string())
+            } else {
+                Some(locale::tr(ui, "File not found!").to_owned())
+            };
+            ui.data_mut(|data| {
+                if let Some(error) = error {
+                    data.insert_temp(error_id, error);
+                } else {
+                    data.remove::<String>(error_id);
+                }
+            });
+        }
+        if let Some(error) = ui.data(|data| data.get_temp::<String>(error_id)) {
+            ui.colored_label(Color32::LIGHT_RED, error);
+        }
+        text_editor::external_file_editor(ui, path, edit);
+    }
+    if choose || choose_new {
+        let extensions = definition["acceptFileTypes"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .map(|s| s.trim_start_matches('.'))
+            .collect::<Vec<_>>();
+        let id = format!(
+            "field_{}_{}",
+            text(definition, "identifier", ""),
+            definition["uid"]
+        );
+        return pick_file(ui, &id, &extensions).map(|path| json!(path.to_string_lossy()));
+    }
+    None
+}
+
 fn scalar_editor_inner(
     ui: &mut egui::Ui,
     project: &Project,
@@ -607,54 +773,7 @@ fn scalar_editor_inner(
             .changed();
             current = json!(format!("#{:02X}{:02X}{:02X}", rgb[0], rgb[1], rgb[2]));
         }
-        "FilePath" => {
-            let state_id = ui.make_persistent_id("instance-default-editor");
-            let choose_new = ui.data_mut(|data| {
-                data.get_temp::<DefaultEditor>(state_id)
-                    .is_some_and(|mut state| {
-                        let requested = std::mem::take(&mut state.focus);
-                        data.insert_temp(state_id, state);
-                        requested
-                    })
-            });
-            let mut v = current.as_str().unwrap_or("").to_owned();
-            let extensions = definition["acceptFileTypes"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .filter_map(Value::as_str)
-                .map(|s| s.trim_start_matches('.'))
-                .collect::<Vec<_>>();
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if !v.is_empty()
-                    && let Ok(path) = project.make_absolute_file_path(&v)
-                {
-                    text_editor::external_file_editor(ui, &path);
-                }
-                let choose = super::panels::source_controls::small_button(ui, "Choose…").clicked()
-                    || choose_new;
-                let size = egui::vec2(ui.available_width().max(20.), ui.spacing().interact_size.y);
-                if let Some(next) = buffered_text_sized(ui, "field-path", &v, size) {
-                    v = next;
-                    modified = true;
-                }
-                if choose
-                    && let Some(p) = pick_file(
-                        ui,
-                        &format!(
-                            "field_{}_{}",
-                            text(definition, "identifier", ""),
-                            definition["uid"]
-                        ),
-                        &extensions,
-                    )
-                {
-                    v = p.to_string_lossy().into_owned();
-                    modified = true;
-                }
-            });
-            current = if v.is_empty() { Value::Null } else { json!(v) };
-        }
+        "FilePath" => return file_path_editor(ui, project, &current, definition, using_default),
         "Point" => {
             let mut x = current["cx"].as_i64().unwrap_or(0);
             let mut y = current["cy"].as_i64().unwrap_or(0);
@@ -1045,8 +1164,10 @@ fn instance_scalar_editor(
     let mut changed = None;
     let mut next_state = None;
     ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 2.;
-        let width = (ui.available_width() - if reset { 24. } else { 0. }).max(20.);
+        let reset_gap = if definition["isArray"] == true { 10. } else { 2. };
+        ui.spacing_mut().item_spacing.x = reset_gap;
+        let reserved = if reset { 22. + reset_gap } else { 0. };
+        let width = (ui.available_width() - reserved).max(20.);
         let state = ui.data_mut(|data| data.get_temp::<DefaultEditor>(id));
         let child = ui.allocate_ui_with_layout(
             egui::vec2(width, 24.),
@@ -1101,111 +1222,88 @@ pub(super) fn field_value_editor(
         let values = value.as_array().cloned().unwrap_or_default();
         let mut edit = None;
         let len = values.len();
-        let sort_id = ui.id().with("array-sort");
         let append_focus_id = ui.id().with("appended-array-item");
         let activate = ui.data_mut(|data| data.remove_temp::<usize>(append_focus_id));
         let group = field_tools::array_field_frame(values.is_empty())
             .show(ui, |ui| {
-                ui.spacing_mut().item_spacing.y = 2.;
-                for (index, item) in values.iter().enumerate() {
-                    ui.push_id(index, |ui| {
-                        let row = ui.horizontal(|ui| {
-                            ui.spacing_mut().item_spacing.x = 2.;
-                            ui.dnd_drag_source(
-                                ui.id().with("sort-field-entry"),
-                                (sort_id, index),
-                                |ui| {
-                                    ui.add_sized(
-                                        [12., 26.],
-                                        egui::Label::new("≡").sense(Sense::drag()),
-                                    )
-                                    .on_hover_text("Drag to reorder");
-                                },
+                ui.spacing_mut().item_spacing.y = 0.;
+                let moved = field_tools::sortable_array_field_rows(ui, len, |ui, index| {
+                    let item = &values[index];
+                    if inner == "EntityRef"
+                        && let Some((_, _, entity)) = reference_target(project, item)
+                        && let Some((def, tile)) = reference_preview(project, entity)
+                    {
+                        let tile = tile.as_ref().unwrap_or(&def["tileRect"]);
+                        if let Some(icon) = tile["tilesetUid"].as_i64().and_then(|uid| {
+                            enum_icon(
+                                project,
+                                &json!({"iconTilesetUid": uid}),
+                                &json!({"tileRect": tile}),
+                            )
+                        }) {
+                            ui.add(icon);
+                        } else {
+                            let (rect, _) = ui
+                                .allocate_exact_size(egui::vec2(20., 20.), Sense::hover());
+                            ui.painter().rect_filled(
+                                rect,
+                                2.,
+                                theme::color(text(def, "color", "#ffcc00")),
                             );
-                            if inner == "EntityRef"
-                                && let Some((_, _, entity)) = reference_target(project, item)
-                                && let Some((def, tile)) = reference_preview(project, entity)
-                            {
-                                let tile = tile.as_ref().unwrap_or(&def["tileRect"]);
-                                if let Some(icon) = tile["tilesetUid"].as_i64().and_then(|uid| {
-                                    enum_icon(
-                                        project,
-                                        &json!({"iconTilesetUid": uid}),
-                                        &json!({"tileRect": tile}),
-                                    )
-                                }) {
-                                    ui.add(icon);
-                                } else {
-                                    let (rect, _) = ui
-                                        .allocate_exact_size(egui::vec2(20., 20.), Sense::hover());
-                                    ui.painter().rect_filled(
-                                        rect,
-                                        2.,
-                                        theme::color(text(def, "color", "#ffcc00")),
-                                    );
-                                }
-                            }
-                            let width = (ui.available_width() - 24.).max(20.);
-                            ui.allocate_ui_with_layout(
-                                egui::vec2(width, 29.),
-                                egui::Layout::top_down(egui::Align::Min),
-                                |ui| {
-                                    ui.set_width(width);
-                                    if activate == Some(index) && field_uses_default(field, index) {
-                                        let id = ui.make_persistent_id("instance-default-editor");
-                                        ui.data_mut(|data| {
-                                            data.insert_temp(
-                                                id,
-                                                DefaultEditor {
-                                                    active: true,
-                                                    focus: true,
-                                                },
-                                            )
-                                        });
-                                    }
-                                    if let Some(next) = instance_scalar_editor(
-                                        ui,
-                                        project,
-                                        inner,
-                                        item,
-                                        definition,
-                                        field_uses_default(field, index),
-                                    ) {
-                                        edit = Some(ldtk_core::FieldArrayEdit::Set {
-                                            index,
-                                            value: next,
-                                        });
-                                    }
-                                },
-                            );
-                            if super::panels::source_controls::small_button(ui, "×")
-                                .on_hover_text("Remove array value")
-                                .clicked()
-                            {
-                                edit = Some(ldtk_core::FieldArrayEdit::Remove { index });
-                            }
-                        });
-                        if let Some(payload) =
-                            row.response.dnd_release_payload::<(egui::Id, usize)>()
-                            && payload.0 == sort_id
-                            && payload.1 != index
-                        {
-                            edit = Some(ldtk_core::FieldArrayEdit::Move {
-                                from: payload.1,
-                                to: index,
-                            });
                         }
-                    });
+                    }
+                    let width = (ui.available_width() - 24.).max(20.);
+                    ui.allocate_ui_with_layout(
+                        egui::vec2(width, 33.),
+                        egui::Layout::top_down(egui::Align::Min),
+                        |ui| {
+                            ui.set_width(width);
+                            if activate == Some(index) && field_uses_default(field, index) {
+                                let id = ui.make_persistent_id("instance-default-editor");
+                                ui.data_mut(|data| {
+                                    data.insert_temp(
+                                        id,
+                                        DefaultEditor {
+                                            active: true,
+                                            focus: true,
+                                        },
+                                    )
+                                });
+                            }
+                            if let Some(next) = instance_scalar_editor(
+                                ui,
+                                project,
+                                inner,
+                                item,
+                                definition,
+                                field_uses_default(field, index),
+                            ) {
+                                edit = Some(ldtk_core::FieldArrayEdit::Set {
+                                    index,
+                                    value: next,
+                                });
+                            }
+                        },
+                    );
+                    if field_tools::array_field_remove(ui).clicked() {
+                        edit = Some(ldtk_core::FieldArrayEdit::Remove { index });
+                    }
+                });
+                if let Some(moved) = moved {
+                    edit = Some(moved);
                 }
                 let max = definition["arrayMaxLength"].as_u64().unwrap_or(u64::MAX);
-                if (values.len() as u64) < max
-                    && field_tools::array_field_add(ui, "Add a new value").clicked()
-                {
-                    if matches!(inner, "String" | "Int" | "Float" | "FilePath") {
-                        ui.data_mut(|data| data.insert_temp(append_focus_id, len));
-                        ui.ctx().request_repaint();
+                if (len as u64) < max {
+                    if len > 0 {
+                        ui.add_space(2.);
                     }
-                    edit = Some(ldtk_core::FieldArrayEdit::Insert { index: len });
+                    if field_tools::array_field_add(ui, "Add a new value").clicked() {
+                        if matches!(inner, "String" | "Int" | "Float" | "FilePath") {
+                            ui.data_mut(|data| data.insert_temp(append_focus_id, len));
+                            ui.ctx().request_repaint();
+                        }
+                        edit = Some(ldtk_core::FieldArrayEdit::Insert { index: len });
+                    }
                 }
             });
         if !values.is_empty() {
@@ -1286,8 +1384,12 @@ mod tests {
                 egui::Shape::Rect(rect) if rect.fill == Color32::from_rgb(49, 55, 66) => {
                     Some(("+", rect.rect.center()))
                 }
-                egui::Shape::Text(text) if text.galley.text() == "×" => {
-                    Some(("×", text.pos + text.galley.size() * 0.5))
+                egui::Shape::Rect(image)
+                    if image.brush.is_some()
+                        && image.rect.size() == Vec2::splat(20.)
+                        && image.rect.right() == rect.right() - 3. =>
+                {
+                    Some(("remove", image.rect.center()))
                 }
                 _ => None,
             };
@@ -1447,6 +1549,7 @@ mod tests {
             .unwrap()
             .clone();
         let ctx = egui::Context::default();
+        egui_extras::install_image_loaders(&ctx);
         let mut time = 0.;
         let mut draw = |p: &mut Project, events| {
             time += 0.02;
@@ -1475,8 +1578,12 @@ mod tests {
         let output = draw(&mut p, vec![]);
         fn handles(shape: &egui::Shape, positions: &mut Vec<egui::Pos2>) {
             match shape {
-                egui::Shape::Text(text) if text.galley.job.text == "≡" => {
-                    positions.push(text.pos + text.galley.size() * 0.5)
+                egui::Shape::Rect(image)
+                    if image.brush.is_some()
+                        && image.rect.size() == Vec2::splat(18.)
+                        && image.rect.left() < 30. =>
+                {
+                    positions.push(image.rect.center());
                 }
                 egui::Shape::Vec(shapes) => {
                     for shape in shapes {
@@ -1491,6 +1598,17 @@ mod tests {
             handles(&shape.shape, &mut positions);
         }
         assert_eq!(positions.len(), 3);
+        let first_top = |output: &egui::FullOutput| {
+            output
+                .shapes
+                .iter()
+                .find_map(|shape| match &shape.shape {
+                    egui::Shape::Text(text) if text.galley.text() == "first" => Some(text.pos.y),
+                    _ => None,
+                })
+                .unwrap()
+        };
+        let before = first_top(&output);
         let start = positions[0];
         let end = positions[2] + egui::vec2(40., 0.);
         draw(
@@ -1502,7 +1620,20 @@ mod tests {
             vec![egui::Event::PointerMoved(start + egui::vec2(8., 0.))],
         );
         draw(&mut p, vec![egui::Event::PointerMoved(end)]);
-        draw(&mut p, vec![click(end, false)]);
+        assert_eq!(first_top(&draw(&mut p, vec![])), before);
+        let halfway = first_top(&draw(&mut p, vec![]));
+        let mut settled = halfway;
+        for _ in 0..5 {
+            settled = first_top(&draw(&mut p, vec![]));
+        }
+        assert!(settled < halfway && halfway < before);
+        assert_eq!(
+            p.level(LEVEL).unwrap()["fieldInstances"][0]["realEditorValues"],
+            json!(wrappers)
+        );
+        let outside = egui::pos2(end.x, 280.);
+        draw(&mut p, vec![egui::Event::PointerMoved(outside)]);
+        draw(&mut p, vec![click(outside, false)]);
         draw(&mut p, vec![]);
         assert_eq!(
             p.level(LEVEL).unwrap()["fieldInstances"][0]["realEditorValues"],
@@ -1622,8 +1753,9 @@ mod tests {
             .unwrap();
         p.set_field_default(uid, json!(7)).unwrap();
         let ctx = egui::Context::default();
+        egui_extras::install_image_loaders(&ctx);
         frame(&ctx, &mut p, uid, vec![]);
-        for (label, expected) in [("+", json!([7])), ("×", json!([]))] {
+        for (label, expected) in [("+", json!([7])), ("remove", json!([]))] {
             let pos = ctx
                 .data_mut(|d| d.get_temp::<egui::Pos2>(egui::Id::new(label)))
                 .unwrap();

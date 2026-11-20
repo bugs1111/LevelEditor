@@ -691,6 +691,34 @@ fn preview_154_aseprite_indexed_image_matches_aseprite_png_export() {
 }
 
 #[test]
+fn preview_154_aseprite_atlases_keep_raw_pixels_and_read_both_palettes() {
+    let fixtures = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+    // Both sprites have two frames and transparent palette index 2. Only the
+    // second frame uses purple. The wide sprite uses the legacy opaque palette.
+    for (asset, alpha) in [
+        ("aseprite-indexed-wide.aseprite", 255),
+        ("aseprite-indexed-alpha.aseprite", 128),
+    ] {
+        let image = ldtk_core::exports::load_image_rgba(&fixtures.join(asset)).unwrap();
+        assert_eq!(image.dimensions(), (32, 32), "{asset}");
+        for (x, y, pixel) in image.enumerate_pixels() {
+            if y >= 16 || (x < 16 && y >= 8) {
+                assert_eq!(pixel[3], 0, "{asset} ({x}, {y})");
+            } else {
+                let expected = if x < 8 {
+                    [27, 233, 215, 255]
+                } else if x < 16 {
+                    [236, 74, 51, alpha]
+                } else {
+                    [82, 28, 188, 255]
+                };
+                assert_eq!(pixel.0, expected, "{asset} ({x}, {y})");
+            }
+        }
+    }
+}
+
+#[test]
 fn preview_154_png_export_progress_counts_completed_levels() {
     let dir = tempfile::tempdir().unwrap();
     let mut project = Project::new();

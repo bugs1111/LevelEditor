@@ -41,6 +41,292 @@ pub(super) fn array_field_add(ui: &mut egui::Ui, tooltip: &str) -> egui::Respons
     .on_hover_text(locale::tr(ui, tooltip))
 }
 
+pub(super) fn array_field_remove(ui: &mut egui::Ui) -> egui::Response {
+    ui.scope(|ui| {
+        ui.spacing_mut().button_padding = egui::vec2(1., 0.);
+        ui.spacing_mut().interact_size = egui::vec2(22., 28.);
+        let widgets = &mut ui.visuals_mut().widgets;
+        for style in [&mut widgets.hovered, &mut widgets.active] {
+            style.weak_bg_fill = theme::ACCENT;
+            style.bg_stroke = Stroke::NONE;
+            style.expansion = 0.;
+            style.corner_radius = 3.into();
+        }
+        ui.add_sized(
+            [22., 28.],
+            egui::Button::new(
+                egui::Image::new(egui::include_image!("../../assets/icons/delete.svg"))
+                    .fit_to_exact_size(Vec2::splat(20.)),
+            )
+            .frame(true)
+            .frame_when_inactive(false),
+        )
+    })
+    .inner
+    .on_hover_text(locale::tr(ui, "Remove array value"))
+}
+
+#[derive(Clone, Default)]
+struct ArrayFieldDrag {
+    from: usize,
+    to: usize,
+    grab: Vec2,
+    pass: u64,
+    rows: Vec<ArrayRowSlide>,
+}
+
+#[derive(Clone, Copy, Default)]
+struct ArrayRowSlide {
+    from_top: f32,
+    top: f32,
+    initial_offset: f32,
+    started: f64,
+    duration: f64,
+}
+
+impl ArrayRowSlide {
+    fn place(self, top: f32, now: f64) -> Self {
+        if top == self.top {
+            return self;
+        }
+        let current_offset = self.offset(now);
+        let initial_offset = self.top - top + current_offset;
+        let duration = if current_offset != 0. && self.from_top == top {
+            // SortableJS shortens a return to the previous slot by the distance left.
+            0.1 * f64::from((initial_offset / (self.top - top)).abs())
+        } else {
+            0.1
+        };
+        Self {
+            from_top: self.top,
+            top,
+            initial_offset,
+            started: now,
+            duration,
+        }
+    }
+
+    fn offset(self, now: f64) -> f32 {
+        if self.duration == 0. || now >= self.started + self.duration {
+            return 0.;
+        }
+        if now <= self.started {
+            return self.initial_offset;
+        }
+        // Chromium's default CSS ease is cubic-bezier(0.25, 0.1, 0.25, 1).
+        let progress = ((now - self.started) / self.duration) as f32;
+        let (mut low, mut high) = (0., 1.);
+        for _ in 0..12 {
+            let t: f32 = (low + high) * 0.5;
+            let x = 0.75 * (1. - t) * t + t.powi(3);
+            if x < progress {
+                low = t;
+            } else {
+                high = t;
+            }
+        }
+        let t: f32 = (low + high) * 0.5;
+        let remaining = (1. - t).powi(2) * (1. + 1.7 * t);
+        self.initial_offset * remaining
+    }
+}
+
+pub(super) fn sortable_array_field_rows(
+    ui: &mut egui::Ui,
+    len: usize,
+    mut draw: impl FnMut(&mut egui::Ui, usize),
+) -> Option<ldtk_core::FieldArrayEdit> {
+    let id = ui.id().with("array-sort");
+    let pass = ui.ctx().cumulative_pass_nr();
+    let mut drag = ui
+        .data_mut(|data| data.remove_temp::<ArrayFieldDrag>(id))
+        .filter(|drag| drag.pass + 1 >= pass && drag.from < len && drag.to < len);
+    let escaped = drag.is_some()
+        && egui::DragAndDrop::payload::<(egui::Id, usize)>(ui.ctx())
+            .is_none_or(|payload| payload.0 != id);
+    let (pointer, press, down, now) = ui.input(|input| {
+        let pointer = &input.pointer;
+        (
+            pointer.interact_pos(),
+            pointer.press_origin(),
+            pointer.primary_down(),
+            input.time,
+        )
+    });
+    let preview = down && !escaped;
+    let list_top = ui.next_widget_position().y;
+    let mut rows = vec![ArrayRowSlide::default(); if preview { len } else { 0 }];
+    let mut animating = false;
+    let mut order = (0..len).collect::<Vec<_>>();
+    if let Some(drag) = &drag {
+        order.remove(drag.from);
+        order.insert(drag.to, drag.from);
+    }
+    let mut hovered = None;
+    for (slot, index) in order.into_iter().enumerate() {
+        ui.push_id(index, |ui| {
+            let active = drag
+                .as_ref()
+                .filter(|drag| preview && drag.from == index)
+                .map(|drag| drag.grab);
+            let first_paint = (preview && drag.is_some())
+                .then(|| ui.painter().add(egui::Shape::Noop));
+            let row = ui.horizontal(|ui| {
+                if active.is_some() {
+                    ui.multiply_opacity(0.7);
+                }
+                // The source reserves 28 pixels before the field editor.
+                ui.spacing_mut().item_spacing.x = 2.;
+                let (rect, _) = ui.allocate_exact_size(egui::vec2(26., 33.), Sense::hover());
+                egui::Image::new(egui::include_image!("../../assets/icons/dragAlpha.svg"))
+                    .paint_at(ui, Rect::from_center_size(rect.center(), Vec2::splat(18.)));
+                let handle = ui
+                    .interact(
+                        rect,
+                        ui.make_persistent_id("array-handle"),
+                        Sense::click_and_drag(),
+                    )
+                    .on_hover_cursor(egui::CursorIcon::Grab);
+                handle.dnd_set_drag_payload((id, index));
+                draw(ui, index);
+                handle
+            });
+            let rect = row.response.rect;
+            if pointer.is_some_and(|pos| rect.intersect(ui.clip_rect()).contains(pos)) {
+                hovered = Some(slot);
+            }
+            if row.inner.drag_started() {
+                drag = Some(ArrayFieldDrag {
+                    from: index,
+                    to: slot,
+                    grab: press.unwrap_or(row.inner.rect.center()) - rect.min,
+                    pass,
+                    rows: Vec::new(),
+                });
+                ui.ctx().request_repaint();
+            }
+            if let (Some(grab), Some(background), Some(pointer)) = (active, first_paint, pointer) {
+                paint_array_field_drag(ui, id, rect, background, pointer - grab - rect.min);
+            }
+            if let Some(row) = rows.get_mut(index) {
+                let top = rect.top() - list_top;
+                *row = drag
+                    .as_ref()
+                    .and_then(|drag| drag.rows.get(index))
+                    .map_or_else(
+                        || ArrayRowSlide { top, ..Default::default() },
+                        |before| before.place(top, now),
+                    );
+                let offset = row.offset(now);
+                if offset != 0. && let Some(first) = first_paint {
+                    slide_array_row_shapes(ui, first, offset);
+                    animating = true;
+                }
+            }
+        });
+    }
+    let mut drag = drag?;
+    let old_destination = drag.to;
+    if !escaped && let Some(slot) = hovered {
+        drag.to = slot;
+    }
+    // SortableJS keeps the last previewed destination when ending outside or with Escape.
+    if escaped || !down {
+        return (drag.from != drag.to).then_some(ldtk_core::FieldArrayEdit::Move {
+            from: drag.from,
+            to: drag.to,
+        });
+    }
+    if drag.to != old_destination || animating {
+        ui.ctx().request_repaint();
+    }
+    drag.pass = pass;
+    drag.rows = rows;
+    ui.data_mut(|data| data.insert_temp(id, drag));
+    None
+}
+
+fn slide_array_row_shapes(ui: &egui::Ui, first: egui::layers::ShapeIdx, offset: f32) {
+    let offset = egui::vec2(0., offset);
+    let clip = ui.clip_rect();
+    ui.ctx().graphics_mut(|graphics| {
+        let layer = graphics.entry(ui.layer_id());
+        for index in first.0..layer.next_idx().0 {
+            layer.mutate_shape(egui::layers::ShapeIdx(index), |entry| {
+                entry.clip_rect = entry.clip_rect.translate(offset).intersect(clip);
+                entry.shape.translate(offset);
+            });
+        }
+    });
+}
+
+fn paint_array_field_drag(
+    ui: &egui::Ui,
+    id: egui::Id,
+    rect: Rect,
+    background: egui::layers::ShapeIdx,
+    offset: Vec2,
+) {
+    let viewport = ui.ctx().content_rect();
+    ui.ctx().graphics_mut(|graphics| {
+        let Some(layer) = graphics.get(ui.layer_id()) else {
+            return;
+        };
+        let content = layer
+            .all_entries()
+            .skip(background.0 + 1)
+            .cloned()
+            .collect::<Vec<_>>();
+        let ghost = graphics.entry(egui::LayerId::new(egui::Order::Tooltip, id));
+        ghost.add(
+            viewport,
+            egui::Shape::rect_filled(rect.translate(offset), 0., theme::MEDIUM),
+        );
+        for mut entry in content {
+            let clip = entry
+                .clip_rect
+                .intersect(rect)
+                .translate(offset)
+                .intersect(viewport);
+            if clip.is_positive() {
+                entry.shape.translate(offset);
+                ghost.add(clip, entry.shape);
+            }
+        }
+    });
+    let mut fill = vec![egui::Shape::rect_filled(
+        rect,
+        0.,
+        Color32::from_rgba_unmultiplied(213, 105, 50, 178),
+    )];
+    let stripes = egui::Image::new(egui::include_image!("../../assets/img/stripes.png"))
+        .texture_options(egui::TextureOptions::NEAREST_REPEAT);
+    if let Ok(egui::load::TexturePoll::Ready { texture }) =
+        stripes.load_for_size(ui.ctx(), rect.size())
+    {
+        fill.push(egui::Shape::image(
+            texture.id,
+            rect,
+            Rect::from_min_size(egui::Pos2::ZERO, rect.size() / 8.),
+            Color32::from_white_alpha(178),
+        ));
+    }
+    ui.painter().set(background, egui::Shape::Vec(fill));
+    let edge = rect.shrink(0.5);
+    ui.painter().extend(egui::Shape::dashed_line(
+        &[
+            edge.left_top(),
+            edge.right_top(),
+            edge.right_bottom(),
+            edge.left_bottom(),
+            edge.left_top(),
+        ],
+        Stroke::new(1., theme::ACCENT),
+        2.,
+        1.,
+    ));
+}
+
 fn picker_outline(painter: &egui::Painter, rect: Rect, stroke: Stroke, dash: f32, gap: f32) {
     painter.extend(egui::Shape::dashed_line(
         &[rect.left_top(), rect.right_top(), rect.right_bottom(), rect.left_bottom(), rect.left_top()],
@@ -655,16 +941,7 @@ impl EditorApp {
                                                 }
                                             });
                                     }
-                                    if ui.add_sized(
-                                        [22., 28.],
-                                        egui::Button::image(
-                                            egui::Image::new(egui::include_image!("../../assets/icons/delete.svg"))
-                                                .fit_to_exact_size(Vec2::splat(20.)),
-                                        ).frame(false),
-                                    )
-                                    .on_hover_text(locale::tr(ui, "Remove array value"))
-                                    .clicked()
-                                    {
+                                    if array_field_remove(ui).clicked() {
                                         edit = Some(ui_fields::FieldEdit::Array(
                                             ldtk_core::FieldArrayEdit::Remove { index },
                                         ));
@@ -761,128 +1038,94 @@ impl EditorApp {
         } else {
             let content = |ui: &mut egui::Ui| {
                 ui.spacing_mut().item_spacing.y = 0.;
-                let sort_id = ui.id().with("reference-array-sort");
-                for (index, value) in values.iter().enumerate() {
-                    ui.push_id(index, |ui| {
-                        let row = ui.horizontal(|ui| {
-                            ui.spacing_mut().item_spacing.x = 1.;
-                            ui.spacing_mut().button_padding = egui::vec2(1., 2.);
-                            ui.spacing_mut().interact_size = egui::vec2(22., 28.);
-                            ui.set_min_height(33.);
-                            if array {
-                                ui.dnd_drag_source(
-                                    ui.id().with("sort-reference"),
-                                    (sort_id, index),
-                                    |ui| {
-                                        ui.add_sized(
-                                            [27., 33.],
-                                            egui::Label::new("≡").sense(Sense::drag()),
-                                        );
-                                    },
-                                );
-                            }
-                            let iid = value["entityIid"].as_str();
-                            let can_clear = definition["canBeNull"] == true && iid.is_some();
-                            let action_count =
-                                u8::from(iid.is_some()) + u8::from(can_clear) + u8::from(array);
-                            let reserved = 23. * f32::from(action_count);
-                            let width = (ui.available_width() - reserved).max(24.);
-                            let request = Some(array.then_some(index));
-                            if let Some(iid) = iid
-                                && let Some(response) = self.reference_card(
-                                    ui, key, value, width, array && owner.is_some(),
-                                )
-                            {
-                                self.hover_entity_reference(&response, iid);
-                                if response.clicked() {
-                                    follow = Some(iid.to_owned());
-                                }
-                            } else {
-                                let response = panels::source_controls::add_sized_button(
-                                    ui,
-                                    [width, 28.],
-                                    egui::Button::new(locale::tr(ui, "Missing reference"))
-                                        .fill(Color32::from_rgb(227, 77, 0))
-                                        .truncate(),
-                                );
-                                pick_rect = Some(response.rect);
-                                if response.clicked() {
-                                    requested = request;
-                                }
-                            }
-                            if iid.is_some() {
-                                let response = panels::source_controls::add_sized_button(
-                                    ui,
-                                    [22., 28.],
-                                    egui::Button::image(
-                                        egui::Image::new(egui::include_image!(
-                                            "../../assets/icons/edit.svg"
-                                        ))
-                                        .fit_to_exact_size(Vec2::splat(16.)),
-                                    )
-                                    .fill(Color32::from_rgb(227, 77, 0)),
-                                )
-                                .on_hover_text(locale::tr(ui, "Pick from canvas"));
-                                pick_rect = Some(response.rect);
-                                if response.clicked() {
-                                    requested = request;
-                                }
-                            }
-                            if can_clear {
-                                let response = panels::source_controls::add_sized_button(
-                                    ui,
-                                    [22., 28.],
-                                    egui::Button::image(
-                                        egui::Image::new(egui::include_image!(
-                                            "../../assets/icons/clear.svg"
-                                        ))
-                                        .fit_to_exact_size(Vec2::splat(16.)),
-                                    )
-                                    .fill(Color32::from_rgb(227, 77, 0)),
-                                )
-                                .on_hover_text(locale::tr(ui, "Clear field value"));
-                                if response.clicked() {
-                                    edit = Some(if array {
-                                        ui_fields::FieldEdit::Array(ldtk_core::FieldArrayEdit::Reset {
-                                            index,
-                                        })
-                                    } else {
-                                        ui_fields::FieldEdit::Value(Value::Null)
-                                    });
-                                }
-                            }
-                            if array
-                                && ui
-                                    .add_sized(
-                                        [22., 28.],
-                                        egui::Button::image(
-                                            egui::Image::new(egui::include_image!(
-                                                "../../assets/icons/delete.svg"
-                                            ))
-                                            .fit_to_exact_size(Vec2::splat(20.)),
-                                        )
-                                        .frame(false),
-                                    )
-                                    .on_hover_text(locale::tr(ui, "Remove array value"))
-                                    .clicked()
-                            {
-                                edit = Some(ui_fields::FieldEdit::Array(
-                                    ldtk_core::FieldArrayEdit::Remove { index },
-                                ));
-                            }
-                        });
-                        if let Some(payload) = row.response.dnd_release_payload::<(egui::Id, usize)>()
-                            && payload.0 == sort_id
-                            && payload.1 != index
-                        {
-                            edit = Some(ui_fields::FieldEdit::Array(
-                                ldtk_core::FieldArrayEdit::Move {
-                                    from: payload.1,
-                                    to: index,
-                                },
-                            ));
+                let mut draw = |ui: &mut egui::Ui, index: usize| {
+                    let value = &values[index];
+                    ui.spacing_mut().item_spacing.x = 1.;
+                    ui.spacing_mut().button_padding = egui::vec2(1., 2.);
+                    ui.spacing_mut().interact_size = egui::vec2(22., 28.);
+                    ui.set_min_height(33.);
+                    let iid = value["entityIid"].as_str();
+                    let can_clear = definition["canBeNull"] == true && iid.is_some();
+                    let action_count =
+                        u8::from(iid.is_some()) + u8::from(can_clear) + u8::from(array);
+                    let reserved = 23. * f32::from(action_count);
+                    let width = (ui.available_width() - reserved).max(24.);
+                    let request = Some(array.then_some(index));
+                    if let Some(iid) = iid
+                        && let Some(response) = self.reference_card(
+                            ui, key, value, width, array && owner.is_some(),
+                        )
+                    {
+                        self.hover_entity_reference(&response, iid);
+                        if response.clicked() {
+                            follow = Some(iid.to_owned());
                         }
-                    });
+                    } else {
+                        let response = panels::source_controls::add_sized_button(
+                            ui,
+                            [width, 28.],
+                            egui::Button::new(locale::tr(ui, "Missing reference"))
+                                .fill(Color32::from_rgb(227, 77, 0))
+                                .truncate(),
+                        );
+                        pick_rect = Some(response.rect);
+                        if response.clicked() {
+                            requested = request;
+                        }
+                    }
+                    if iid.is_some() {
+                        let response = panels::source_controls::add_sized_button(
+                            ui,
+                            [22., 28.],
+                            egui::Button::image(
+                                egui::Image::new(egui::include_image!(
+                                    "../../assets/icons/edit.svg"
+                                ))
+                                .fit_to_exact_size(Vec2::splat(16.)),
+                            )
+                            .fill(Color32::from_rgb(227, 77, 0)),
+                        )
+                        .on_hover_text(locale::tr(ui, "Pick from canvas"));
+                        pick_rect = Some(response.rect);
+                        if response.clicked() {
+                            requested = request;
+                        }
+                    }
+                    if can_clear {
+                        let response = panels::source_controls::add_sized_button(
+                            ui,
+                            [22., 28.],
+                            egui::Button::image(
+                                egui::Image::new(egui::include_image!(
+                                    "../../assets/icons/clear.svg"
+                                ))
+                                .fit_to_exact_size(Vec2::splat(16.)),
+                            )
+                            .fill(Color32::from_rgb(227, 77, 0)),
+                        )
+                        .on_hover_text(locale::tr(ui, "Clear field value"));
+                        if response.clicked() {
+                            edit = Some(if array {
+                                ui_fields::FieldEdit::Array(ldtk_core::FieldArrayEdit::Reset {
+                                    index,
+                                })
+                            } else {
+                                ui_fields::FieldEdit::Value(Value::Null)
+                            });
+                        }
+                    }
+                    if array && array_field_remove(ui).clicked() {
+                        edit = Some(ui_fields::FieldEdit::Array(
+                            ldtk_core::FieldArrayEdit::Remove { index },
+                        ));
+                    }
+                };
+                if array {
+                    if let Some(moved) = sortable_array_field_rows(ui, values.len(), draw) {
+                        edit = Some(ui_fields::FieldEdit::Array(moved));
+                    }
+                } else if !values.is_empty() {
+                    ui.push_id(0, |ui| ui.horizontal(|ui| draw(ui, 0)));
                 }
                 if can_add {
                     if !values.is_empty() {

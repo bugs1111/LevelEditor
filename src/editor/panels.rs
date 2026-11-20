@@ -1235,6 +1235,7 @@ impl EditorApp {
                                             }
                                         }
                                         if !point_required
+                                            && !matches!(kind, "FilePath" | "Array<FilePath>")
                                             && let Ok(errors) = self
                                                 .project
                                                 .as_ref()

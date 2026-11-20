@@ -2,12 +2,12 @@
 use crate::project::{atomic_save, relative_to};
 use crate::workflow::effective_position;
 use crate::{Error, LevelKey, Project, Result};
-use image::{Rgba, RgbaImage};
+use image::{GenericImage, Rgba, RgbaImage};
 use serde_json::{Value, json};
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
     fs,
-    io::Cursor,
+    io::{BufReader, Cursor, Read},
     path::{Path, PathBuf},
 };
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1237,24 +1237,67 @@ fn tmx_layer(id: i32, name: &str, w: usize, h: usize, opacity: f64, data: &[u32]
     )
 }
 
-/// Decode native project atlases; Aseprite resources use their first animation frame.
+/// Decode project images. Aseprite frames are packed into LDtk's square atlas grid.
 pub fn load_image_rgba(path: &Path) -> Result<RgbaImage> {
     if path
         .extension()
         .and_then(|s| s.to_str())
         .is_some_and(|e| e.eq_ignore_ascii_case("ase") || e.eq_ignore_ascii_case("aseprite"))
     {
-        let ase = asefile::AsepriteFile::read_file(path)
-            .map_err(|e| Error::Invalid(format!("{}: {e}", path.display())))?;
-        let frame = ase.frame(0).image();
-        RgbaImage::from_raw(frame.width(), frame.height(), frame.into_raw())
-            .ok_or_else(|| Error::Invalid("invalid Aseprite frame dimensions".into()))
+        load_aseprite_atlas(path)
     } else {
         image::open(path)
             .map(|i| i.to_rgba8())
             .map_err(|e| Error::Invalid(format!("{}: {e}", path.display())))
     }
 }
+
+fn load_aseprite_atlas(path: &Path) -> Result<RgbaImage> {
+    let io_error = |source| Error::Io {
+        path: path.to_owned(),
+        source,
+    };
+    let mut file = BufReader::new(fs::File::open(path).map_err(io_error)?);
+    // LDtk uses the stored pixel dimensions regardless of Aseprite's display ratio.
+    // Neutralize those two header bytes for asefile without changing the input file.
+    const PIXEL_RATIO_OFFSET: usize = 34;
+    let mut prefix = [0; PIXEL_RATIO_OFFSET + 2];
+    file.read_exact(&mut prefix).map_err(io_error)?;
+    prefix[PIXEL_RATIO_OFFSET..].fill(1);
+    let ase = asefile::AsepriteFile::read(Cursor::new(prefix).chain(file))
+        .map_err(|error| Error::Invalid(format!("{}: {error}", path.display())))?;
+    let width = ase.width() as u32;
+    let height = ase.height() as u32;
+    let frames = ase.num_frames();
+    if width == 0 || height == 0 || frames == 0 {
+        return Err(Error::Invalid(format!(
+            "{}: invalid Aseprite dimensions or frame count",
+            path.display()
+        )));
+    }
+    let frame_image = |index| {
+        let frame = ase.frame(index).image();
+        RgbaImage::from_raw(width, height, frame.into_raw())
+            .ok_or_else(|| Error::Invalid("invalid Aseprite frame dimensions".into()))
+    };
+    if frames == 1 {
+        return frame_image(0);
+    }
+
+    let side = (frames - 1).isqrt() + 1;
+    let (atlas_width, atlas_height) = (width * side, height * side);
+    image::Limits::default()
+        .reserve(u64::from(atlas_width) * u64::from(atlas_height) * 4)
+        .map_err(|error| Error::Invalid(format!("{}: {error}", path.display())))?;
+    let mut atlas = RgbaImage::new(atlas_width, atlas_height);
+    for index in 0..frames {
+        atlas
+            .copy_from(&frame_image(index)?, index % side * width, index / side * height)
+            .map_err(|error| Error::Invalid(format!("{}: {error}", path.display())))?;
+    }
+    Ok(atlas)
+}
+
 pub fn embedded_atlas() -> Result<RgbaImage> {
     image::load_from_memory(include_bytes!(
         "../../../assets/embedAtlas/finalbossblues-icons_full_16.png"

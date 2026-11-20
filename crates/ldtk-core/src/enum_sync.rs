@@ -654,9 +654,34 @@ impl Project {
                             id
                         } else {
                             let image = crate::exports::load_image_rgba(&atlas)?;
-                            let id = crate::workflow::alloc_uid(&mut candidate)?;
-                            let size = n(&tile, "size").max(1);
-                            candidate.json["defs"]["tilesets"].as_array_mut().unwrap().push(json!({"uid":id,"identifier":clean_identifier(&format!("{}_{}",path.file_name().unwrap().to_string_lossy(),atlas.file_name().unwrap().to_string_lossy())),"relPath":rel_atlas,"embedAtlas":null,"pxWid":image.width(),"pxHei":image.height(),"tileGridSize":size,"spacing":0,"padding":0,"tags":["CastleDB"],"enumTags":[],"customData":[],"savedSelections":[],"tagsSourceEnumUid":null,"cachedPixelData":null,"__cWid":image.width()as i64/size,"__cHei":image.height()as i64/size}));
+                            let occupied = arr(&candidate.json["defs"]["tilesets"])
+                                .iter()
+                                .map(|def| s(def, "identifier").to_owned())
+                                .collect();
+                            let name = format!(
+                                "{}_{}",
+                                path.file_name().unwrap_or_default().to_string_lossy(),
+                                atlas.file_name().unwrap_or_default().to_string_lossy()
+                            );
+                            let identifier = crate::naming::unique_name(
+                                &name,
+                                s(&candidate.json, "identifierStyle"),
+                                &occupied,
+                            );
+                            // The icon size controls its crop, while LDtk creates a standard tileset.
+                            let id = candidate.add_tileset(
+                                Path::new(&rel_atlas),
+                                16,
+                                image.width() as i32,
+                                image.height() as i32,
+                            )?;
+                            let definition = candidate.json["defs"]["tilesets"]
+                                .as_array_mut()
+                                .unwrap()
+                                .last_mut()
+                                .expect("added tileset");
+                            definition["identifier"] = json!(identifier);
+                            definition["tags"] = json!(["CastleDB"]);
                             id
                         };
                         e.icon_tileset_uid = Some(tileset_uid);

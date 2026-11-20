@@ -128,6 +128,14 @@ fn lucario() -> &'static Theme {
     })
 }
 fn highlight(source: &str, mode: &str, wrap: f32) -> LayoutJob {
+    if mode.is_empty() {
+        return LayoutJob::simple(
+            source.to_owned(),
+            FontId::monospace(13.),
+            Color32::from_rgb(248, 248, 242),
+            wrap,
+        );
+    }
     let syntaxes = syntax_set();
     let syntax = syntaxes
         .find_syntax_by_token(syntax_token(mode))
@@ -508,9 +516,9 @@ fn read_external(path: &Path) -> std::io::Result<String> {
     }
     String::from_utf8(bytes).map_err(std::io::Error::other)
 }
-pub(super) fn external_file_editor(ui: &mut egui::Ui, path: &Path) {
+pub(super) fn external_file_editor(ui: &mut egui::Ui, path: &Path, clicked: bool) {
     let owner = ui.make_persistent_id(("external-text", path));
-    if panels::source_controls::small_button(ui, "Edit file").clicked() {
+    if clicked {
         match read_external(path) {
             Ok(source) => open(
                 ui.ctx(),

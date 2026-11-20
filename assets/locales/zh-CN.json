@@ -815,6 +815,7 @@
   "Replace level render in world view": "替换世界视图中的关卡画面",
   "Report a bug": "报告问题",
   "Required tags": "必需标签",
+  "Required!": "必填！",
   "Reset": "重置",
   "Reset assigned color": "重置自定义颜色",
   "Reset tileset overrides in all levels": "重置所有关卡的图块集覆盖",

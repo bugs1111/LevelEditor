@@ -260,6 +260,65 @@ fn preview_154_castledb_extracts_unique_ids_from_first_level_lists() {
 }
 
 #[test]
+fn preview_154_castledb_list_icons_preserve_tileset_grid_and_unique_name() {
+    let dir = tempfile::tempdir().unwrap();
+    let source_dir = dir.path().join("db");
+    fs::create_dir(&source_dir).unwrap();
+    let source = source_dir.join("game.cdb");
+    let icon = source_dir.join("hero.png");
+    image::RgbaImage::new(35, 34).save(&icon).unwrap();
+    let mut project = Project::new();
+    project.path = Some(dir.path().join("game.ldtk"));
+    project.json["identifierStyle"] = json!("Uppercase");
+    let existing = project
+        .add_tileset(std::path::Path::new("GAME_CDB_HERO_PNG.png"), 16, 16, 16)
+        .unwrap();
+    fs::write(
+        &source,
+        json!({"sheets":[
+            {"name":"Units","columns":[{"name":"id","typeStr":"0"}],"lines":[
+                {"id":"Mage","spells":[{"name":"Bolt","icon":{"file":"hero.png","size":8,"x":1,"y":1,"width":2}}]}]},
+            {"name":"Units@spells","props":{"displayIcon":"icon"},"columns":[
+                {"name":"name","typeStr":"0"},{"name":"icon","typeStr":"16"}],"lines":[]}
+        ]}).to_string(),
+    )
+    .unwrap();
+    project.sync_external_enums(&source).unwrap();
+
+    let list = project.json["defs"]["externalEnums"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|enu| enu["identifier"] == "UNITS_SPELLS")
+        .unwrap();
+    let uid = list["iconTilesetUid"].as_i64().unwrap();
+    let atlas = project.tileset(uid).unwrap();
+    assert_eq!(atlas["identifier"], "GAME_CDB_HERO_PNG2");
+    assert_eq!(
+        project.tileset(existing).unwrap()["identifier"],
+        "GAME_CDB_HERO_PNG"
+    );
+    assert_eq!(atlas["relPath"], "db/hero.png");
+    assert_eq!(atlas["tileGridSize"], 16);
+    assert_eq!(
+        (atlas["__cWid"].as_i64(), atlas["__cHei"].as_i64()),
+        (Some(3), Some(3))
+    );
+    assert_eq!(atlas["tags"], json!(["CastleDB"]));
+    assert_eq!(
+        list["values"][0]["tileRect"],
+        json!({"tilesetUid":uid,"x":8,"y":8,"w":16,"h":8})
+    );
+
+    project.sync_external_enums(&source).unwrap();
+    assert_eq!(project.json["defs"]["tilesets"].as_array().unwrap().len(), 2);
+    assert_eq!(
+        project.tileset(uid).unwrap()["identifier"],
+        "GAME_CDB_HERO_PNG2"
+    );
+}
+
+#[test]
 fn preview_154_castledb_nested_list_sync_updates_and_rejects_missing_parent_atomically() {
     let dir = tempfile::tempdir().unwrap();
     let source = dir.path().join("data.cdb");
