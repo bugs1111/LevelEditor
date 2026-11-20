@@ -16,13 +16,16 @@ const HANDLES: [[i32; 2]; 8] = [
 fn handle_active(def: &Value, handle: [i32; 2]) -> bool {
     (handle[0] == 0 || def["resizableX"] == true) && (handle[1] == 0 || def["resizableY"] == true)
 }
+fn entity_rect(entity: &Value, def: &Value) -> ([f32; 2], [f32; 2]) {
+    let size = [number(entity, "width", 16.), number(entity, "height", 16.)];
+    let top_left = std::array::from_fn(|axis| {
+        let pivot = number(def, if axis == 0 { "pivotX" } else { "pivotY" }, 0.);
+        (entity["px"][axis].as_f64().unwrap_or(0.) as f32 - size[axis] * pivot + 0.5).floor()
+    });
+    (top_left, size)
+}
 fn handle_position(entity: &Value, def: &Value, handle: [i32; 2]) -> [f32; 2] {
-    let w = number(entity, "width", 16.0);
-    let h = number(entity, "height", 16.0);
-    let px = number(def, "pivotX", 0.0);
-    let py = number(def, "pivotY", 0.0);
-    let left = (entity["px"][0].as_f64().unwrap_or(0.) as f32 - w * px + 0.5).floor();
-    let top = (entity["px"][1].as_f64().unwrap_or(0.) as f32 - h * py + 0.5).floor();
+    let ([left, top], [w, h]) = entity_rect(entity, def);
     [
         match handle[0] {
             -1 => left - HANDLE_RADIUS,
@@ -48,29 +51,21 @@ fn handle_at(entity: &Value, def: &Value, local: [f32; 2]) -> Option<[i32; 2]> {
 
 pub(super) fn requested_entity_size(
     def: &Value,
-    initial: [i32; 2],
-    delta: [f32; 2],
+    entity: &Value,
+    cursor: [f32; 2],
     handle: [i32; 2],
 ) -> [i32; 2] {
+    let (top_left, size) = entity_rect(entity, def);
+    let initial = size.map(|value| value as i32);
     let mut requested = initial;
-    for (axis, (resizable, pivot)) in [("resizableX", "pivotX"), ("resizableY", "pivotY")]
-        .into_iter()
-        .enumerate()
-    {
-        let direction = handle[axis];
-        if direction == 0 || def[resizable] != true {
-            continue;
+    for axis in 0..2 {
+        if def[if axis == 0 { "resizableX" } else { "resizableY" }] == true {
+            requested[axis] = match handle[axis] {
+                -1 => (top_left[axis] + size[axis] - HANDLE_RADIUS - cursor[axis]) as i32,
+                1 => (cursor[axis] - top_left[axis] - HANDLE_RADIUS) as i32,
+                _ => initial[axis],
+            };
         }
-        let pivot = number(def, pivot, 0.0).clamp(0., 1.);
-        let anchor_moves = (direction < 0 && pivot == 0.) || (direction > 0 && pivot == 1.);
-        let fraction = if direction < 0 { pivot } else { 1. - pivot };
-        let scale = if anchor_moves {
-            1.
-        } else {
-            1. / fraction.max(f32::EPSILON)
-        };
-        requested[axis] =
-            (initial[axis] as f32 + direction as f32 * delta[axis] * scale + 0.5).floor() as i32;
     }
     // Original corner handles use width to control aspect; top/bottom use height.
     if handle[0] != 0
@@ -138,8 +133,7 @@ impl EditorApp {
         key: LevelKey,
         layer: usize,
         index: usize,
-        local: [f32; 2],
-        _zoom: f32,
+        level_pixel: [f32; 2],
     ) -> Option<[i32; 2]> {
         if !self.single_entity_selected(key, layer, index) {
             return None;
@@ -153,7 +147,7 @@ impl EditorApp {
             .as_array()?
             .iter()
             .find(|d| d["uid"] == entity["defUid"])?;
-        handle_at(entity, def, local)
+        handle_at(entity, def, level_pixel)
     }
     pub(super) fn draw_resize_handles(&self, ui: &egui::Ui, rect: Rect) {
         if self.world || !self.details {
@@ -196,7 +190,7 @@ impl EditorApp {
             }
             let position = handle_position(entity, def, handle);
             let screen = self.viewport.to_screen(
-                canvas::layer_to_world(project, key, self.layer, &self.viewport, position),
+                position,
                 rect.min.into(),
                 rect.size().into(),
             );
@@ -214,14 +208,15 @@ mod tests {
     use super::*;
     use serde_json::json;
     #[test]
-    fn center_pivots_double_size_delta_but_endpoint_pivots_move_the_anchor() {
+    fn requested_size_uses_the_current_rectangle_and_level_cursor() {
         let def = json!({"resizableX":true,"resizableY":true,"pivotX":0.5,"pivotY":1,"width":20,"height":10});
+        let entity = json!({"px":[100,100],"width":20,"height":10});
         assert_eq!(
-            requested_entity_size(&def, [20, 10], [4., 3.], [1, 1]),
+            requested_entity_size(&def, &entity, [123., 108.], [1, 1]),
             [28, 13]
         );
         assert_eq!(
-            requested_entity_size(&def, [20, 10], [4., 3.], [-1, -1]),
+            requested_entity_size(&def, &entity, [93., 88.], [-1, -1]),
             [12, 7]
         );
         assert_eq!(
@@ -241,20 +236,22 @@ mod tests {
         assert!(handle_active(&def, [1, 0]));
         assert!(!handle_active(&def, [1, 1]));
         assert!(!handle_active(&def, [0, 1]));
+        let entity = json!({"px":[100,100],"width":20,"height":10});
         assert_eq!(
-            requested_entity_size(&def, [20, 10], [3., 99.], [1, 0]),
+            requested_entity_size(&def, &entity, [121., 199.], [1, 0]),
             [26, 10]
         );
     }
     #[test]
     fn aspect_corner_uses_horizontal_control_and_vertical_side_uses_height() {
         let def = json!({"resizableX":true,"resizableY":true,"keepAspectRatio":true,"width":20,"height":10,"pivotX":0,"pivotY":0});
-        let request = requested_entity_size(&def, [20, 10], [0., 40.], [1, 1]);
+        let entity = json!({"px":[100,100],"width":20,"height":10});
+        let request = requested_entity_size(&def, &entity, [125., 155.], [1, 1]);
         assert_eq!(
             ldtk_core::constrained_entity_size(&def, request, [20, 10], None),
             [20, 10]
         );
-        let request = requested_entity_size(&def, [20, 10], [0., 10.], [0, 1]);
+        let request = requested_entity_size(&def, &entity, [100., 125.], [0, 1]);
         assert_eq!(
             ldtk_core::constrained_entity_size(&def, request, [20, 10], None),
             [40, 20]
@@ -293,11 +290,7 @@ mod native_tests {
         app.entity_index = Some(0);
         app.viewport.zoom = 2.;
         assert_eq!(
-            app.resize_handle_at(key, 0, 0, [32., 11.], 1.),
-            Some([0, -1])
-        );
-        assert_eq!(
-            app.resize_handle_at(key, 0, 0, [32., 11.], 4.),
+            app.resize_handle_at(key, 0, 0, [32., 11.]),
             Some([0, -1])
         );
         let ctx = egui::Context::default();

@@ -186,10 +186,11 @@ impl Scene<'_> {
         painter: &Painter,
         entity: &Value,
         def: &Value,
+        origin_transform: Transform,
         transform: Transform,
         grid: f32,
     ) {
-        let origin = self.point(transform.point(point_origin(entity, def, grid)));
+        let origin = self.point(origin_transform.point(point_origin(entity, def, grid)));
         let color = lighten(self.smart_color(entity, def), 0.5);
         for field in values(&def["fieldDefs"]) {
             let mode = text(field, "editorDisplayMode", "");

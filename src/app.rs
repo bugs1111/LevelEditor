@@ -1017,7 +1017,7 @@ impl EditorApp {
         );
     }
 
-    fn edit_entity(&mut self, local: [f32; 2], erase: bool) {
+    fn erase_entity(&mut self, local: [f32; 2]) {
         if !self.details {
             return;
         }
@@ -1027,79 +1027,93 @@ impl EditorApp {
         let Some(project) = &self.project else {
             return;
         };
-        if erase {
-            self.chain_entity = None;
-            self.selection_group = None;
-            let index = project
-                .layer(key, self.layer)
-                .and_then(|l| hit_entity(project, l, local).map(|e| e.0));
-            if let Some(index) = index {
-                let entity =
-                    project.layer(key, self.layer).unwrap()["entityInstances"][index].clone();
-                let snapshot = self.capture_entity_render(key, self.layer);
-                self.history
-                    .mark_entity_change(project, key, self.layer, &entity);
-                let project = self.project.as_mut().unwrap();
-                match project.remove_entity(key, self.layer, index) {
-                    Ok(changed) => {
-                        self.dirty |= changed;
-                        if changed {
-                            self.defer_entity_render(snapshot);
-                            self.bleep_entity(key, self.layer, &entity);
-                            self.entity_index = None;
-                            if self.panel == Some(Panel::Entity) {
-                                self.panel = None;
-                            }
-                        }
-                    }
-                    Err(e) => self.status = e.to_string(),
-                }
-            }
-        } else if let Some(uid) = self.entity_uid {
-            let grid = project
-                .layer(key, self.layer)
-                .map(|l| number(l, "__gridSize", 16.0))
-                .unwrap_or(16.0);
-            let Some(def) = project.json["defs"]["entities"]
-                .as_array()
-                .and_then(|a| a.iter().find(|d| d["uid"].as_i64() == Some(uid)))
-            else {
-                return;
-            };
-            let pos = ldtk_core::snapped_entity_position(def, local, grid as i32, self.grid);
-            let prevent_message = format!(
-                "You cannot have more than {} {}.",
-                number(def, "maxCount", 0.) as i32,
-                text(def, "identifier", "entities")
-            );
+        self.chain_entity = None;
+        self.selection_group = None;
+        let index = project
+            .layer(key, self.layer)
+            .and_then(|l| hit_entity(project, l, local).map(|e| e.0));
+        if let Some(index) = index {
+            let entity =
+                project.layer(key, self.layer).unwrap()["entityInstances"][index].clone();
             let snapshot = self.capture_entity_render(key, self.layer);
+            self.history
+                .mark_entity_change(project, key, self.layer, &entity);
             let project = self.project.as_mut().unwrap();
-            match project.add_entity(key, self.layer, uid, pos[0], pos[1]) {
+            match project.remove_entity(key, self.layer, index) {
                 Ok(changed) => {
                     self.dirty |= changed;
-                    if !changed {
-                        self.status = prevent_message;
-                        self.status_error = true;
-                    }
-                    if changed
-                        && let Some(index) = project
-                            .layer(key, self.layer)
-                            .and_then(|l| l["entityInstances"].as_array())
-                            .map(|a| a.len().saturating_sub(1))
-                    {
-                        self.history.mark_entity_change(
-                            project,
-                            key,
-                            self.layer,
-                            &project.layer(key, self.layer).unwrap()["entityInstances"][index],
-                        );
+                    if changed {
                         self.defer_entity_render(snapshot);
-                        self.entity_index = Some(index);
-                        self.try_chain_to(key, self.layer, index, true, self.entity_uid);
+                        self.bleep_entity(key, self.layer, &entity);
+                        self.entity_index = None;
+                        if self.panel == Some(Panel::Entity) {
+                            self.panel = None;
+                        }
                     }
                 }
                 Err(e) => self.status = e.to_string(),
             }
+        }
+    }
+
+    fn place_entity(&mut self, local: [f32; 2], level_pixel: [f32; 2]) {
+        if !self.details {
+            return;
+        }
+        let Some(key) = self.selected else {
+            return;
+        };
+        let Some(project) = &self.project else {
+            return;
+        };
+        let Some(uid) = self.entity_uid else {
+            return;
+        };
+        let grid = project
+            .layer(key, self.layer)
+            .map(|l| number(l, "__gridSize", 16.0))
+            .unwrap_or(16.0);
+        let Some(def) = project.json["defs"]["entities"]
+            .as_array()
+            .and_then(|a| a.iter().find(|d| d["uid"].as_i64() == Some(uid)))
+        else {
+            return;
+        };
+        let placement = if self.grid { local } else { level_pixel };
+        let pos = ldtk_core::snapped_entity_position(def, placement, grid as i32, self.grid);
+        let cursor = level_pixel.map(|pixel| pixel as i32);
+        let prevent_message = format!(
+            "You cannot have more than {} {}.",
+            number(def, "maxCount", 0.) as i32,
+            text(def, "identifier", "entities")
+        );
+        let snapshot = self.capture_entity_render(key, self.layer);
+        let project = self.project.as_mut().unwrap();
+        match project.place_entity(key, self.layer, uid, cursor, pos) {
+            Ok(changed) => {
+                self.dirty |= changed;
+                if !changed {
+                    self.status = prevent_message;
+                    self.status_error = true;
+                }
+                if changed
+                    && let Some(index) = project
+                        .layer(key, self.layer)
+                        .and_then(|l| l["entityInstances"].as_array())
+                        .map(|a| a.len().saturating_sub(1))
+                {
+                    self.history.mark_entity_change(
+                        project,
+                        key,
+                        self.layer,
+                        &project.layer(key, self.layer).unwrap()["entityInstances"][index],
+                    );
+                    self.defer_entity_render(snapshot);
+                    self.entity_index = Some(index);
+                    self.try_chain_to(key, self.layer, index, true, self.entity_uid);
+                }
+            }
+            Err(e) => self.status = e.to_string(),
         }
     }
 
@@ -2187,8 +2201,13 @@ mod tests {
         let mut app = EditorApp::empty();
         app.set_project(p);
         app.entity_uid = Some(uid);
-        app.edit_entity([8.0, 8.0], false);
-        app.edit_entity([24.0, 8.0], false);
+        let key = app.selected.unwrap();
+        for x in [8., 24.] {
+            app.history.begin(app.project.as_ref().unwrap(), key);
+            app.stroke = true;
+            app.place_entity([x, 8.], [x, 8.]);
+            app.finish_stroke();
+        }
         let entities = app
             .project
             .as_ref()
@@ -2201,6 +2220,13 @@ mod tests {
             entities[0]["fieldInstances"][0]["__value"]["entityIid"],
             entities[1]["iid"]
         );
+        app.undo_action(false);
+        let entities = &app.project.as_ref().unwrap().layer(key, 0).unwrap()["entityInstances"];
+        assert_eq!(entities.as_array().unwrap().len(), 2);
+        assert!(entities[0]["fieldInstances"][0]["__value"].is_null());
+        app.undo_action(false);
+        let entities = &app.project.as_ref().unwrap().layer(key, 0).unwrap()["entityInstances"];
+        assert_eq!(entities.as_array().unwrap().len(), 1);
     }
 
     #[test]
@@ -2249,18 +2275,35 @@ mod tests {
     }
 
     #[test]
-    fn entity_drag_preserves_pivot_and_pointer_cell_phase() {
+    fn entity_drag_preserves_pointer_cell_phase_and_uses_the_scaled_grid() {
+        let mut project = Project::new();
+        let layer = project.add_layer("Actors", "Entities", 16).unwrap();
+        let key = project.level_keys()[0];
+        let view = Viewport::default();
         assert_eq!(
-            entity_tools::drag_position([8, 16], [7.0, 8.0], [17.0, 8.0], 16.0, 1.0, true),
-            [24, 16]
+            entity_tools::drag_delta(&project, key, 0, &view, [[7., 8.], [17., 8.]], true),
+            [16., 0.]
         );
         assert_eq!(
-            entity_tools::drag_position([8, 16], [1.0, 1.0], [15.0, 1.0], 16.0, 1.0, true),
-            [8, 16]
+            entity_tools::drag_delta(&project, key, 0, &view, [[1., 1.], [15., 1.]], true),
+            [0., 0.]
         );
+        project
+            .update_layer_properties(
+                layer,
+                &serde_json::json!({"parallaxFactorX":0.5,"parallaxScaling":true}),
+            )
+            .unwrap();
         assert_eq!(
-            entity_tools::drag_position([8, 16], [7.0, 8.0], [17.0, 8.0], 16.0, 0.5, true),
-            [16, 16]
+            entity_tools::drag_delta(&project, key, 0, &view, [[7., 8.], [9., 8.]], true),
+            [8., 0.]
+        );
+        project
+            .update_layer_properties(layer, &serde_json::json!({"pxOffsetX":20}))
+            .unwrap();
+        assert_eq!(
+            entity_tools::drag_delta(&project, key, 0, &view, [[27., 8.], [29., 8.]], true),
+            [8., 0.]
         );
     }
 
@@ -2281,6 +2324,7 @@ mod tests {
             key,
             layer: 0,
             index: 0,
+            press: egui::pos2(64., 80.),
             start: [64., 80.],
             end: [83., 83.],
             origin: [64, 80],
@@ -3401,6 +3445,7 @@ mod tests {
             let old = visible_entity(&draw(&mut app, 1.261, vec![])).unwrap();
 
             let handle_offset = egui::vec2(4., 5.);
+            let resized_handle_shift = egui::vec2(-1., 0.);
             let start = if resizable {
                 old.right_bottom() + handle_offset
             } else {
@@ -3417,14 +3462,15 @@ mod tests {
                     vec![egui::Event::PointerMoved(end - egui::vec2(8., 4.))],
                 );
                 assert_eq!(visible_entity(&out), Some(old));
-                assert_eq!(entities(&app)[0]["width"], 72);
+                assert_eq!(entities(&app)[0]["width"], 71);
             }
             let out = draw(&mut app, 2.02, vec![egui::Event::PointerMoved(end)]);
             assert_eq!(visible_entity(&out), Some(old));
             if resizable {
-                assert_eq!(entities(&app)[0]["width"], 80);
+                assert_eq!(entities(&app)[0]["width"], 79);
                 assert!(out.shapes.iter().any(|shape| matches!(&shape.shape, egui::Shape::Circle(circle)
-                    if circle.fill == Color32::from_rgba_unmultiplied(255, 204, 0, 191) && circle.center == end)));
+                    if circle.fill == Color32::from_rgba_unmultiplied(255, 204, 0, 191)
+                        && circle.center == end + resized_handle_shift)));
             } else {
                 let ghost_fill = Color32::from_rgb(34, 170, 119).gamma_multiply(0.5);
                 assert!(
@@ -3449,7 +3495,7 @@ mod tests {
             );
             let next = visible_entity(&draw(&mut app, deadline + 0.001, vec![])).unwrap();
             if resizable {
-                assert_eq!(next.right_bottom() + handle_offset, end);
+                assert_eq!(next.right_bottom() + handle_offset, end + resized_handle_shift);
             } else {
                 assert_eq!(next.center(), end);
             }
@@ -3652,6 +3698,267 @@ mod tests {
     }
 
     #[test]
+    fn selection_drag_threshold_uses_screen_motion_before_release() {
+        let mut project = Project::new();
+        let layer = project.add_layer("Actors", "Entities", 16).unwrap();
+        project
+            .update_layer_properties(
+                layer,
+                &serde_json::json!({"parallaxFactorX":0.25,"parallaxFactorY":0.25,"parallaxScaling":true}),
+            )
+            .unwrap();
+        let actor = project.add_entity_def("Actor", 16, 16).unwrap();
+        project
+            .update_entity_definition(actor, &serde_json::json!({"pivotX":0,"pivotY":0}))
+            .unwrap();
+        let key = project.level_keys()[0];
+        project.add_entity(key, 0, actor, 64, 80).unwrap();
+        project.add_entity(key, 0, actor, 104, 104).unwrap();
+        let modifiers = egui::Modifiers::NONE;
+        for (select_all, start, end, motion, expected_x) in [
+            (false, 14., 23., true, 64),
+            (false, 17., 27., true, 67),
+            (false, 17., 29., false, 64),
+            (true, 14., 23., true, 64),
+            (true, 17., 27., true, 67),
+            (true, 17., 29., false, 64),
+        ] {
+            let mut app = EditorApp::empty();
+            app.set_project(project.clone());
+            app.fit = false;
+            app.grid = false;
+            app.viewport.center = [128.; 2];
+            app.viewport.zoom = 900. / 336.;
+            if select_all {
+                app.select_all();
+            }
+            let ctx = egui::Context::default();
+            let start = egui::pos2(start, 42.);
+            let end = egui::pos2(end, 42.);
+            let click = |pos, pressed| egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers,
+            };
+            canvas_frame(&mut app, &ctx, vec![egui::Event::PointerMoved(start)], modifiers);
+            canvas_frame(&mut app, &ctx, vec![click(start, true)], modifiers);
+            assert!(if select_all {
+                matches!(app.gesture, Some(tools::Gesture::SelectionMove { .. }))
+            } else {
+                matches!(app.gesture, Some(tools::Gesture::EntityMove { .. }))
+            });
+            let mut events = Vec::new();
+            if motion {
+                events.push(egui::Event::PointerMoved(end));
+            }
+            events.push(click(end, false));
+            events.push(egui::Event::PointerMoved(egui::pos2(70., 42.)));
+            canvas_frame(&mut app, &ctx, events, modifiers);
+            let entities = &app.project.as_ref().unwrap().layer(key, 0).unwrap()["entityInstances"];
+            assert_eq!(
+                entities[0]["px"],
+                serde_json::json!([expected_x, 80]),
+                "select_all={select_all}, end={end:?}"
+            );
+            let second_x = if select_all { 104 + expected_x - 64 } else { 104 };
+            assert_eq!(entities[1]["px"], serde_json::json!([second_x, 104]));
+            assert_eq!(app.dirty, expected_x != 64);
+        }
+    }
+
+    #[test]
+    fn parallax_entity_drag_uses_rounded_level_pixels_or_scaled_grid_steps() {
+        let mut project = Project::new();
+        let layer = project.add_layer("Actors", "Entities", 16).unwrap();
+        project
+            .update_layer_properties(
+                layer,
+                &serde_json::json!({
+                    "parallaxFactorX":0.25,"parallaxFactorY":0.25,"parallaxScaling":true
+                }),
+            )
+            .unwrap();
+        let actor = project.add_entity_def("Actor", 16, 16).unwrap();
+        project
+            .update_entity_definition(actor, &serde_json::json!({"pivotX":0,"pivotY":0}))
+            .unwrap();
+        let key = project.level_keys()[0];
+        project.add_entity(key, 0, actor, 64, 80).unwrap();
+        for (grid, expected) in [(false, [78, 96]), (true, [76, 92])] {
+            let mut app = EditorApp::empty();
+            app.set_project(project.clone());
+            app.fit = false;
+            app.grid = grid;
+            app.viewport.center = [128.; 2];
+            app.viewport.zoom = 1.;
+            let ctx = egui::Context::default();
+            let start = egui::pos2(86., 96.);
+            let end = egui::pos2(100., 112.);
+            let modifiers = egui::Modifiers::NONE;
+            canvas_frame(&mut app, &ctx, vec![egui::Event::PointerMoved(start)], modifiers);
+            for (pos, pressed) in [(start, true), (end, false)] {
+                canvas_frame(
+                    &mut app,
+                    &ctx,
+                    vec![
+                        egui::Event::PointerMoved(pos),
+                        egui::Event::PointerButton {
+                            pos,
+                            button: egui::PointerButton::Primary,
+                            pressed,
+                            modifiers,
+                        },
+                    ],
+                    modifiers,
+                );
+            }
+            let position = |app: &EditorApp| {
+                app.project.as_ref().unwrap().layer(key, 0).unwrap()["entityInstances"][0]["px"]
+                    .clone()
+            };
+            assert_eq!(position(&app), serde_json::json!(expected), "grid={grid}");
+            app.undo_action(false);
+            assert_eq!(position(&app), serde_json::json!([64, 80]));
+        }
+    }
+
+    #[test]
+    fn parallax_resize_uses_level_handles_and_keeps_an_entity_outside_the_scaled_grid() {
+        let mut project = Project::new();
+        let layer = project.add_layer("Actors", "Entities", 16).unwrap();
+        project
+            .update_layer_properties(
+                layer,
+                &serde_json::json!({
+                    "parallaxFactorX":0.25,"parallaxFactorY":0.25,"parallaxScaling":true
+                }),
+            )
+            .unwrap();
+        let actor = project.add_entity_def("Actor", 16, 16).unwrap();
+        project
+            .update_entity_definition(
+                actor,
+                &serde_json::json!({"resizableX":true,"pivotX":0,"pivotY":0}),
+            )
+            .unwrap();
+        let key = project.level_keys()[0];
+        project.add_entity(key, 0, actor, 200, 154).unwrap();
+        let mut app = EditorApp::empty();
+        app.set_project(project);
+        app.fit = false;
+        app.grid = false;
+        app.entity_index = Some(0);
+        app.viewport.center = [128.; 2];
+        app.viewport.zoom = 1.;
+        let ctx = egui::Context::default();
+        let start = egui::pos2(220., 162.);
+        let end = egui::pos2(239., 162.);
+        let modifiers = egui::Modifiers::NONE;
+        canvas_frame(&mut app, &ctx, vec![egui::Event::PointerMoved(start)], modifiers);
+        for (pos, pressed) in [(start, true), (end, false)] {
+            canvas_frame(
+                &mut app,
+                &ctx,
+                vec![
+                    egui::Event::PointerMoved(pos),
+                    egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers,
+                    },
+                ],
+                modifiers,
+            );
+        }
+        let entity = |app: &EditorApp| {
+            app.project.as_ref().unwrap().layer(key, 0).unwrap()["entityInstances"][0].clone()
+        };
+        assert_eq!(entity(&app)["px"], serde_json::json!([200, 154]));
+        assert_eq!(entity(&app)["width"], 34);
+        app.undo_action(false);
+        assert_eq!(entity(&app)["width"], 16);
+        app.undo_action(true);
+        assert_eq!(entity(&app)["width"], 34);
+    }
+
+    #[test]
+    fn entity_placement_uses_level_bounds_on_a_scaled_parallax_layer() {
+        let mut project = Project::new();
+        let layer = project.add_layer("Actors", "Entities", 16).unwrap();
+        project
+            .update_layer_properties(
+                layer,
+                &serde_json::json!({
+                    "parallaxFactorX":0.25,"parallaxFactorY":0.25,"parallaxScaling":true
+                }),
+            )
+            .unwrap();
+        let actor = project.add_entity_def("Actor", 16, 16).unwrap();
+        project
+            .update_entity_definition(actor, &serde_json::json!({"pivotX":0.5,"pivotY":0.5}))
+            .unwrap();
+        let key = project.level_keys()[0];
+        let modifiers = egui::Modifiers::NONE;
+        for (grid, x, expected) in [
+            (false, 98., [98, 154]),
+            (false, 12., [12, 154]),
+            (true, 12., [-24, 168]),
+            (false, 240., [240, 154]),
+            (true, 240., [280, 168]),
+        ] {
+            let mut app = EditorApp::empty();
+            app.set_project(project.clone());
+            app.fit = false;
+            app.grid = grid;
+            app.entity_uid = Some(actor);
+            app.viewport = Viewport {
+                center: [128.; 2],
+                zoom: 1.,
+            };
+            let ctx = egui::Context::default();
+            let pos = egui::pos2(x, 154.);
+            canvas_frame(&mut app, &ctx, vec![egui::Event::PointerMoved(pos)], modifiers);
+            for pressed in [true, false] {
+                canvas_frame(
+                    &mut app,
+                    &ctx,
+                    vec![egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers,
+                    }],
+                    modifiers,
+                );
+            }
+            assert_eq!(
+                app.project.as_ref().unwrap().layer(key, 0).unwrap()["entityInstances"][0]["px"],
+                serde_json::json!(expected),
+                "grid={grid}, x={x}"
+            );
+            if expected[0] < 0 || expected[0] >= 256 {
+                for pressed in [true, false] {
+                    canvas_frame(
+                        &mut app,
+                        &ctx,
+                        vec![egui::Event::PointerButton {
+                            pos,
+                            button: egui::PointerButton::Secondary,
+                            pressed,
+                            modifiers,
+                        }],
+                        modifiers,
+                    );
+                }
+                let layer = app.project.as_ref().unwrap().layer(key, 0).unwrap();
+                assert_eq!(layer["entityInstances"], serde_json::json!([]));
+            }
+        }
+    }
+
+    #[test]
     fn mixed_selection_move_uses_rendered_layer_scales_and_ignores_brush_flips() {
         let mut p = Project::new();
         let normal = p.add_layer("Normal", "IntGrid", 16).unwrap();
@@ -3681,6 +3988,7 @@ mod tests {
         assert_eq!(app.selection_group.as_ref().unwrap()["elementCount"], 2);
         app.gesture = Some(tools::Gesture::SelectionMove {
             region: [0, 0, 4, 2],
+            press: egui::Pos2::ZERO,
             start: [0, 0],
             end: [2, 0],
             copy: false,

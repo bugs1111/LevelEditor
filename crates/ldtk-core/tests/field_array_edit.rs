@@ -136,6 +136,63 @@ fn set_normalizes_only_new_path_value_and_preserves_other_raw_strings() {
     }
 }
 #[test]
+fn symmetric_array_slot_insertion_preserves_legacy_links_until_a_target_is_picked() {
+    let mut p = Project::new();
+    p.add_layer("Actors", "Entities", 16).unwrap();
+    let actor = p.add_entity_def("Actor", 16, 16).unwrap();
+    let foreign = p.add_entity_def("Foreign", 16, 16).unwrap();
+    let uid = p
+        .add_field_definition(Some(actor), "Links", "EntityRef", true)
+        .unwrap();
+    p.update_field_definition(uid, &json!({"allowedRefs":"Any"}))
+        .unwrap();
+    for (i, definition) in [actor, actor, actor, foreign].into_iter().enumerate() {
+        p.add_entity(K, 0, definition, 16 * (i as i32 + 1), 16)
+            .unwrap();
+    }
+    let ids: Vec<_> = p.layer(K, 0).unwrap()["entityInstances"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|entity| entity["iid"].as_str().unwrap().to_owned())
+        .collect();
+    for source in [&ids[0], &ids[2]] {
+        p.set_field_editor_value(K, Some(source), uid, json!([ids[3]]))
+            .unwrap();
+    }
+    p.update_field_definition(uid, &json!({"symmetricalRef":true}))
+        .unwrap();
+    let links = |p: &Project, entity: usize| {
+        p.layer(K, 0).unwrap()["entityInstances"][entity]["fieldInstances"][0]["__value"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|value| value["entityIid"].clone())
+            .collect::<Vec<_>>()
+    };
+
+    p.edit_field_array(K, Some(&ids[0]), uid, Edit::Insert { index: 1 })
+        .unwrap();
+    assert_eq!(links(&p, 0), vec![json!(ids[3]), json!(null)]);
+    p.edit_field_array(K, Some(&ids[0]), uid, Edit::Move { from: 0, to: 1 })
+        .unwrap();
+    assert_eq!(links(&p, 0), vec![json!(null), json!(ids[3])]);
+    p.edit_field_array(
+        K,
+        Some(&ids[0]),
+        uid,
+        Edit::Set {
+            index: 0,
+            value: json!(ids[1]),
+        },
+    )
+    .unwrap();
+    assert_eq!(links(&p, 0), vec![json!(ids[1])]);
+    assert_eq!(links(&p, 1), vec![json!(ids[0])]);
+    assert_eq!(links(&p, 2), vec![json!(ids[3])]);
+}
+
+#[test]
 fn indexed_entity_reference_edits_update_both_ends_and_reject_invalid_targets_atomically() {
     let mut p = Project::new();
     p.add_layer("Actors", "Entities", 16).unwrap();

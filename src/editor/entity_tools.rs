@@ -1,21 +1,31 @@
 use super::*;
 use serde_json::json;
 
-pub(super) fn drag_position(
-    origin: [i32; 2],
-    start: [f32; 2],
-    end: [f32; 2],
-    grid: f32,
-    scale: f32,
+pub(super) fn placement_in_level(project: &Project, key: LevelKey, [x, y]: [f32; 2]) -> bool {
+    let [left, top, right, bottom] = canvas::bounds(project, key, false);
+    (left..right).contains(&x) && (top..bottom).contains(&y)
+}
+
+pub(super) fn drag_delta(
+    project: &Project,
+    key: LevelKey,
+    layer: usize,
+    view: &Viewport,
+    [start, end]: [[f32; 2]; 2],
     snap: bool,
-) -> [i32; 2] {
+) -> [f32; 2] {
+    if !snap {
+        return [end[0] - start[0], end[1] - start[1]];
+    }
+    let grid = project
+        .layer(key, layer)
+        .map_or(16., |layer| number(layer, "__gridSize", 16.).max(1.));
+    let scale =
+        canvas::pointer_transform(project, key, layer, view).map_or(1., |transform| transform.scale);
+    let [start, end] =
+        [start, end].map(|level| canvas::pointer_to_layer(project, key, layer, view, level));
     std::array::from_fn(|axis| {
-        let delta = if snap {
-            ((end[axis] / grid).floor() - (start[axis] / grid).floor()) * grid * scale
-        } else {
-            (end[axis] - start[axis]) * scale
-        };
-        origin[axis] + delta.trunc() as i32
+        ((end[axis] / grid).floor() - (start[axis] / grid).floor()) * (grid * scale)
     })
 }
 
@@ -51,16 +61,17 @@ impl EditorApp {
             project.level(key)?["layerInstances"]
                 .as_array()?
                 .iter()
-                .find_map(|l| {
+                .enumerate()
+                .find_map(|(layer, l)| {
                     l["entityInstances"]
                         .as_array()?
                         .iter()
                         .find(|e| e["iid"] == previous)
                         .cloned()
-                        .map(|e| (key, e))
+                        .map(|e| (key, layer, e))
                 })
         });
-        let Some((source_key, source)) = source else {
+        let Some((source_key, source_layer, source)) = source else {
             self.chain_entity = created.then_some(target_iid);
             return;
         };
@@ -127,17 +138,10 @@ impl EditorApp {
             .find(|f| f["defUid"] == uid)
             .and_then(|f| f["__value"].as_array())
             .map_or(0, Vec::len);
-        if let Some(source_layer) = project
-            .level(source_key)
-            .and_then(|l| l["layerInstances"].as_array())
-            .and_then(|ls| {
-                ls.iter().position(|l| {
-                    l["entityInstances"]
-                        .as_array()
-                        .is_some_and(|es| es.iter().any(|e| e["iid"] == previous))
-                })
-            })
-        {
+        // LDtk saves placement first and only records the link for same-level pairs.
+        self.dirty |= self.history.commit(project);
+        if source_key == key {
+            self.history.begin(project, key);
             self.history
                 .mark_entity_change(project, source_key, source_layer, &source);
         }
@@ -163,6 +167,19 @@ impl EditorApp {
         } else {
             project.set_field_editor_value(source_key, Some(&previous), uid, reference)
         };
+        if source_key == key {
+            if result.is_ok() {
+                self.dirty |= self.history.commit(project);
+            } else {
+                self.history.cancel(project);
+            }
+        } else {
+            self.dirty |= result.is_ok();
+        }
+        if self.stroke {
+            // Capture any move or resize that follows the press independently of the link.
+            self.history.begin(project, key);
+        }
         match result {
             Ok(()) => {
                 if definition["isArray"] == true || definition["symmetricalRef"] != true {
@@ -202,7 +219,7 @@ mod tests {
         let old = app.chain_entity.clone().unwrap();
         app.navigate_level(b, true);
         assert_eq!(app.chain_entity.as_deref(), Some(old.as_str()));
-        app.edit_entity([24.0, 24.0], false);
+        app.place_entity([24.0, 24.0], [24.0, 24.0]);
         let p = app.project.as_ref().unwrap();
         let target = &p.layer(b, 0).unwrap()["entityInstances"][0];
         assert_eq!(

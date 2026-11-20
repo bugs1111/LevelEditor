@@ -158,6 +158,25 @@ fn canvas_reference_pick_crosses_levels_returns_to_source_and_follow_button_navi
 }
 
 #[test]
+fn cross_level_reference_pick_only_records_the_array_insertion_for_undo() {
+    let mut f = fixture(true);
+    let ctx = egui::Context::default();
+    start(&mut f, &ctx);
+    assert_eq!(value(&f), json!([null]));
+    f.app.dirty = false;
+    f.app.navigate_level(f.target, false);
+    click_entity(&mut f, &ctx, [96., 96.]);
+    assert_eq!(f.app.selected, Some(f.source));
+    assert_eq!(value(&f)[0]["entityIid"], f.target_iid);
+    assert!(f.app.dirty, "the cross-level link must be saved");
+
+    f.app.undo_action(false);
+    assert_eq!(value(&f), json!([]));
+    f.app.undo_action(true);
+    assert_eq!(value(&f), json!([null]));
+}
+
+#[test]
 fn world_reference_picker_selects_the_level_before_picking_and_returns_in_world_view() {
     let mut f = fixture(false);
     let ctx = egui::Context::default();
@@ -481,6 +500,10 @@ fn same_level_reference_pick_keeps_the_inspector_and_camera() {
     assert_eq!(f.app.panel, Some(Panel::Entity));
     assert_eq!(f.app.entity_index, Some(0));
     assert!(!f.app.picking_entity_ref());
+    f.app.undo_action(false);
+    assert!(value(&f).is_null());
+    f.app.undo_action(true);
+    assert_eq!(value(&f)["entityIid"], target);
 }
 
 #[test]
@@ -701,7 +724,7 @@ fn point_picker_stays_armed_while_entity_handles_resize_with_either_button() {
         frame(&mut f, &ctx, vec![egui::Event::PointerMoved(finish)], false);
         assert_eq!(
             f.app.project.as_ref().unwrap().layer(f.source, 0).unwrap()["entityInstances"][0]["width"],
-            48
+            47 // Level X 84 minus the left edge 32 and handle radius 5.
         );
         frame(
             &mut f,
@@ -1110,6 +1133,50 @@ fn point_array_pick_button_reserves_the_source_summary_and_row_heights() {
 }
 
 #[test]
+fn point_array_marks_only_expanded_required_slots_in_the_inspector() {
+    let mut f = fixture(true);
+    let ctx = egui::Context::default();
+    theme::configure(&ctx);
+    let project = f.app.project.as_mut().unwrap();
+    let actor = project.json["defs"]["entities"][0]["uid"].as_i64().unwrap();
+    project.remove_field_definition(f.uid).unwrap();
+    f.uid = project
+        .add_field_definition(Some(actor), "Waypoints", "Point", true)
+        .unwrap();
+    project
+        .set_field_editor_value(f.source, Some(&f.owner), f.uid, json!([null, {"cx":10,"cy":8}]))
+        .unwrap();
+
+    for (mode, expected_text, required) in [
+        ("PointPathLoop", "POINT REQUIRED!", true),
+        ("Points", ", <10,8>", false),
+    ] {
+        let project = f.app.project.as_mut().unwrap();
+        project
+            .update_field_definition(f.uid, &json!({"canBeNull":false,"editorDisplayMode":mode}))
+            .unwrap();
+        let entity = project.layer(f.source, 0).unwrap()["entityInstances"][0].clone();
+        let output = ctx.run(egui::RawInput::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                ui.set_width(330.);
+                f.app.instance_fields(ui, f.source, Some(&f.owner), &entity);
+            });
+        });
+        let has_label = |expected| output.shapes.iter().any(|shape| {
+            matches!(&shape.shape, egui::Shape::Text(text) if text.galley.text() == expected)
+        });
+        let error_headers = output.shapes.iter().filter(|shape| {
+            matches!(&shape.shape, egui::Shape::Vec(parts) if parts.iter().any(|part|
+                matches!(part, egui::Shape::Rect(rect) if rect.fill == Color32::from_rgb(121, 17, 5))
+            ))
+        }).count();
+        assert_eq!(error_headers, usize::from(required), "{mode}");
+        assert!(has_label(expected_text), "{mode}");
+        assert!(!has_label("Value required"), "{mode}");
+    }
+}
+
+#[test]
 fn point_array_coordinates_are_read_only_and_required_slots_can_be_filled() {
     let mut f = fixture(true);
     let ctx = egui::Context::default();
@@ -1174,13 +1241,8 @@ fn point_array_canvas_pick_retains_offset_parallax_geometry_and_editor_length_di
     click(&mut f, &ctx, pos, true);
     assert!(f.app.field_pick.is_some());
     let (rect, _) = frame(&mut f, &ctx, vec![], false);
-    let world = canvas::layer_to_world(
-        f.app.project.as_ref().unwrap(),
-        f.source,
-        0,
-        &f.app.viewport,
-        [40., 72.],
-    );
+    // Coords uses [64 + 24, 64 - 8] as the layer input origin.
+    let world = [108., 92.];
     let pointer = f
         .app
         .viewport

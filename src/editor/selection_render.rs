@@ -389,12 +389,14 @@ impl EditorApp {
         };
         let grid = number(instance, "__gridSize", 16.);
         let center = |p: [f32; 2]| {
-            canvas::layer_to_world(
+            let layer_pixel =
+                canvas::pointer_to_layer(project, *key, *layer, &self.viewport, p);
+            canvas::layer_to_pointer_world(
                 project,
                 *key,
                 *layer,
                 &self.viewport,
-                p.map(|v| ((v / grid).floor() + 0.5) * grid),
+                layer_pixel.map(|v| ((v / grid).floor() + 0.5) * grid),
             )
         };
         draw_move_arrow(
@@ -610,6 +612,7 @@ mod interaction_tests {
             key,
             layer: 0,
             index: 0,
+            press: egui::Pos2::ZERO,
             start: [1., 1.],
             end: [33., 1.],
             origin: [0, 0],

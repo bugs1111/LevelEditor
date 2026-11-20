@@ -2,6 +2,7 @@
 use crate::workflow::{alloc_uid, invalid, valid_identifier, visit_fields_mut};
 use crate::{Error, LevelKey, Project, Result};
 use serde_json::{Value, json};
+use std::collections::{BTreeMap, BTreeSet};
 
 /// One source editor array action, preserving every untouched ValueWrapper.
 #[derive(Debug, Clone, PartialEq)]
@@ -647,7 +648,6 @@ impl Project {
                 && let Some(source) = entity
             {
                 symmetry(p, source, &d, &old, &f)?;
-                tidy_symmetric_refs(p)?;
             }
             refresh_fields(p)
         })
@@ -718,7 +718,6 @@ impl Project {
                 && let Some(source) = entity
             {
                 symmetry(p, source, &d, &old, &f)?;
-                tidy_symmetric_refs(p)?;
             }
             refresh_fields(p)
         })
@@ -858,7 +857,6 @@ impl Project {
                 && let Some(source) = entity
             {
                 symmetry(p, source, &d, &old, &new)?;
-                tidy_symmetric_refs(p)?;
             }
             refresh_fields(p)
         })
@@ -1447,13 +1445,10 @@ fn symmetry(p: &mut Project, source: &str, d: &Value, old: &Value, new: &Value) 
     let uid = d["uid"]
         .as_i64()
         .ok_or_else(|| invalid("field UID missing"))?;
-    let old_ids = wrapper_ids(old);
-    let new_ids = wrapper_ids(new);
-    for target in old_ids
-        .iter()
-        .chain(new_ids.iter())
-        .collect::<std::collections::BTreeSet<_>>()
-    {
+    let old_ids: BTreeSet<_> = wrapper_ids(old).into_iter().collect();
+    let new_ids: BTreeSet<_> = wrapper_ids(new).into_iter().collect();
+    let mut touched = BTreeSet::new();
+    for target in old_ids.symmetric_difference(&new_ids) {
         let Some((key, _)) = find_entity(p, target) else {
             continue;
         };
@@ -1465,6 +1460,7 @@ fn symmetry(p: &mut Project, source: &str, d: &Value, old: &Value, new: &Value) 
             .as_array_mut()
             .ok_or_else(|| invalid("target editor values missing"))?;
         let contains = values.iter().any(|v| wrapper_value(v, 2) == source);
+        touched.insert(target.clone());
         if new_ids.contains(target) {
             if !contains {
                 let w = wrapper(d, &json!(source), 2)?;
@@ -1482,7 +1478,7 @@ fn symmetry(p: &mut Project, source: &str, d: &Value, old: &Value, new: &Value) 
             }
         }
     }
-    Ok(())
+    tidy_symmetric_refs(p, uid, &touched)
 }
 impl Project {
     pub(crate) fn remove_enum_field_definitions(&mut self, name: &str, kind: &str) -> Result<()> {
@@ -1734,9 +1730,12 @@ fn update_enum_uses(p: &mut Project, enum_uid: i64, fields: &[i64], old: &str, n
         }
     }
 }
-fn tidy_symmetric_refs(p: &mut Project) -> Result<()> {
-    let defs = field_defs(p);
-    let mut links = std::collections::BTreeMap::new();
+fn tidy_symmetric_refs(p: &mut Project, uid: i64, touched: &BTreeSet<String>) -> Result<()> {
+    if touched.is_empty() {
+        return Ok(());
+    }
+    let mut links = BTreeMap::new();
+    let mut affected = touched.clone();
     for key in p.level_keys() {
         let level = p.level(key).ok_or_else(|| invalid("level not loaded"))?;
         for layer in level["layerInstances"].as_array().into_iter().flatten() {
@@ -1745,8 +1744,15 @@ fn tidy_symmetric_refs(p: &mut Project) -> Result<()> {
                     continue;
                 };
                 for field in entity["fieldInstances"].as_array().into_iter().flatten() {
-                    if let Some(uid) = field["defUid"].as_i64() {
-                        links.insert((iid.to_owned(), uid), wrapper_ids(field));
+                    if matches!(field["__type"].as_str(), Some("EntityRef" | "Array<EntityRef>")) {
+                        let targets = wrapper_ids(field);
+                        // The source tidies changed targets and their incoming referers.
+                        if targets.iter().any(|target| touched.contains(target)) {
+                            affected.insert(iid.to_owned());
+                        }
+                        if field["defUid"] == uid {
+                            links.insert(iid.to_owned(), targets);
+                        }
                     }
                 }
             }
@@ -1762,7 +1768,11 @@ fn tidy_symmetric_refs(p: &mut Project) -> Result<()> {
                 .into_iter()
                 .flatten()
             {
-                let Some(iid) = entity["iid"].as_str().map(str::to_owned) else {
+                let Some(iid) = entity["iid"]
+                    .as_str()
+                    .filter(|iid| affected.contains(*iid))
+                    .map(str::to_owned)
+                else {
                     continue;
                 };
                 for field in entity["fieldInstances"]
@@ -1770,12 +1780,7 @@ fn tidy_symmetric_refs(p: &mut Project) -> Result<()> {
                     .into_iter()
                     .flatten()
                 {
-                    let Some(uid) = field["defUid"].as_i64() else {
-                        continue;
-                    };
-                    if !defs.iter().any(|d| {
-                        d["uid"] == uid && d["symmetricalRef"] == true && base(d) == "EntityRef"
-                    }) {
+                    if field["defUid"] != uid {
                         continue;
                     }
                     if let Some(values) = field["realEditorValues"].as_array_mut() {
@@ -1783,7 +1788,7 @@ fn tidy_symmetric_refs(p: &mut Project) -> Result<()> {
                             let raw = wrapper_value(v, 2);
                             raw.as_str().is_none_or(|target| {
                                 links
-                                    .get(&(target.to_owned(), uid))
+                                    .get(target)
                                     .is_some_and(|refs| refs.contains(&iid))
                             })
                         });

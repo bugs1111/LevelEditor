@@ -68,15 +68,8 @@ impl EditorApp {
             return;
         };
         let grid = number(layer, "__gridSize", 16.);
-        if local[0] < 0.
-            || local[1] < 0.
-            || local[0] >= number(layer, "__cWid", 0.) * grid
-            || local[1] >= number(layer, "__cHei", 0.) * grid
-        {
-            return;
-        }
         let Some((index, uid, array_index)) = point_tools::hit_point(project, layer, local) else {
-            self.edit_entity(local, true);
+            self.erase_entity(local);
             return;
         };
         let entity = layer["entityInstances"][index].clone();

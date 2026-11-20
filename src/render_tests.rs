@@ -301,7 +301,7 @@ fn selection_ghost_mirrors_cells_about_group_bounds_and_preserves_project() {
             ..Default::default()
         },
         |ctx| {
-            draw_selection_ghost(
+            draw_group_ghost(
                 ctx,
                 &ctx.layer_painter(egui::LayerId::background()),
                 canvas,
@@ -311,6 +311,7 @@ fn selection_ghost_mirrors_cells_about_group_bounds_and_preserves_project() {
                 &group,
                 [16., 0.],
                 [true, false],
+                GhostMode::Move,
                 &mut assets,
             )
         },

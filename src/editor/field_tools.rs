@@ -5,13 +5,20 @@ fn point_coordinates(value: &Value) -> Option<String> {
     Some(format!("{},{}", value["cx"].as_i64()?, value["cy"].as_i64()?))
 }
 
+pub(super) fn point_array_is_compact(definition: &Value) -> bool {
+    matches!(
+        text(definition, "editorDisplayMode", ""),
+        "Points" | "PointPath" | "PointStar"
+    )
+}
+
 pub(super) fn array_field_frame(empty: bool) -> egui::Frame {
     let padding = if empty { 2 } else { 8 };
     egui::Frame::new().inner_margin(egui::Margin {
-        left: padding + 4,
-        right: 2,
-        top: padding,
-        bottom: padding,
+        left: padding + 5,
+        right: 1,
+        top: if empty { 4 } else { padding },
+        bottom: if empty { 3 } else { padding },
     })
 }
 
@@ -24,21 +31,32 @@ pub(super) fn array_field_border(ui: &egui::Ui, rect: Rect) {
 }
 
 pub(super) fn array_field_add(ui: &mut egui::Ui, tooltip: &str) -> egui::Response {
-    ui.scope(|ui| {
-        ui.spacing_mut().button_padding.y = 0.;
-        ui.spacing_mut().interact_size.y = 23.;
-        panels::source_controls::add_sized_button(
-            ui,
-            [ui.available_width(), 23.],
-            egui::Button::image(
-                egui::Image::new(egui::include_image!("../../assets/icons/add.svg"))
-                    .fit_to_exact_size(Vec2::splat(20.)),
+    egui::Frame::new()
+        .inner_margin(egui::Margin {
+            left: 1,
+            ..egui::Margin::ZERO
+        })
+        .show(ui, |ui| {
+            let size = 22.667;
+            ui.spacing_mut().button_padding.y = 0.;
+            ui.spacing_mut().interact_size.y = size;
+            let widgets = &mut ui.visuals_mut().widgets;
+            widgets.inactive.weak_bg_fill = Color32::from_rgb(49, 55, 66);
+            for style in [&mut widgets.hovered, &mut widgets.active] {
+                style.weak_bg_fill = theme::LIGHT;
+                style.expansion = 0.;
+            }
+            panels::source_controls::add_sized_button(
+                ui,
+                [ui.available_width(), size],
+                egui::Button::image(
+                    egui::Image::new(egui::include_image!("../../assets/icons/add.svg"))
+                        .fit_to_exact_size(Vec2::splat(size)),
+                ),
             )
-            .fill(Color32::from_rgb(49, 55, 66)),
-        )
-    })
-    .inner
-    .on_hover_text(locale::tr(ui, tooltip))
+        })
+        .inner
+        .on_hover_text(locale::tr(ui, tooltip))
 }
 
 pub(super) fn array_field_remove(ui: &mut egui::Ui) -> egui::Response {
@@ -895,16 +913,13 @@ impl EditorApp {
             let group = array_field_frame(values.is_empty())
                 .show(ui, |ui| {
                     ui.spacing_mut().item_spacing.y = 0.;
-                    let compact = matches!(
-                        text(definition, "editorDisplayMode", ""),
-                        "Points" | "PointPath" | "PointStar"
-                    );
-                    if compact && !values.is_empty() {
+                    if point_array_is_compact(definition) && !values.is_empty() {
                         let summary = values
                             .iter()
                             .map(|value| {
-                                let point = point_coordinates(value);
-                                format!("<{}>", point.as_deref().unwrap_or("null"))
+                                point_coordinates(value)
+                                    .map(|point| format!("<{point}>"))
+                                    .unwrap_or_default()
                             })
                             .collect::<Vec<_>>()
                             .join(", ");
@@ -925,8 +940,8 @@ impl EditorApp {
                             ui.push_id(index, |ui| {
                                 ui.horizontal(|ui| {
                                     ui.spacing_mut().item_spacing.x = 0.;
-                                    let required = value.is_null() && definition["canBeNull"] == false;
-                                    ui.set_height(if required { 38. } else { 28. });
+                                    let required = value.is_null() && definition["canBeNull"] != true;
+                                    ui.set_height(if required { 39. } else { 28. });
                                     if required {
                                         let picking = self.field_pick.as_ref().is_some_and(|pick| {
                                             pick.kind == "Point"
@@ -940,12 +955,38 @@ impl EditorApp {
                                             if picking { "Cancel" } else { "Point required!" },
                                         )
                                         .to_uppercase();
-                                        let response = panels::source_controls::add_sized_button(
-                                            ui,
-                                            [77., 38.],
-                                            egui::Button::new(RichText::new(label).size(10.667))
-                                                .fill(Color32::from_rgb(121, 17, 5)),
-                                        );
+                                        ui.add_space(1.);
+                                        let response = ui.scope(|ui| {
+                                            let error = Color32::from_rgb(227, 77, 0);
+                                            let widgets = &mut ui.visuals_mut().widgets;
+                                            widgets.inactive.weak_bg_fill = error;
+                                            for style in [&mut widgets.hovered, &mut widgets.active] {
+                                                style.weak_bg_fill = Color32::from_rgb(255, 93, 74);
+                                                style.expansion = 0.;
+                                            }
+                                            ui.spacing_mut().button_padding = egui::vec2(1., 4.);
+                                            let glow = ui.painter().add(egui::Shape::Noop);
+                                            let response = panels::source_controls::add_sized_button(
+                                                ui,
+                                                [77., 38.],
+                                                egui::Button::new(
+                                                    RichText::new(label).size(13.333).color(Color32::WHITE),
+                                                ).wrap(),
+                                            );
+                                            ui.painter().set(glow, egui::epaint::Shadow {
+                                                offset: [0, 0],
+                                                blur: 32,
+                                                spread: 0,
+                                                color: error,
+                                            }.as_shape(response.rect, 0.));
+                                            ui.painter().rect_stroke(
+                                                response.rect,
+                                                0.,
+                                                Stroke::new(1., theme::ACCENT),
+                                                StrokeKind::Outside,
+                                            );
+                                            response
+                                        }).inner;
                                         pick_rect = Some(response.rect);
                                         if response.clicked() {
                                             if picking {
@@ -1421,7 +1462,7 @@ impl EditorApp {
                 self.canvas_pointer_pixels(project, key, rect, pointer, ctx.pixels_per_point());
             let in_level_panel = self.picking_point_in_level_panel();
             if !in_level_panel
-                && let Some((_, _, _, handle)) = self.selected_entity_resize_handle(world)
+                && let Some((_, _, handle)) = self.selected_entity_resize_handle(world)
             {
                 ctx.set_cursor_icon(level_resize::cursor(handle));
             } else if (in_level_panel
@@ -1553,7 +1594,10 @@ impl EditorApp {
             None
         };
         let status = if point { "Field picked" } else { "" };
-        let result = if owner.is_some() {
+        let result = if !point && owner.is_some() && self.selected != Some(key) {
+            // The source records the slot insertion separately from a cross-level pick.
+            self.edit_level_without_undo(status, key, |p| edit.apply(p, key, owner.as_deref(), uid))
+        } else if owner.is_some() {
             self.edit_level_marked(status, key, |p, history| {
                 if let Some(entity) = p
                     .layer(key, layer)
@@ -1578,6 +1622,9 @@ impl EditorApp {
             if result.is_some() {
                 self.retain_entity_render(snapshot);
             }
+        }
+        if result.is_some() && !point {
+            self.chain_entity = None;
         }
         if result.is_some()
             && let Some(cell) = point_cell

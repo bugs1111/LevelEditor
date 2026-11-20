@@ -811,6 +811,7 @@ mod tests {
             key: KEY,
             layer: 0,
             index: 0,
+            press: egui::Pos2::ZERO,
             start: [64., 80.],
             end: [96., 80.],
             origin: [64, 80],

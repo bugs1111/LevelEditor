@@ -1197,6 +1197,12 @@ impl EditorApp {
                     let point_required = kind == "Point"
                         && field["__value"].is_null()
                         && definition["canBeNull"] != true;
+                    let point_array_required = kind == "Array<Point>"
+                        && definition["canBeNull"] != true
+                        && !field_tools::point_array_is_compact(&definition)
+                        && field["__value"].as_array().is_some_and(|values| {
+                            values.iter().any(Value::is_null)
+                        });
                     let count = field["__value"].as_array().map_or(0, Vec::len);
                     let min = definition["arrayMinLength"].as_u64();
                     let max = definition["arrayMaxLength"].as_u64();
@@ -1212,7 +1218,8 @@ impl EditorApp {
                         };
                         locale::format(ui, "Array should have {bounds} value(s)", &[("bounds", &bounds)])
                     });
-                    let row_error = point_required || array_warning.is_some();
+                    let value_error = point_required || array_warning.is_some();
+                    let row_error = value_error || point_array_required;
                     let using_default = if array {
                         count == 0
                     } else {
@@ -1284,6 +1291,11 @@ impl EditorApp {
                                 egui::Layout::top_down(egui::Align::Min),
                                 |ui| {
                                     ui.set_width(value_width);
+                                    if array && using_default && !row_error
+                                        && !ui.rect_contains_pointer(ui.response().rect)
+                                    {
+                                        ui.multiply_opacity(0.35);
+                                    }
                                     egui::Frame::new().inner_margin(if using_default { 0 } else { 2 }).show(ui, |ui| {
                                         if let Some(warning) = &array_warning {
                                             ui.scope(|ui| {
@@ -1344,7 +1356,9 @@ impl EditorApp {
                                                 .field_value_errors(key, entity, uid)
                                         {
                                             for error in errors {
-                                                if !matches!(error.as_str(), "Array too short" | "Array too long") {
+                                                if !matches!(error.as_str(), "Array too short" | "Array too long")
+                                                    && !(kind == "Array<Point>" && error == "Value required")
+                                                {
                                                     ui.colored_label(Color32::LIGHT_RED, error);
                                                 }
                                             }
@@ -1376,7 +1390,7 @@ impl EditorApp {
                                 ne: 4,
                                 se: 4,
                             },
-                            if row_error { error_fill } else { theme::MEDIUM },
+                            if value_error { error_fill } else { theme::MEDIUM },
                         ));
                         if row_error {
                             shapes.push(egui::Shape::rect_filled(

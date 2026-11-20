@@ -433,15 +433,27 @@ impl Project {
         x: i32,
         y: i32,
     ) -> Result<bool> {
-        self.edit_document(|p| p.add_entity_inner(key, layer_index, def_uid, x, y))
+        self.place_entity(key, layer_index, def_uid, [x, y], [x, y])
+    }
+
+    /// Place an entity from a level-space click. Its snapped anchor can lie outside the level.
+    pub fn place_entity(
+        &mut self,
+        key: LevelKey,
+        layer_index: usize,
+        def_uid: i64,
+        cursor: [i32; 2],
+        position: [i32; 2],
+    ) -> Result<bool> {
+        self.edit_document(|p| p.add_entity_inner(key, layer_index, def_uid, cursor, position))
     }
     fn add_entity_inner(
         &mut self,
         key: LevelKey,
         layer_index: usize,
         def_uid: i64,
-        x: i32,
-        y: i32,
+        cursor: [i32; 2],
+        position: [i32; 2],
     ) -> Result<bool> {
         let layer = self
             .layer(key, layer_index)
@@ -464,9 +476,11 @@ impl Project {
         if width <= 0 || height <= 0 {
             return Err(invalid("level dimensions must be positive"));
         }
-        if x < 0 || y < 0 || i64::from(x) >= width || i64::from(y) >= height {
+        let [click_x, click_y] = cursor;
+        if click_x < 0 || click_y < 0 || i64::from(click_x) >= width || i64::from(click_y) >= height {
             return Ok(false);
         }
+        let [x, y] = position;
         if let Some(layer_def) = layer
             .get("layerDefUid")
             .and_then(Value::as_i64)
@@ -558,8 +572,8 @@ impl Project {
             .unwrap_or(0.0);
         entity["px"] = json!([x, y]);
         entity["__grid"] = json!([
-            (x - i32::from(pivot_x == 1.0)) / grid,
-            (y - i32::from(pivot_y == 1.0)) / grid
+            (i64::from(x) - i64::from(pivot_x == 1.0)) / i64::from(grid),
+            (i64::from(y) - i64::from(pivot_y == 1.0)) / i64::from(grid)
         ]);
         let world = key
             .world

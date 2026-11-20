@@ -1,6 +1,27 @@
 use super::*;
 use serde_json::json;
 
+pub(super) fn selection_drag_started(ctx: &egui::Context, press: egui::Pos2) -> bool {
+    let page = |point: egui::Pos2| egui::pos2(point.x.trunc(), point.y.trunc());
+    let press = page(press);
+    ctx.input(|input| {
+        for event in &input.events {
+            match event {
+                egui::Event::PointerButton {
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    ..
+                } => break,
+                egui::Event::PointerMoved(point) if press.distance(page(*point)) >= 10. => {
+                    return true;
+                }
+                _ => {}
+            }
+        }
+        false
+    })
+}
+
 impl EditorApp {
     pub(super) fn selection_geometries(&self, key: LevelKey) -> Value {
         let Some(project) = &self.project else {
@@ -534,6 +555,7 @@ mod tests {
         assert_eq!(app.selection_world_delta([32., 32.], [51., 35.]), [19., 3.]);
         app.gesture = Some(tools::Gesture::SelectionMove {
             region: [0, 0, 6, 6],
+            press: egui::Pos2::ZERO,
             start: [0, 0],
             end: [0, 0],
             copy: false,

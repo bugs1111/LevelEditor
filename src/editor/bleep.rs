@@ -790,6 +790,7 @@ mod tests {
         app.select_all();
         app.gesture = Some(tools::Gesture::SelectionMove {
             region: [0, 0, 16, 16],
+            press: egui::Pos2::ZERO,
             start: [0, 0],
             end: [25, 0],
             copy: false,
@@ -1019,7 +1020,7 @@ mod tests {
     #[test]
     fn single_pick_bleeps_but_deleting_selection_does_not_add_source_unspecified_feedback() {
         let (mut app, ctx) = fixture();
-        assert!(app.select_element_at([24., 24.], false, false));
+        assert!(app.select_element_at([24., 24.], false, None));
         assert_eq!(draw(&app, &ctx, 0.).len(), 1);
         assert!(draw(&app, &ctx, 1.).is_empty());
         app.delete_selection();
@@ -1047,7 +1048,7 @@ mod tests {
             .unwrap();
         p.set_field_value(KEY, Some(&iid), field, json!([{"cx":4,"cy":2}]))
             .unwrap();
-        assert!(app.point_interaction(KEY, [72., 40.], [72., 40.], [4, 2], true));
+        assert!(app.point_interaction(KEY, [72., 40.], [72., 40.], [4, 2], egui::Pos2::ZERO, true));
         let shapes = draw(&app, &ctx, 0.);
         assert_eq!(shapes.len(), 2);
         let circle = shapes
@@ -1070,7 +1071,7 @@ mod tests {
     #[test]
     fn entity_erase_uses_snapshot_after_removal() {
         let (mut app, ctx) = fixture();
-        app.edit_entity([24., 24.], true);
+        app.erase_entity([24., 24.]);
         assert!(
             app.project.as_ref().unwrap().layer(KEY, 0).unwrap()["entityInstances"]
                 .as_array()

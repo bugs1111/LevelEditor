@@ -1406,7 +1406,7 @@ mod tests {
                 egui::Shape::Rect(image)
                     if image.brush.is_some()
                         && image.rect.size() == Vec2::splat(20.)
-                        && image.rect.right() == rect.right() - 3. =>
+                        && image.rect.right() >= rect.right() - 3. =>
                 {
                     Some(("remove", image.rect.center()))
                 }

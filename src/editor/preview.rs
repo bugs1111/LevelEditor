@@ -48,18 +48,20 @@ impl EditorApp {
         let local = canvas::pointer_to_layer(project, key, self.layer, &self.viewport, world);
         let grid = number(layer, "__gridSize", 16.0).max(1.0);
         let cell = local.map(|v| (v / grid).floor() as i32);
-        if cell[0] < 0
-            || cell[1] < 0
-            || cell[0] >= number(layer, "__cWid", 0.0) as i32
-            || cell[1] >= number(layer, "__cHei", 0.0) as i32
-        {
-            return;
-        }
-        if let Some(group) = self
+        let group = self
             .stamp
             .as_ref()
-            .filter(|v| v["type"] == "SelectionGroup")
-        {
+            .filter(|v| v["type"] == "SelectionGroup");
+        let inside = if layer["__type"] == "Entities" && group.is_none() {
+            entity_tools::placement_in_level(project, key, world)
+        } else {
+            (0..number(layer, "__cWid", 0.0) as i32).contains(&cell[0])
+                && (0..number(layer, "__cHei", 0.0) as i32).contains(&cell[1])
+        };
+        if !inside {
+            return;
+        }
+        if let Some(group) = group {
             let origin = canvas::layer_to_world(
                 project,
                 key,
@@ -187,8 +189,9 @@ impl EditorApp {
                     {
                         ui.ctx().set_cursor_icon(egui::CursorIcon::Cell);
                     }
+                    let placement = if self.grid { local } else { world };
                     let point =
-                        ldtk_core::snapped_entity_position(def, local, grid as i32, self.grid);
+                        ldtk_core::snapped_entity_position(def, placement, grid as i32, self.grid);
                     clipboard["entityInstances"] = json!([{"iid":"@cursor","defUid":def["uid"],"__identifier":def["identifier"],"px":[point[0]as f32-cell[0]as f32*grid,point[1]as f32-cell[1]as f32*grid],"width":def["width"],"height":def["height"],"__pivot":[def["pivotX"],def["pivotY"]],"__tile":def["tileRect"],"__smartColor":def["color"],"fieldInstances":[]}]);
                 }
             }

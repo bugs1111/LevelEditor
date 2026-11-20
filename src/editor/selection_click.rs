@@ -272,7 +272,7 @@ impl EditorApp {
         &mut self,
         world: [f32; 2],
         copy: bool,
-        start_drag: bool,
+        press: Option<egui::Pos2>,
     ) -> bool {
         let (Some(key), Some(project)) = (self.selected, &self.project) else {
             return false;
@@ -354,19 +354,9 @@ impl EditorApp {
             }
         }
         self.set_selection_group(group);
-        if start_drag {
-            self.history.begin(self.project.as_ref().unwrap(), key);
-            self.stroke = true;
-            self.last_chance = None;
-            self.gesture = Some(tools::Gesture::SelectionMove {
-                region: self.selection.unwrap_or([cell[0], cell[1], 1, 1]),
-                start: cell,
-                end: cell,
-                copy,
-                world_start: world,
-                world_end: world,
-                moved: false,
-            });
+        if let Some(press) = press {
+            let region = self.selection.unwrap_or([cell[0], cell[1], 1, 1]);
+            self.begin_selection_move(key, region, cell, world, press, copy);
         }
         self.bleep_selected_element(key, layer_index, cell, element);
         true
@@ -395,7 +385,7 @@ mod tests {
         p.paint_int_grid(K, 1, 0, 0, 1).unwrap();
         let mut a = app(p);
         a.layer = 1;
-        assert!(a.select_element_at([4., 4.], false, true));
+        assert!(a.select_element_at([4., 4.], false, Some(egui::Pos2::ZERO)));
         assert_eq!(a.layer, 0);
         assert_eq!(a.selection_group.as_ref().unwrap()["elementCount"], 1);
         assert_eq!(
@@ -438,7 +428,7 @@ mod tests {
         p.add_entity(K, 0, def, 0, 0).unwrap();
         let expected = p.layer(K, 0).unwrap()["entityInstances"][1]["iid"].clone();
         let mut a = app(p);
-        assert!(a.select_element_at([40., 40.], false, false));
+        assert!(a.select_element_at([40., 40.], false, None));
         let g = a.selection_group.as_ref().unwrap();
         assert_eq!(g["elementCount"], 1);
         assert_eq!(
@@ -483,7 +473,7 @@ mod tests {
         p.set_field_value(K, Some(&id), field, json!({"cx":1,"cy":1}))
             .unwrap();
         let mut a = app(p);
-        assert!(a.select_element_at([20., 20.], false, false));
+        assert!(a.select_element_at([20., 20.], false, None));
         let g = a.selection_group.as_ref().unwrap();
         assert_eq!(g["elementCount"], 1);
         assert!(
@@ -540,7 +530,7 @@ mod tests {
         app.restore_canvas_atlas_memory(&ctx, other_atlas);
         assert!(app.set_atlas_selection(other_atlas, vec![1]));
         app.remember_canvas_atlas_memory(&ctx, other_atlas);
-        assert!(app.select_element_at([4., 4.], false, false));
+        assert!(app.select_element_at([4., 4.], false, None));
         assert_eq!(app.layer, art_index);
         app.restore_canvas_atlas_memory(&ctx, atlas);
         assert_eq!(app.selected_tile_ids_for(atlas), [1, 2]);
@@ -567,7 +557,7 @@ mod tests {
             .unwrap();
         let mut a = app(p);
         a.set_atlas_selection(ts, vec![3]);
-        assert!(a.select_element_at([4., 4.], false, false));
+        assert!(a.select_element_at([4., 4.], false, None));
         assert_eq!(a.selected_tile_ids_for(ts), vec![1, 2]);
         assert!(a.random_tiles);
         assert_eq!(a.flips, 3);
@@ -580,7 +570,7 @@ mod tests {
                 .len(),
             2
         );
-        assert!(a.select_element_at([4., 4.], true, true));
+        assert!(a.select_element_at([4., 4.], true, Some(egui::Pos2::ZERO)));
         assert_eq!(
             a.selected_tile_ids_for(ts),
             vec![1],
@@ -618,14 +608,14 @@ mod tests {
         let mut a = app(p);
         a.layer = 1;
         a.single_layer = true;
-        assert!(a.select_element_at([4., 4.], false, false));
+        assert!(a.select_element_at([4., 4.], false, None));
         assert_eq!(a.layer, 1);
         a.project
             .as_mut()
             .unwrap()
             .paint_int_grid(K, 1, 0, 0, 0)
             .unwrap();
-        assert!(a.select_element_at([4., 4.], false, false));
+        assert!(a.select_element_at([4., 4.], false, None));
         assert_eq!(
             a.layer, 0,
             "single-layer mode still falls back when active has no hit"
@@ -638,7 +628,7 @@ mod tests {
             .iter_mut()
             .find(|d| d["uid"] == top)
             .unwrap()["canSelectWhenInactive"] = json!(false);
-        assert!(!a.select_element_at([4., 4.], false, false));
+        assert!(!a.select_element_at([4., 4.], false, None));
         let def = a.project.as_mut().unwrap().json["defs"]["layers"]
             .as_array_mut()
             .unwrap()
@@ -647,10 +637,10 @@ mod tests {
             .unwrap();
         def["canSelectWhenInactive"] = json!(true);
         def["inactiveOpacity"] = json!(0.);
-        assert!(!a.select_element_at([4., 4.], false, false));
+        assert!(!a.select_element_at([4., 4.], false, None));
         a.layer = 0;
         a.details = false;
-        assert!(!a.select_element_at([4., 4.], false, false));
+        assert!(!a.select_element_at([4., 4.], false, None));
     }
     #[test]
     fn native_alt_pointer_press_then_drag_moves_the_picked_cell() {

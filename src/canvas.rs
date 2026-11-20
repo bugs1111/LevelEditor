@@ -347,16 +347,23 @@ pub fn world_to_layer(
         ]
     })
 }
-fn pointer_transform(
+pub(super) fn pointer_transform(
     project: &Project,
     key: LevelKey,
     index: usize,
     view: &Viewport,
 ) -> Option<Transform> {
-    editing_transform(project, key, index, view).map(|mut transform| {
-        transform.origin = transform.origin.map(f32::round);
-        transform
-    })
+    let level = project.level(key)?;
+    let layer = project.layer(key, index)?;
+    let def = project.layer_def(layer["layerDefUid"].as_i64()?)?;
+    let mut transform = layer_transform_for(level, layer, def, [0.; 2], view, true);
+    let offset = [
+        number(layer, "__pxTotalOffsetX", 0.),
+        number(layer, "__pxTotalOffsetY", 0.),
+    ];
+    // Coords adds the raw layer offset before rounding, independently of scale.
+    transform.origin = std::array::from_fn(|axis| (transform.origin[axis] + offset[axis]).round());
+    Some(transform)
 }
 
 pub fn pointer_to_layer(
@@ -1632,40 +1639,13 @@ pub fn entity_preview(
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum GhostMode {
     Move,
+    EntityDrag,
     Copy,
     Brush,
     EntityHover { ui_scale: f32 },
 }
 
 /// Render only the clipboard payload; no project or source-layer clone is required.
-#[allow(clippy::too_many_arguments)]
-pub fn draw_selection_ghost(
-    ctx: &egui::Context,
-    painter: &Painter,
-    canvas: Rect,
-    project: &Project,
-    view: &Viewport,
-    key: LevelKey,
-    group: &Value,
-    delta_px: [f32; 2],
-    flips: [bool; 2],
-    assets: &mut Assets,
-) {
-    draw_group_ghost(
-        ctx,
-        painter,
-        canvas,
-        project,
-        view,
-        key,
-        group,
-        delta_px,
-        flips,
-        GhostMode::Move,
-        assets,
-    );
-}
-
 #[allow(clippy::too_many_arguments)]
 pub fn draw_group_ghost(
     ctx: &egui::Context,
@@ -1740,7 +1720,10 @@ pub fn draw_group_ghost(
         let def = project
             .layer_def(layer["layerDefUid"].as_i64().unwrap_or(-1))
             .unwrap_or(&Value::Null);
-        let transform = if matches!(mode, GhostMode::Brush | GhostMode::EntityHover { .. }) {
+        let transform = if matches!(
+            mode,
+            GhostMode::EntityDrag | GhostMode::Brush | GhostMode::EntityHover { .. }
+        ) {
             pointer_transform(project, key, index, view)
         } else {
             editing_transform(project, key, index, view)
@@ -1749,6 +1732,11 @@ pub fn draw_group_ghost(
             origin: [0.; 2],
             scale: 1.,
         });
+        let entity_transform = if mode == GhostMode::EntityDrag {
+            Transform { scale: 1., ..transform }
+        } else {
+            transform
+        };
         let offset = [
             number(layer, "__pxTotalOffsetX", 0.),
             number(layer, "__pxTotalOffsetY", 0.),
@@ -1894,20 +1882,25 @@ pub fn draw_group_ghost(
                 &painter,
                 &e,
                 def,
-                transform,
+                entity_transform,
                 match mode {
                     GhostMode::Brush | GhostMode::EntityHover { .. } => 0.33,
-                    GhostMode::Move | GhostMode::Copy => 0.5,
+                    GhostMode::Move | GhostMode::EntityDrag | GhostMode::Copy => 0.5,
                 },
                 true,
                 key,
             );
-            if mode == GhostMode::Move {
+            if matches!(mode, GhostMode::Move | GhostMode::EntityDrag) {
                 let entity_def = values(&project.json["defs"]["entities"])
                     .iter()
                     .find(|d| d["uid"] == e["defUid"])
                     .unwrap_or(&Value::Null);
-                scene.ghost_entity_links(&painter, &e, entity_def, transform, grid);
+                let (owner, link_origin) = if mode == GhostMode::EntityDrag {
+                    (entity, Transform { origin: delta_px, scale: 1. })
+                } else {
+                    (&e, transform)
+                };
+                scene.ghost_entity_links(&painter, owner, entity_def, link_origin, transform, grid);
             } else if let GhostMode::EntityHover { ui_scale } = mode {
                 scene.hovered_entity_cursor(&painter, &e, transform, ui_scale);
             }

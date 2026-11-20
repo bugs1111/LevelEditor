@@ -187,6 +187,7 @@ mod tests {
             key,
             layer: 0,
             index: 0,
+            press: egui::Pos2::ZERO,
             start: [0.0, 0.0],
             end: [0.0, 0.0],
             origin: [0, 0],

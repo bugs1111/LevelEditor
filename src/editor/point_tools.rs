@@ -25,6 +25,7 @@ impl EditorApp {
         local: [f32; 2],
         world: [f32; 2],
         cell: [i32; 2],
+        press: egui::Pos2,
         erase: bool,
     ) -> bool {
         let Some((entity, uid, index)) = self.project.as_ref().and_then(|p| {
@@ -98,25 +99,19 @@ impl EditorApp {
             self.entity_index = Some(entity);
             self.panel = Some(Panel::Entity);
         } else {
-            self.history.begin(self.project.as_ref().unwrap(), key);
-            self.stroke = true;
-            self.last_chance = None;
             self.set_selection_group(group);
-            self.gesture = Some(tools::Gesture::SelectionMove {
-                region: [cell[0], cell[1], 1, 1],
-                start: cell,
-                end: cell,
-                copy: false,
-                world_start: world,
-                world_end: world,
-                moved: false,
-            });
+            self.begin_selection_move(key, [cell[0], cell[1], 1, 1], cell, world, press, false);
             self.entity_index = Some(entity);
         }
         true
     }
 
-    pub(super) fn start_created_entity_transform(&mut self, key: LevelKey, local: [f32; 2]) {
+    pub(super) fn start_created_entity_transform(
+        &mut self,
+        key: LevelKey,
+        press: egui::Pos2,
+        level_pixel: [f32; 2],
+    ) {
         let Some(index) = self.entity_index else {
             return;
         };
@@ -146,7 +141,6 @@ impl EditorApp {
                 key,
                 layer: self.layer,
                 index,
-                start: local,
                 size: [
                     number(entity, "width", 16.0) as i32,
                     number(entity, "height", 16.0) as i32,
@@ -162,8 +156,9 @@ impl EditorApp {
                 key,
                 layer: self.layer,
                 index,
-                start: local,
-                end: local,
+                press,
+                start: level_pixel,
+                end: level_pixel,
                 origin,
                 moved: false,
             }

@@ -58,6 +58,7 @@ pub(super) enum Gesture {
     },
     SelectionMove {
         region: [i32; 4],
+        press: egui::Pos2,
         start: [i32; 2],
         end: [i32; 2],
         copy: bool,
@@ -69,6 +70,7 @@ pub(super) enum Gesture {
         key: LevelKey,
         layer: usize,
         index: usize,
+        press: egui::Pos2,
         start: [f32; 2],
         end: [f32; 2],
         origin: [i32; 2],
@@ -78,7 +80,6 @@ pub(super) enum Gesture {
         key: LevelKey,
         layer: usize,
         index: usize,
-        start: [f32; 2],
         size: [i32; 2],
         origin: [i32; 2],
         handle: [i32; 2],
@@ -143,20 +144,27 @@ pub(super) fn rectangle_tiles(
     result
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum EditHistory {
+    Recorded,
+    Recoverable,
+    Unrecorded,
+}
+
 impl EditorApp {
     pub(super) fn edit<T>(
         &mut self,
         label: &str,
         operation: impl FnOnce(&mut Project) -> ldtk_core::Result<T>,
     ) -> Option<T> {
-        self.edit_operation(label, None, false, |p, _| operation(p))
+        self.edit_operation(label, None, EditHistory::Recorded, |p, _| operation(p))
     }
     pub(super) fn edit_recoverable<T>(
         &mut self,
         label: &str,
         operation: impl FnOnce(&mut Project) -> ldtk_core::Result<T>,
     ) -> Option<T> {
-        self.edit_operation(label, None, true, |p, _| operation(p))
+        self.edit_operation(label, None, EditHistory::Recoverable, |p, _| operation(p))
     }
     pub(super) fn edit_level<T>(
         &mut self,
@@ -164,7 +172,7 @@ impl EditorApp {
         key: LevelKey,
         operation: impl FnOnce(&mut Project) -> ldtk_core::Result<T>,
     ) -> Option<T> {
-        self.edit_operation(label, Some(key), false, |p, _| operation(p))
+        self.edit_operation(label, Some(key), EditHistory::Recorded, |p, _| operation(p))
     }
     pub(super) fn edit_level_recoverable<T>(
         &mut self,
@@ -172,7 +180,7 @@ impl EditorApp {
         key: LevelKey,
         operation: impl FnOnce(&mut Project) -> ldtk_core::Result<T>,
     ) -> Option<T> {
-        self.edit_operation(label, Some(key), true, |p, _| operation(p))
+        self.edit_operation(label, Some(key), EditHistory::Recoverable, |p, _| operation(p))
     }
     pub(super) fn edit_level_marked<T>(
         &mut self,
@@ -180,13 +188,21 @@ impl EditorApp {
         key: LevelKey,
         operation: impl FnOnce(&mut Project, &mut History) -> ldtk_core::Result<T>,
     ) -> Option<T> {
-        self.edit_operation(label, Some(key), false, operation)
+        self.edit_operation(label, Some(key), EditHistory::Recorded, operation)
+    }
+    pub(super) fn edit_level_without_undo<T>(
+        &mut self,
+        label: &str,
+        key: LevelKey,
+        operation: impl FnOnce(&mut Project) -> ldtk_core::Result<T>,
+    ) -> Option<T> {
+        self.edit_operation(label, Some(key), EditHistory::Unrecorded, |p, _| operation(p))
     }
     fn edit_operation<T>(
         &mut self,
         label: &str,
         key: Option<LevelKey>,
-        recoverable: bool,
+        history: EditHistory,
         operation: impl FnOnce(&mut Project, &mut History) -> ldtk_core::Result<T>,
     ) -> Option<T> {
         if !self.settle_deferred_auto_paint() {
@@ -211,10 +227,12 @@ impl EditorApp {
                     .get(self.entity_index?)?;
                 Some((key, self.layer, entity["iid"].as_str()?.to_owned()))
             });
-        if let Some(key) = key {
-            self.history.begin(project, key);
-        } else {
-            self.history.begin_project(project);
+        if history != EditHistory::Unrecorded {
+            if let Some(key) = key {
+                self.history.begin(project, key);
+            } else {
+                self.history.begin_project(project);
+            }
         }
         match operation(project, &mut self.history) {
             Ok(value) => {
@@ -226,7 +244,7 @@ impl EditorApp {
                 {
                     self.history.mark_entity_change(project, key, layer, entity);
                 }
-                let changed = self.history.commit(project);
+                let changed = history == EditHistory::Unrecorded || self.history.commit(project);
                 self.dirty |= changed;
                 if changed {
                     if definitions.as_ref().is_some_and(|before| {
@@ -240,7 +258,7 @@ impl EditorApp {
                     {
                         self.history.clear_level_timelines();
                     }
-                    if recoverable {
+                    if history == EditHistory::Recoverable {
                         self.last_chance = Some((label.into(), Instant::now()));
                     }
                 }
@@ -249,7 +267,9 @@ impl EditorApp {
                 Some(value)
             }
             Err(error) => {
-                self.history.cancel(project);
+                if history != EditHistory::Unrecorded {
+                    self.history.cancel(project);
+                }
                 self.status = error.to_string();
                 self.status_error = true;
                 None
@@ -340,7 +360,7 @@ impl EditorApp {
                 let r = region(start, end);
                 if select {
                     if r[2] == 1 && r[3] == 1 {
-                        self.select_element_at(world_end, false, false);
+                        self.select_element_at(world_end, false, None);
                     } else {
                         self.capture_selection(r);
                     }
@@ -361,6 +381,7 @@ impl EditorApp {
                 world_start,
                 world_end,
                 moved,
+                ..
             } => {
                 if !moved {
                     self.finish_stroke();
@@ -518,22 +539,19 @@ impl EditorApp {
                 end,
                 origin,
                 moved,
+                ..
             } => {
                 if moved && let Some(project) = &self.project {
-                    let grid = project
-                        .layer(key, layer)
-                        .map(|l| number(l, "__gridSize", 16.0))
-                        .unwrap_or(16.0);
-                    let a = canvas::layer_to_world(project, key, layer, &self.viewport, [0.0; 2]);
-                    let b = canvas::layer_to_world(project, key, layer, &self.viewport, [1.0, 0.0]);
-                    let position = entity_tools::drag_position(
-                        origin,
-                        start,
-                        end,
-                        grid,
-                        b[0] - a[0],
+                    let delta = entity_tools::drag_delta(
+                        project,
+                        key,
+                        layer,
+                        &self.viewport,
+                        [start, end],
                         self.grid,
                     );
+                    let position: [i32; 2] =
+                        std::array::from_fn(|axis| origin[axis] + delta[axis].trunc() as i32);
                     let position = json!(position);
                     if let Some(entity) = project
                         .layer(key, layer)
@@ -550,12 +568,39 @@ impl EditorApp {
                         entity["px"] = position;
                         self.defer_entity_render(snapshot);
                     }
+                    self.finish_entity_gesture(key, layer, index);
                 }
-                self.finish_entity_gesture(key, layer, index);
             }
             Gesture::EntityResize {
-                key, layer, index, ..
-            } => self.finish_entity_gesture(key, layer, index),
+                key,
+                layer,
+                index,
+                origin,
+                size,
+                ..
+            } => {
+                let resized = self
+                    .project
+                    .as_ref()
+                    .and_then(|project| project.layer(key, layer))
+                    .and_then(|layer| layer["entityInstances"].get(index))
+                    .is_some_and(|entity| {
+                        entity["px"] != json!(origin)
+                            || entity["width"] != size[0]
+                            || entity["height"] != size[1]
+                    });
+                if resized {
+                    let project = self.project.as_mut().unwrap();
+                    let entity = &project.layer(key, layer).unwrap()["entityInstances"][index];
+                    self.history.mark_entity_change(project, key, layer, entity);
+                    if let Err(error) = project.refresh_derived_data() {
+                        self.history.cancel(project);
+                        self.async_paint = None;
+                        self.status = error.to_string();
+                        self.status_error = true;
+                    }
+                }
+            }
         }
         if pointer_release {
             self.release_stroke();
@@ -845,12 +890,13 @@ impl EditorApp {
             })
     }
 
-    fn begin_selection_move(
+    pub(super) fn begin_selection_move(
         &mut self,
         key: LevelKey,
         region: [i32; 4],
         cell: [i32; 2],
         world: [f32; 2],
+        press: egui::Pos2,
         copy: bool,
     ) {
         self.history.begin(self.project.as_ref().unwrap(), key);
@@ -858,6 +904,7 @@ impl EditorApp {
         self.stroke = true;
         self.gesture = Some(Gesture::SelectionMove {
             region,
+            press,
             start: cell,
             end: cell,
             copy,
@@ -869,24 +916,21 @@ impl EditorApp {
 
     pub(super) fn selected_entity_resize_handle(
         &self,
-        world: [f32; 2],
-    ) -> Option<(LevelKey, usize, [f32; 2], [i32; 2])> {
+        level_pixel: [f32; 2],
+    ) -> Option<(LevelKey, usize, [i32; 2])> {
         let key = self.selected?;
         let index = self.entity_index?;
         if !self.details || !self.layer_visible(key, self.layer) {
             return None;
         }
-        let project = self.project.as_ref()?;
-        let local = canvas::pointer_to_layer(project, key, self.layer, &self.viewport, world);
-        let handle = self.resize_handle_at(key, self.layer, index, local, self.viewport.zoom)?;
-        Some((key, index, local, handle))
+        let handle = self.resize_handle_at(key, self.layer, index, level_pixel)?;
+        Some((key, index, handle))
     }
 
     fn begin_entity_resize(
         &mut self,
         key: LevelKey,
         index: usize,
-        local: [f32; 2],
         handle: [i32; 2],
     ) {
         let project = self.project.as_ref().unwrap();
@@ -898,7 +942,6 @@ impl EditorApp {
             key,
             layer: self.layer,
             index,
-            start: local,
             origin: std::array::from_fn(|axis| entity["px"][axis].as_i64().unwrap_or(0) as i32),
             size: [
                 number(entity, "width", 16.) as i32,
@@ -942,8 +985,8 @@ impl EditorApp {
             return false;
         };
         let (world, _) = self.canvas_pointer_pixels(project, key, rect, pos, ctx.pixels_per_point());
-        if let Some((key, index, local, handle)) = self.selected_entity_resize_handle(world) {
-            self.begin_entity_resize(key, index, local, handle);
+        if let Some((key, index, handle)) = self.selected_entity_resize_handle(world) {
+            self.begin_entity_resize(key, index, handle);
             return true;
         }
         if button == egui::PointerButton::Primary
@@ -966,7 +1009,7 @@ impl EditorApp {
             .filter(|_| self.selection_contains_world(world));
         let copy = modifiers.command && modifiers.alt;
         if !modifiers.shift && region.is_none() {
-            self.select_element_at(world, copy, true);
+            self.select_element_at(world, copy, Some(pos));
         } else if let (Some(project), Some(key)) = (&self.project, self.selected)
             && let Some(layer) = project.layer(key, self.layer)
         {
@@ -986,7 +1029,7 @@ impl EditorApp {
                     world_end: world,
                 });
             } else if let Some(region) = region {
-                self.begin_selection_move(key, region, cell, world, copy);
+                self.begin_selection_move(key, region, cell, world, pos, copy);
             }
         }
         true
@@ -1215,6 +1258,25 @@ impl EditorApp {
                 i.pointer.any_released(),
             )
         });
+        let pointer = if matches!(
+            self.gesture,
+            Some(Gesture::EntityMove { .. } | Gesture::SelectionMove { .. })
+        ) {
+            ctx.input(|input| {
+                input.events.iter().find_map(|event| match event {
+                    egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed: false,
+                        ..
+                    } => Some(*pos),
+                    _ => None,
+                })
+            })
+            .or(pointer)
+        } else {
+            pointer
+        };
         let Some(pointer) = pointer else {
             return;
         };
@@ -1385,12 +1447,30 @@ impl EditorApp {
             && !modifiers.alt
         {
             let erase = secondary || (cfg!(target_os = "macos") && modifiers.ctrl);
-            if !erase && self.point_interaction(key, local, local_world, cell, false) {
+            if !erase && self.point_interaction(key, local, local_world, cell, pointer, false) {
                 return;
             }
         }
         let project = self.project.as_ref().unwrap();
         let layer = project.layer(key, self.layer).unwrap();
+        let resize_positions: Vec<_> = if matches!(self.gesture, Some(Gesture::EntityResize { .. })) {
+            let density = ctx.pixels_per_point();
+            ctx.input(|input| {
+                input
+                    .events
+                    .iter()
+                    .filter_map(|event| match event {
+                        egui::Event::PointerMoved(pos) => Some(
+                            self.canvas_pointer_pixels(project, key, rect, *pos, density)
+                                .0,
+                        ),
+                        _ => None,
+                    })
+                    .collect()
+            })
+        } else {
+            Vec::new()
+        };
         if let Some(gesture) = &mut self.gesture {
             match gesture {
                 Gesture::Rectangle { end, world_end, .. } => {
@@ -1402,82 +1482,72 @@ impl EditorApp {
                 }
                 Gesture::SelectionMove {
                     end,
-                    world_start,
+                    press,
                     world_end,
                     moved,
                     ..
                 } => {
                     *end = cell;
                     *world_end = local_world;
-                    *moved |= (local_world[0] - world_start[0])
-                        .hypot(local_world[1] - world_start[1])
-                        * self.viewport.zoom
-                        >= 10.0;
+                    *moved = *moved || selection_tools::selection_drag_started(ctx, *press);
                 }
                 Gesture::EntityMove {
-                    key,
-                    layer,
-                    start,
+                    press,
                     end,
                     moved,
                     ..
                 } => {
-                    *end = local;
-                    let a = canvas::layer_to_world(project, *key, *layer, &self.viewport, [0.0; 2]);
-                    let b =
-                        canvas::layer_to_world(project, *key, *layer, &self.viewport, [1.0, 0.0]);
-                    *moved |= (local[0] - start[0]).hypot(local[1] - start[1])
-                        * self.viewport.zoom
-                        * (b[0] - a[0])
-                        >= 10.0;
+                    *end = local_world;
+                    *moved = *moved || selection_tools::selection_drag_started(ctx, *press);
                 }
                 Gesture::EntityResize {
                     key,
                     layer,
                     index,
-                    start,
-                    size,
-                    origin,
                     handle,
+                    ..
                 } => {
                     let (key, layer, index) = (*key, *layer, *index);
-                    let geometry = self.project.as_ref().and_then(|p| {
-                        let e = &p.layer(key, layer)?["entityInstances"][index];
-                        let d = p.json["defs"]["entities"]
-                            .as_array()?
-                            .iter()
-                            .find(|d| d["uid"] == e["defUid"])?;
-                        let requested = resize_tools::requested_entity_size(
-                            d,
-                            *size,
-                            [local[0] - start[0], local[1] - start[1]],
-                            *handle,
-                        );
-                        let result = ldtk_core::constrained_entity_size(
-                            d,
-                            requested,
-                            *size,
-                            self.grid.then_some(grid as i32),
-                        );
-                        let [w, h] = result;
-                        let position = json!(resize_tools::resized_entity_origin(
-                            d, *origin, *size, result, *handle
-                        ));
-                        (e["width"] != w || e["height"] != h || e["px"] != position)
-                            .then_some((w, h, position))
-                    });
-                    if let Some((w, h, position)) = geometry {
-                        let snapshot = self.capture_entity_render(key, layer);
-                        let entity = &mut self
-                            .project
-                            .as_mut()
-                            .unwrap()
-                            .layer_mut(key, layer)
-                            .unwrap()["entityInstances"][index];
-                        entity["width"] = json!(w);
-                        entity["height"] = json!(h);
-                        entity["px"] = position;
-                        self.defer_entity_render(snapshot);
+                    let handle = *handle;
+                    for cursor in resize_positions {
+                        let geometry = self.project.as_ref().and_then(|p| {
+                            let entity = &p.layer(key, layer)?["entityInstances"][index];
+                            let def = p.json["defs"]["entities"]
+                                .as_array()?
+                                .iter()
+                                .find(|def| def["uid"] == entity["defUid"])?;
+                            let size = [
+                                number(entity, "width", 16.) as i32,
+                                number(entity, "height", 16.) as i32,
+                            ];
+                            let origin = std::array::from_fn(|axis| {
+                                entity["px"][axis].as_i64().unwrap_or(0) as i32
+                            });
+                            let requested =
+                                resize_tools::requested_entity_size(def, entity, cursor, handle);
+                            let result = ldtk_core::constrained_entity_size(
+                                def,
+                                requested,
+                                size,
+                                self.grid.then_some(grid as i32),
+                            );
+                            let position =
+                                resize_tools::resized_entity_origin(def, origin, size, result, handle);
+                            (size != result || origin != position).then_some((result, position))
+                        });
+                        if let Some(([width, height], position)) = geometry {
+                            let snapshot = self.capture_entity_render(key, layer);
+                            let entity = &mut self
+                                .project
+                                .as_mut()
+                                .unwrap()
+                                .layer_mut(key, layer)
+                                .unwrap()["entityInstances"][index];
+                            entity["width"] = json!(width);
+                            entity["height"] = json!(height);
+                            entity["px"] = json!(position);
+                            self.defer_entity_render(snapshot);
+                        }
                     }
                 }
                 _ => {}
@@ -1491,9 +1561,9 @@ impl EditorApp {
             && !modifiers.shift
             && let Some(index) = self.entity_index
             && let Some(handle) =
-                self.resize_handle_at(key, self.layer, index, local, self.viewport.zoom)
+                self.resize_handle_at(key, self.layer, index, local_world)
         {
-            self.begin_entity_resize(key, index, local, handle);
+            self.begin_entity_resize(key, index, handle);
             return;
         }
         if pressed
@@ -1507,12 +1577,13 @@ impl EditorApp {
                 region,
                 cell,
                 local_world,
+                pointer,
                 modifiers.command && modifiers.alt,
             );
             return;
         }
         if pressed && primary && modifiers.alt && !modifiers.shift {
-            self.select_element_at(local_world, modifiers.command, true);
+            self.select_element_at(local_world, modifiers.command, Some(pointer));
             return;
         }
         if kind == "AutoLayer"
@@ -1525,7 +1596,19 @@ impl EditorApp {
         {
             return;
         }
-        if cell[0] < 0 || cell[1] < 0 || cell[0] >= width || cell[1] >= height {
+        let erase = if released && self.stroke {
+            self.stroke_erase
+        } else {
+            secondary || (cfg!(target_os = "macos") && modifiers.ctrl)
+        };
+        let entity_brush = kind == "Entities" && !modifiers.shift && self.stamp.is_none();
+        let entity_placement = entity_brush
+            && pressed
+            && !erase
+            && entity_tools::placement_in_level(project, key, local_world);
+        if !(entity_placement || entity_brush && erase)
+            && (cell[0] < 0 || cell[1] < 0 || cell[0] >= width || cell[1] >= height)
+        {
             self.last_cell = None;
             return;
         }
@@ -1533,11 +1616,6 @@ impl EditorApp {
         {
             return;
         }
-        let erase = if released && self.stroke {
-            self.stroke_erase
-        } else {
-            secondary || (cfg!(target_os = "macos") && modifiers.ctrl)
-        };
         if !self.stroke {
             if !pressed || !response.hovered() {
                 return;
@@ -1591,7 +1669,6 @@ impl EditorApp {
                     key,
                     layer: self.layer,
                     index,
-                    start: local,
                     size: [
                         number(entity, "width", 16.0) as i32,
                         number(entity, "height", 16.0) as i32,
@@ -1604,8 +1681,9 @@ impl EditorApp {
                     key,
                     layer: self.layer,
                     index,
-                    start: local,
-                    end: local,
+                    press: pointer,
+                    start: local_world,
+                    end: local_world,
                     origin,
                     moved: false,
                 });
@@ -1622,12 +1700,12 @@ impl EditorApp {
         if kind == "Entities" {
             if erase && (pressed || released || ctx.input(|i| i.pointer.delta().length_sq() > 0.)) {
                 self.erase_entities_at_input(ctx, rect, local, pressed);
-            } else if pressed {
+            } else if entity_placement {
                 self.entity_index = None;
                 self.selection = None;
                 self.selection_group = None;
-                self.edit_entity(local, false);
-                self.start_created_entity_transform(key, local);
+                self.place_entity(local, local_world);
+                self.start_created_entity_transform(key, pointer, local_world);
             }
         } else if self.last_cell != Some(cell) {
             self.paint_cells(&stroke_cells(self.last_cell.unwrap_or(cell), cell), erase);
@@ -1645,23 +1723,27 @@ impl EditorApp {
             index,
             start,
             end,
-            origin,
             moved: true,
+            ..
         }) = &self.gesture
             && let Some(project) = &self.project
             && let Some(instance) = project.layer(*key, *layer)
         {
             let grid = number(instance, "__gridSize", 16.0);
-            let a = canvas::layer_to_world(project, *key, *layer, &self.viewport, [0.0; 2]);
-            let b = canvas::layer_to_world(project, *key, *layer, &self.viewport, [1.0, 0.0]);
-            let position =
-                entity_tools::drag_position(*origin, *start, *end, grid, b[0] - a[0], self.grid);
+            let delta = entity_tools::drag_delta(
+                project,
+                *key,
+                *layer,
+                &self.viewport,
+                [*start, *end],
+                self.grid,
+            );
             let offset = [
                 number(instance, "__pxTotalOffsetX", 0.0),
                 number(instance, "__pxTotalOffsetY", 0.0),
             ];
             let group = json!({"origin":offset,"size":[grid,grid],"layers":[{"layerDefUid":instance["layerDefUid"],"origin":offset,"rect":[0,0,1,1],"points":[],"clipboard":{"gridSize":grid,"width":1,"height":1,"entityInstances":[instance["entityInstances"][*index]],"gridTiles":[],"intGridCsv":[]}}]});
-            canvas::draw_selection_ghost(
+            canvas::draw_group_ghost(
                 ui.ctx(),
                 ui.painter(),
                 rect,
@@ -1669,11 +1751,9 @@ impl EditorApp {
                 &self.viewport,
                 *key,
                 &group,
-                [
-                    (position[0] - origin[0]) as f32,
-                    (position[1] - origin[1]) as f32,
-                ],
+                delta,
                 [false; 2],
+                canvas::GhostMode::EntityDrag,
                 &mut self.assets,
             );
             self.draw_entity_move_arrow(ui, rect);
