@@ -210,6 +210,24 @@ impl Scene<'_> {
                 Some((texture, source))
             })
         };
+        if visible {
+            if tile_texture.is_none() && (tile.is_some() || mode == "Tile") {
+                missing_tile(painter, rect);
+            }
+            // The pivot is part of the base drawing beneath the tile texture.
+            let pivot = self.point(transform.point(pair(&entity["px"], [0.; 2])));
+            let pixel = self.view.zoom * transform.scale;
+            painter.rect_filled(
+                Rect::from_min_size(pivot - vec2(pixel, pixel), vec2(pixel * 3., pixel * 3.)),
+                0.,
+                Color32::BLACK.gamma_multiply(core_alpha * 0.4),
+            );
+            painter.rect_filled(
+                Rect::from_min_size(pivot, vec2(pixel, pixel)),
+                0.,
+                color.gamma_multiply(core_alpha),
+            );
+        }
         if let Some((texture, source)) = tile_texture {
             let pivot = pair(
                 &entity["__pivot"],
@@ -264,22 +282,6 @@ impl Scene<'_> {
                 );
             }
             painter.add(egui::Shape::mesh(mesh));
-        } else if (tile.is_some() || mode == "Tile") && visible {
-            missing_tile(painter, rect);
-        }
-        if visible {
-            let pivot = self.point(transform.point(pair(&entity["px"], [0.; 2])));
-            let pixel = self.view.zoom * transform.scale;
-            painter.rect_filled(
-                Rect::from_min_size(pivot - vec2(pixel, pixel), vec2(pixel * 3., pixel * 3.)),
-                0.,
-                Color32::BLACK.gamma_multiply(core_alpha * 0.4),
-            );
-            painter.rect_filled(
-                Rect::from_min_size(pivot, vec2(pixel, pixel)),
-                0.,
-                color.gamma_multiply(core_alpha),
-            );
         }
         if self.options.details && (active || layer_def["hideFieldsWhenInactive"] != true) {
             self.entity_fields(

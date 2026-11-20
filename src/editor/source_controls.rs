@@ -610,12 +610,12 @@ pub(super) fn field_instance_label(
     width: f32,
     help: Option<&str>,
     using_default: bool,
-    required: bool,
+    has_error: bool,
 ) -> egui::Response {
     let (rect, response) = ui.allocate_exact_size(egui::vec2(width, 24.), Sense::click());
     let reserve = if help.is_some() { 40. } else { 8. };
     let mut label = RichText::new(name).color(theme::TEXT);
-    if required {
+    if has_error {
         label = label.color(Color32::from_rgb(255, 163, 134));
     } else if using_default {
         label = label.italics().color(theme::TEXT.gamma_multiply(0.9));

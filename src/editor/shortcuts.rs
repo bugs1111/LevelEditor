@@ -326,10 +326,29 @@ impl EditorApp {
         ));
         self.finish_gesture();
         self.finish_stroke();
+        // Preserve a directly selected entity when its inspector closes.
+        let group = self.selection_group.take().or_else(|| {
+            let (project, key, entity) =
+                (self.project.as_ref()?, self.selected?, self.entity_index?);
+            project.layer(key, self.layer)?["entityInstances"].get(entity)?;
+            self.element_selection_group(
+                project,
+                key,
+                self.layer,
+                [0, 0],
+                selection_click::Element::Entity(entity),
+            )
+            .ok()
+        });
         self.layer = index;
         self.entity_index = None;
+        if self.panel == Some(Panel::Entity) {
+            self.panel = None;
+        }
         self.selection = None;
-        self.selection_group = None;
+        if let Some(group) = group {
+            self.set_selection_group(group);
+        }
         self.stamp = None;
         self.normalize_palette();
     }
@@ -492,62 +511,75 @@ impl EditorApp {
         if self.world || self.panel.is_some_and(|panel| panel != Panel::Entity) {
             return;
         }
-        let Some(group) = self
-            .selection_group
-            .as_ref()
-            .filter(|group| group["elementCount"] == 1)
-        else {
-            return;
-        };
-        let Some(entry) = group["layers"].as_array().and_then(|layers| {
-            layers.iter().find(|entry| {
-                entry["clipboard"]["entityInstances"]
-                    .as_array()
-                    .is_some_and(|entities| !entities.is_empty())
-            })
-        }) else {
-            return;
-        };
-        let Some(iid) = entry["clipboard"]["entityInstances"][0]["iid"]
-            .as_str()
-            .map(str::to_owned)
-        else {
-            return;
-        };
         let (Some(project), Some(key)) = (&self.project, self.selected) else {
             return;
         };
-        let Some(layer) = project.layer(key, self.layer) else {
+        let Some(layers) = project
+            .level(key)
+            .and_then(|level| level["layerInstances"].as_array())
+        else {
             return;
         };
-        if layer["layerDefUid"] != entry["layerDefUid"]
-            || project
-                .layer_def(layer["layerDefUid"].as_i64().unwrap_or(-1))
-                .is_none_or(|def| {
-                    def["entityDepthSorting"].as_str().unwrap_or("Manual") != "Manual"
+        let (layer_index, index) = if let Some(group) = &self.selection_group {
+            if group["elementCount"] != 1 {
+                return;
+            }
+            let Some((entry, iid)) = group["layers"].as_array().and_then(|entries| {
+                entries.iter().find_map(|entry| {
+                    Some((
+                        entry,
+                        entry["clipboard"]["entityInstances"][0]["iid"].as_str()?,
+                    ))
                 })
+            }) else {
+                return;
+            };
+            let Some((layer_index, layer)) = layers
+                .iter()
+                .enumerate()
+                .find(|(_, layer)| layer["layerDefUid"] == entry["layerDefUid"])
+            else {
+                return;
+            };
+            let Some(index) = layer["entityInstances"]
+                .as_array()
+                .and_then(|entities| entities.iter().position(|entity| entity["iid"] == iid))
+            else {
+                return;
+            };
+            (layer_index, index)
+        } else if let Some(index) = self.entity_index {
+            (self.layer, index)
+        } else {
+            return;
+        };
+        let Some(layer) = layers.get(layer_index) else {
+            return;
+        };
+        if project
+            .layer_def(layer["layerDefUid"].as_i64().unwrap_or(-1))
+            .is_none_or(|def| def["entityDepthSorting"].as_str().unwrap_or("Manual") != "Manual")
         {
             return;
         }
-        let Some(entities) = layer["entityInstances"].as_array() else {
+        let total = layer["entityInstances"].as_array().map_or(0, Vec::len);
+        if index >= total {
             return;
-        };
-        let Some(index) = entities.iter().position(|entity| entity["iid"] == iid) else {
-            return;
-        };
+        }
         let target = if extreme {
-            if up { entities.len() - 1 } else { 0 }
+            if up { total - 1 } else { 0 }
         } else if up {
-            (index + 1).min(entities.len() - 1)
+            (index + 1).min(total - 1)
         } else {
             index.saturating_sub(1)
         };
         if target == index {
             return;
         }
-        let layer_index = self.layer;
         if self
-            .edit_level("Entity depth changed", key, |p| {
+            .edit_level_marked("Entity depth changed", key, |p, history| {
+                let entity = &p.layer(key, layer_index).unwrap()["entityInstances"][index];
+                history.mark_entity_change(p, key, layer_index, entity);
                 let entities = p.layer_mut(key, layer_index).unwrap()["entityInstances"]
                     .as_array_mut()
                     .unwrap();
@@ -556,6 +588,8 @@ impl EditorApp {
                 Ok(())
             })
             .is_some()
+            && self.layer == layer_index
+            && self.entity_index == Some(index)
         {
             self.entity_index = Some(target);
         }
@@ -1360,6 +1394,7 @@ mod tests {
     #[test]
     fn preview_154_manual_entity_depth_shortcuts_preserve_selection_and_undo() {
         let mut p = Project::new();
+        p.add_layer("Ground", "IntGrid", 16).unwrap();
         let layer_uid = p.add_layer("Actors", "Entities", 16).unwrap();
         let def = p.add_entity_def("Actor", 16, 16).unwrap();
         let level = p.level_keys()[0];
@@ -1424,23 +1459,36 @@ mod tests {
             app.project.as_ref().unwrap().layer(level, 0).unwrap()["entityInstances"][1]["iid"],
             ids[1]
         );
-        app.selection_group.as_mut().unwrap()["elementCount"] = json!(1);
+        app.selection_group = None;
+        app.panel = Some(Panel::Entity);
         send(&mut app, Key::ArrowUp, false);
         assert_eq!(
             app.project.as_ref().unwrap().layer(level, 0).unwrap()["entityInstances"][2]["iid"],
             ids[1]
         );
         assert_eq!(app.entity_index, Some(2));
+        app.switch_layer(1);
+        assert_eq!(app.layer, 1);
+        assert_eq!(app.panel, None);
+        assert_eq!(app.entity_index, None);
+        assert_eq!(app.selection_group.as_ref().unwrap()["elementCount"], 1);
         send(&mut app, Key::ArrowDown, true);
         assert_eq!(
             app.project.as_ref().unwrap().layer(level, 0).unwrap()["entityInstances"][0]["iid"],
             ids[1]
+        );
+        assert_eq!(app.entity_index, None);
+        assert!(
+            app.history
+                .level_change_bounds(app.project.as_ref().unwrap(), level, false)
+                .is_some()
         );
         app.undo_action(false);
         assert_eq!(
             app.project.as_ref().unwrap().layer(level, 0).unwrap()["entityInstances"][2]["iid"],
             ids[1]
         );
+        assert!(app.selection_group.is_none());
     }
     #[test]
     fn function_layer_keys_follow_filtered_list_but_number_keys_use_actual_order() {

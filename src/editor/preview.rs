@@ -98,6 +98,7 @@ impl EditorApp {
             offset[0] + cell[0] as f32 * grid,
             offset[1] + cell[1] as f32 * grid,
         ];
+        let mut ghost_mode = canvas::GhostMode::Brush;
         let mut clipboard = json!({"gridSize":grid,"width":1,"height":1,"gridTiles":[],"entityInstances":[],"intGridCsv":[]});
         match text(layer, "__type", "") {
             "IntGrid" => clipboard["intGridCsv"] = json!([self.int_value]),
@@ -161,8 +162,19 @@ impl EditorApp {
                     ui.ctx().set_cursor_icon(egui::CursorIcon::Move);
                     return;
                 }
+                if self
+                    .entity_index
+                    .and_then(|index| layer["entityInstances"].get(index))
+                    .is_some_and(|entity| selection_click::entity_is_over(project, entity, local))
+                {
+                    ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
+                    return;
+                }
                 if let Some((_, entity)) = hit_entity(project, layer, local) {
                     ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
+                    ghost_mode = canvas::GhostMode::EntityHover {
+                        ui_scale: self.settings.float("editorUiScale", 1.),
+                    };
                     let mut preview = entity.clone();
                     preview["px"] = json!([
                         entity["px"][0].as_f64().unwrap_or(0.0) - f64::from(cell[0] as f32 * grid),
@@ -170,6 +182,12 @@ impl EditorApp {
                     ]);
                     clipboard["entityInstances"] = json!([preview]);
                 } else {
+                    if ui
+                        .ctx()
+                        .output(|output| output.cursor_icon == egui::CursorIcon::Default)
+                    {
+                        ui.ctx().set_cursor_icon(egui::CursorIcon::Cell);
+                    }
                     let point =
                         ldtk_core::snapped_entity_position(def, local, grid as i32, self.grid);
                     clipboard["entityInstances"] = json!([{"iid":"@cursor","defUid":def["uid"],"__identifier":def["identifier"],"px":[point[0]as f32-cell[0]as f32*grid,point[1]as f32-cell[1]as f32*grid],"width":def["width"],"height":def["height"],"__pivot":[def["pivotX"],def["pivotY"]],"__tile":def["tileRect"],"__smartColor":def["color"],"fieldInstances":[]}]);
@@ -188,8 +206,82 @@ impl EditorApp {
             &group,
             [0.0; 2],
             [false; 2],
-            canvas::GhostMode::Brush,
+            ghost_mode,
             &mut self.assets,
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn entity_brush_highlights_hovered_bounds_and_labels_only_existing_entities() {
+        let mut project = Project::new();
+        project.add_layer("Actors", "Entities", 16).unwrap();
+        let actor = project.add_entity_def("Actor", 32, 24).unwrap();
+        let key = project.level_keys()[0];
+        project.add_entity(key, 0, actor, 64, 64).unwrap();
+        project.json["defs"]["entities"][0]["color"] = json!("#DC424F");
+        let mut app = EditorApp::empty();
+        app.set_project(project);
+        app.entity_uid = Some(actor);
+        app.viewport = Viewport {
+            center: [128., 128.],
+            zoom: 2.,
+        };
+        let ctx = egui::Context::default();
+        let rect = Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(512., 512.));
+        let frame = |app: &mut EditorApp, point| {
+            ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(rect),
+                    events: vec![egui::Event::PointerMoved(point)],
+                    ..Default::default()
+                },
+                |ctx| {
+                    egui::CentralPanel::default()
+                        .frame(egui::Frame::NONE)
+                        .show(ctx, |ui| app.draw_brush_preview(ui, rect, true));
+                },
+            )
+        };
+        let has_label = |output: &egui::FullOutput| {
+            output.shapes.iter().any(|shape| {
+                matches!(&shape.shape, egui::Shape::Rect(rect) if rect.fill == Color32::from_rgb(110, 33, 40))
+            })
+        };
+        let hovered = egui::pos2(150., 145.);
+        for (mode, vertices) in [
+            ("Rectangle", 8),
+            ("Ellipse", 24),
+            ("Cross", 24),
+            ("Tile", 8),
+        ] {
+            app.project.as_mut().unwrap().json["defs"]["entities"][0]["renderMode"] = json!(mode);
+            let output = frame(&mut app, hovered);
+            assert_eq!(output.platform_output.cursor_icon, egui::CursorIcon::Grab);
+            assert!(
+                output.shapes.iter().any(|shape| {
+                    matches!(&shape.shape, egui::Shape::Mesh(mesh)
+                        if mesh.vertices.len() == vertices * 2
+                        && mesh.indices.len() == vertices * 6
+                        && mesh.vertices.iter().all(|vertex| vertex.color == theme::ACCENT))
+                }),
+                "missing {mode} hover outline"
+            );
+            assert!(has_label(&output));
+        }
+        app.entity_index = Some(0);
+        let selected = frame(&mut app, hovered);
+        assert_eq!(selected.platform_output.cursor_icon, egui::CursorIcon::Grab);
+        assert!(!has_label(&selected));
+        let placement = frame(&mut app, egui::pos2(260., 260.));
+        assert_eq!(
+            placement.platform_output.cursor_icon,
+            egui::CursorIcon::Cell
+        );
+        assert!(!has_label(&placement));
     }
 }

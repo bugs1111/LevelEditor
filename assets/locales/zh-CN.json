@@ -102,6 +102,7 @@
   "Array": "数组",
   "Array maximum length": "最大数组长度",
   "Array minimum length": "最小数组长度",
+  "Array should have {bounds} value(s)": "数组应包含 {bounds} 个值",
   "ArrayCountNoLabel": "仅数组长度",
   "ArrayCountWithLabel": "数组标签与长度",
   "ArrowsLine": "连续箭头",

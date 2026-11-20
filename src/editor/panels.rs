@@ -1097,6 +1097,21 @@ impl EditorApp {
                         && field["__value"].is_null()
                         && definition["canBeNull"] != true;
                     let count = field["__value"].as_array().map_or(0, Vec::len);
+                    let min = definition["arrayMinLength"].as_u64();
+                    let max = definition["arrayMaxLength"].as_u64();
+                    let array_warning = (array
+                        && (min.is_some_and(|n| (count as u64) < n)
+                            || max.is_some_and(|n| (count as u64) > n)))
+                    .then(|| {
+                        let lower = min.map_or_else(|| "null".to_owned(), |n| n.to_string());
+                        let bounds = match max {
+                            Some(max) if min == Some(max) => lower,
+                            Some(max) => format!("{lower}-{max}"),
+                            None => format!("{lower}+"),
+                        };
+                        locale::format(ui, "Array should have {bounds} value(s)", &[("bounds", &bounds)])
+                    });
+                    let row_error = point_required || array_warning.is_some();
                     let using_default = if array {
                         count == 0
                     } else {
@@ -1129,7 +1144,7 @@ impl EditorApp {
                                         };
                                         let label = source_controls::field_instance_label(
                                             ui, &label, LABEL_WIDTH, definition["doc"].as_str(),
-                                            using_default, point_required,
+                                            using_default, row_error,
                                         );
                                         let empty_array = array && count > 0 && ui
                                             .allocate_ui_with_layout(
@@ -1169,6 +1184,27 @@ impl EditorApp {
                                 |ui| {
                                     ui.set_width(value_width);
                                     egui::Frame::new().inner_margin(if using_default { 0 } else { 2 }).show(ui, |ui| {
+                                        if let Some(warning) = &array_warning {
+                                            ui.scope(|ui| {
+                                                ui.spacing_mut().item_spacing.y = 0.;
+                                                ui.add_space(6.);
+                                                let width = ui.available_width();
+                                                let rect = egui::Frame::new()
+                                                    .fill(Color32::from_rgb(75, 9, 4))
+                                                    .inner_margin(8)
+                                                    .show(ui, |ui| {
+                                                        ui.set_width((width - 16.).max(0.));
+                                                        ui.label(RichText::new(warning).color(Color32::WHITE));
+                                                    }).response.rect;
+                                                ui.painter().extend(egui::Shape::dashed_line(
+                                                    &[rect.left_top(), rect.right_top(), rect.right_bottom(), rect.left_bottom(), rect.left_top()],
+                                                    Stroke::new(1., Color32::RED),
+                                                    2.,
+                                                    2.,
+                                                ));
+                                                ui.add_space(11.);
+                                            });
+                                        }
                                         let value = if empty_array {
                                             self.cancel_field_pick();
                                             Some(FieldEdit::Value(json!([])))
@@ -1206,7 +1242,9 @@ impl EditorApp {
                                                 .field_value_errors(key, entity, uid)
                                         {
                                             for error in errors {
-                                                ui.colored_label(Color32::LIGHT_RED, error);
+                                                if !matches!(error.as_str(), "Array too short" | "Array too long") {
+                                                    ui.colored_label(Color32::LIGHT_RED, error);
+                                                }
                                             }
                                         }
                                     });
@@ -1216,7 +1254,7 @@ impl EditorApp {
                         });
                     let rect = row.response.rect;
                     let mut shapes = Vec::new();
-                    if !using_default || point_required {
+                    if !using_default || row_error {
                         let error_fill = Color32::from_rgb(121, 17, 5);
                         shapes.push(egui::Shape::rect_filled(
                             Rect::from_min_size(rect.min, egui::vec2(LABEL_WIDTH, rect.height())),
@@ -1226,7 +1264,7 @@ impl EditorApp {
                                 ne: 0,
                                 se: 0,
                             },
-                            if point_required { error_fill } else { Color32::from_rgb(115, 127, 157) },
+                            if row_error { error_fill } else { Color32::from_rgb(115, 127, 157) },
                         ));
                         shapes.push(egui::Shape::rect_filled(
                             value_rect,
@@ -1236,9 +1274,9 @@ impl EditorApp {
                                 ne: 4,
                                 se: 4,
                             },
-                            if point_required { error_fill } else { theme::MEDIUM },
+                            if row_error { error_fill } else { theme::MEDIUM },
                         ));
-                        if point_required {
+                        if row_error {
                             shapes.push(egui::Shape::rect_filled(
                                 Rect::from_min_size(rect.min, egui::vec2(4., rect.height())),
                                 0.,
@@ -3727,6 +3765,17 @@ mod tests {
         let project = app.project.as_ref().unwrap();
         assert_eq!(project.level(key).unwrap()["fieldInstances"][2]["__value"], json!([]));
         assert!(!project.field_value_errors(key, None, array).unwrap().is_empty());
+        let output = frame(&mut app, vec![]);
+        let warning = point(&output, "Array should have 1+ value(s)");
+        assert!(output.shapes.iter().any(|shape| {
+            matches!(&shape.shape, egui::Shape::Rect(button) if button.fill == Color32::from_rgb(49, 55, 66)
+                && warning.y < button.rect.top())
+        }));
+        assert!(output.shapes.iter().any(|shape| {
+            matches!(&shape.shape, egui::Shape::Vec(parts) if parts.iter().filter(|part|
+                matches!(part, egui::Shape::Rect(rect) if rect.fill == Color32::from_rgb(121, 17, 5))
+            ).count() == 2)
+        }));
     }
     #[test]
     fn creating_first_extra_world_through_native_button_preserves_original_world() {

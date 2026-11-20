@@ -26,6 +26,90 @@ pub(super) fn point_origin(entity: &Value, def: &Value, grid: f32) -> [f32; 2] {
     })
 }
 impl Scene<'_> {
+    pub(super) fn hovered_entity_cursor(
+        &mut self,
+        painter: &Painter,
+        entity: &Value,
+        transform: Transform,
+        ui_scale: f32,
+    ) {
+        let Some(def) = values(&self.project.json["defs"]["entities"])
+            .iter()
+            .find(|def| def["uid"] == entity["defUid"])
+        else {
+            return;
+        };
+        let bounds = entities::entity_bounds(entity, def);
+        let rect = self.screen(transform.rect(bounds));
+        let scale = self.view.zoom * transform.scale;
+        let bevel = 3. * scale;
+        let outer = rect.expand(bevel);
+        let points = match text(def, "renderMode", "Rectangle") {
+            "Ellipse" | "Cross" => {
+                let segments = if bounds.width() <= 32. && bounds.height() <= 32. {
+                    24
+                } else {
+                    // Heaps uses ceil(radiusY * 3.14 / 2) for automatic segments.
+                    ((bounds.height() * 0.5 + 3.) * 1.57).ceil().min(4096.) as usize
+                };
+                let radius = outer.size() * 0.5;
+                (0..segments)
+                    .map(|i| {
+                        let angle = i as f32 * std::f32::consts::TAU / segments as f32;
+                        outer.center() + egui::vec2(angle.cos(), angle.sin()) * radius
+                    })
+                    .collect()
+            }
+            _ => {
+                let b = egui::vec2(bevel, 0.);
+                let v = egui::vec2(0., bevel);
+                vec![
+                    outer.left_top() + b,
+                    outer.right_top() - b,
+                    outer.right_top() + v,
+                    outer.right_bottom() - v,
+                    outer.right_bottom() - b,
+                    outer.left_bottom() + b,
+                    outer.left_bottom() - v,
+                    outer.left_top() + v,
+                ]
+            }
+        };
+        let mut path = egui::epaint::tessellator::Path::default();
+        path.add_line_loop(&points);
+        let mut outline = Mesh::default();
+        // The source cursor uses a hard-edged world-pixel stroke.
+        path.stroke_closed(0., &Stroke::new(scale, theme::ACCENT).into(), &mut outline);
+        painter.add(egui::Shape::mesh(outline));
+
+        let label = text(def, "identifier", "");
+        let color = self.smart_color(entity, def);
+        let pad = egui::vec2(3., 1.) * (ui_scale / self.ctx.pixels_per_point());
+        let size = bitmap_font::measure_flow(self.ctx, label, ui_scale, f32::INFINITY) + pad * 2.;
+        let pivot = pair(&entity["px"], [0.; 2]);
+        let zoom = self.view.zoom;
+        let offset =
+            bounds.center_top() - Pos2::from(pivot) - egui::vec2(size.x * 0.5, size.y) / zoom;
+        let min = self.point(transform.point(pivot))
+            + egui::vec2(offset.x.trunc(), offset.y.trunc()) * zoom;
+        painter.rect_filled(
+            Rect::from_min_size(min, size),
+            0.,
+            color.lerp_to_gamma(Color32::BLACK, 0.5),
+        );
+        bitmap_font::paint(
+            self.ctx,
+            painter,
+            self.assets,
+            min + pad,
+            label,
+            color.lerp_to_gamma(Color32::WHITE, 0.5),
+            ui_scale,
+            f32::INFINITY,
+            false,
+        );
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(super) fn ghost_tiles(
         &mut self,

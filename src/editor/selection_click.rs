@@ -172,36 +172,15 @@ impl EditorApp {
             layer_hit(project, layer, local, cell).map(|element| (index, cell, element))
         })
     }
-    pub(super) fn select_element_at(
-        &mut self,
-        world: [f32; 2],
-        copy: bool,
-        start_drag: bool,
-    ) -> bool {
-        let Some(key) = self.selected else {
-            return false;
-        };
-        let Some(project) = &self.project else {
-            return false;
-        };
-        let Some(layers) = project
-            .level(key)
-            .and_then(|l| l["layerInstances"].as_array())
-        else {
-            return false;
-        };
-        let hit = self.generic_element_at(world);
-        let Some((layer_index, cell, element)) = hit else {
-            self.selection = None;
-            self.selection_group = None;
-            self.entity_index = None;
-            self.chain_entity = None;
-            if self.panel == Some(Panel::Entity) {
-                self.panel = None;
-            }
-            return false;
-        };
-        let layer = &layers[layer_index];
+    pub(super) fn element_selection_group(
+        &self,
+        project: &Project,
+        key: LevelKey,
+        layer_index: usize,
+        cell: [i32; 2],
+        element: Element,
+    ) -> ldtk_core::Result<Value> {
+        let layer = project.layer(key, layer_index).unwrap();
         let grid = number(layer, "__gridSize", 16.);
         let mut capture_cell = cell;
         let mut local_min = [cell[0] as f32 * grid, cell[1] as f32 * grid];
@@ -237,7 +216,7 @@ impl EditorApp {
         ];
         let geometries = self.selection_geometries(key);
         let regions = json!([{"layerIndex":layer_index,"rect":[capture_cell[0],capture_cell[1],1,1],"geometry":geometries[layer_index]}]);
-        let result = project
+        project
             .copy_selection_group_from_regions(key, &regions, bounds)
             .and_then(|mut group| {
                 let entry = &mut group["layers"][0];
@@ -276,8 +255,36 @@ impl EditorApp {
                 group["originalRects"] = json!([]);
                 group["emptySpace"] = json!(false);
                 project.refresh_selection_group_geometry(key, &group, &geometries)
-            });
-        let group = match result {
+            })
+    }
+
+    pub(super) fn select_element_at(
+        &mut self,
+        world: [f32; 2],
+        copy: bool,
+        start_drag: bool,
+    ) -> bool {
+        let (Some(key), Some(project)) = (self.selected, &self.project) else {
+            return false;
+        };
+        let Some(layers) = project
+            .level(key)
+            .and_then(|level| level["layerInstances"].as_array())
+        else {
+            return false;
+        };
+        let Some((layer_index, cell, element)) = self.generic_element_at(world) else {
+            self.selection = None;
+            self.selection_group = None;
+            self.entity_index = None;
+            self.chain_entity = None;
+            if self.panel == Some(Panel::Entity) {
+                self.panel = None;
+            }
+            return false;
+        };
+        let layer = &layers[layer_index];
+        let group = match self.element_selection_group(project, key, layer_index, cell, element) {
             Ok(group) => group,
             Err(e) => {
                 self.status = e.to_string();
@@ -290,6 +297,7 @@ impl EditorApp {
         self.chain_entity = None;
         match element {
             Element::Grid => {
+                let grid = number(layer, "__gridSize", 16.);
                 if layer["__type"] == "IntGrid" {
                     let width = number(layer, "__cWid", 1.) as i32;
                     self.int_value = layer["intGridCsv"][(cell[0] + cell[1] * width) as usize]

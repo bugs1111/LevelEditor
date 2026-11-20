@@ -5,7 +5,7 @@ fn point_coordinates(value: &Value) -> Option<String> {
     Some(format!("{},{}", value["cx"].as_i64()?, value["cy"].as_i64()?))
 }
 
-fn array_field_frame(empty: bool) -> egui::Frame {
+pub(super) fn array_field_frame(empty: bool) -> egui::Frame {
     let padding = if empty { 2 } else { 8 };
     egui::Frame::new().inner_margin(egui::Margin {
         left: padding + 4,
@@ -15,7 +15,7 @@ fn array_field_frame(empty: bool) -> egui::Frame {
     })
 }
 
-fn array_field_border(ui: &egui::Ui, rect: Rect) {
+pub(super) fn array_field_border(ui: &egui::Ui, rect: Rect) {
     ui.painter().vline(
         rect.left() + 4.,
         (rect.top() + 4.)..=(rect.bottom() - 4.),
@@ -23,7 +23,7 @@ fn array_field_border(ui: &egui::Ui, rect: Rect) {
     );
 }
 
-fn array_field_add(ui: &mut egui::Ui) -> egui::Response {
+pub(super) fn array_field_add(ui: &mut egui::Ui, tooltip: &str) -> egui::Response {
     ui.scope(|ui| {
         ui.spacing_mut().button_padding.y = 0.;
         ui.spacing_mut().interact_size.y = 23.;
@@ -38,7 +38,7 @@ fn array_field_add(ui: &mut egui::Ui) -> egui::Response {
         )
     })
     .inner
-    .on_hover_text(locale::tr(ui, "Add from canvas"))
+    .on_hover_text(locale::tr(ui, tooltip))
 }
 
 fn picker_outline(painter: &egui::Painter, rect: Rect, stroke: Stroke, dash: f32, gap: f32) {
@@ -674,7 +674,7 @@ impl EditorApp {
                         }
                     }
                     if can_add {
-                        let response = array_field_add(ui);
+                        let response = array_field_add(ui, "Add from canvas");
                         pick_rect = Some(response.rect);
                         if response.clicked() {
                             requested = Some(None);
@@ -888,7 +888,7 @@ impl EditorApp {
                     if !values.is_empty() {
                         ui.add_space(2.);
                     }
-                    let response = array_field_add(ui);
+                    let response = array_field_add(ui, "Add from canvas");
                     pick_rect = Some(response.rect);
                     if response.clicked() {
                         let index = values.len();

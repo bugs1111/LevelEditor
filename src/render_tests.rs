@@ -980,6 +980,9 @@ fn preview_154_filepath_field_renders_external_image_as_entity_tile() {
     project.path = Some(temp.path().join("fixture.ldtk"));
     project.add_layer("Actors", "Entities", 16).unwrap();
     let def = project.add_entity_def("Actor", 16, 16).unwrap();
+    project
+        .update_entity_definition(def, &serde_json::json!({"color": "#DF6247"}))
+        .unwrap();
     let field = project
         .add_field_definition(Some(def), "Image", "FilePath", false)
         .unwrap();
@@ -1010,7 +1013,27 @@ fn preview_154_filepath_field_renders_external_image_as_entity_tile() {
     loop {
         let (_, out) = frame(&ctx, &project, &view, &opts, &mut assets);
         if let Some(texture) = assets.texture(&ctx, &path) {
-            assert!(out.shapes.iter().any(|s| matches!(&s.shape, egui::Shape::Mesh(m) if m.texture_id == texture.id() && !m.vertices.is_empty())));
+            let decal = out
+                .shapes
+                .iter()
+                .position(|shape| {
+                    matches!(&shape.shape, egui::Shape::Mesh(mesh)
+                        if mesh.texture_id == texture.id() && !mesh.vertices.is_empty())
+                })
+                .expect("FilePath image has a decal mesh");
+            let pivot_rect = Rect::from_min_size(Pos2::new(500., 350.), egui::Vec2::splat(4.));
+            let pivot = out
+                .shapes
+                .iter()
+                .position(|shape| {
+                    matches!(&shape.shape, egui::Shape::Rect(rect)
+                        if rect.rect == pivot_rect && rect.fill == theme::color("#DF6247"))
+                })
+                .expect("entity has a one-pixel pivot marker");
+            assert!(
+                pivot < decal,
+                "opaque decal pixels must cover the pivot marker"
+            );
             break;
         }
         assert!(

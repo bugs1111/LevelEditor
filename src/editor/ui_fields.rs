@@ -503,7 +503,7 @@ fn scalar_editor_inner(
                 .unwrap_or(i32::MAX as i64);
             let before = v;
             let cleared = std::cell::Cell::new(false);
-            ui_commit::prepare_editor(ui.ctx(), ui.next_auto_id());
+            prepare_number_editor(ui);
             let response = ui.add(
                 egui::DragValue::new(&mut v)
                     .range(lo..=hi)
@@ -526,7 +526,7 @@ fn scalar_editor_inner(
             let mut v = current.as_f64().unwrap_or(0.0);
             let before = v;
             let cleared = std::cell::Cell::new(false);
-            ui_commit::prepare_editor(ui.ctx(), ui.next_auto_id());
+            prepare_number_editor(ui);
             let response = ui.add(
                 egui::DragValue::new(&mut v)
                     .update_while_editing(false)
@@ -608,6 +608,15 @@ fn scalar_editor_inner(
             current = json!(format!("#{:02X}{:02X}{:02X}", rgb[0], rgb[1], rgb[2]));
         }
         "FilePath" => {
+            let state_id = ui.make_persistent_id("instance-default-editor");
+            let choose_new = ui.data_mut(|data| {
+                data.get_temp::<DefaultEditor>(state_id)
+                    .is_some_and(|mut state| {
+                        let requested = std::mem::take(&mut state.focus);
+                        data.insert_temp(state_id, state);
+                        requested
+                    })
+            });
             let mut v = current.as_str().unwrap_or("").to_owned();
             let extensions = definition["acceptFileTypes"]
                 .as_array()
@@ -616,12 +625,20 @@ fn scalar_editor_inner(
                 .filter_map(Value::as_str)
                 .map(|s| s.trim_start_matches('.'))
                 .collect::<Vec<_>>();
-            ui.horizontal(|ui| {
-                if let Some(next) = buffered_text(ui, "field-path", &v) {
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if !v.is_empty()
+                    && let Ok(path) = project.make_absolute_file_path(&v)
+                {
+                    text_editor::external_file_editor(ui, &path);
+                }
+                let choose = super::panels::source_controls::small_button(ui, "Choose…").clicked()
+                    || choose_new;
+                let size = egui::vec2(ui.available_width().max(20.), ui.spacing().interact_size.y);
+                if let Some(next) = buffered_text_sized(ui, "field-path", &v, size) {
                     v = next;
                     modified = true;
                 }
-                if super::panels::source_controls::small_button(ui, "Choose…").clicked()
+                if choose
                     && let Some(p) = pick_file(
                         ui,
                         &format!(
@@ -634,11 +651,6 @@ fn scalar_editor_inner(
                 {
                     v = p.to_string_lossy().into_owned();
                     modified = true;
-                }
-                if !v.is_empty()
-                    && let Ok(path) = project.make_absolute_file_path(&v)
-                {
-                    text_editor::external_file_editor(ui, &path);
                 }
             });
             current = if v.is_empty() { Value::Null } else { json!(v) };
@@ -885,12 +897,26 @@ struct DefaultEditor {
     active: bool,
     focus: bool,
 }
+fn prepare_number_editor(ui: &egui::Ui) {
+    let id = ui.next_auto_id();
+    let default = ui.make_persistent_id("instance-default-editor");
+    if ui
+        .data(|data| data.get_temp::<DefaultEditor>(default))
+        .is_some_and(|state| state.focus)
+    {
+        // DragValue selects the old number when it observes the focus change.
+        ui.memory_mut(|memory| memory.request_focus(id));
+    }
+    ui_commit::prepare_editor(ui.ctx(), id);
+}
 fn track_default_editor(ui: &egui::Ui, response: &egui::Response) {
     let id = ui.make_persistent_id("instance-default-editor");
     if let Some(mut state) = ui.data_mut(|data| data.get_temp::<DefaultEditor>(id)) {
         if state.focus {
             response.request_focus();
+            response.scroll_to_me(None);
             state.focus = false;
+            ui.ctx().request_repaint();
         }
         if response.lost_focus() {
             state.active = false;
@@ -1076,17 +1102,9 @@ pub(super) fn field_value_editor(
         let mut edit = None;
         let len = values.len();
         let sort_id = ui.id().with("array-sort");
-        egui::Frame::new()
-            .inner_margin(if values.is_empty() {
-                egui::Margin::same(2)
-            } else {
-                egui::Margin {
-                    left: 8,
-                    right: 2,
-                    top: 8,
-                    bottom: 8,
-                }
-            })
+        let append_focus_id = ui.id().with("appended-array-item");
+        let activate = ui.data_mut(|data| data.remove_temp::<usize>(append_focus_id));
+        let group = field_tools::array_field_frame(values.is_empty())
             .show(ui, |ui| {
                 ui.spacing_mut().item_spacing.y = 2.;
                 for (index, item) in values.iter().enumerate() {
@@ -1133,6 +1151,18 @@ pub(super) fn field_value_editor(
                                 egui::Layout::top_down(egui::Align::Min),
                                 |ui| {
                                     ui.set_width(width);
+                                    if activate == Some(index) && field_uses_default(field, index) {
+                                        let id = ui.make_persistent_id("instance-default-editor");
+                                        ui.data_mut(|data| {
+                                            data.insert_temp(
+                                                id,
+                                                DefaultEditor {
+                                                    active: true,
+                                                    focus: true,
+                                                },
+                                            )
+                                        });
+                                    }
                                     if let Some(next) = instance_scalar_editor(
                                         ui,
                                         project,
@@ -1169,14 +1199,18 @@ pub(super) fn field_value_editor(
                 }
                 let max = definition["arrayMaxLength"].as_u64().unwrap_or(u64::MAX);
                 if (values.len() as u64) < max
-                    && ui
-                        .add_sized([ui.available_width(), 22.], egui::Button::new("+"))
-                        .on_hover_text("Add value")
-                        .clicked()
+                    && field_tools::array_field_add(ui, "Add a new value").clicked()
                 {
+                    if matches!(inner, "String" | "Int" | "Float" | "FilePath") {
+                        ui.data_mut(|data| data.insert_temp(append_focus_id, len));
+                        ui.ctx().request_repaint();
+                    }
                     edit = Some(ldtk_core::FieldArrayEdit::Insert { index: len });
                 }
             });
+        if !values.is_empty() {
+            field_tools::array_field_border(ui, group.response.rect);
+        }
         edit.map(FieldEdit::Array)
     } else {
         instance_scalar_editor(
@@ -1248,13 +1282,17 @@ mod tests {
             },
         );
         for shape in output.shapes {
-            if let egui::Shape::Text(text) = shape.shape {
-                let label = text.galley.text();
-                if label == "+" || label == "×" {
-                    ctx.data_mut(|d| {
-                        d.insert_temp(egui::Id::new(label), text.pos + text.galley.size() * 0.5)
-                    });
+            let button = match shape.shape {
+                egui::Shape::Rect(rect) if rect.fill == Color32::from_rgb(49, 55, 66) => {
+                    Some(("+", rect.rect.center()))
                 }
+                egui::Shape::Text(text) if text.galley.text() == "×" => {
+                    Some(("×", text.pos + text.galley.size() * 0.5))
+                }
+                _ => None,
+            };
+            if let Some((label, point)) = button {
+                ctx.data_mut(|d| d.insert_temp(egui::Id::new(label), point));
             }
         }
         (rect, changed)
@@ -1600,6 +1638,51 @@ mod tests {
             assert_eq!(
                 p.level(LEVEL).unwrap()["fieldInstances"][0]["__value"],
                 expected
+            );
+        }
+    }
+    #[test]
+    fn appended_text_and_number_slots_accept_typing_without_an_extra_click() {
+        for (kind, existing, typed, expected) in [
+            ("String", json!("old"), "fresh", json!("fresh")),
+            ("Int", json!(1), "37", json!(37)),
+            ("Float", json!(1.5), "27.5", json!(27.5)),
+        ] {
+            let mut project = Project::new();
+            let field = project
+                .add_field_definition(None, "Values", kind, true)
+                .unwrap();
+            project
+                .set_field_editor_value(LEVEL, None, field, json!([existing]))
+                .unwrap();
+            let ctx = egui::Context::default();
+            frame(&ctx, &mut project, field, vec![]);
+            let add = ctx
+                .data_mut(|d| d.get_temp::<egui::Pos2>(egui::Id::new("+")))
+                .unwrap();
+            frame(
+                &ctx,
+                &mut project,
+                field,
+                vec![egui::Event::PointerMoved(add), click(add, true)],
+            );
+            frame(&ctx, &mut project, field, vec![click(add, false)]);
+            frame(&ctx, &mut project, field, vec![]);
+            frame(&ctx, &mut project, field, vec![]);
+            assert!(
+                project.level(LEVEL).unwrap()["fieldInstances"][0]["realEditorValues"][1].is_null()
+            );
+            frame(
+                &ctx,
+                &mut project,
+                field,
+                vec![egui::Event::Text(typed.to_owned())],
+            );
+            frame(&ctx, &mut project, field, vec![key(Key::Enter)]);
+            assert_eq!(
+                project.level(LEVEL).unwrap()["fieldInstances"][0]["__value"],
+                json!([existing, expected]),
+                "{kind}"
             );
         }
     }

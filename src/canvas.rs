@@ -1593,11 +1593,12 @@ pub fn entity_preview(
     entities::preview(ctx, painter, rect, project, definition, assets);
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum GhostMode {
     Move,
     Copy,
     Brush,
+    EntityHover { ui_scale: f32 },
 }
 
 /// Render only the clipboard payload; no project or source-layer clone is required.
@@ -1853,7 +1854,10 @@ pub fn draw_group_ghost(
                 &e,
                 def,
                 transform,
-                if mode == GhostMode::Brush { 0.33 } else { 0.5 },
+                match mode {
+                    GhostMode::Brush | GhostMode::EntityHover { .. } => 0.33,
+                    GhostMode::Move | GhostMode::Copy => 0.5,
+                },
                 true,
                 key,
             );
@@ -1863,6 +1867,8 @@ pub fn draw_group_ghost(
                     .find(|d| d["uid"] == e["defUid"])
                     .unwrap_or(&Value::Null);
                 scene.ghost_entity_links(&painter, &e, entity_def, transform, grid);
+            } else if let GhostMode::EntityHover { ui_scale } = mode {
+                scene.hovered_entity_cursor(&painter, &e, transform, ui_scale);
             }
             if let Some(iid) = e["iid"].as_str() {
                 moved_entities.insert(iid.to_owned(), e);
