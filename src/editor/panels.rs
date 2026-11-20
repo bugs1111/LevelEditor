@@ -6,6 +6,9 @@ mod definition_clipboard;
 mod entity_transfer;
 #[path = "enum_sync_dialog.rs"]
 mod enum_sync_dialog;
+pub(super) use enum_sync_dialog::PendingSync;
+#[path = "image_picker.rs"]
+mod image_picker;
 #[cfg(test)]
 #[path = "layer_settings_tests.rs"]
 mod layer_settings_tests;
@@ -13,24 +16,140 @@ mod layer_settings_tests;
 mod panel_layout;
 #[path = "rule_batch.rs"]
 mod rule_batch;
+#[path = "rule_detail.rs"]
+mod rule_detail;
+pub(super) use rule_detail::RuleDraft;
 #[path = "rule_wizard.rs"]
 mod rule_wizard;
 #[path = "source_colors.rs"]
 pub(in crate::app) mod source_colors;
 #[path = "source_controls.rs"]
 pub(in crate::app) mod source_controls;
+#[path = "tag_editor.rs"]
+mod tag_editor;
 use super::ui_fields::{
-    Property as P, Widget as W, apply_patch, changed, field_value_editor, form, scalar_editor, tags,
+    FieldEdit, Property as P, Widget as W, apply_patch, changed, field_value_editor, form,
+    form_with_label_width, scalar_editor, tags,
 };
 use super::*;
 use definition_clipboard::ClipTarget;
 use serde_json::json;
+const TILESET_MIN_LABEL_WIDTH: f32 = 110.;
+const ENUM_VALUE_SIZE: f32 = 32.;
+const ENUM_VALUE_SPACING: f32 = 3.;
+
+#[derive(Clone, Copy)]
+pub(super) enum IntGridRemoval {
+    Value(i64, Rect),
+    Group(i64),
+}
+
+fn collapsing(ui: &mut egui::Ui, title: &str, body: impl FnOnce(&mut egui::Ui)) {
+    egui::CollapsingHeader::new(locale::tr(ui, title))
+        .id_salt(title)
+        .show(ui, body);
+}
+
+fn tileset_tag_enum_picker(
+    ui: &mut egui::Ui,
+    project: &Project,
+    current: Option<i64>,
+) -> Option<Option<i64>> {
+    let local = project.json["defs"]["enums"]
+        .as_array()
+        .into_iter()
+        .flatten();
+    let external = project.json["defs"]["externalEnums"]
+        .as_array()
+        .into_iter()
+        .flatten();
+    let all = local.clone().chain(external.clone());
+    let selected = all
+        .clone()
+        .find(|e| e["uid"].as_i64() == current)
+        .map(|e| text(e, "identifier", "-- None --"))
+        .unwrap_or_else(|| locale::tr(ui, "-- None --"));
+    let mut tag_names = local
+        .clone()
+        .flat_map(|e| e["tags"].as_array().into_iter().flatten())
+        .filter_map(Value::as_str)
+        .collect::<Vec<_>>();
+    tag_names.sort_by_key(|tag| tag.to_lowercase());
+    tag_names.dedup();
+    let mut groups: Vec<(&str, Vec<(&Value, bool)>)> = Vec::new();
+    let untagged = local
+        .clone()
+        .filter(|e| e["tags"].as_array().is_none_or(|tags| tags.is_empty()))
+        .map(|e| (e, false))
+        .collect::<Vec<_>>();
+    if !untagged.is_empty() {
+        groups.push((locale::tr(ui, "Untagged"), untagged));
+    }
+    for tag in tag_names {
+        groups.push((
+            tag,
+            local
+                .clone()
+                .filter(|e| {
+                    e["tags"]
+                        .as_array()
+                        .is_some_and(|tags| tags.iter().any(|v| v == tag))
+                })
+                .map(|e| (e, false))
+                .collect(),
+        ));
+    }
+    let mut sources = external
+        .clone()
+        .map(|e| text(e, "externalRelPath", "External enums"))
+        .collect::<Vec<_>>();
+    sources.sort_unstable();
+    sources.dedup();
+    for source in sources {
+        groups.push((
+            source,
+            external
+                .clone()
+                .filter(|e| text(e, "externalRelPath", "External enums") == source)
+                .map(|e| (e, true))
+                .collect(),
+        ));
+    }
+    let mut next = current;
+    egui::ComboBox::from_id_salt("tileset-tag-source-enum")
+        .width(ui.available_width().min(465.))
+        .selected_text(selected)
+        .show_ui(ui, |ui| {
+            ui.selectable_value(&mut next, None, locale::tr(ui, "-- None --"));
+            for (name, entries) in &groups {
+                if groups.len() > 1 {
+                    ui.label(*name);
+                }
+                for (e, is_external) in entries {
+                    if *is_external {
+                        let label = locale::format(
+                            ui,
+                            "{name} (unsupported external enum)",
+                            &[("name", text(e, "identifier", ""))],
+                        );
+                        ui.add_enabled(false, egui::Button::new(label));
+                    } else if let Some(uid) = e["uid"].as_i64() {
+                        ui.selectable_value(&mut next, Some(uid), text(e, "identifier", ""));
+                    }
+                }
+            }
+        });
+    (next != current).then_some(next)
+}
 
 pub(super) fn source_panel_width(panel: Panel) -> f32 {
     match panel {
+        Panel::Rules => 356.,
         Panel::World => 400.,
         Panel::Level => 490.,
-        Panel::Project | Panel::Help => 840.,
+        Panel::Fields => 790.,
+        Panel::Project => 840.,
+        Panel::Help => 906.,
         _ => 1000.,
     }
 }
@@ -59,7 +178,7 @@ impl EditorApp {
             Panel::Fields => self.field_properties(ui),
             Panel::Enums => self.enum_properties(ui),
             Panel::Tilesets => self.tileset_properties(ui),
-            Panel::Rules => self.rule_properties(ui),
+            Panel::Rules => self.rule_list(ui, ui.available_height()),
             Panel::Settings => self.settings_properties(ui),
             Panel::Export => self.export_properties(ui),
             Panel::Help => self.help_contents(ui),
@@ -85,7 +204,7 @@ impl EditorApp {
                 self.show_panel(Some(Panel::Export));
             }
         });
-        ui.heading("Extra files");
+        ui.heading(locale::tr(ui, "Extra files"));
         let patch = form(
             ui,
             &self.project.as_ref().unwrap().json,
@@ -140,7 +259,7 @@ impl EditorApp {
                 self.edit("Project settings changed", operation);
             }
         }
-        ui.heading("Workspace settings");
+        ui.heading(locale::tr(ui, "Workspace settings"));
         let patch = form(
             ui,
             &self.project.as_ref().unwrap().json,
@@ -170,13 +289,13 @@ impl EditorApp {
                 p.refresh_derived_data()
             });
         }
-        ui.collapsing("Advanced project settings",|ui|{
+        collapsing(ui, "Advanced project settings", |ui| {
             for flag in ["MultiWorlds","ExportPreCsvIntGridFormat","ExportOldTableOfContentData","DiscardPreCsvIntGrid","UseMultilinesType","ExportTileIds","IgnoreBackupSuggest","PrependIndexToLevelFileNames"]{
                 let mut enabled=self.project.as_ref().unwrap().json["flags"].as_array().is_some_and(|a|a.contains(&json!(flag)));
                 if ui.checkbox(&mut enabled,flag).changed(){if flag=="MultiWorlds" {if enabled&&self.edit("Multiple worlds enabled",|p|p.enable_multiworlds()).is_some(){if let Some(mut key)=self.selected{key.world=Some(0);self.navigate_level(key,true);}else{self.navigate_world(Some(0));}}else if !enabled{self.status="Move or remove extra worlds before converting back to a single world.".into();self.status_error=true;}return;}self.edit("Project option changed",|p|{let flags=p.json["flags"].as_array_mut().ok_or_else(||ldtk_core::Error::Invalid("flags must be an array".into()))?;flags.retain(|v|v!=flag);if enabled{flags.push(json!(flag));}Ok(())});}
             }
         });
-        ui.heading("Custom commands");
+        ui.heading(locale::tr(ui, "Custom commands"));
         self.command_properties(ui);
     }
 
@@ -190,14 +309,14 @@ impl EditorApp {
         let browser_key = egui::Id::new(("backup-browser", iid.clone()));
         let rename_key = egui::Id::new(("project-rename", iid));
         if read_only {
-            ui.heading("Backup preview");
-            ui.label("This backup is read-only. Restore it to replace the original project, or save a new copy.");
+            ui.heading(locale::tr(ui, "Backup preview"));
+            ui.label(locale::tr(ui, "This backup is read-only. Restore it to replace the original project, or save a new copy."));
             let original = ui
                 .ctx()
                 .data_mut(|data| data.get_temp::<PathBuf>(original_key));
             ui.horizontal(|ui| {
                 if source_controls::button(ui, "Locate original project…").clicked()
-                    && let Some(original) = rfd::FileDialog::new()
+                    && let Some(original) = FileDialog::new()
                         .add_filter("LDtk project", &["ldtk", "json"])
                         .pick_file()
                 {
@@ -212,7 +331,11 @@ impl EditorApp {
                 }
             });
             if let Some(original) = original {
-                ui.label(format!("Original: {}", original.display()));
+                ui.label(locale::format(
+                    ui,
+                    "Original: {path}",
+                    &[("path", &original.display().to_string())],
+                ));
                 if source_controls::button(ui, "Restore this backup…").clicked()
                     && let Some(backup) = self.project.as_ref().and_then(|p| p.path.clone())
                 {
@@ -286,8 +409,11 @@ impl EditorApp {
         {
             let mut close = false;
             egui::Modal::new(rename_key).show(ui.ctx(), |ui| {
-                ui.heading("Rename project");
-                ui.label("New file name; the project extension is kept.");
+                ui.heading(locale::tr(ui, "Rename project"));
+                ui.label(locale::tr(
+                    ui,
+                    "New file name; the project extension is kept.",
+                ));
                 ui.text_edit_singleline(&mut name);
                 ui.horizontal(|ui| {
                     if source_controls::button(ui, "Rename").clicked() {
@@ -313,20 +439,20 @@ impl EditorApp {
         {
             let mut close = false;
             egui::Modal::new(browser_key).show(ui.ctx(), |ui| {
-                ui.heading("Project backups");
+                ui.heading(locale::tr(ui, "Project backups"));
                 ui.label(browser.original.display().to_string());
                 if let Some(backup)=browser.restore.clone(){
-                    ui.colored_label(theme::ACCENT,"Restoring replaces the current project with this backup. The current version will be backed up first.");
+                    ui.colored_label(theme::ACCENT,locale::tr(ui, "Restoring replaces the current project with this backup. The current version will be backed up first."));
                     ui.label(backup.display().to_string());
                     ui.horizontal(|ui|{
                         if source_controls::button(ui,"Restore backup").clicked(){self.request(ui.ctx(),Action::RestoreBackup{backup:backup.clone(),original:browser.original.clone()});close=true;}
                         if source_controls::button(ui,"Back").clicked(){browser.restore=None;}
                     });
                 }else{
-                    if browser.backups.is_empty(){ui.label("No backups found.");}
+                    if browser.backups.is_empty(){ui.label(locale::tr(ui, "No backups found."));}
                     egui::ScrollArea::vertical().max_height(360.0).show(ui,|ui|{
                         for backup in &browser.backups{ui.horizontal(|ui|{
-                            ui.label(format!("{}{}",backup.timestamp,if backup.crash{" (crash recovery)"}else{""}));
+                            ui.label(format!("{}{}",backup.timestamp,if backup.crash{locale::tr(ui, " (crash recovery)")}else{""}));
                             if source_controls::button(ui,"Open").clicked(){ui.ctx().data_mut(|data|data.insert_temp(original_key,browser.original.clone()));self.request(ui.ctx(),Action::OpenBackup{backup:backup.path.clone(),original:browser.original.clone()});close=true;}
                             if source_controls::button(ui,"Restore…").clicked(){browser.restore=Some(backup.path.clone());}
                         });}
@@ -408,7 +534,7 @@ impl EditorApp {
                         && self.project.as_ref().unwrap().json["flags"]
                             .as_array()
                             .is_none_or(|f| !f.contains(&json!("MultiWorlds"))),
-                egui::Button::new("Create level"),
+                egui::Button::new(locale::tr(ui, "Create level")),
             )
             .clicked()
             {
@@ -500,7 +626,7 @@ impl EditorApp {
 
     fn level_properties(&mut self, ui: &mut egui::Ui) {
         let Some(key) = self.selected else {
-            ui.label("Create a level in the World panel.");
+            ui.label(locale::tr(ui, "Create a level in the World panel."));
             return;
         };
         let Some(level) = self.project.as_ref().and_then(|p| p.level(key)).cloned() else {
@@ -599,14 +725,14 @@ impl EditorApp {
                         .iter()
                         .find(|(i, _)| *i == destination)
                         .map(|(_, name)| name.as_str())
-                        .unwrap_or("Root world"),
+                        .unwrap_or_else(|| locale::tr(ui, "Root world")),
                 )
                 .show_ui(ui, |ui| {
                     if self.project.as_ref().unwrap().json["flags"]
                         .as_array()
                         .is_none_or(|flags| !flags.contains(&json!("MultiWorlds")))
                     {
-                        ui.selectable_value(&mut destination, None, "Root world");
+                        ui.selectable_value(&mut destination, None, locale::tr(ui, "Root world"));
                     }
                     for (index, name) in &destinations {
                         ui.selectable_value(&mut destination, *index, name);
@@ -628,7 +754,7 @@ impl EditorApp {
                 }
             }
         }
-        ui.heading("Custom fields");
+        ui.heading(locale::tr(ui, "Custom fields"));
         self.instance_fields(ui, key, None, &level);
         if source_controls::button(ui, "Edit level field definitions").clicked() {
             self.field_owner = None;
@@ -642,10 +768,14 @@ impl EditorApp {
             ui.horizontal(|ui| {
                 ui.text_edit_singleline(&mut self.new_name);
                 egui::ComboBox::from_id_salt("new-layer-kind")
-                    .selected_text(&self.new_kind)
+                    .selected_text(locale::tr(ui, &self.new_kind))
                     .show_ui(ui, |ui| {
                         for kind in ["IntGrid", "Tiles", "AutoLayer", "Entities"] {
-                            ui.selectable_value(&mut self.new_kind, kind.to_owned(), kind);
+                            ui.selectable_value(
+                                &mut self.new_kind,
+                                kind.to_owned(),
+                                locale::tr(ui, kind),
+                            );
                         }
                     });
                 ui.add(egui::DragValue::new(&mut self.new_grid).range(1..=1024));
@@ -675,30 +805,37 @@ impl EditorApp {
             return;
         };
         let uid = def["uid"].as_i64().unwrap();
-        ui.horizontal(|ui| {
-            if source_controls::button(ui, "Move up").clicked() {
-                let index = self.definition_index("layers", uid);
-                self.edit("Layer reordered", |p| {
-                    p.reorder_layer(uid, index.saturating_sub(1))
-                });
-            }
-            if source_controls::button(ui, "Move down").clicked() {
-                let index = self.definition_index("layers", uid);
-                let n = self.project.as_ref().unwrap().json["defs"]["layers"]
-                    .as_array()
-                    .unwrap()
-                    .len();
-                self.edit("Layer reordered", |p| {
-                    p.reorder_layer(uid, (index + 1).min(n - 1))
-                });
-            }
-            if source_controls::button(ui, "Delete layer").clicked() {
-                self.edit_recoverable("Layer deleted", |p| p.remove_definition("layers", uid));
-                self.definition_uid = None;
-            }
-        });
+        if self.source_panel_active(ui) {
+            ui.spacing_mut().item_spacing.y = 2.;
+        } else {
+            ui.horizontal(|ui| {
+                if source_controls::button(ui, "Move up").clicked() {
+                    let index = self.definition_index("layers", uid);
+                    self.edit("Layer reordered", |p| {
+                        p.reorder_layer(uid, index.saturating_sub(1))
+                    });
+                }
+                if source_controls::button(ui, "Move down").clicked() {
+                    let index = self.definition_index("layers", uid);
+                    let n = self.project.as_ref().unwrap().json["defs"]["layers"]
+                        .as_array()
+                        .unwrap()
+                        .len();
+                    self.edit("Layer reordered", |p| {
+                        p.reorder_layer(uid, (index + 1).min(n - 1))
+                    });
+                }
+                if source_controls::button(ui, "Delete layer").clicked() {
+                    self.edit_recoverable("Layer deleted", |p| p.remove_definition("layers", uid));
+                    self.definition_uid = None;
+                }
+            });
+        }
         let patch = self.source_layer_settings(ui, &def);
         if changed(&patch) {
+            let rebuild = patch.as_object().unwrap().keys().any(|key| {
+                !matches!(key.as_str(), "uiColor" | "guideColor" | "guideOpacity")
+            });
             let operation = |p: &mut Project| {
                 let mut patch = patch.clone();
                 if let Some(grid) = patch["gridSize"].as_i64() {
@@ -708,8 +845,10 @@ impl EditorApp {
                 if changed(&patch) {
                     p.update_layer_properties(uid, &patch)?;
                 }
-                for key in p.level_keys() {
-                    p.rebuild_auto_layers(key)?;
+                if rebuild {
+                    for key in p.level_keys() {
+                        p.rebuild_auto_layers(key)?;
+                    }
                 }
                 Ok(())
             };
@@ -720,8 +859,8 @@ impl EditorApp {
             }
         }
         let kind = text(&def, "type", "");
-        if kind == "AutoLayer" || kind == "IntGrid" {
-            self.layer_tileset_assignment(ui, &def);
+        if kind == "IntGrid" || kind == "AutoLayer" {
+            self.source_generated_layer_settings(ui, &def);
         }
         if let Some(key) = self.selected
             && let Some((index, instance)) = self
@@ -736,7 +875,7 @@ impl EditorApp {
                 })
                 .map(|(i, l)| (i, l.clone()))
         {
-            ui.collapsing("Current level instance", |ui| {
+            collapsing(ui, "Current level instance", |ui| {
                 let patch = form(
                     ui,
                     &instance,
@@ -780,269 +919,6 @@ impl EditorApp {
                     }
                 }
             });
-        }
-        if kind == "Entities" {
-            if ui
-                .button("Move existing entities to another layer…")
-                .clicked()
-            {
-                self.begin_entity_transfer(ui.ctx(), uid);
-            }
-            for field in ["requiredTags", "excludedTags"] {
-                if let Some(value) = tags(ui, field, &def[field]) {
-                    let patch = json!({field:value});
-                    self.edit("Layer tags changed", |p| {
-                        p.update_layer_properties(uid, &patch)
-                    });
-                }
-            }
-        }
-        if kind == "IntGrid" {
-            ui.heading("IntGrid values");
-            let mut values = def["intGridValues"].as_array().cloned().unwrap_or_default();
-            let mut groups = def["intGridValuesGroups"]
-                .as_array()
-                .cloned()
-                .unwrap_or_default();
-            let mut edited = false;
-            let mut delete = None;
-            let mut reorder = None;
-            let mut icon_atlas = ui
-                .ctx()
-                .data_mut(|data| data.get_temp::<i64>(egui::Id::new(("intgrid-icon-atlas", uid))))
-                .unwrap_or_else(|| def["tilesetDefUid"].as_i64().unwrap_or(-1));
-            self.tileset_choice(ui, "Palette icon tileset", &mut icon_atlas);
-            ui.ctx().data_mut(|data| {
-                data.insert_temp(egui::Id::new(("intgrid-icon-atlas", uid)), icon_atlas)
-            });
-            if icon_atlas >= 0 {
-                self.atlas_rect_picker(&ui.ctx().clone(), ui, icon_atlas);
-            }
-            let value_count = values.len();
-            for (index, value) in values.iter_mut().enumerate() {
-                ui.push_id(("intgrid-value", uid, index), |ui| {
-                    ui.horizontal(|ui| {
-                        ui.label(value["value"].to_string());
-                        if let Some(id) = ui_fields::buffered_text(
-                            ui,
-                            "identifier",
-                            text(value, "identifier", ""),
-                        ) {
-                            value["identifier"] = if id.is_empty() {
-                                Value::Null
-                            } else {
-                                json!(id)
-                            };
-                            edited = true;
-                        }
-                        edited |= color_field(ui, "", value, "color");
-                        if source_controls::add_enabled_button(
-                            ui,
-                            index > 0,
-                            egui::Button::new("↑"),
-                        )
-                        .clicked()
-                        {
-                            reorder = Some((index, index - 1));
-                        }
-                        if source_controls::add_enabled_button(
-                            ui,
-                            index + 1 < value_count,
-                            egui::Button::new("↓"),
-                        )
-                        .clicked()
-                        {
-                            reorder = Some((index, index + 1));
-                        }
-                        if source_controls::small_button(ui, "Delete").clicked() {
-                            delete = Some(index);
-                        }
-                    });
-                    let mut group = value["groupUid"].as_i64().unwrap_or(0);
-                    let old = group;
-                    egui::ComboBox::from_id_salt(ui.id().with("value-group"))
-                        .selected_text(
-                            groups
-                                .iter()
-                                .find(|g| g["uid"] == group)
-                                .map(|g| text(g, "identifier", "Group"))
-                                .unwrap_or("Ungrouped"),
-                        )
-                        .show_ui(ui, |ui| {
-                            ui.selectable_value(&mut group, 0, "Ungrouped");
-                            for g in &groups {
-                                ui.selectable_value(
-                                    &mut group,
-                                    g["uid"].as_i64().unwrap_or(0),
-                                    text(g, "identifier", "Group"),
-                                );
-                            }
-                        });
-                    if group != old {
-                        value["groupUid"] = json!(group);
-                        edited = true;
-                    }
-                    ui.horizontal(|ui| {
-                        if source_controls::button(ui, "Use icon tile").clicked()
-                            && let Some(tile) = self.selected_tile_rect_for(icon_atlas)
-                        {
-                            value["tile"] = tile;
-                            edited = true;
-                        }
-                        if source_controls::button(ui, "Clear icon").clicked() {
-                            value["tile"] = Value::Null;
-                            edited = true;
-                        }
-                    });
-                });
-            }
-            if let Some(index) = delete {
-                values.remove(index);
-                edited = true;
-            } else if let Some((from, to)) = reorder {
-                values.swap(from, to);
-                edited = true;
-            }
-            if source_controls::button(ui, "Add IntGrid value").clicked() {
-                let next = values
-                    .iter()
-                    .filter_map(|v| v["value"].as_i64())
-                    .max()
-                    .unwrap_or(0)
-                    + 1;
-                if next < 1000 {
-                    let color = self.suggested_color(&values);
-                    values.push(json!({"value":next,"identifier":format!("Value_{next}"),"color":format!("#{color:06X}"),"tile":null,"groupUid":0}));
-                    edited = true;
-                }
-            }
-            ui.collapsing("Value groups", |ui| {
-                let mut remove = None;
-                let mut reorder = None;
-                let count = groups.len();
-                for (index, group) in groups.iter_mut().enumerate() {
-                    ui.push_id(("intgrid-group", uid, index), |ui| {
-                        ui.horizontal(|ui| {
-                            if let Some(name) =
-                                ui_fields::buffered_text(ui, "name", text(group, "identifier", ""))
-                            {
-                                group["identifier"] = json!(name);
-                                edited = true;
-                            }
-                            let mut color = group["color"]
-                                .as_str()
-                                .map(theme::color)
-                                .map(|c| [c.r(), c.g(), c.b()]);
-                            if source_colors::nullable_color_editor(ui, &mut color).changed() {
-                                group["color"] = color
-                                    .map(|c| {
-                                        json!(format!("#{:02X}{:02X}{:02X}", c[0], c[1], c[2]))
-                                    })
-                                    .unwrap_or(Value::Null);
-                                edited = true;
-                            }
-                            if source_controls::add_enabled_button(
-                                ui,
-                                index > 0,
-                                egui::Button::new("↑"),
-                            )
-                            .clicked()
-                            {
-                                reorder = Some((index, index - 1));
-                            }
-                            if source_controls::add_enabled_button(
-                                ui,
-                                index + 1 < count,
-                                egui::Button::new("↓"),
-                            )
-                            .clicked()
-                            {
-                                reorder = Some((index, index + 1));
-                            }
-                            if source_controls::small_button(ui, "Delete group").clicked() {
-                                remove = Some(index);
-                            }
-                        });
-                    });
-                }
-                if let Some(index) = remove {
-                    groups.remove(index);
-                    edited = true;
-                } else if let Some((from, to)) = reorder {
-                    groups.swap(from, to);
-                    edited = true;
-                }
-                if source_controls::button(ui, "Add value group").clicked() {
-                    let id = groups
-                        .iter()
-                        .filter_map(|g| g["uid"].as_i64())
-                        .max()
-                        .unwrap_or(0)
-                        + 1;
-                    groups.push(
-                        json!({"uid":id,"identifier":format!("Group_{id}"),"color":"#FFCC00"}),
-                    );
-                    edited = true;
-                }
-            });
-            if edited {
-                let operation = |p: &mut Project| {
-                    p.update_layer_properties(
-                        uid,
-                        &json!({"intGridValues":values,"intGridValuesGroups":groups}),
-                    )
-                };
-                if values.len() < def["intGridValues"].as_array().map_or(0, Vec::len) {
-                    self.edit_recoverable("IntGrid value removed", operation);
-                } else {
-                    self.edit("IntGrid palette changed", operation);
-                }
-            }
-        }
-        if kind == "IntGrid" || kind == "AutoLayer" {
-            if source_controls::button(ui, "Edit auto-layer rules").clicked() {
-                self.definition_uid = Some(uid);
-                self.rule_uid = None;
-                self.rule_group_uid = None;
-                self.show_panel(Some(Panel::Rules));
-            }
-            if kind == "AutoLayer" {
-                let sources = self.project.as_ref().unwrap().json["defs"]["layers"]
-                    .as_array()
-                    .unwrap()
-                    .iter()
-                    .filter(|d| d["type"] == "IntGrid")
-                    .cloned()
-                    .collect::<Vec<_>>();
-                let mut selected = def["autoSourceLayerDefUid"].as_i64().unwrap_or(-1);
-                let old = selected;
-                egui::ComboBox::from_id_salt("source-grid")
-                    .selected_text(
-                        sources
-                            .iter()
-                            .find(|s| s["uid"] == selected)
-                            .map(|s| text(s, "identifier", "Source"))
-                            .unwrap_or("Choose source IntGrid"),
-                    )
-                    .show_ui(ui, |ui| {
-                        for source in sources {
-                            ui.selectable_value(
-                                &mut selected,
-                                source["uid"].as_i64().unwrap(),
-                                text(&source, "identifier", "Source"),
-                            );
-                        }
-                    });
-                if old != selected {
-                    self.edit("Auto-layer source changed", |p| {
-                        p.update_layer_properties(uid, &json!({"autoSourceLayerDefUid":selected}))?;
-                        for key in p.level_keys() {
-                            p.rebuild_auto_layers(key)?;
-                        }
-                        Ok(())
-                    });
-                }
-            }
         }
     }
 
@@ -1199,10 +1075,12 @@ impl EditorApp {
         entity: Option<&str>,
         owner: &Value,
     ) {
+        const LABEL_WIDTH: f32 = 120.;
         let fields = owner["fieldInstances"]
             .as_array()
             .cloned()
             .unwrap_or_default();
+        let has_fields = !fields.is_empty();
         ui.scope(|ui| {
             ui.spacing_mut().item_spacing = egui::vec2(2., 10.);
             for field in fields {
@@ -1213,9 +1091,14 @@ impl EditorApp {
                     continue;
                 };
                 ui.push_id((key.world, key.level, entity, uid), |ui| {
-                    let array = text(&field, "__type", "").starts_with("Array<");
+                    let kind = text(&field, "__type", "");
+                    let array = kind.starts_with("Array<");
+                    let point_required = kind == "Point"
+                        && field["__value"].is_null()
+                        && definition["canBeNull"] != true;
+                    let count = field["__value"].as_array().map_or(0, Vec::len);
                     let using_default = if array {
-                        field["__value"].as_array().is_none_or(Vec::is_empty)
+                        count == 0
                     } else {
                         ui_fields::field_uses_default(&field, 0)
                     };
@@ -1225,17 +1108,17 @@ impl EditorApp {
                     let row =
                         ui.horizontal_top(|ui| {
                             ui.spacing_mut().item_spacing.x = 2.;
-                            let label = ui
+                            let (label, empty_array) = ui
                                 .allocate_ui_with_layout(
-                                    egui::vec2(120., 26.),
+                                    egui::vec2(LABEL_WIDTH, 26.),
                                     egui::Layout::top_down(egui::Align::Min),
                                     |ui| {
-                                        ui.set_width(120.);
+                                        ui.set_width(LABEL_WIDTH);
+                                        ui.spacing_mut().item_spacing.y = 0.;
                                         let name = text(&field, "__identifier", "Field");
                                         let label = if array {
-                                            let count =
-                                                field["__value"].as_array().map_or(0, Vec::len);
                                             if let Some(max) = definition["arrayMaxLength"].as_u64()
+                                                .filter(|max| *max > 0)
                                             {
                                                 format!("{name} {count}/{max}")
                                             } else {
@@ -1244,25 +1127,30 @@ impl EditorApp {
                                         } else {
                                             name.to_owned()
                                         };
-                                        ui.add_sized(
-                                            [112., 26.],
-                                            egui::Label::new(RichText::new(label).color(
-                                                if using_default {
-                                                    Color32::from_rgb(115, 127, 157)
-                                                } else {
-                                                    Color32::WHITE
+                                        let label = source_controls::field_instance_label(
+                                            ui, &label, LABEL_WIDTH, definition["doc"].as_str(),
+                                            using_default, point_required,
+                                        );
+                                        let empty_array = array && count > 0 && ui
+                                            .allocate_ui_with_layout(
+                                                egui::vec2(LABEL_WIDTH - 8., 12.),
+                                                egui::Layout::top_down(egui::Align::RIGHT),
+                                                |ui| {
+                                                    ui.visuals_mut().hyperlink_color = theme::ACCENT;
+                                                    ui.link(
+                                                        RichText::new(locale::tr(ui, "Empty array"))
+                                                            .size(9.333)
+                                                            .color(theme::ACCENT)
+                                                            .underline(),
+                                                    ).clicked()
                                                 },
-                                            ))
-                                            .halign(egui::Align::RIGHT)
-                                            .truncate()
-                                            .sense(Sense::click()),
-                                        )
-                                        .on_hover_text(text(&definition, "doc", name))
+                                            ).inner;
+                                        (label, empty_array)
                                     },
                                 )
                                 .inner;
                             label.context_menu(|ui| {
-                                if ui.button("Edit field definition").clicked() {
+                                if ui.button(locale::tr(ui, "Edit field definition")).clicked() {
                                     self.field_uid = Some(uid);
                                     self.field_owner = owner["defUid"].as_i64();
                                     if let Some(owner) = self.field_owner {
@@ -1274,18 +1162,17 @@ impl EditorApp {
                                     ui.close();
                                 }
                             });
+                            let value_width = (width - LABEL_WIDTH - 2.).max(30.);
                             let value = ui.allocate_ui_with_layout(
-                                egui::vec2((width - 122.).max(30.), 26.),
+                                egui::vec2(value_width, 26.),
                                 egui::Layout::top_down(egui::Align::Min),
                                 |ui| {
-                                    ui.set_width((width - 122.).max(30.));
-                                    egui::Frame::new().inner_margin(2).show(ui, |ui| {
-                                        let kind = text(&field, "__type", "");
-                                        if kind == "Point"
-                                            || kind == "EntityRef"
-                                            || kind == "Array<Point>"
-                                            || kind == "Array<EntityRef>"
-                                        {
+                                    ui.set_width(value_width);
+                                    egui::Frame::new().inner_margin(if using_default { 0 } else { 2 }).show(ui, |ui| {
+                                        let value = if empty_array {
+                                            self.cancel_field_pick();
+                                            Some(FieldEdit::Value(json!([])))
+                                        } else if matches!(kind, "Point" | "EntityRef" | "Array<Point>" | "Array<EntityRef>") {
                                             let _ = self.field_pick_controls(
                                                 ui,
                                                 key,
@@ -1293,12 +1180,11 @@ impl EditorApp {
                                                 &field,
                                                 &definition,
                                             );
-                                        } else if let Some(value) = field_value_editor(
-                                            ui,
-                                            self.project.as_ref().unwrap(),
-                                            &field,
-                                            &definition,
-                                        ) {
+                                            None
+                                        } else {
+                                            field_value_editor(ui, self.project.as_ref().unwrap(), &field, &definition)
+                                        };
+                                        if let Some(value) = value {
                                             if entity.is_some() {
                                                 self.edit_level("Field changed", key, |p| {
                                                     value.apply(p, key, entity, uid)
@@ -1312,11 +1198,12 @@ impl EditorApp {
                                                 self.history.clear_level_timelines();
                                             }
                                         }
-                                        if let Ok(errors) = self
-                                            .project
-                                            .as_ref()
-                                            .unwrap()
-                                            .field_value_errors(key, entity, uid)
+                                        if !point_required
+                                            && let Ok(errors) = self
+                                                .project
+                                                .as_ref()
+                                                .unwrap()
+                                                .field_value_errors(key, entity, uid)
                                         {
                                             for error in errors {
                                                 ui.colored_label(Color32::LIGHT_RED, error);
@@ -1329,16 +1216,17 @@ impl EditorApp {
                         });
                     let rect = row.response.rect;
                     let mut shapes = Vec::new();
-                    if !using_default {
+                    if !using_default || point_required {
+                        let error_fill = Color32::from_rgb(121, 17, 5);
                         shapes.push(egui::Shape::rect_filled(
-                            Rect::from_min_size(rect.min, egui::vec2(120., rect.height())),
+                            Rect::from_min_size(rect.min, egui::vec2(LABEL_WIDTH, rect.height())),
                             egui::CornerRadius {
                                 nw: 4,
                                 sw: 4,
                                 ne: 0,
                                 se: 0,
                             },
-                            Color32::from_rgb(115, 127, 157),
+                            if point_required { error_fill } else { Color32::from_rgb(115, 127, 157) },
                         ));
                         shapes.push(egui::Shape::rect_filled(
                             value_rect,
@@ -1348,11 +1236,22 @@ impl EditorApp {
                                 ne: 4,
                                 se: 4,
                             },
-                            theme::MEDIUM,
+                            if point_required { error_fill } else { theme::MEDIUM },
                         ));
+                        if point_required {
+                            shapes.push(egui::Shape::rect_filled(
+                                Rect::from_min_size(rect.min, egui::vec2(4., rect.height())),
+                                0.,
+                                Color32::from_rgb(227, 77, 0),
+                            ));
+                        }
                     }
                     ui.painter().set(background, egui::Shape::Vec(shapes));
                 });
+            }
+            if has_fields {
+                // Source field rows include their gap below the final row as well.
+                ui.add_space(0.);
             }
         });
     }
@@ -1416,8 +1315,12 @@ impl EditorApp {
         {
             let uid = fields[index]["uid"].as_i64().unwrap();
             ui.horizontal(|ui| {
-                if source_controls::add_enabled_button(ui, index > 0, egui::Button::new("Field up"))
-                    .clicked()
+                if source_controls::add_enabled_button(
+                    ui,
+                    index > 0,
+                    egui::Button::new(locale::tr(ui, "Field up")),
+                )
+                .clicked()
                 {
                     self.edit("Field reordered", |p| {
                         p.reorder_field_definition(uid, index - 1)
@@ -1426,7 +1329,7 @@ impl EditorApp {
                 if source_controls::add_enabled_button(
                     ui,
                     index + 1 < fields.len(),
-                    egui::Button::new("Field down"),
+                    egui::Button::new(locale::tr(ui, "Field down")),
                 )
                 .clicked()
                 {
@@ -1457,7 +1360,11 @@ impl EditorApp {
         let old = (kind.clone(), array);
         ui.horizontal(|ui| {
             egui::ComboBox::from_id_salt("field-type")
-                .selected_text(&kind)
+                .selected_text(if kind.contains('.') {
+                    &kind
+                } else {
+                    locale::tr(ui, &kind)
+                })
                 .show_ui(ui, |ui| {
                     for item in [
                         "Int",
@@ -1471,7 +1378,7 @@ impl EditorApp {
                         "Tile",
                         "EntityRef",
                     ] {
-                        ui.selectable_value(&mut kind, item.into(), item);
+                        ui.selectable_value(&mut kind, item.into(), locale::tr(ui, item));
                     }
                     let p = self.project.as_ref().unwrap();
                     for group in ["enums", "externalEnums"] {
@@ -1491,7 +1398,7 @@ impl EditorApp {
                         }
                     }
                 });
-            ui.checkbox(&mut array, "Array");
+            ui.checkbox(&mut array, locale::tr(ui, "Array"));
         });
         if old != (kind.clone(), array) {
             self.edit_recoverable("Field type converted", |p| {
@@ -1598,7 +1505,7 @@ impl EditorApp {
                 p.update_field_definition(uid, &json!({"allowedRefTags":value}))
             });
         }
-        ui.label("Default value");
+        ui.label(locale::tr(ui, "Default value"));
         if let Ok(instance) = self.project.as_ref().unwrap().make_field_instance(&def)
             && let Some(value) = scalar_editor(
                 ui,
@@ -1641,52 +1548,76 @@ impl EditorApp {
                         self.new_name.clear();
                     }
                 }
-                self.import_enum_menu(ui);
+                self.import_enum_menu(ui, "Import / sync external…");
             });
         }
-        if let Some(def) = self.definition_picker(ui, "enums") {
+        if let Some(mut def) = self.definition_picker(ui, "enums") {
             let uid = def["uid"].as_i64().unwrap();
-            let patch = form(ui, &def, &[P("identifier", "Enum identifier", W::Text)]);
-            if changed(&patch) {
-                self.edit("Enum renamed", |p| p.update_enum_definition(uid, &patch));
+            let name = enum_property_row(ui, "Enum identifier", "identifier", |ui| {
+                ui_fields::buffered_text_sized(
+                    ui,
+                    "identifier",
+                    text(&def, "identifier", ""),
+                    egui::vec2(ui.available_width(), 30.),
+                )
+            });
+            if let Some(name) = name {
+                self.edit("Enum renamed", |p| {
+                    p.update_enum_definition(uid, &json!({"identifier":name}))
+                });
             }
-            let mut atlas = def["iconTilesetUid"].as_i64().unwrap_or(-1);
-            let old_atlas = atlas;
-            self.tileset_choice(ui, "Enum icon tileset", &mut atlas);
-            if atlas != old_atlas {
-                let has_icons = def["values"]
-                    .as_array()
-                    .into_iter()
-                    .flatten()
-                    .any(|v| !v["tileRect"].is_null());
-                let operation = |p: &mut Project| {
-                    let mut values = def["values"].as_array().cloned().unwrap_or_default();
-                    for v in &mut values {
-                        v["tileRect"] = Value::Null;
+            let atlas = self.enum_icon_tileset(ui, &mut def, false, true);
+            let tag_change = enum_property_row(ui, "Tags", "tags", |ui| {
+                tag_editor::show(
+                    ui,
+                    self.project.as_ref().unwrap(),
+                    tag_editor::Field::Definition("enums"),
+                    uid,
+                    &def["tags"],
+                )
+            });
+            if let Some(change) = tag_change {
+                self.edit("Enum tags changed", |p| match change {
+                    tag_editor::Change::Set(value) => {
+                        p.update_enum_definition(uid, &json!({"tags":value}))
                     }
-                    p.update_enum_definition(
-                        uid,
-                        &json!({"iconTilesetUid":(atlas>=0).then_some(atlas),"values":values}),
-                    )
-                };
-                if has_icons {
-                    self.edit_recoverable("Enum icons changed", operation);
-                } else {
-                    self.edit("Enum icon tileset changed", operation);
-                }
+                    tag_editor::Change::Rename {
+                        old,
+                        new,
+                        everywhere,
+                    } => p.rename_definition_tag("enums", uid, &old, &new, everywhere),
+                });
             }
-            if atlas >= 0 {
-                self.atlas_rect_picker(&ui.ctx().clone(), ui, atlas);
-            }
+            source_controls::form_heading(ui, "All possible enum values");
+            let add_value = source_controls::add_sized_button(
+                ui,
+                [ui.available_width(), 30.],
+                egui::Button::new(locale::tr(ui, "Add a new value")),
+            )
+            .clicked();
             let mut values = def["values"].as_array().cloned().unwrap_or_default();
             let mut edited = false;
             let mut remove = None;
+            let mut reorder = None;
             for (index, value) in values.iter_mut().enumerate() {
                 let old = text(value, "id", "").to_owned();
-                ui.push_id((uid, index), |ui| {
+                let row = ui.push_id((uid, &old), |ui| {
                     ui.horizontal(|ui| {
-                        if let Some(id) =
-                            ui_fields::buffered_text(ui, ("enum-value-name", uid, index), &old)
+                        ui.spacing_mut().item_spacing.x = ENUM_VALUE_SPACING;
+                        let handle = ui
+                            .add_sized(
+                                [20., ENUM_VALUE_SIZE],
+                                egui::Label::new("≡").sense(Sense::drag()),
+                            )
+                            .on_hover_cursor(egui::CursorIcon::Grab);
+                        if let Some(tile) = self.value_tile_thumbnail(ui, atlas, &value["tileRect"], true, false) {
+                            value["tileRect"] = tile;
+                            edited = true;
+                        }
+                        edited |= enum_value_color(ui, value, true);
+                        let name_width =
+                            (ui.available_width() - ENUM_VALUE_SIZE - ENUM_VALUE_SPACING).max(20.);
+                        if let Some(id) = enum_value_name(ui, value, &old, name_width, true)
                             && self
                                 .edit("Enum value renamed", |p| {
                                     p.rename_enum_value(uid, &old, &id)
@@ -1695,30 +1626,38 @@ impl EditorApp {
                         {
                             value["id"] = json!(id);
                         }
-                        let mut color = enum_color(value);
-                        if source_colors::color_editor(ui, &mut color).changed() {
-                            value["color"] = json!(
-                                ((color[0] as u32) << 16)
-                                    | ((color[1] as u32) << 8)
-                                    | color[2] as u32
-                            );
-                            edited = true;
-                        }
-                        if source_controls::small_button(ui, "Use tile").clicked()
-                            && let Some(tile) = self.selected_tile_rect_for(atlas)
+                        if source_controls::add_sized_button(
+                            ui,
+                            Vec2::splat(ENUM_VALUE_SIZE),
+                            egui::Button::new("×"),
+                        )
+                        .clicked()
                         {
-                            value["tileRect"] = tile;
-                            edited = true;
-                        }
-                        if source_controls::small_button(ui, "Clear tile").clicked() {
-                            value["tileRect"] = Value::Null;
-                            edited = true;
-                        }
-                        if source_controls::small_button(ui, "×").clicked() {
                             remove = Some(text(value, "id", "").to_owned());
                         }
-                    });
+                        if handle.drag_started() {
+                            handle.dnd_set_drag_payload((uid, text(value, "id", "").to_owned()));
+                        }
+                    })
                 });
+                let item = row.inner.response;
+                if let Some(payload) = item.dnd_hover_payload::<(i64, String)>()
+                    && payload.0 == uid
+                    && value["id"] != payload.1
+                {
+                    ui.painter().rect_stroke(
+                        item.rect,
+                        2.,
+                        egui::Stroke::new(1., theme::ACCENT),
+                        egui::StrokeKind::Inside,
+                    );
+                }
+                if let Some(payload) = item.dnd_release_payload::<(i64, String)>()
+                    && payload.0 == uid
+                    && value["id"] != payload.1
+                {
+                    reorder = Some((payload.1.clone(), index));
+                }
             }
             if let Some(value) = remove
                 && self
@@ -1726,8 +1665,14 @@ impl EditorApp {
                     .is_some()
             {
                 values.retain(|v| v["id"] != value);
+            } else if let Some((id, to)) = reorder
+                && let Some(from) = values.iter().position(|v| v["id"] == id)
+            {
+                let value = values.remove(from);
+                values.insert(to, value);
+                edited = true;
             }
-            if source_controls::button(ui, "Add enum value").clicked() {
+            if add_value {
                 let name = unique_name("Value", values.iter().map(|v| text(v, "id", "")));
                 let color = self.suggested_color(&values);
                 values.push(json!({"id":name,"color":color,"tileRect":null}));
@@ -1743,7 +1688,10 @@ impl EditorApp {
                 self.definition_uid = None;
             }
         }
-        ui.collapsing("External enums", |ui| {
+        if self.source_panel_active(ui) {
+            return;
+        }
+        collapsing(ui, "External enums", |ui| {
             let defs = self.project.as_ref().unwrap().json["defs"]["externalEnums"]
                 .as_array()
                 .cloned()
@@ -1783,10 +1731,270 @@ impl EditorApp {
         });
     }
 
+    fn enum_icon_tileset(
+        &mut self,
+        ui: &mut egui::Ui,
+        def: &mut Value,
+        external: bool,
+        editable: bool,
+    ) -> Option<i64> {
+        let previous = def["iconTilesetUid"].as_i64();
+        let mut atlas = previous;
+        let project = self.project.as_ref().unwrap();
+        let picker = |ui: &mut egui::Ui| {
+            let response = ui.add_enabled_ui(editable, |ui| {
+                egui::ComboBox::from_id_salt("enum-icon-tileset")
+                    .width(ui.available_width())
+                    .truncate()
+                    .selected_text(
+                        previous
+                            .and_then(|uid| project.tileset(uid))
+                            .map(|d| text(d, "identifier", "Tileset"))
+                            .unwrap_or_else(|| {
+                                locale::tr(
+                                    ui,
+                                    if external {
+                                        "-- Select a tileset --"
+                                    } else {
+                                        "None"
+                                    },
+                                )
+                            }),
+                    )
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(&mut atlas, None, locale::tr(ui, "None"));
+                        for def in project.json["defs"]["tilesets"]
+                            .as_array()
+                            .into_iter()
+                            .flatten()
+                        {
+                            ui.selectable_value(
+                                &mut atlas,
+                                def["uid"].as_i64(),
+                                text(def, "identifier", locale::tr(ui, "Tileset")),
+                            );
+                        }
+                    })
+                    .response
+            });
+            if !editable {
+                source_controls::disabled_hatch(ui, response.inner.rect);
+            }
+        };
+        if external {
+            source_controls::form_row(ui, "Icon tileset", "icons", 110., picker);
+        } else {
+            enum_property_row(ui, "Icon tileset", "icons", picker);
+        }
+        if atlas == previous {
+            return previous;
+        }
+        let uid = def["uid"].as_i64().unwrap();
+        let mut values = def["values"].as_array().cloned().unwrap_or_default();
+        let has_icons = values.iter().any(|value| !value["tileRect"].is_null());
+        for value in &mut values {
+            value["tileRect"] = Value::Null;
+        }
+        let edit = |p: &mut Project| {
+            if external {
+                p.update_external_enum_appearance(uid, atlas, &values)
+            } else {
+                p.update_enum_definition(uid, &json!({"iconTilesetUid":atlas,"values":values}))
+            }
+        };
+        let updated = if has_icons {
+            self.edit_recoverable("Enum icons changed", edit)
+        } else {
+            self.edit("Enum icon tileset changed", edit)
+        };
+        if updated.is_some() {
+            def["iconTilesetUid"] = json!(atlas);
+            def["values"] = json!(values);
+            atlas
+        } else {
+            previous
+        }
+    }
+
+    pub(super) fn source_external_enum_values(&mut self, ui: &mut egui::Ui, mut def: Value) {
+        let editable = !std::path::Path::new(text(&def, "externalRelPath", ""))
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("cdb"));
+        let atlas = self.enum_icon_tileset(ui, &mut def, true, editable);
+        source_controls::form_heading(ui, "All possible enum values");
+        let uid = def["uid"].as_i64().unwrap();
+        let mut values = def["values"].as_array().cloned().unwrap_or_default();
+        let mut edited = false;
+        for value in &mut values {
+            let id = text(value, "id", "").to_owned();
+            ui.push_id((uid, &id), |ui| {
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = ENUM_VALUE_SPACING;
+                    if let Some(tile) = self.value_tile_thumbnail(ui, atlas, &value["tileRect"], editable, false) {
+                        value["tileRect"] = tile;
+                        edited = true;
+                    }
+                    edited |= enum_value_color(ui, value, editable);
+                    enum_value_name(ui, value, &id, ui.available_width(), false);
+                });
+            });
+        }
+        if edited {
+            self.edit("External enum appearance changed", |p| {
+                p.update_external_enum_appearance(uid, atlas, &values)
+            });
+        }
+    }
+
+    fn value_tile_thumbnail(
+        &mut self,
+        ui: &mut egui::Ui,
+        atlas: Option<i64>,
+        tile: &Value,
+        editable: bool,
+        clear_on_secondary: bool,
+    ) -> Option<Value> {
+        let project = self.project.as_ref()?;
+        let tileset = atlas.and_then(|uid| project.tileset(uid));
+        let enabled = editable && tileset.is_some();
+        let sense = if enabled {
+            Sense::click()
+        } else {
+            Sense::hover()
+        };
+        let (rect, preview) = ui.allocate_exact_size(Vec2::splat(ENUM_VALUE_SIZE), sense);
+        ui.painter().rect_filled(rect, 4., theme::DARK);
+        let ctx = ui.ctx().clone();
+        if let Some(tileset) = tileset.filter(|_| !tile.is_null()) {
+            let texture = if let Some(path) = tileset["relPath"].as_str() {
+                self.assets
+                    .texture(&ctx, &canvas::asset_path(project, path))
+            } else if !tileset["embedAtlas"].is_null() {
+                self.assets.embedded(&ctx)
+            } else {
+                None
+            };
+            if let Some(texture) = texture {
+                let size = texture.size_vec2();
+                let source = Rect::from_min_size(
+                    egui::pos2(number(tile, "x", 0.), number(tile, "y", 0.)),
+                    egui::vec2(number(tile, "w", 16.), number(tile, "h", 16.)).max(Vec2::ONE),
+                );
+                let scale = ENUM_VALUE_SIZE / source.size().max_elem();
+                ui.painter().image(
+                    texture.id(),
+                    Rect::from_center_size(rect.center(), source.size() * scale),
+                    Rect::from_min_max(
+                        (source.min.to_vec2() / size).to_pos2(),
+                        (source.max.to_vec2() / size).to_pos2(),
+                    ),
+                    Color32::WHITE,
+                );
+            }
+        }
+        ui.painter().rect_stroke(
+            rect,
+            4.,
+            Stroke::new(
+                1.,
+                if preview.hovered() && enabled {
+                    theme::ACCENT
+                } else {
+                    theme::LIGHT
+                },
+            ),
+            egui::StrokeKind::Inside,
+        );
+        if !editable {
+            source_controls::disabled_hatch(ui, rect);
+        }
+        let tileset = tileset.filter(|_| enabled)?;
+        let uid = tileset["uid"].as_i64()?;
+        let id = ui.make_persistent_id(("enum-icon-picker", text(&project.json, "iid", ""), uid));
+        if clear_on_secondary && preview.secondary_clicked() {
+            return (!tile.is_null()).then_some(Value::Null);
+        }
+        let opened = preview
+            .on_hover_text(locale::tr(
+                ui,
+                if clear_on_secondary {
+                    "Left-click to pick a tile or right-click to remove it."
+                } else {
+                    "Click to pick an icon."
+                },
+            ))
+            .clicked();
+        let open = opened || ctx.data(|data| data.get_temp::<bool>(id)).unwrap_or(false);
+        if !open {
+            return None;
+        }
+        let (picked, keep_open) = self.show_icon_atlas_picker(&ctx, id, uid, tile, opened);
+        ctx.data_mut(|data| data.insert_temp(id, keep_open));
+        picked
+    }
+
+    fn show_icon_atlas_picker(
+        &mut self,
+        ctx: &egui::Context,
+        id: egui::Id,
+        uid: i64,
+        tile: &Value,
+        opening: bool,
+    ) -> (Option<Value>, bool) {
+        let Some(tileset) = self.project.as_ref().and_then(|p| p.tileset(uid)) else {
+            return (None, false);
+        };
+        let current = if tile.is_null() {
+            None
+        } else {
+            let padding = number(tileset, "padding", 0.);
+            let spacing = number(tileset, "spacing", 0.);
+            let stride = (number(tileset, "tileGridSize", 16.) + spacing).max(1.);
+            let cells = |origin, size| {
+                let start = number(tile, origin, 0.) - padding;
+                let end = start + number(tile, size, 16.).max(1.) - 1.;
+                let first = (start / stride) as i32;
+                let last = (end / stride) as i32;
+                [first, last - first + 1]
+            };
+            let [x, w] = cells("x", "w");
+            let [y, h] = cells("y", "h");
+            Some([x, y, w, h])
+        };
+        self.with_local_atlas_state(ctx, id, |app| {
+            if opening {
+                app.atlas_selection = current.is_none().then_some((uid, vec![]));
+                if let Some(rect) = current {
+                    app.tile_rect = rect;
+                }
+            }
+            let before = app.atlas_selection.clone();
+            let viewport = ctx.content_rect();
+            let modal = egui::Modal::new(id)
+                .frame(project_dialogs::dialog_frame(0).corner_radius(0.)
+                    .stroke(Stroke::new(1., theme::LIGHT)))
+                .area(egui::Area::new(id).kind(egui::UiKind::Modal)
+                    .sense(Sense::hover()).order(egui::Order::Foreground)
+                    .fixed_pos(viewport.left_top() + Vec2::splat(50.)))
+                .show(ctx, |ui| {
+                    ui.set_width(viewport.width() * 0.9);
+                    ui.set_height(viewport.height() * 0.9);
+                    app.atlas_enum_icon_picker(ctx, ui, uid);
+                });
+            let picked = if before != app.atlas_selection {
+                app.selected_tile_rect_for(uid)
+            } else {
+                None
+            };
+            let keep_open = picked.is_none() && !modal.should_close();
+            (picked, keep_open)
+        })
+    }
+
     fn tileset_properties(&mut self, ui: &mut egui::Ui) {
         if !self.source_panel_active(ui) {
             ui.horizontal(|ui| {
-                ui.label("Grid");
+                ui.label(locale::tr(ui, "Grid"));
                 ui.add(egui::DragValue::new(&mut self.new_grid).range(1..=1024));
                 if source_controls::button(ui, "Import tileset image…").clicked()
                     && let Some(path) = self.pick_project_file(
@@ -1817,67 +2025,228 @@ impl EditorApp {
             return;
         };
         let uid = def["uid"].as_i64().unwrap();
-        let options = remap_options(
-            ui,
-            ("tileset", uid),
-            false,
-            ldtk_core::TilesetRemap::AtlasCoordinates,
-        );
-        let patch = form(
-            ui,
-            &def,
-            &[
-                P("identifier", "Tileset identifier", W::Text),
-                P("relPath", "Image", W::Path),
-                P("tileGridSize", "Tile size", W::Int(1, 1024)),
-                P("padding", "Atlas padding", W::Int(0, 1024)),
-                P("spacing", "Tile spacing", W::Int(0, 1024)),
-                P(
-                    "tagsSourceEnumUid",
-                    "Tag source enum",
-                    W::Int(-1, i32::MAX as i64),
-                ),
-            ],
-        );
-        if changed(&patch) {
-            let operation = |p: &mut Project| {
-                let mut patch = patch.clone();
-                relative_path_patch(p, &mut patch, "relPath")?;
-                if let Some(rel) = patch["relPath"].as_str() {
-                    let image =
-                        ldtk_core::exports::load_image_rgba(&p.make_absolute_file_path(rel)?)?;
-                    patch["pxWid"] = json!(image.width());
-                    patch["pxHei"] = json!(image.height());
-                }
-                p.update_tileset_definition_with_policy(
-                    uid,
-                    &patch,
-                    options.mode,
-                    options.allow_loss,
-                )
-            };
-            let recoverable = patch.get("tileGridSize").is_some()
-                || patch.get("tagsSourceEnumUid").is_some()
-                    && def["enumTags"].as_array().is_some_and(|a| !a.is_empty());
-            let discarded = if recoverable {
-                self.edit_recoverable("Tileset grid or tags changed", operation)
-            } else {
-                self.edit("Tileset changed", operation)
-            };
-            if let Some(discarded) = discarded
-                && discarded > 0
-            {
-                self.status = format!("Tileset changed; removed {discarded} references");
+        let embedded = !def["embedAtlas"].is_null();
+        let editable_rows = [
+            ("Source image", "relPath"),
+            ("Identifier", "identifier"),
+            ("Tiles layout", "tileGridSize"),
+            ("Enum for tile marking", "tagsSourceEnumUid"),
+        ];
+        let label_width = std::iter::once(("Tags", "tags"))
+            .chain(editable_rows.into_iter().filter(|_| !embedded))
+            .map(|(label, key)| source_controls::property_label_intrinsic_width(ui, label, key))
+            .fold(TILESET_MIN_LABEL_WIDTH, f32::max);
+        let options = if embedded {
+            RemapOptions {
+                mode: ldtk_core::TilesetRemap::AtlasCoordinates,
+                allow_loss: false,
+                clear_overrides: false,
             }
-            self.assets = Assets::default();
-        }
-        if let Some(value) = tags(ui, "Tags", &def["tags"]) {
-            self.edit("Tileset tags changed", |p| {
-                p.update_tileset_definition(uid, &json!({"tags":value}))
+        } else {
+            remap_options(
+                ui,
+                ("tileset", uid),
+                false,
+                ldtk_core::TilesetRemap::AtlasCoordinates,
+            )
+        };
+        let mut patch = json!({});
+        if !embedded {
+            source_controls::form_row(ui, "Source image", "relPath", label_width, |ui| {
+                if let Some(path) =
+                    self.source_image_picker(ui, ("tileset", uid), def["relPath"].as_str())
+                {
+                    patch["relPath"] = json!(path);
+                }
+            });
+            if let Some(identifier) =
+                source_controls::form_row(ui, "Identifier", "identifier", label_width, |ui| {
+                    ui_fields::buffered_text(ui, "identifier", text(&def, "identifier", ""))
+                })
+            {
+                patch["identifier"] = json!(identifier);
+            }
+            source_controls::form_row(ui, "Tiles layout", "tileGridSize", label_width, |ui| {
+                let max = if def["relPath"].is_string() {
+                    def["pxWid"]
+                        .as_i64()
+                        .unwrap_or(100)
+                        .min(def["pxHei"].as_i64().unwrap_or(100))
+                        .max(2)
+                } else {
+                    100
+                };
+                let caption_gap = 3.;
+                let number_padding = 4.;
+                let controls = [
+                    ("tileGridSize", 2, "px tiles, spaced by"),
+                    ("spacing", 0, "px, with an atlas padding of"),
+                    ("padding", 0, "px"),
+                ]
+                .map(|(key, min, suffix)| {
+                    let caption = ui.painter().layout_no_wrap(
+                        locale::tr(ui, suffix).to_owned(),
+                        FontId::proportional(14.667),
+                        Color32::from_white_alpha(128),
+                    );
+                    (key, min, def[key].as_i64().unwrap_or(min), caption)
+                });
+                let caption_width = controls
+                    .iter()
+                    .map(|(_, _, _, caption)| caption.size().x + 2. * caption_gap)
+                    .sum::<f32>();
+                let number_font = ui.style().drag_value_text_style.resolve(ui.style());
+                let minimum_width = controls
+                    .iter()
+                    .map(|(_, _, value, _)| {
+                        ui.painter()
+                            .layout_no_wrap(value.to_string(), number_font.clone(), theme::TEXT)
+                            .size()
+                            .x
+                            + 2. * number_padding
+                    })
+                    .fold(0., f32::max);
+                let width = ((ui.available_width() - caption_width) / controls.len() as f32)
+                    .floor()
+                    .max(minimum_width);
+
+                ui.horizontal_wrapped(|ui| {
+                    ui.spacing_mut().item_spacing.x = caption_gap;
+                    ui.spacing_mut().button_padding.x = number_padding;
+                    ui.spacing_mut().interact_size.x = width;
+                    for (key, min, mut value, caption) in controls {
+                        ui_commit::prepare_editor(ui.ctx(), ui.next_auto_id());
+                        let response = ui.add_sized(
+                            [width, 32.],
+                            egui::DragValue::new(&mut value)
+                                .range(min..=max)
+                                .update_while_editing(false),
+                        );
+                        ui_commit::track_editor(ui.ctx(), &response);
+                        if response.changed() {
+                            patch[key] = json!(value);
+                        }
+                        ui.add(egui::Label::new(caption).extend());
+                    }
+                });
             });
         }
+        let changed_tags = source_controls::form_row(ui, "Tags", "tags", label_width, |ui| {
+            ui.spacing_mut().item_spacing.x = 0.;
+            tag_editor::show(
+                ui,
+                self.project.as_ref().unwrap(),
+                tag_editor::Field::Definition("tilesets"),
+                uid,
+                &def["tags"],
+            )
+        });
+        if let Some(change) = changed_tags {
+            self.edit("Tileset tags changed", |p| match change {
+                tag_editor::Change::Set(value) => {
+                    p.update_tileset_definition(uid, &json!({"tags":value}))
+                }
+                tag_editor::Change::Rename {
+                    old,
+                    new,
+                    everywhere,
+                } => p.rename_definition_tag("tilesets", uid, &old, &new, everywhere),
+            });
+        }
+        if embedded {
+            ui.label(locale::tr(
+                ui,
+                "This tileset uses an embedded LDtk image and cannot be modified.",
+            ));
+            ui.horizontal(|ui| {
+                ui.label(locale::tr(ui, "Image by"));
+                ui.hyperlink_to("FinalBossBlues", "https://finalbossblues.itch.io/icons");
+                ui.hyperlink_to("Patreon", "https://www.patreon.com/finalbossblues");
+            });
+            ui.label(locale::tr(ui, "LICENSING: This image is only meant to be used inside LDtk and cannot be redistributed. Contact the author to license it for your game."));
+        }
+        let current = def["tagsSourceEnumUid"].as_i64();
+        let pending_id = egui::Id::new((
+            "tileset-tag-source-confirm",
+            text(&self.project.as_ref().unwrap().json, "iid", ""),
+            uid,
+        ));
+        if !embedded {
+            source_controls::form_row(
+                ui,
+                "Enum for tile marking",
+                "tagsSourceEnumUid",
+                label_width,
+                |ui| {
+                    if let Some(next) =
+                        tileset_tag_enum_picker(ui, self.project.as_ref().unwrap(), current)
+                    {
+                        let has_tags = def["enumTags"].as_array().is_some_and(|tags| {
+                            tags.iter().any(|tag| {
+                                tag["tileIds"].as_array().is_some_and(|ids| !ids.is_empty())
+                            })
+                        });
+                        if current.is_some() && has_tags {
+                            ui.ctx().data_mut(|data| data.insert_temp(pending_id, next));
+                        } else {
+                            patch["tagsSourceEnumUid"] = json!(next);
+                        }
+                    }
+                },
+            );
+        }
+        if let Some(next) = ui
+            .ctx()
+            .data(|data| data.get_temp::<Option<i64>>(pending_id))
+        {
+            let mut confirm = false;
+            let mut cancel = false;
+            let modal = egui::Modal::new(pending_id).show(ui.ctx(), |ui| {
+                ui.label(locale::tr(ui, "Be careful: you have tags in this tileset. You will LOSE them by changing the source Enum!"));
+                ui.horizontal(|ui| {
+                    confirm = ui.button(locale::tr(ui, "Confirm")).clicked();
+                    cancel = ui.button(locale::tr(ui, "Cancel")).clicked();
+                });
+            });
+            cancel |= modal.should_close();
+            if confirm || cancel {
+                ui.ctx()
+                    .data_mut(|data| data.remove::<Option<i64>>(pending_id));
+            }
+            if confirm && !cancel {
+                patch["tagsSourceEnumUid"] = json!(next);
+            }
+        }
+        if let Some(next) = patch.get("tagsSourceEnumUid") {
+            let allowed = next
+                .as_i64()
+                .and_then(|uid| {
+                    self.project.as_ref().unwrap().json["defs"]["enums"]
+                        .as_array()?
+                        .iter()
+                        .find(|e| e["uid"] == uid)
+                })
+                .and_then(|e| e["values"].as_array());
+            let tags = def["enumTags"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter(|tag| {
+                    allowed
+                        .is_some_and(|values| values.iter().any(|v| v["id"] == tag["enumValueId"]))
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+            patch["enumTags"] = json!(tags);
+        }
+        if changed(&patch) {
+            self.apply_tileset_form_patch(ui.ctx(), &def, patch, options);
+        }
         self.atlas_picker(&ui.ctx().clone(), ui, uid);
-        ui.collapsing("Saved tile selections", |ui| {
+        if embedded {
+            return;
+        }
+        collapsing(ui, "Saved tile selections", |ui| {
             let mut selections = def["savedSelections"]
                 .as_array()
                 .cloned()
@@ -1887,18 +2256,32 @@ impl EditorApp {
             for (index, selection) in selections.iter_mut().enumerate() {
                 ui.push_id(("saved-selection", uid, index), |ui| {
                     ui.horizontal(|ui| {
-                        ui.label(format!(
-                            "Selection {} ({} tiles)",
-                            index + 1,
-                            selection["ids"].as_array().map_or(0, Vec::len)
+                        ui.label(locale::format(
+                            ui,
+                            "Selection {number} ({count} tiles)",
+                            &[
+                                ("number", &(index + 1).to_string()),
+                                (
+                                    "count",
+                                    &selection["ids"].as_array().map_or(0, Vec::len).to_string(),
+                                ),
+                            ],
                         ));
                         let mut mode = text(selection, "mode", "Stamp").to_owned();
                         let old = mode.clone();
                         egui::ComboBox::from_id_salt(ui.id().with("mode"))
-                            .selected_text(&mode)
+                            .selected_text(locale::tr(ui, &mode))
                             .show_ui(ui, |ui| {
-                                ui.selectable_value(&mut mode, "Stamp".into(), "Stamp");
-                                ui.selectable_value(&mut mode, "Random".into(), "Random");
+                                ui.selectable_value(
+                                    &mut mode,
+                                    "Stamp".into(),
+                                    locale::tr(ui, "Stamp"),
+                                );
+                                ui.selectable_value(
+                                    &mut mode,
+                                    "Random".into(),
+                                    locale::tr(ui, "Random"),
+                                );
                             });
                         if mode != old {
                             selection["mode"] = json!(mode);
@@ -1941,8 +2324,12 @@ impl EditorApp {
                 });
             }
         });
-        ui.collapsing("Selected tile data", |ui| {
-            ui.label(format!("Tile #{}", self.tile_id));
+        collapsing(ui, "Selected tile data", |ui| {
+            ui.label(locale::format(
+                ui,
+                "Tile #{id}",
+                &[("id", &self.tile_id.to_string())],
+            ));
             let existing = def["customData"]
                 .as_array()
                 .and_then(|a| a.iter().find(|v| v["tileId"] == self.tile_id));
@@ -2023,605 +2410,123 @@ impl EditorApp {
         }
     }
 
-    fn rule_properties(&mut self, ui: &mut egui::Ui) {
-        let Some(def) = self.definition_picker(ui, "layers") else {
-            return;
-        };
+    fn apply_tileset_form_patch(
+        &mut self,
+        ctx: &egui::Context,
+        def: &Value,
+        mut patch: Value,
+        options: RemapOptions,
+    ) {
         let uid = def["uid"].as_i64().unwrap();
-        if def["type"] != "IntGrid" && def["type"] != "AutoLayer" {
-            ui.label("Choose an IntGrid or AutoLayer.");
-            return;
-        }
-        let mut atlas = def["tilesetDefUid"].as_i64().unwrap_or(-1);
-        let old_atlas = atlas;
-        self.tileset_choice(ui, "Rule output tileset", &mut atlas);
-        if atlas != old_atlas {
-            self.edit_recoverable("Auto-layer tileset changed", |p| {
-                p.assign_tileset_with_policy(
-                    uid,
-                    (atlas >= 0).then_some(atlas),
-                    ldtk_core::TilesetRemap::TileIds,
-                    false,
-                    false,
-                )?;
-                for key in p.level_keys() {
-                    p.rebuild_auto_layers(key)?;
-                }
-                Ok(())
-            });
-        }
-        let fields = self.project.as_ref().unwrap().json["defs"]["levelFields"]
-            .as_array()
-            .cloned()
-            .unwrap_or_default();
-        let biome_fields = fields
+        let image_changed = patch.get("relPath").is_some();
+        let geometry_changed = ["tileGridSize", "padding", "spacing"]
             .iter()
-            .filter(|f| text(f, "__type", "").contains("Enum."))
-            .collect::<Vec<_>>();
-        let mut biome = def["biomeFieldUid"].as_i64().unwrap_or(-1);
-        let old_biome = biome;
-        egui::ComboBox::from_id_salt(("rule-biome-field", uid))
-            .selected_text(
-                biome_fields
-                    .iter()
-                    .find(|f| f["uid"] == biome)
-                    .map(|f| text(f, "identifier", "Biome"))
-                    .unwrap_or("No biome field"),
-            )
-            .show_ui(ui, |ui| {
-                ui.selectable_value(&mut biome, -1, "No biome field");
-                for field in &biome_fields {
-                    ui.selectable_value(
-                        &mut biome,
-                        field["uid"].as_i64().unwrap_or(-1),
-                        text(field, "identifier", "Biome"),
-                    );
-                }
-            });
-        if biome != old_biome {
-            self.edit_recoverable("Auto-layer biome changed", |p| {
-                p.update_layer_properties(
-                    uid,
-                    &json!({"biomeFieldUid":if biome<0{Value::Null}else{json!(biome)}}),
-                )?;
-                for key in p.level_keys() {
-                    p.rebuild_auto_layers(key)?;
-                }
-                Ok(())
-            });
-        }
-        ui.horizontal(|ui| {
-            if source_controls::button(ui, "New rule group").clicked()
-                && let Some(group) = self.edit("Rule group created", |p| {
-                    p.add_auto_rule_group(uid, "New group")
-                })
-            {
-                self.rule_group_uid = Some(group);
-            }
-            if source_controls::button(ui, "Rebuild all").clicked() {
-                self.edit("Auto-layers rebuilt", |p| {
-                    for key in p.level_keys() {
-                        p.rebuild_auto_layers(key)?;
-                    }
-                    Ok(())
-                });
-            }
-        });
-        ui.horizontal(|ui| {
-            if source_controls::button(ui, "Rules wizard…").clicked() {
-                self.begin_rule_wizard(ui.ctx(), uid, None);
-            }
-            if self.rule_group_uid.is_some()
-                && source_controls::button(ui, "Edit group with wizard…").clicked()
-            {
-                self.begin_rule_wizard(ui.ctx(), uid, self.rule_group_uid);
-            }
-        });
-        let groups = def["autoRuleGroups"]
-            .as_array()
-            .cloned()
-            .unwrap_or_default();
-        ui.horizontal_wrapped(|ui| {
-            for (index, group) in groups.iter().enumerate() {
-                let id = group["uid"].as_i64().unwrap_or(-1);
-                let response = ui.add(
-                    egui::Button::new(format!("≡ {}", text(group, "name", "Group")))
-                        .selected(self.rule_group_uid == Some(id))
-                        .sense(Sense::click_and_drag()),
-                );
-                response.dnd_set_drag_payload((uid, id));
-                if response.clicked() {
-                    self.rule_group_uid = Some(id);
-                    self.rule_uid = None;
-                    self.clipboard_focus(
-                        ui.ctx(),
-                        ClipTarget::Rule {
-                            layer: uid,
-                            group: id,
-                            rule: None,
-                        },
-                    );
-                }
-                if let Some(payload) = response.dnd_release_payload::<(i64, i64)>()
-                    && payload.0 == uid
-                    && payload.1 != id
+            .any(|key| patch.get(key).is_some());
+        let remove_image = image_changed && patch["relPath"].is_null();
+        let prepare = |app: &mut Self, patch: &mut Value| -> ldtk_core::Result<Option<PathBuf>> {
+            let project = app.project.as_ref().unwrap();
+            relative_path_patch(project, patch, "relPath")?;
+            if let Some(relative) = patch["relPath"].as_str() {
+                let path = project.make_absolute_file_path(relative)?;
+                let image = ldtk_core::exports::load_image_rgba(&path)?;
+                let current = text(def, "identifier", "");
+                let old_name = def["relPath"]
+                    .as_str()
+                    .and_then(|path| Path::new(path).file_stem())
+                    .and_then(|stem| stem.to_str())
+                    .map(|stem| project.cleanup_identifier(stem));
+                if patch.get("identifier").is_none()
+                    && (current.starts_with("Tileset")
+                        || old_name.is_some_and(|name| !name.is_empty() && current.contains(&name)))
+                    && let Some(stem) = path.file_stem().and_then(|stem| stem.to_str())
                 {
-                    self.edit("Rule group reordered", |p| {
-                        p.reorder_auto_rule_group(uid, payload.1, index)
-                    });
+                    let name = project.cleanup_identifier(stem);
+                    if !name.is_empty() && name != "_" {
+                        let others = project.json["defs"]["tilesets"]
+                            .as_array()
+                            .into_iter()
+                            .flatten()
+                            .filter(|d| d["uid"] != uid)
+                            .filter_map(|d| d["identifier"].as_str());
+                        patch["identifier"] = json!(unique_name(&name, others));
+                    }
                 }
-                response.context_menu(|ui| {
-                    self.clipboard_menu(
-                        ui,
-                        ClipTarget::Rule {
-                            layer: uid,
-                            group: id,
-                            rule: None,
-                        },
-                    )
-                });
+                patch["pxWid"] = json!(image.width());
+                patch["pxHei"] = json!(image.height());
+                let max = i64::from(image.width().min(image.height()));
+                for key in ["tileGridSize", "spacing", "padding"] {
+                    if let Some(value) = patch[key].as_i64().or_else(|| def[key].as_i64()) {
+                        patch[key] = json!(value.min(max));
+                    }
+                }
+                app.assets.store_file_image(ctx, &path, image)?;
             }
-        });
-        if !groups
-            .iter()
-            .any(|g| g["uid"].as_i64() == self.rule_group_uid)
-        {
-            self.rule_group_uid = groups.first().and_then(|g| g["uid"].as_i64());
-        }
-        let Some(group) = groups
-            .iter()
-            .find(|g| g["uid"].as_i64() == self.rule_group_uid)
-        else {
-            return;
+            if remove_image || !(image_changed || geometry_changed) {
+                return Ok(None);
+            }
+            let Some(relative) = patch["relPath"]
+                .as_str()
+                .or_else(|| def["relPath"].as_str())
+            else {
+                return Ok(None);
+            };
+            let path = project.make_absolute_file_path(relative)?;
+            let get = |key: &str| {
+                patch[key]
+                    .as_i64()
+                    .or_else(|| def[key].as_i64())
+                    .unwrap_or(0)
+            };
+            let (width, height) = (get("pxWid"), get("pxHei"));
+            if width <= 0 || height <= 0 {
+                return Ok(None);
+            }
+            let padding = resources::trimmed_atlas_padding(def, width, height, get("padding"));
+            let pixels = resources::atlas_pixel_data(
+                &mut app.assets,
+                &path,
+                [width as usize, height as usize],
+                get("tileGridSize"),
+                padding,
+                get("spacing"),
+            );
+            let needs_reload = pixels.is_none();
+            patch["cachedPixelData"] = pixels.unwrap_or(Value::Null);
+            Ok(needs_reload.then_some(path))
         };
-        let gid = group["uid"].as_i64().unwrap();
-        let patch = form(
-            ui,
-            group,
-            &[
-                P("name", "Group name", W::Text),
-                P("active", "Active", W::Bool),
-                P("isOptional", "Optional group", W::Bool),
-                P("color", "Group color", W::NullableColor),
-            ],
-        );
-        if changed(&patch) {
-            self.edit("Rule group changed", |p| {
-                p.update_auto_rule_group(uid, gid, &patch)
-            });
-        }
-        if let Some(field) = biome_fields.iter().find(|f| f["uid"] == biome) {
-            let public = text(field, "__type", "")
-                .trim_start_matches("Array<")
-                .trim_end_matches('>');
-            let enum_name = public.split_once('.').map(|(_, s)| s).unwrap_or("");
-            let values = self.project.as_ref().unwrap().json["defs"]["enums"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .chain(
-                    self.project.as_ref().unwrap().json["defs"]["externalEnums"]
-                        .as_array()
-                        .into_iter()
-                        .flatten(),
-                )
-                .find(|e| e["identifier"] == enum_name)
-                .and_then(|e| e["values"].as_array())
-                .cloned()
-                .unwrap_or_default();
-            ui.label("Required biome values");
-            let mut required = group["requiredBiomeValues"]
-                .as_array()
-                .cloned()
-                .unwrap_or_default();
-            let mut changed_values = false;
-            ui.horizontal_wrapped(|ui| {
-                for value in values {
-                    let id = text(&value, "id", "");
-                    let mut enabled = required.contains(&json!(id));
-                    if ui.checkbox(&mut enabled, id).changed() {
-                        required.retain(|v| v != id);
-                        if enabled {
-                            required.push(json!(id));
-                        }
-                        changed_values = true;
-                    }
-                }
-            });
-            let mut mode = group["biomeRequirementMode"].as_i64().unwrap_or(0);
-            let old_mode = mode;
-            ui.horizontal(|ui| {
-                ui.radio_value(&mut mode, 0, "Match any");
-                ui.radio_value(&mut mode, 1, "Match all");
-            });
-            if changed_values || mode != old_mode {
-                self.edit("Rule biome requirements changed", |p| {
-                    p.update_auto_rule_group(
-                        uid,
-                        gid,
-                        &json!({"requiredBiomeValues":required,"biomeRequirementMode":mode}),
-                    )
-                });
+        let reload = match prepare(self, &mut patch) {
+            Ok(path) => path,
+            Err(error) => {
+                self.status = error.to_string();
+                self.status_error = true;
+                return;
             }
-        }
-        ui.horizontal(|ui| {
-            let index = groups.iter().position(|g| g["uid"] == gid).unwrap_or(0);
-            if source_controls::add_enabled_button(ui, index > 0, egui::Button::new("Group up"))
-                .clicked()
-            {
-                self.edit("Rule group reordered", |p| {
-                    p.reorder_auto_rule_group(uid, gid, index - 1)
-                });
-            }
-            if source_controls::add_enabled_button(
-                ui,
-                index + 1 < groups.len(),
-                egui::Button::new("Group down"),
-            )
-            .clicked()
-            {
-                self.edit("Rule group reordered", |p| {
-                    p.reorder_auto_rule_group(uid, gid, index + 1)
-                });
-            }
-            if group["usesWizard"] != true
-                && source_controls::button(ui, "Add rule").clicked()
-                && let Some(rule) = self.edit("Auto rule created", |p| p.add_auto_rule(uid, gid, 3))
-            {
-                self.rule_uid = Some(rule);
-            }
-            if source_controls::button(ui, "Duplicate and remap…").clicked() {
-                self.begin_group_remap(ui.ctx(), uid, gid);
-            }
-            if source_controls::button(ui, "Delete group").clicked() {
-                self.edit_recoverable("Rule group deleted", |p| p.remove_auto_rule_group(uid, gid));
-                self.rule_group_uid = None;
-                self.rule_uid = None;
-            }
-        });
-        ui.horizontal(|ui| {
-            if source_controls::button(ui, "Use selected tile as group icon").clicked()
-                && let Some(rect) = self.selected_tile_rect_for(atlas)
-            {
-                self.edit("Rule group icon changed", |p| {
-                    p.update_auto_rule_group(uid, gid, &json!({"icon":rect}))
-                });
-            }
-            if !group["icon"].is_null() && source_controls::button(ui, "Clear group icon").clicked()
-            {
-                self.edit("Rule group icon cleared", |p| {
-                    p.update_auto_rule_group(uid, gid, &json!({"icon":null}))
-                });
-            }
-        });
-        if group["usesWizard"] == true {
-            ui.label("These rules are managed by the Assistant. Use the wizard to change their layout or enable advanced mode to edit individual rules.");
-            if source_controls::button(ui, "Edit using the Assistant").clicked() {
-                self.begin_rule_wizard(ui.ctx(), uid, Some(gid));
-            }
-            if source_controls::button(ui, "Enable advanced mode").clicked() {
-                self.edit_recoverable("Enabled advanced mode on rule group", |p| {
-                    p.update_auto_rule_group(uid, gid, &json!({"usesWizard":false}))
-                });
-            }
-            return;
-        }
-        let rules = group["rules"].as_array().cloned().unwrap_or_default();
-        ui.horizontal_wrapped(|ui| {
-            for (index, rule) in rules.iter().enumerate() {
-                let rid = rule["uid"].as_i64().unwrap_or(-1);
-                let response = ui.add(
-                    egui::Button::new(format!("≡ Rule {}", index + 1))
-                        .selected(self.rule_uid == Some(rid))
-                        .sense(Sense::click_and_drag()),
-                );
-                response.dnd_set_drag_payload((uid, gid, rid));
-                if response.clicked() {
-                    self.rule_uid = Some(rid);
-                    self.clipboard_focus(
-                        ui.ctx(),
-                        ClipTarget::Rule {
-                            layer: uid,
-                            group: gid,
-                            rule: Some(rid),
-                        },
-                    );
-                }
-                if let Some(payload) = response.dnd_release_payload::<(i64, i64, i64)>()
-                    && payload.0 == uid
-                    && payload.2 != rid
-                {
-                    self.edit("Rule reordered", |p| {
-                        p.move_auto_rule_to_group(uid, payload.1, gid, payload.2, index)
-                    });
-                }
-                response.context_menu(|ui| {
-                    self.clipboard_menu(
-                        ui,
-                        ClipTarget::Rule {
-                            layer: uid,
-                            group: gid,
-                            rule: Some(rid),
-                        },
-                    )
-                });
-            }
-        });
-        if !rules.iter().any(|r| r["uid"].as_i64() == self.rule_uid) {
-            self.rule_uid = rules.first().and_then(|r| r["uid"].as_i64());
-        }
-        let Some(rule) = rules.iter().find(|r| r["uid"].as_i64() == self.rule_uid) else {
-            return;
         };
-        let rid = rule["uid"].as_i64().unwrap();
-        let size = number(rule, "size", 3.0) as usize;
-        let mut next_size = size;
-        ui.horizontal(|ui| {
-            ui.label("Pattern size");
-            egui::ComboBox::from_id_salt(("rule-size", rid))
-                .selected_text(format!("{size} × {size}"))
-                .show_ui(ui, |ui| {
-                    for size in [1, 3, 5, 7, 9] {
-                        ui.selectable_value(&mut next_size, size, format!("{size} × {size}"));
-                    }
-                });
-        });
-        if next_size != size {
-            let pattern = resize_rule_pattern(rule, next_size);
-            self.edit("Rule pattern resized", |p| {
-                p.update_auto_rule(uid, gid, rid, &json!({"size":next_size,"pattern":pattern}))
-            });
-        }
-        let source = def["autoSourceLayerDefUid"]
-            .as_i64()
-            .and_then(|id| self.project.as_ref().unwrap().layer_def(id))
-            .unwrap_or(&def);
-        let values = source["intGridValues"]
-            .as_array()
-            .cloned()
-            .unwrap_or_default();
-        let value_key = egui::Id::new(("rule-pattern-value", uid));
-        let mut value = ui
-            .ctx()
-            .data_mut(|data| data.get_temp::<i64>(value_key))
-            .unwrap_or(self.int_value.max(1) as i64);
-        egui::ComboBox::from_id_salt(("rule-input-value", uid))
-            .selected_text(if value == 1000001 {
-                "Any non-empty".into()
-            } else {
-                values
-                    .iter()
-                    .find(|v| v["value"] == value)
-                    .map(|v| text(v, "identifier", "Value").to_owned())
-                    .unwrap_or_else(|| value.to_string())
-            })
-            .show_ui(ui, |ui| {
-                ui.selectable_value(&mut value, 1000001, "Any non-empty");
-                for v in &values {
-                    ui.selectable_value(
-                        &mut value,
-                        v["value"].as_i64().unwrap_or(1),
-                        format!("{}: {}", v["value"], text(v, "identifier", "Value")),
-                    );
+        let recoverable = image_changed
+            || geometry_changed
+            || patch.get("tagsSourceEnumUid").is_some()
+                && def["enumTags"].as_array().is_some_and(|a| !a.is_empty());
+        let operation = |p: &mut Project| {
+            if remove_image {
+                p.remove_tileset_image(uid)?;
+                patch.as_object_mut().unwrap().remove("relPath");
+                if !changed(&patch) {
+                    return Ok(0);
                 }
-                for group in source["intGridValuesGroups"]
-                    .as_array()
-                    .into_iter()
-                    .flatten()
-                {
-                    let id = group["uid"].as_i64().unwrap_or(0);
-                    ui.selectable_value(
-                        &mut value,
-                        (id + 1) * 1000,
-                        format!("Group: {}", text(group, "identifier", "Group")),
-                    );
-                }
-            });
-        ui.ctx().data_mut(|data| data.insert_temp(value_key, value));
-        let mut pattern = rule["pattern"]
-            .as_array()
-            .cloned()
-            .unwrap_or_else(|| vec![json!(0); size * size]);
-        let mut pattern_changed = false;
-        ui.label("Pattern: left click includes the selected value, right click excludes it, middle click clears.");
-        egui::Grid::new(("rule-pattern", rid))
-            .spacing([2.0, 2.0])
-            .show(ui, |ui| {
-                for y in 0..size {
-                    for x in 0..size {
-                        let index = x + y * size;
-                        let v = pattern.get(index).and_then(Value::as_i64).unwrap_or(0);
-                        let response = source_controls::add_sized_button(
-                            ui,
-                            [34.0, 34.0],
-                            egui::Button::new(if v == 0 {
-                                "·".to_owned()
-                            } else if v.abs() == 1000001 {
-                                if v > 0 { "Any".into() } else { "Empty".into() }
-                            } else {
-                                v.to_string()
-                            })
-                            .fill(if v == 0 {
-                                theme::DARK
-                            } else {
-                                theme::MEDIUM
-                            }),
-                        );
-                        let next = if response.clicked() {
-                            Some(value)
-                        } else if response.secondary_clicked() {
-                            Some(-value)
-                        } else if response.clicked_by(egui::PointerButton::Middle) {
-                            Some(0)
-                        } else {
-                            None
-                        };
-                        if let Some(next) = next
-                            && index < pattern.len()
-                        {
-                            pattern[index] = json!(next);
-                            pattern_changed = true;
-                        }
-                    }
-                    ui.end_row();
-                }
-            });
-        if pattern_changed {
-            self.edit("Rule pattern changed", |p| {
-                p.update_auto_rule(uid, gid, rid, &json!({"pattern":pattern}))
-            });
-        }
-        let mut outside = rule["outOfBoundsValue"].as_i64();
-        let previous = outside;
-        source_controls::property_label(ui, "Out-of-bounds policy", "outOfBoundsValue");
-        egui::ComboBox::from_id_salt(("single-rule-outside", rid))
-            .selected_text(match outside {
-                None => "Do not apply outside layer bounds (default)".to_owned(),
-                Some(0) => "Empty cells".into(),
-                Some(v) => values
-                    .iter()
-                    .find(|value| value["value"] == v)
-                    .map(|value| format!("{v} - {}", text(value, "identifier", "")))
-                    .unwrap_or_else(|| v.to_string()),
-            })
-            .show_ui(ui, |ui| {
-                ui.selectable_value(
-                    &mut outside,
-                    None,
-                    "Do not apply outside layer bounds (default)",
-                );
-                ui.selectable_value(&mut outside, Some(0), "Empty cells");
-                for value in &values {
-                    if let Some(v) = value["value"].as_i64() {
-                        ui.selectable_value(
-                            &mut outside,
-                            Some(v),
-                            format!("{v} - {}", text(value, "identifier", "")),
-                        );
-                    }
-                }
-            });
-        if outside != previous {
-            self.edit("Rule out-of-bounds value changed", |p| {
-                p.update_auto_rule(uid, gid, rid, &json!({"outOfBoundsValue":outside}))
-            });
-        }
-        let patch = form(
-            ui,
-            rule,
-            &[
-                P("active", "Active", W::Bool),
-                P("chance", "Chance", W::Float(0.0, 1.0)),
-                P("breakOnMatch", "Break on match", W::Bool),
-                P("flipX", "Horizontal symmetry", W::Bool),
-                P("flipY", "Vertical symmetry", W::Bool),
-                P("alpha", "Tile opacity", W::Float(0.0, 1.0)),
-                P("tileMode", "Tile mode", W::Choice(&["Single", "Stamp"])),
-                P(
-                    "checker",
-                    "Checker mode",
-                    W::Choice(&["None", "Horizontal", "Vertical"]),
-                ),
-                P("xModulo", "X modulo", W::Int(1, 1024)),
-                P("yModulo", "Y modulo", W::Int(1, 1024)),
-                P("xOffset", "X offset", W::Int(-65536, 65536)),
-                P("yOffset", "Y offset", W::Int(-65536, 65536)),
-                P("tileXOffset", "Tile X offset", W::Int(-65536, 65536)),
-                P("tileYOffset", "Tile Y offset", W::Int(-65536, 65536)),
-                P("tileRandomXMin", "Random X minimum", W::Int(-65536, 65536)),
-                P("tileRandomXMax", "Random X maximum", W::Int(-65536, 65536)),
-                P("tileRandomYMin", "Random Y minimum", W::Int(-65536, 65536)),
-                P("tileRandomYMax", "Random Y maximum", W::Int(-65536, 65536)),
-                P("pivotX", "Stamp pivot X", W::Float(0.0, 1.0)),
-                P("pivotY", "Stamp pivot Y", W::Float(0.0, 1.0)),
-                P("perlinActive", "Perlin noise", W::Bool),
-                P(
-                    "perlinSeed",
-                    "Perlin seed",
-                    W::Int(i32::MIN as i64, i32::MAX as i64),
-                ),
-                P("perlinScale", "Perlin scale", W::Float(0.001, 10.0)),
-                P("perlinOctaves", "Perlin octaves", W::Int(1, 10)),
-            ],
-        );
-        if changed(&patch) {
-            self.edit("Auto rule changed", |p| {
-                p.update_auto_rule(uid, gid, rid, &patch)
-            });
-        }
-        if atlas >= 0 {
-            self.atlas_picker(&ui.ctx().clone(), ui, atlas);
-        }
-        ui.horizontal(|ui| {
-            let ids = self.selected_tile_ids_for(atlas);
-            if source_controls::add_enabled_button(
-                ui,
-                !ids.is_empty(),
-                egui::Button::new("Use selected tiles"),
-            )
-            .clicked()
-            {
-                let outputs = if rule["tileMode"] == "Stamp" {
-                    json!([ids])
-                } else {
-                    json!(ids.iter().map(|id| json!([id])).collect::<Vec<_>>())
-                };
-                self.edit("Rule output changed", |p| {
-                    p.update_auto_rule(uid, gid, rid, &json!({"tileRectsIds":outputs}))
-                });
             }
-            let index = rules.iter().position(|r| r["uid"] == rid).unwrap_or(0);
-            if source_controls::add_enabled_button(ui, index > 0, egui::Button::new("Rule up"))
-                .clicked()
-            {
-                self.edit("Auto rule reordered", |p| {
-                    p.reorder_auto_rule(uid, gid, rid, index - 1)
-                });
+            p.update_tileset_definition_with_policy(uid, &patch, options.mode, options.allow_loss)
+        };
+        let discarded = if recoverable {
+            self.edit_recoverable("Tileset image, grid or tags changed", operation)
+        } else {
+            self.edit("Tileset changed", operation)
+        };
+        if let Some(count) = discarded {
+            if count > 0 {
+                self.status = format!("Tileset changed; removed {count} references");
             }
-            if source_controls::add_enabled_button(
-                ui,
-                index + 1 < rules.len(),
-                egui::Button::new("Rule down"),
-            )
-            .clicked()
-            {
-                self.edit("Auto rule reordered", |p| {
-                    p.reorder_auto_rule(uid, gid, rid, index + 1)
-                });
-            }
-            if source_controls::button(ui, "Delete rule").clicked() {
-                self.edit("Auto rule deleted", |p| p.remove_auto_rule(uid, gid, rid));
-                self.rule_uid = None;
-            }
-        });
-        if let Some(key) = self.selected
-            && let Some(index) = self
-                .project
-                .as_ref()
-                .unwrap()
-                .level(key)
-                .and_then(|l| l["layerInstances"].as_array())
-                .and_then(|a| a.iter().position(|l| l["layerDefUid"] == uid))
-            && group["isOptional"] == true
-        {
-            let mut active =
-                self.project.as_ref().unwrap().layer(key, index).unwrap()["optionalRules"]
-                    .as_array()
-                    .is_some_and(|a| a.contains(&json!(gid)));
-            if ui
-                .checkbox(&mut active, "Enable group in current level")
-                .changed()
-            {
-                self.edit_level("Optional rule group toggled", key, |p| {
-                    let a = p.layer_mut(key, index).unwrap()["optionalRules"]
-                        .as_array_mut()
-                        .unwrap();
-                    a.retain(|v| *v != gid);
-                    if active {
-                        a.push(json!(gid));
-                    }
-                    p.rebuild_auto_layers(key)
-                });
+            if let Some(path) = reload {
+                self.retry_resource(ctx, &path);
             }
         }
     }
@@ -2630,7 +2535,7 @@ impl EditorApp {
         if self.project.is_none() {
             return;
         }
-        ui.label("Export current project");
+        ui.label(locale::tr(ui, "Export current project"));
         for (label, format) in [
             ("Super simple export", "simple"),
             ("Layer and level PNGs", "png"),
@@ -2638,14 +2543,18 @@ impl EditorApp {
             ("Tiled TMX", "tmx"),
             ("GameMaker Studio 2 rooms", "gms"),
         ] {
-            if source_controls::add_enabled_button(ui, !self.is_busy(), egui::Button::new(label))
-                .clicked()
-                && let Some(dir) = rfd::FileDialog::new().pick_folder()
+            if source_controls::add_enabled_button(
+                ui,
+                !self.is_busy(),
+                egui::Button::new(locale::tr(ui, label)),
+            )
+            .clicked()
+                && let Some(dir) = FileDialog::new().pick_folder()
             {
                 self.export_async(format, dir);
             }
         }
-        ui.small("GameMaker export follows the original experimental exporter: entity instances and generated auto-layers are not exported.");
+        ui.small(locale::tr(ui, "GameMaker export follows the original experimental exporter: entity instances and generated auto-layers are not exported."));
         if source_controls::button(ui, "Import Ogmo project…").clicked() {
             self.request(ui.ctx(), Action::BrowseOgmo);
         }
@@ -2693,7 +2602,7 @@ impl EditorApp {
                     if source_controls::add_enabled_button(
                         ui,
                         trusted,
-                        egui::Button::new("Run command"),
+                        egui::Button::new(locale::tr(ui, "Run command")),
                     )
                     .clicked()
                     {
@@ -2792,19 +2701,23 @@ impl EditorApp {
             return;
         };
         ui.horizontal(|ui| {
-            ui.label(label);
+            ui.label(locale::tr(ui, label));
             egui::ComboBox::from_id_salt(ui.id().with(label))
                 .selected_text(
                     p.tileset(*value)
                         .map(|d| text(d, "identifier", "Tileset"))
-                        .unwrap_or("Choose tileset"),
+                        .unwrap_or_else(|| locale::tr(ui, "Choose tileset")),
                 )
                 .show_ui(ui, |ui| {
-                    ui.selectable_value(value, -1, "None / use default");
+                    ui.selectable_value(value, -1, locale::tr(ui, "None / use default"));
                     if let Some(defs) = p.json["defs"]["tilesets"].as_array() {
                         for d in defs {
                             if let Some(uid) = d["uid"].as_i64() {
-                                ui.selectable_value(value, uid, text(d, "identifier", "Tileset"));
+                                ui.selectable_value(
+                                    value,
+                                    uid,
+                                    text(d, "identifier", locale::tr(ui, "Tileset")),
+                                );
                             }
                         }
                     }
@@ -2915,6 +2828,78 @@ pub(in crate::app) fn unique_name<'a>(
         index = index.saturating_add(1);
     }
 }
+fn enum_property_row<R>(
+    ui: &mut egui::Ui,
+    label: &str,
+    key: &str,
+    content: impl FnOnce(&mut egui::Ui) -> R,
+) -> R {
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 0.;
+        source_controls::property_label(ui, label, key);
+        ui.add_space(18.);
+        content(ui)
+    })
+    .inner
+}
+
+fn enum_value_color(ui: &mut egui::Ui, value: &mut Value, editable: bool) -> bool {
+    let mut color = enum_color(value);
+    let changed = ui
+        .add_enabled_ui(editable, |ui| {
+            source_colors::color_editor_sized(ui, &mut color, None, Vec2::splat(ENUM_VALUE_SIZE))
+        })
+        .inner
+        .changed();
+    if editable && changed {
+        let [r, g, b] = color;
+        value["color"] = json!(u32::from(r) << 16 | u32::from(g) << 8 | u32::from(b));
+        return true;
+    }
+    false
+}
+
+fn enum_value_name(
+    ui: &mut egui::Ui,
+    value: &Value,
+    mut name: &str,
+    width: f32,
+    editable: bool,
+) -> Option<String> {
+    let size = egui::vec2(width, ENUM_VALUE_SIZE);
+    ui.scope(|ui| {
+        if !value["color"].is_null() {
+            let [r, g, b] = enum_color(value);
+            let color = Color32::from_rgb(r, g, b);
+            let lighten = |channel| (f32::from(channel) * 0.3 + 255. * 0.7).round() as u8;
+            let style = ui.visuals_mut();
+            style.override_text_color = Some(Color32::from_rgb(lighten(r), lighten(g), lighten(b)));
+            style.extreme_bg_color = Color32::from_rgb(r / 2, g / 2, b / 2);
+            style.text_edit_bg_color = Some(style.extreme_bg_color);
+            style.widgets.inactive.bg_stroke.color = color;
+        }
+        if editable {
+            ui_fields::buffered_text_sized(ui, "enum-value-name", name, size)
+        } else {
+            let background = ui.painter().add(egui::Shape::Noop);
+            let response = ui.add_sized(
+                size,
+                egui::TextEdit::singleline(&mut name)
+                    .desired_width(f32::INFINITY)
+                    .min_size(size),
+            );
+            if !value["color"].is_null() {
+                ui.painter().set(
+                    background,
+                    egui::Shape::rect_filled(response.rect, 2., ui.visuals().text_edit_bg_color()),
+                );
+            }
+            None
+        }
+    })
+    .inner
+}
+
 fn enum_color(value: &Value) -> [u8; 3] {
     let color = value["color"].as_u64().unwrap_or_else(|| {
         u64::from_str_radix(
@@ -2975,30 +2960,30 @@ fn remap_options(
             allow_loss: false,
             clear_overrides: false,
         });
-    ui.collapsing("Existing tile references", |ui| {
+    collapsing(ui, "Existing tile references", |ui| {
         ui.radio_value(
             &mut options.mode,
             ldtk_core::TilesetRemap::TileIds,
-            "Keep tile numbers",
+            locale::tr(ui, "Keep tile numbers"),
         );
         ui.radio_value(
             &mut options.mode,
             ldtk_core::TilesetRemap::AtlasCoordinates,
-            "Keep image positions",
+            locale::tr(ui, "Keep image positions"),
         );
         ui.radio_value(
             &mut options.mode,
             ldtk_core::TilesetRemap::Clear,
-            "Clear affected tiles",
+            locale::tr(ui, "Clear affected tiles"),
         );
         ui.checkbox(
             &mut options.allow_loss,
-            "Allow removal of references that no longer fit",
+            locale::tr(ui, "Allow removal of references that no longer fit"),
         );
         if overrides {
             ui.checkbox(
                 &mut options.clear_overrides,
-                "Reset tileset overrides in all levels",
+                locale::tr(ui, "Reset tileset overrides in all levels"),
             );
         }
     });
@@ -3030,6 +3015,428 @@ fn normalize_background_patch(level: &Value, patch: &mut Value) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn replacing_tileset_image_updates_pixels_and_name_in_the_same_undo() {
+        let dir = tempfile::tempdir().unwrap();
+        let old = dir.path().join("Ground.png");
+        let new = dir.path().join("Walls.png");
+        image::RgbaImage::from_pixel(32, 16, image::Rgba([255, 0, 0, 255]))
+            .save(&new)
+            .unwrap();
+        let mut project = Project::new();
+        project.path = Some(dir.path().join("Map.ldtk"));
+        let uid = project.add_tileset(&old, 16, 16, 16).unwrap();
+        let mut app = EditorApp::empty();
+        app.set_project(project);
+        let def = app.project.as_ref().unwrap().tileset(uid).unwrap().clone();
+        let ctx = egui::Context::default();
+        let options = RemapOptions {
+            mode: ldtk_core::TilesetRemap::AtlasCoordinates,
+            allow_loss: false,
+            clear_overrides: false,
+        };
+        let input = json!({"relPath":new});
+        app.apply_tileset_form_patch(&ctx, &def, input, options);
+        let updated = app.project.as_ref().unwrap().tileset(uid).unwrap();
+        assert_eq!(updated["relPath"], "Walls.png");
+        assert_eq!(updated["identifier"], "Walls");
+        assert_eq!(updated["pxWid"], 32);
+        assert_eq!(updated["cachedPixelData"]["opaqueTiles"], "11");
+        assert!(app.resource_checks.is_empty());
+        assert!(app.history.undo(app.project.as_mut().unwrap()));
+        assert_eq!(app.project.as_ref().unwrap().tileset(uid).unwrap(), &def);
+    }
+    #[test]
+    fn tileset_form_uses_source_row_order_and_restricts_embedded_atlases() {
+        fn label<'a>(shape: &'a egui::Shape, name: &str) -> Option<&'a egui::epaint::TextShape> {
+            match shape {
+                egui::Shape::Text(text)
+                    if text
+                        .galley
+                        .job
+                        .text
+                        .split_whitespace()
+                        .eq(name.split_whitespace()) =>
+                {
+                    Some(text)
+                }
+                egui::Shape::Vec(shapes) => shapes.iter().find_map(|shape| label(shape, name)),
+                _ => None,
+            }
+        }
+        fn draw(app: &mut EditorApp, ctx: &egui::Context, width: f32) -> egui::FullOutput {
+            ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(width, 1200.),
+                    )),
+                    ..Default::default()
+                },
+                |ctx| {
+                    app.source_panel(ctx, Panel::Tilesets);
+                },
+            )
+        }
+        let mut project = Project::new();
+        project.json["defs"]["tilesets"] = json!([{"uid":13,"identifier":"Atlas","relPath":null,"embedAtlas":null,"pxWid":32,"pxHei":32,"tileGridSize":16,"spacing":0,"padding":0,"tags":[],"tagsSourceEnumUid":null,"enumTags":[],"savedSelections":[],"customData":[]}]);
+        let mut app = EditorApp::empty();
+        app.set_project(project);
+        app.panel = Some(Panel::Tilesets);
+        app.definition_uid = Some(13);
+        let ctx = egui::Context::default();
+        theme::configure(&ctx);
+        for width in [1000., 900.] {
+            draw(&mut app, &ctx, width);
+            let out = draw(&mut app, &ctx, width);
+            let position = |name| {
+                let (clip, text) = out
+                    .shapes
+                    .iter()
+                    .find_map(|shape| label(&shape.shape, name).map(|text| (shape.clip_rect, text)))
+                    .unwrap_or_else(|| panic!("missing {name}"));
+                assert_eq!(text.galley.rows.len(), 1, "{name} must stay on one line");
+                let bounds = Rect::from_min_size(text.pos, text.galley.size());
+                assert!(
+                    clip.expand(0.1).contains_rect(bounds),
+                    "{name} glyphs {bounds:?} cannot be clipped by {clip:?}"
+                );
+                text.pos.y
+            };
+            assert!(position("Source image") < position("Identifier"));
+            assert!(position("Identifier") < position("Tiles layout"));
+            let layout_top = position("Tiles layout");
+            let tags_top = position("Tags");
+            assert!(layout_top < tags_top);
+            assert!(tags_top < position("Enum for tile marking"));
+            if width == 1000. {
+                let first_caption = position("px tiles, spaced by");
+                assert_eq!(position("px, with an atlas padding of"), first_caption);
+                assert_eq!(position("px"), first_caption);
+            }
+            let pane_right = width - 20.;
+            for item in &out.shapes {
+                let bounds = item.shape.visual_bounding_rect();
+                if bounds.top() >= layout_top - 12.
+                    && bounds.bottom() < tags_top - 2.
+                    && bounds.left() > 315.
+                {
+                    assert!(
+                        bounds.right() <= pane_right + 0.1,
+                        "Tiles layout control {bounds:?} crosses right pane {pane_right}"
+                    );
+                }
+            }
+            let panel = egui::AreaState::load(&ctx, egui::Id::new("source-definition-panel"))
+                .unwrap()
+                .rect();
+            assert_eq!(panel.right(), width);
+        }
+        app.project.as_mut().unwrap().json["defs"]["tilesets"][0]["embedAtlas"] =
+            json!("LdtkIcons");
+        let out = draw(&mut app, &ctx, 1000.);
+        for name in [
+            "Source image",
+            "Identifier",
+            "Tiles layout",
+            "Enum for tile marking",
+        ] {
+            assert!(
+                !out.shapes
+                    .iter()
+                    .any(|shape| label(&shape.shape, name).is_some()),
+                "embedded atlas must hide {name}"
+            );
+        }
+        assert!(
+            out.shapes
+                .iter()
+                .any(|shape| label(&shape.shape, "Tags").is_some())
+        );
+        assert!(out.shapes.iter().any(|shape| {
+            label(
+                &shape.shape,
+                "This tileset uses an embedded LDtk image and cannot be modified.",
+            )
+            .is_some()
+        }));
+        for name in [
+            "Saved tile selections",
+            "Selected tile data",
+            "Delete tileset",
+        ] {
+            assert!(
+                !out.shapes
+                    .iter()
+                    .any(|shape| label(&shape.shape, name).is_some()),
+                "embedded atlas must hide {name}"
+            );
+        }
+    }
+    #[test]
+    fn tileset_layout_row_commits_grid_edit_and_undoes_it() {
+        fn positions(shape: &egui::Shape, found: &mut Vec<egui::Pos2>) {
+            match shape {
+                egui::Shape::Text(t) if t.galley.job.text == "16" => {
+                    found.push(t.pos + t.galley.size() * 0.5)
+                }
+                egui::Shape::Vec(v) => v.iter().for_each(|s| positions(s, found)),
+                _ => {}
+            }
+        }
+        fn frame(
+            app: &mut EditorApp,
+            ctx: &egui::Context,
+            events: Vec<egui::Event>,
+        ) -> egui::FullOutput {
+            ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1000., 1200.),
+                    )),
+                    events,
+                    ..Default::default()
+                },
+                |ctx| {
+                    egui::CentralPanel::default()
+                        .show(ctx, |ui| app.properties(ui, Panel::Tilesets));
+                },
+            )
+        }
+        let mut project = Project::new();
+        project.json["defs"]["tilesets"] = json!([{"uid":13,"identifier":"Atlas","relPath":null,"embedAtlas":null,"pxWid":32,"pxHei":32,"tileGridSize":16,"spacing":0,"padding":0,"tags":[],"tagsSourceEnumUid":null,"enumTags":[],"savedSelections":[],"customData":[]}]);
+        let mut app = EditorApp::empty();
+        app.set_project(project);
+        app.panel = Some(Panel::Tilesets);
+        app.definition_uid = Some(13);
+        let ctx = egui::Context::default();
+        theme::configure(&ctx);
+        let out = frame(&mut app, &ctx, vec![]);
+        let mut found = Vec::new();
+        for shape in &out.shapes {
+            positions(&shape.shape, &mut found);
+        }
+        let pos = *found.last().expect("grid size");
+        for pressed in [true, false] {
+            frame(
+                &mut app,
+                &ctx,
+                vec![
+                    egui::Event::PointerMoved(pos),
+                    egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                ],
+            );
+        }
+        let key = |key, modifiers| egui::Event::Key {
+            key,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers,
+        };
+        frame(
+            &mut app,
+            &ctx,
+            vec![key(
+                Key::A,
+                egui::Modifiers {
+                    ctrl: true,
+                    command: true,
+                    ..Default::default()
+                },
+            )],
+        );
+        frame(
+            &mut app,
+            &ctx,
+            vec![
+                egui::Event::Text("8".into()),
+                key(Key::Enter, Default::default()),
+            ],
+        );
+        frame(&mut app, &ctx, vec![]);
+        assert_eq!(
+            app.project.as_ref().unwrap().tileset(13).unwrap()["tileGridSize"],
+            8
+        );
+        assert!(app.history.undo(app.project.as_mut().unwrap()));
+        assert_eq!(
+            app.project.as_ref().unwrap().tileset(13).unwrap()["tileGridSize"],
+            16
+        );
+    }
+    #[test]
+    fn tileset_tag_source_picker_uses_names_and_disables_external_enums() {
+        fn find(shape: &egui::Shape, name: &str) -> Option<egui::Pos2> {
+            match shape {
+                egui::Shape::Text(t) if t.galley.job.text == name => {
+                    Some(t.pos + t.galley.size() * 0.5)
+                }
+                egui::Shape::Vec(v) => v.iter().find_map(|s| find(s, name)),
+                _ => None,
+            }
+        }
+        let mut project = Project::new();
+        project.json["defs"]["enums"] =
+            json!([{"uid": 11, "identifier":"Terrain", "tags":["Ground"], "values":[]}]);
+        project.json["defs"]["externalEnums"] = json!([{"uid": 12, "identifier":"External", "externalRelPath":"data.cdb", "tags":[], "values":[]}]);
+        let ctx = egui::Context::default();
+        theme::configure(&ctx);
+        let selected = std::cell::Cell::new(None);
+        let draw = |events| {
+            ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(700., 500.),
+                    )),
+                    events,
+                    ..Default::default()
+                },
+                |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        if let Some(value) = tileset_tag_enum_picker(ui, &project, None) {
+                            selected.set(Some(value));
+                        }
+                    });
+                },
+            )
+        };
+        let out = draw(vec![]);
+        let center = |out: &egui::FullOutput, s| {
+            out.shapes
+                .iter()
+                .find_map(|s0| find(&s0.shape, s))
+                .unwrap_or_else(|| panic!("missing {s}"))
+        };
+        let click = |pos| {
+            draw(vec![egui::Event::PointerMoved(pos)]);
+            for pressed in [true, false] {
+                draw(vec![egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: egui::Modifiers::NONE,
+                }]);
+            }
+            draw(vec![])
+        };
+        let out = click(center(&out, "-- None --"));
+        center(&out, "Ground");
+        center(&out, "data.cdb");
+        let external = center(&out, "External (unsupported external enum)");
+        let out = click(external);
+        assert_eq!(selected.get(), None);
+        let out = click(center(&out, "-- None --"));
+        let local = center(&out, "Terrain");
+        click(local);
+        assert_eq!(selected.get(), Some(Some(11)));
+    }
+    #[test]
+    fn tileset_tag_source_change_confirms_and_preserves_matching_tags() {
+        fn find(shape: &egui::Shape, name: &str) -> Option<egui::Pos2> {
+            match shape {
+                egui::Shape::Text(t) if t.galley.job.text == name => {
+                    Some(t.pos + t.galley.size() * 0.5)
+                }
+                egui::Shape::Vec(v) => v.iter().find_map(|s| find(s, name)),
+                _ => None,
+            }
+        }
+        fn frame(
+            app: &mut EditorApp,
+            ctx: &egui::Context,
+            events: Vec<egui::Event>,
+        ) -> egui::FullOutput {
+            ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1000., 1200.),
+                    )),
+                    events,
+                    ..Default::default()
+                },
+                |ctx| {
+                    egui::CentralPanel::default()
+                        .show(ctx, |ui| app.properties(ui, Panel::Tilesets));
+                },
+            )
+        }
+        fn click(app: &mut EditorApp, ctx: &egui::Context, name: &str) {
+            let output = frame(app, ctx, vec![]);
+            let pos = output
+                .shapes
+                .iter()
+                .find_map(|s| find(&s.shape, name))
+                .unwrap_or_else(|| panic!("missing {name}"));
+            frame(app, ctx, vec![egui::Event::PointerMoved(pos)]);
+            for pressed in [true, false] {
+                frame(
+                    app,
+                    ctx,
+                    vec![egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: egui::Modifiers::NONE,
+                    }],
+                );
+            }
+        }
+        let mut project = Project::new();
+        project.json["defs"]["enums"] = json!([
+            {"uid":11,"identifier":"Terrain","values":[{"id":"Grass"},{"id":"Water"}],"tags":[]},
+            {"uid":12,"identifier":"Biome","values":[{"id":"Grass"}],"tags":[]}
+        ]);
+        project.json["defs"]["tilesets"] = json!([{"uid":13,"identifier":"Atlas","relPath":null,"pxWid":32,"pxHei":32,"tileGridSize":16,"spacing":0,"padding":0,"tags":[],"tagsSourceEnumUid":11,"enumTags":[{"enumValueId":"Grass","tileIds":[0]},{"enumValueId":"Water","tileIds":[1]}],"savedSelections":[],"customData":[]}]);
+        let mut app = EditorApp::empty();
+        app.set_project(project);
+        app.panel = Some(Panel::Tilesets);
+        app.definition_uid = Some(13);
+        let ctx = egui::Context::default();
+        theme::configure(&ctx);
+        click(&mut app, &ctx, "Terrain");
+        click(&mut app, &ctx, "Biome");
+        assert_eq!(
+            app.project.as_ref().unwrap().tileset(13).unwrap()["tagsSourceEnumUid"],
+            11
+        );
+        click(&mut app, &ctx, "Cancel");
+        assert_eq!(
+            app.project.as_ref().unwrap().tileset(13).unwrap()["enumTags"]
+                .as_array()
+                .unwrap()
+                .len(),
+            2
+        );
+        click(&mut app, &ctx, "Terrain");
+        click(&mut app, &ctx, "Biome");
+        click(&mut app, &ctx, "Confirm");
+        let tileset = app.project.as_ref().unwrap().tileset(13).unwrap();
+        assert_eq!(tileset["tagsSourceEnumUid"], 12);
+        assert_eq!(
+            tileset["enumTags"],
+            json!([{"enumValueId":"Grass","tileIds":[0]}])
+        );
+        assert!(app.history.undo(app.project.as_mut().unwrap()));
+        let tileset = app.project.as_ref().unwrap().tileset(13).unwrap();
+        assert_eq!(tileset["tagsSourceEnumUid"], 11);
+        assert_eq!(tileset["enumTags"].as_array().unwrap().len(), 2);
+        click(&mut app, &ctx, "Terrain");
+        click(&mut app, &ctx, "-- None --");
+        click(&mut app, &ctx, "Confirm");
+        let tileset = app.project.as_ref().unwrap().tileset(13).unwrap();
+        assert!(tileset["tagsSourceEnumUid"].is_null());
+        assert_eq!(tileset["enumTags"], json!([]));
+    }
     #[test]
     fn background_assignment_defaults_to_cover_and_removal_resets_position() {
         let mut patch = json!({"bgRelPath":"large.png"});
@@ -3178,7 +3585,7 @@ mod tests {
             fn find(shape: &egui::Shape, label: &str) -> Option<egui::Pos2> {
                 match shape {
                     egui::Shape::Text(text) if text.galley.job.text == label => {
-                        Some(text.pos + text.galley.size() * 0.5)
+                        Some(text.pos + text.galley.rect.center().to_vec2())
                     }
                     egui::Shape::Vec(shapes) => shapes.iter().find_map(|shape| find(shape, label)),
                     _ => None,
@@ -3201,6 +3608,8 @@ mod tests {
         p.set_field_default(title, json!("seed")).unwrap();
         let array = p
             .add_field_definition(None, "Words", "String", true)
+            .unwrap();
+        p.update_field_definition(array, &json!({"arrayMinLength":1}))
             .unwrap();
         p.set_field_editor_value(key, None, array, json!([null, "keep"]))
             .unwrap();
@@ -3268,21 +3677,6 @@ mod tests {
             before,
             "activating a default must not materialize it"
         );
-        let command = egui::Modifiers {
-            ctrl: true,
-            command: true,
-            ..Default::default()
-        };
-        frame(
-            &mut app,
-            vec![egui::Event::Key {
-                key: Key::A,
-                physical_key: None,
-                pressed: true,
-                repeat: false,
-                modifiers: command,
-            }],
-        );
         frame(&mut app, vec![egui::Event::Text("edited".into())]);
         frame(
             &mut app,
@@ -3312,6 +3706,27 @@ mod tests {
             "edited"
         );
         assert_eq!(loaded.level(key).unwrap()["fieldInstances"][2], untouched);
+
+        let output = frame(&mut app, vec![]);
+        let clear = point(&output, "Empty array");
+        assert!(clear.x < point(&output, "7").x, "clear belongs in the label column");
+        for pressed in [true, false] {
+            frame(
+                &mut app,
+                vec![
+                    egui::Event::PointerMoved(clear),
+                    egui::Event::PointerButton {
+                        pos: clear,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: Default::default(),
+                    },
+                ],
+            );
+        }
+        let project = app.project.as_ref().unwrap();
+        assert_eq!(project.level(key).unwrap()["fieldInstances"][2]["__value"], json!([]));
+        assert!(!project.field_value_errors(key, None, array).unwrap().is_empty());
     }
     #[test]
     fn creating_first_extra_world_through_native_button_preserves_original_world() {
@@ -3413,18 +3828,486 @@ mod tests {
         assert_eq!(patch, json!({"worldX":100,"pxWid":300}));
     }
     #[test]
-    fn external_enum_preview_is_read_only_until_apply() {
+    fn enum_value_rows_keep_fixed_columns_at_two_panel_widths() {
+        fn flatten<'a>(shape: &'a egui::Shape, shapes: &mut Vec<&'a egui::Shape>) {
+            if let egui::Shape::Vec(children) = shape {
+                for child in children {
+                    flatten(child, shapes);
+                }
+            } else {
+                shapes.push(shape);
+            }
+        }
+
+        let mut project = Project::new();
+        let local = project.add_enum_definition("State", &["Idle"]).unwrap();
+        project.json["defs"]["enums"][0]["values"][0]["color"] = json!(0x47_95_5d);
+        let mut external_def = project.json["defs"]["enums"][0].clone();
+        let external = project.json["nextUid"].as_i64().unwrap();
+        external_def["uid"] = json!(external);
+        external_def["identifier"] = json!("ImportedState");
+        external_def["externalRelPath"] = json!("values.json");
+        project.json["defs"]["externalEnums"] = json!([external_def]);
+        project.json["nextUid"] = json!(external + 1);
+        let mut app = EditorApp::empty();
+        app.set_project(project);
+        app.panel = Some(Panel::Enums);
+
+        for uid in [local, external] {
+            app.definition_uid = Some(uid);
+            let width_at = |app: &mut EditorApp, screen_width| {
+                let ctx = egui::Context::default();
+                theme::configure(&ctx);
+                ctx.style_mut(|style| style.animation_time = 0.);
+                let frame = |app: &mut EditorApp| {
+                    ctx.run(
+                        egui::RawInput {
+                            screen_rect: Some(Rect::from_min_size(
+                                egui::Pos2::ZERO,
+                                egui::vec2(screen_width, 800.),
+                            )),
+                            ..Default::default()
+                        },
+                        |ctx| {
+                            app.source_panel(ctx, Panel::Enums);
+                        },
+                    )
+                };
+                frame(app);
+                let output = frame(app);
+                let mut shapes = Vec::new();
+                for shape in &output.shapes {
+                    flatten(&shape.shape, &mut shapes);
+                }
+                let rects = shapes.iter().filter_map(|shape| match shape {
+                    egui::Shape::Rect(rect) => Some(rect),
+                    _ => None,
+                });
+                let swatch_color = Color32::from_rgb(71, 149, 93);
+                let swatch = rects
+                    .clone()
+                    .filter(|rect| rect.fill == swatch_color)
+                    .map(|rect| rect.rect)
+                    .next()
+                    .expect("enum swatch is rendered");
+                let name = rects
+                    .clone()
+                    .find(|rect| {
+                        if uid == local {
+                            rect.fill == Color32::from_rgb(35, 74, 46)
+                        } else {
+                            rect.stroke.color == swatch_color
+                        }
+                    })
+                    .expect("enum name is rendered")
+                    .rect;
+                assert_eq!(swatch.size(), Vec2::splat(32.));
+                assert_eq!(name.height(), 32.);
+                assert_eq!(name.left() - swatch.right(), 3.);
+
+                let text_pos = |label, region: Rect| {
+                    shapes.iter().find_map(|shape| match shape {
+                        egui::Shape::Text(text) if text.galley.job.text == label => {
+                            let center = text.pos + text.galley.rect.center().to_vec2();
+                            region.contains(center).then_some(center)
+                        }
+                        _ => None,
+                    })
+                };
+                let control_rect = |label, region| {
+                    let center =
+                        text_pos(label, region).unwrap_or_else(|| panic!("missing {label}"));
+                    rects
+                        .clone()
+                        .filter(|shape| shape.fill != Color32::TRANSPARENT)
+                        .map(|shape| shape.rect)
+                        .filter(|rect| rect.contains(center) && rect.width() >= 24.)
+                        .min_by(|a, b| a.area().total_cmp(&b.area()))
+                        .unwrap_or_else(|| panic!("missing {label} control"))
+                };
+                let values = Rect::from_min_max(
+                    egui::pos2(name.right(), name.top()),
+                    egui::pos2(screen_width, name.bottom()),
+                );
+                if uid == local {
+                    let remove = control_rect("×", values);
+                    assert_eq!(remove.size(), Vec2::splat(32.));
+                    assert_eq!(remove.left() - name.right(), 3.);
+
+                    let header = Rect::from_min_max(
+                        egui::pos2(300., 90.),
+                        egui::pos2(screen_width, name.top()),
+                    );
+                    let identifier = control_rect("State", header);
+                    let atlas = control_rect("None", header);
+                    let tags = text_pos("(No tag)", header).expect("empty tag label is rendered");
+                    assert_eq!(identifier.left(), atlas.left());
+                    assert!((tags.x - identifier.left() - 32.5).abs() < 1.);
+                    assert_eq!(identifier.right(), atlas.right());
+                    let add = control_rect("Add a new value", header);
+                    assert!(add.bottom() < name.top());
+                } else {
+                    assert!(text_pos("×", values).is_none());
+                }
+                name.width()
+            };
+            let narrow = width_at(&mut app, 760.);
+            let wide = width_at(&mut app, 1200.);
+            assert!(
+                wide > narrow + 100.,
+                "enum name must absorb the extra width"
+            );
+        }
+    }
+
+    #[test]
+    fn dragging_native_enum_values_preserves_references_and_undo() {
+        fn handles(shape: &egui::Shape, positions: &mut Vec<egui::Pos2>) {
+            match shape {
+                egui::Shape::Text(text) if text.galley.job.text == "≡" => {
+                    let center = text.pos + text.galley.size() * 0.5;
+                    if center.x > 286. && center.y > 100. {
+                        positions.push(center);
+                    }
+                }
+                egui::Shape::Vec(shapes) => {
+                    for shape in shapes {
+                        handles(shape, positions);
+                    }
+                }
+                _ => {}
+            }
+        }
+        let mut project = Project::new();
+        let uid = project
+            .add_enum_definition("State", &["Idle", "Run", "Jump"])
+            .unwrap();
+        let field = project
+            .add_field_definition(None, "State", "LocalEnum.State", false)
+            .unwrap();
+        let level = project.level_keys()[0];
+        project.set_field_default(field, json!("Run")).unwrap();
+        project
+            .set_field_value(level, None, field, json!("Idle"))
+            .unwrap();
+        let tileset = project
+            .add_tileset(std::path::Path::new("atlas.png"), 16, 32, 32)
+            .unwrap();
+        project
+            .update_tileset_definition(
+                tileset,
+                &json!({
+                    "tagsSourceEnumUid": uid,
+                    "enumTags":[{"enumValueId":"Jump","tileIds":[0]}]
+                }),
+            )
+            .unwrap();
+        project.json["defs"]["enums"][0]["values"][0]["color"] = json!(0x44_88_aa);
+
+        let mut app = EditorApp::empty();
+        app.set_project(project);
+        app.panel = Some(Panel::Enums);
+        app.definition_uid = Some(uid);
+        let ctx = egui::Context::default();
+        theme::configure(&ctx);
+        let frame = |app: &mut EditorApp, events| {
+            ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1200., 800.),
+                    )),
+                    events,
+                    ..Default::default()
+                },
+                |ctx| {
+                    app.source_panel(ctx, Panel::Enums);
+                },
+            )
+        };
+        let drag = |app: &mut EditorApp, from: usize, to: usize| {
+            let mut positions = Vec::new();
+            for shape in frame(app, vec![]).shapes {
+                handles(&shape.shape, &mut positions);
+            }
+            positions.sort_by(|a, b| a.y.total_cmp(&b.y));
+            assert_eq!(positions.len(), 3, "one handle per local enum value");
+            let pointer = |pos, pressed| egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: egui::Modifiers::NONE,
+            };
+            frame(
+                app,
+                vec![
+                    egui::Event::PointerMoved(positions[from]),
+                    pointer(positions[from], true),
+                ],
+            );
+            frame(app, vec![egui::Event::PointerMoved(positions[to])]);
+            frame(app, vec![pointer(positions[to], false)]);
+        };
+
+        frame(&mut app, vec![]);
+        let before = app.project.as_ref().unwrap().json.clone();
+        let mut expected = before.clone();
+        drag(&mut app, 0, 2);
+        expected["defs"]["enums"][0]["values"]
+            .as_array_mut()
+            .unwrap()
+            .rotate_left(1);
+        assert_eq!(app.project.as_ref().unwrap().json, expected);
+        let moved_to_bottom = expected.clone();
+
+        drag(&mut app, 2, 1);
+        expected["defs"]["enums"][0]["values"]
+            .as_array_mut()
+            .unwrap()
+            .swap(1, 2);
+        assert_eq!(app.project.as_ref().unwrap().json, expected);
+        assert!(app.history.undo(app.project.as_mut().unwrap()));
+        assert_eq!(app.project.as_ref().unwrap().json, moved_to_bottom);
+        assert!(app.history.undo(app.project.as_mut().unwrap()));
+        assert_eq!(app.project.as_ref().unwrap().json, before);
+    }
+
+    #[test]
+    fn enum_icon_picker_matches_thumbnail_and_atlas_mouse_buttons() {
+        let mut project = Project::new();
+        let image = ldtk_core::exports::embedded_atlas().unwrap();
+        let atlas = project
+            .add_tileset(
+                std::path::Path::new("Icons.png"),
+                16,
+                image.width() as i32,
+                image.height() as i32,
+            )
+            .unwrap();
+        project.json["defs"]["tilesets"][0]["relPath"] = Value::Null;
+        project.json["defs"]["tilesets"][0]["embedAtlas"] = json!("LdtkIcons");
+        let uid = project
+            .add_enum_definition("State", &["Idle", "Run"])
+            .unwrap();
+        let initial_icon = json!({"tilesetUid":atlas,"x":0,"y":0,"w":16,"h":16});
+        project.json["defs"]["enums"][0]["iconTilesetUid"] = json!(atlas);
+        project.json["defs"]["enums"][0]["values"][0]["tileRect"] = initial_icon;
+        let mut app = EditorApp::empty();
+        app.set_project(project);
+        app.panel = Some(Panel::Enums);
+        app.definition_uid = Some(uid);
+        app.set_atlas_selection(atlas, vec![7]);
+        let ctx = egui::Context::default();
+        theme::configure(&ctx);
+        let texture = app.assets.embedded(&ctx).unwrap().id();
+        let frame = |app: &mut EditorApp, events| {
+            ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1200., 800.),
+                    )),
+                    events,
+                    ..Default::default()
+                },
+                |ctx| {
+                    app.source_panel(ctx, Panel::Enums);
+                },
+            )
+        };
+        fn image_rect(shape: &egui::Shape, texture: egui::TextureId, large: bool) -> Option<Rect> {
+            match shape {
+                egui::Shape::Mesh(mesh) if mesh.texture_id == texture => {
+                    let rect = mesh.calc_bounds();
+                    ((rect.width() > 40.) == large && (large || rect.left() > 280.)).then_some(rect)
+                }
+                egui::Shape::Vec(shapes) => shapes
+                    .iter()
+                    .find_map(|shape| image_rect(shape, texture, large)),
+                _ => None,
+            }
+        }
+        let image_in = |out: egui::FullOutput, large| {
+            out.shapes
+                .iter()
+                .find_map(|item| image_rect(&item.shape, texture, large))
+        };
+        let gesture = |app: &mut EditorApp, from, to, button| {
+            for (pos, pressed) in [(from, true), (to, false)] {
+                frame(
+                    app,
+                    vec![
+                        egui::Event::PointerMoved(pos),
+                        egui::Event::PointerButton {
+                            pos,
+                            button,
+                            pressed,
+                            modifiers: Default::default(),
+                        },
+                    ],
+                );
+            }
+        };
+        let click = |app: &mut EditorApp, pos, button| gesture(app, pos, pos, button);
+        let value = |app: &EditorApp| {
+            app.project.as_ref().unwrap().json["defs"]["enums"][0]["values"][0].clone()
+        };
+
+        frame(&mut app, vec![]);
+        let preview = image_in(frame(&mut app, vec![]), false).expect("32-pixel value preview");
+        assert_eq!(preview.size(), egui::vec2(32., 32.));
+        let before = app.project.as_ref().unwrap().json.clone();
+        click(&mut app, preview.center(), egui::PointerButton::Secondary);
+        assert_eq!(app.project.as_ref().unwrap().json, before);
+        assert!(!app.history.can_undo());
+        assert!(image_in(frame(&mut app, vec![]), true).is_none());
+
+        click(&mut app, preview.center(), egui::PointerButton::Primary);
+        frame(&mut app, vec![]);
+        let picker = image_in(frame(&mut app, vec![]), true).expect("atlas picker");
+        gesture(
+            &mut app,
+            picker.min + egui::vec2(72., 24.),
+            picker.min + egui::vec2(120., 72.),
+            egui::PointerButton::Primary,
+        );
+        let chosen = json!({"tilesetUid":atlas,"x":16,"y":0,"w":32,"h":32});
+        assert_eq!(value(&app)["tileRect"], chosen);
+        assert_eq!(value(&app)["id"], "Idle");
+        assert_eq!(app.selected_tile_ids_for(atlas), vec![7]);
+        assert!(image_in(frame(&mut app, vec![]), true).is_none());
+
+        let preview = image_in(frame(&mut app, vec![]), false).unwrap();
+        click(&mut app, preview.center(), egui::PointerButton::Primary);
+        frame(&mut app, vec![]);
+        let picker = image_in(frame(&mut app, vec![]), true).unwrap();
+        click(
+            &mut app,
+            picker.min + egui::vec2(120., 72.),
+            egui::PointerButton::Secondary,
+        );
+        assert_eq!(
+            value(&app)["tileRect"],
+            json!({"tilesetUid":atlas,"x":32,"y":16,"w":16,"h":16})
+        );
+        assert!(image_in(frame(&mut app, vec![]), true).is_none());
+        assert_eq!(app.selected_tile_ids_for(atlas), vec![7]);
+        assert!(app.history.undo(app.project.as_mut().unwrap()));
+        assert_eq!(value(&app)["tileRect"], chosen);
+
+        let project = app.project.as_mut().unwrap();
+        let uid = project.json["nextUid"].as_i64().unwrap();
+        let mut imported = project.json["defs"]["enums"][0].clone();
+        imported["uid"] = json!(uid);
+        imported["identifier"] = json!("Imported");
+        imported["externalRelPath"] = json!("imported.json");
+        project.json["defs"]["externalEnums"] = json!([imported]);
+        project.json["nextUid"] = json!(uid + 1);
+        app.definition_uid = Some(uid);
+
+        frame(&mut app, vec![]);
+        let preview = image_in(frame(&mut app, vec![]), false).unwrap();
+        let before = app.project.as_ref().unwrap().json.clone();
+        click(&mut app, preview.center(), egui::PointerButton::Secondary);
+        assert_eq!(app.project.as_ref().unwrap().json, before);
+        assert!(image_in(frame(&mut app, vec![]), true).is_none());
+        click(&mut app, preview.center(), egui::PointerButton::Primary);
+        frame(&mut app, vec![]);
+        let picker = image_in(frame(&mut app, vec![]), true).expect("imported enum atlas picker");
+        click(
+            &mut app,
+            picker.min + egui::vec2(24., 24.),
+            egui::PointerButton::Primary,
+        );
+        let project = app.project.as_mut().unwrap();
+        let imported = &mut project.json["defs"]["externalEnums"][0];
+        assert_eq!(imported["values"][0]["tileRect"]["x"], 0);
+        assert_eq!(imported["values"][0]["id"], "Idle");
+        imported["externalRelPath"] = json!("imported.CDB");
+        let before = project.json.clone();
+
+        frame(&mut app, vec![]);
+        let preview = image_in(frame(&mut app, vec![]), false).expect("read-only preview");
+        click(&mut app, preview.center(), egui::PointerButton::Primary);
+        assert!(image_in(frame(&mut app, vec![]), true).is_none());
+        click(&mut app, preview.center(), egui::PointerButton::Secondary);
+        assert_eq!(app.project.as_ref().unwrap().json, before);
+    }
+
+    #[test]
+    fn source_external_enum_panel_exposes_the_changed_file_without_auto_selecting_an_enum() {
+        fn texts(shape: &egui::Shape, out: &mut Vec<String>) {
+            match shape {
+                egui::Shape::Text(text) => out.push(text.galley.job.text.clone()),
+                egui::Shape::Vec(shapes) => shapes.iter().for_each(|shape| texts(shape, out)),
+                _ => (),
+            }
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("Values.json");
+        std::fs::write(&path, r#"{"State":["Idle"]}"#).unwrap();
+        let mut project = Project::new();
+        project.path = Some(dir.path().join("Project.ldtk"));
+        project.sync_external_enums(&path).unwrap();
+        let mut app = EditorApp::empty();
+        app.set_project(project);
+        app.panel = Some(Panel::Enums);
+        std::fs::write(&path, r#"{"State":["Idle","Run"]}"#).unwrap();
+        let ctx = egui::Context::default();
+        theme::configure(&ctx);
+        let frame = |app: &mut EditorApp| {
+            ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1280., 800.),
+                    )),
+                    ..Default::default()
+                },
+                |ctx| {
+                    app.source_panel(ctx, Panel::Enums);
+                },
+            )
+        };
+        frame(&mut app);
+        let output = frame(&mut app);
+        let mut labels = Vec::new();
+        for shape in output.shapes {
+            texts(&shape.shape, &mut labels);
+        }
+        assert_eq!(app.definition_uid, None);
+        assert!(
+            labels.iter().any(|label| label == "Values.json"),
+            "{labels:?}"
+        );
+        assert!(
+            labels
+                .iter()
+                .any(|label| label == "FILE WAS MODIFIED, PLEASE USE SYNC."),
+            "{labels:?}"
+        );
+        assert!(!app.dirty);
+    }
+
+    #[test]
+    fn importing_external_enums_without_removals_applies_immediately() {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("state.json");
         std::fs::write(&path, r#"{"State":["Idle","Run"]}"#).unwrap();
         let mut app = EditorApp::empty();
         app.set_project(Project::new());
-        let before = app.project.as_ref().unwrap().json.clone();
         let ctx = egui::Context::default();
-        theme::configure(&ctx);
-        app.begin_enum_sync(&ctx, path);
-        let _ = ctx.run(egui::RawInput::default(), |ctx| app.enum_sync_dialog(ctx));
-        assert_eq!(app.project.as_ref().unwrap().json, before);
-        assert!(!app.history.can_undo());
+        app.begin_enum_sync(&ctx, path.clone());
+        assert_eq!(
+            app.project.as_ref().unwrap().json["defs"]["externalEnums"][0]["values"][1]["id"],
+            "Run"
+        );
+        assert!(app.dirty);
+        assert!(app.history.can_undo());
+        assert!(!app.enum_sync_is_open());
+        let project = app.project.as_ref().unwrap();
+        assert!(!project.external_enum_source_changed(&path).unwrap());
+        std::fs::write(&path, r#"{"State":["Idle","Run","Fly"]}"#).unwrap();
+        assert!(project.external_enum_source_changed(&path).unwrap());
     }
 }

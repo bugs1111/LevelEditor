@@ -195,19 +195,45 @@ impl Project {
         let mut tilesets = BTreeMap::new();
         for ts in arr(&source["tilesets"]) {
             let rel = s(ts, "path");
-            let img = load_image_rgba(&base.join(rel))?;
+            let atlas_path = base.join(rel);
+            let (dimensions, rel_path) = match load_image_rgba(&atlas_path) {
+                Ok(image) => (Some(image.dimensions()), Some(rel)),
+                Err(error) => match atlas_path.try_exists() {
+                    Ok(false) => {
+                        warnings.push(format!(
+                            "File not found for Ogmo tileset {}: {}",
+                            s(ts, "label"),
+                            atlas_path.display()
+                        ));
+                        (None, None)
+                    }
+                    Ok(true) => {
+                        warnings.push(format!(
+                            "Image loading failed for Ogmo tileset {}: {error}",
+                            s(ts, "label")
+                        ));
+                        (None, Some(rel))
+                    }
+                    Err(_) => return Err(error),
+                },
+            };
             let size = grid(&json!({"x":ts["tileWidth"],"y":ts["tileHeight"]}), 16)?;
             let id = uid(&mut p);
             let spacing = n(ts, "tileSeparationX");
             let padding = n(ts, "tileMarginX");
-            let cols = (img.width() as i64 - 2 * padding + spacing) / (size + spacing);
-            let rows = (img.height() as i64 - 2 * padding + spacing) / (size + spacing);
-            if cols <= 0 || rows <= 0 {
-                return Err(Error::Invalid(
-                    "invalid Ogmo tileset atlas dimensions".into(),
-                ));
-            }
-            p.json["defs"]["tilesets"].as_array_mut().unwrap().push(json!({"uid":id,"identifier":clean_identifier(s(ts,"label")),"relPath":rel,"embedAtlas":null,"pxWid":img.width(),"pxHei":img.height(),"tileGridSize":size,"spacing":spacing,"padding":padding,"__cWid":cols,"__cHei":rows,"tags":[],"enumTags":[],"customData":[],"savedSelections":[],"cachedPixelData":null,"tagsSourceEnumUid":null}));
+            let (width, height, cols, rows) = if let Some((width, height)) = dimensions {
+                let cols = (i64::from(width) - 2 * padding + spacing) / (size + spacing);
+                let rows = (i64::from(height) - 2 * padding + spacing) / (size + spacing);
+                if cols <= 0 || rows <= 0 {
+                    return Err(Error::Invalid(
+                        "invalid Ogmo tileset atlas dimensions".into(),
+                    ));
+                }
+                (width, height, cols, rows)
+            } else {
+                (0, 0, 0, 0)
+            };
+            p.json["defs"]["tilesets"].as_array_mut().unwrap().push(json!({"uid":id,"identifier":clean_identifier(s(ts,"label")),"relPath":rel_path,"embedAtlas":null,"pxWid":width,"pxHei":height,"tileGridSize":size,"spacing":spacing,"padding":padding,"__cWid":cols,"__cHei":rows,"tags":[],"enumTags":[],"customData":[],"savedSelections":[],"cachedPixelData":null,"tagsSourceEnumUid":null}));
             tilesets.insert(s(ts, "label").to_owned(), id);
         }
         for e in arr(&source["entities"]) {
@@ -289,6 +315,7 @@ impl Project {
             }
         }
         let template = p.json["levels"][0].clone();
+        p.grid_presence.clear();
         let defs = arr(&p.json["defs"]["layers"]).to_vec();
         let mut files = BTreeSet::new();
         for dir in arr(&source["levelPaths"]) {
@@ -341,6 +368,7 @@ impl Project {
                         let map = legends.get(&n(d, "uid")).unwrap();
                         let input_values = flat(&data, "grid", "grid2D");
                         let mut csv = vec![0i64; (cw * ch) as usize];
+                        let mut presence = crate::grid_presence::GridPresence::empty();
                         for (i, v) in input_values.iter().enumerate().take(csv.len()) {
                             let key = v
                                 .as_str()
@@ -353,8 +381,13 @@ impl Project {
                                 ));
                             }
                             csv[i] = map.get(&key).copied().unwrap_or(0);
+                            if csv[i] == 0 {
+                                presence.set(i, true);
+                            }
                         }
                         li["intGridCsv"] = json!(csv);
+                        let iid = li["iid"].as_str().expect("imported layer IID");
+                        p.grid_presence.insert(iid.into(), presence);
                     }
                     "Tiles" => {
                         let id = data["tileset"]
@@ -377,7 +410,7 @@ impl Project {
                             if rotations > 0 {
                                 warnings.push(format!("Found {rotations} unsupported Ogmo tile rotations in {}: rotations ignored",s(d,"identifier")));
                             }
-                            let cols = n(td, "__cWid").max(1);
+                            let cols = n(td, "__cWid");
                             let size = n(td, "tileGridSize");
                             let spacing = n(td, "spacing");
                             let padding = n(td, "padding");
@@ -389,7 +422,9 @@ impl Project {
                                 }
                                 let f = flags.get(i).and_then(Value::as_i64).unwrap_or(0);
                                 let flips = ((f >> 2) & 1) | (f & 2);
-                                tiles.push(json!({"px":[(i as i64%cw)*grid,(i as i64/cw)*grid],"src":[padding+tid%cols*(size+spacing),padding+tid/cols*(size+spacing)],"f":flips,"t":tid,"d":[i],"a":1}));
+                                let row = if cols == 0 { 0 } else { tid / cols };
+                                let col = tid - row * cols;
+                                tiles.push(json!({"px":[(i as i64%cw)*grid,(i as i64/cw)*grid],"src":[padding+col*(size+spacing),padding+row*(size+spacing)],"f":flips,"t":tid,"d":[i],"a":1}));
                             }
                             li["gridTiles"] = json!(tiles);
                         }
@@ -397,13 +432,18 @@ impl Project {
                     "Entities" => {
                         let mut entities = Vec::new();
                         for e in arr(&data["entities"]) {
-                            let name = clean_identifier(s(e, "name"));
-                            let ed = arr(&p.json["defs"]["entities"])
+                            let name = s(e, "name");
+                            let identifier = clean_identifier(name);
+                            let Some(ed) = arr(&p.json["defs"]["entities"])
                                 .iter()
-                                .find(|d| d["identifier"] == name)
-                                .ok_or_else(|| {
-                                    Error::Invalid(format!("unknown Ogmo entity {name}"))
-                                })?;
+                                .find(|d| d["identifier"] == identifier)
+                            else {
+                                warnings.push(format!(
+                                    "Unknown Ogmo entity {name} in {}",
+                                    file.display()
+                                ));
+                                continue;
+                            };
                             let mut fields = Vec::new();
                             for fd in arr(&ed["fieldDefs"]) {
                                 let typ = s(fd, "__type");

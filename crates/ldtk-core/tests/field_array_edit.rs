@@ -80,6 +80,7 @@ fn invalid_indices_and_non_array_targets_are_atomic_errors() {
         Edit::Reset { index: 1 },
         Edit::Remove { index: 1 },
         Edit::Insert { index: 2 },
+        Edit::InsertValue { index: 2, value: json!(2) },
         Edit::Move { from: 0, to: 1 },
         Edit::Move { from: 1, to: 0 },
     ] {
@@ -181,6 +182,13 @@ fn indexed_entity_reference_edits_update_both_ends_and_reject_invalid_targets_at
         },
     )
     .unwrap();
+    let mut cleared = p.clone();
+    cleared
+        .set_field_editor_value(K, Some(&ids[0]), uid, json!([]))
+        .unwrap();
+    assert_eq!(field(&cleared, 0)["__value"], json!([]));
+    assert_eq!(field(&cleared, 1)["__value"], json!([]));
+    assert_eq!(field(&cleared, 2)["__value"], json!([]));
     let before = p.json.clone();
     assert!(
         p.edit_field_array(

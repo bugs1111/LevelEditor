@@ -11,7 +11,7 @@ fn palette_search(ui: &mut egui::Ui, search: &mut String, columns: &mut usize) {
         let response = ui.add_sized(
             [width, 33.],
             egui::TextEdit::singleline(search)
-                .hint_text("Search…")
+                .hint_text(locale::tr(ui, "Search…"))
                 .margin(egui::Margin {
                     left: 28,
                     right: 8,
@@ -30,28 +30,12 @@ fn palette_search(ui: &mut egui::Ui, search: &mut String, columns: &mut usize) {
         ui.visuals_mut().widgets.inactive.bg_fill = Color32::TRANSPARENT;
         ui.visuals_mut().widgets.inactive.weak_bg_fill = Color32::TRANSPARENT;
         ui.visuals_mut().widgets.inactive.bg_stroke = Stroke::NONE;
-        ui.menu_button(
-            egui::Image::new(egui::include_image!("../../assets/icons/gridView.svg"))
-                .fit_to_exact_size(Vec2::splat(20.)),
-            |ui| {
-                for n in 1..=10 {
-                    if ui
-                        .selectable_label(
-                            *columns == n,
-                            if n == 1 {
-                                "List".to_owned()
-                            } else {
-                                format!("{n} columns")
-                            },
-                        )
-                        .clicked()
-                    {
-                        *columns = n;
-                        ui.close();
-                    }
-                }
-            },
-        );
+        let image = egui::Image::new(egui::include_image!("../../assets/icons/gridView.svg"))
+            .fit_to_exact_size(Vec2::splat(20.));
+        let button = ui.add(egui::Button::image(image));
+        if let Some(next) = panels::source_controls::palette_columns_menu(&button) {
+            *columns = next;
+        }
     });
 }
 fn palette_group(
@@ -61,44 +45,76 @@ fn palette_group(
     color: Color32,
     body: impl FnOnce(&mut egui::Ui),
 ) -> bool {
-    egui::Frame::new()
-        .stroke(Stroke::new(1_f32, theme::LIGHT))
-        .inner_margin(4)
-        .show(ui, |ui| {
-            ui.spacing_mut().item_spacing.y = 0.;
-            let (rect, response) =
-                ui.allocate_exact_size(egui::vec2(ui.available_width(), 17.), Sense::click());
-            ui.painter()
-                .rect_filled(rect, 0., Color32::from_rgb(115, 127, 157));
-            egui::Image::new(if open {
-                egui::include_image!("../../assets/icons/expanded.svg")
-            } else {
-                egui::include_image!("../../assets/icons/collapsed.svg")
-            })
-            .paint_at(
-                ui,
-                Rect::from_center_size(rect.left_center() + egui::vec2(12., 0.), Vec2::splat(15.)),
-            );
-            ui.painter().text(
-                rect.left_center() + egui::vec2(24., 0.),
-                Align2::LEFT_CENTER,
-                title,
-                FontId::new(12., egui::FontFamily::Name("panel-title".into())),
-                color,
-            );
-            if response.clicked() {
-                open = !open;
-            }
-            if open {
-                ui.add_space(5.);
-                egui::Frame::new()
-                    .inner_margin(egui::Margin::symmetric(5, 0))
-                    .show(ui, body);
-                ui.add_space(1.);
-            }
-        });
-    ui.add_space(4.);
+    ui.add_space(2.);
+    let (rect, response) =
+        ui.allocate_exact_size(egui::vec2(ui.available_width(), 17.), Sense::click());
+    ui.painter()
+        .rect_filled(rect, 0., Color32::from_rgb(115, 127, 157));
+    egui::Image::new(if open {
+        egui::include_image!("../../assets/icons/expanded.svg")
+    } else {
+        egui::include_image!("../../assets/icons/collapsed.svg")
+    })
+    .paint_at(
+        ui,
+        Rect::from_center_size(rect.left_center() + egui::vec2(12., 0.), Vec2::splat(15.)),
+    );
+    ui.painter().text(
+        rect.left_center() + egui::vec2(24., 0.),
+        Align2::LEFT_CENTER,
+        title,
+        FontId::new(12., egui::FontFamily::Name("panel-title".into())),
+        color,
+    );
+    if response.clicked() {
+        open = !open;
+    }
+    if open {
+        egui::Frame::new()
+            .stroke(Stroke::new(1_f32, theme::LIGHT))
+            .inner_margin(4)
+            .show(ui, body);
+        ui.add_space(8.);
+    } else {
+        ui.add_space(2.);
+    }
     open
+}
+
+fn palette_item(
+    painter: &egui::Painter,
+    rect: Rect,
+    color: Color32,
+    selected: bool,
+    hovered: bool,
+    list: bool,
+) -> Color32 {
+    let fill = if selected {
+        color.lerp_to_gamma(Color32::WHITE, 0.66)
+    } else {
+        color.lerp_to_gamma(Color32::from_rgb(49, 56, 67), 0.72)
+    };
+    painter.rect_filled(rect, 0., fill);
+    if list {
+        painter.rect_filled(
+            Rect::from_min_size(rect.min, egui::vec2(6., rect.height())),
+            0.,
+            color,
+        );
+    }
+    if selected || hovered {
+        painter.rect_stroke(
+            rect,
+            0.,
+            Stroke::new(1., Color32::WHITE),
+            StrokeKind::Inside,
+        );
+    }
+    if selected {
+        Color32::BLACK
+    } else {
+        color.lerp_to_gamma(Color32::WHITE, 0.3)
+    }
 }
 
 #[derive(Clone)]
@@ -112,7 +128,7 @@ fn directory_color_key() -> egui::Id {
 }
 impl EditorApp {
     pub(super) fn directory_color_menu(&mut self, ui: &mut egui::Ui, path: &std::path::Path) {
-        if ui.button("Assign custom color").clicked() {
+        if ui.button(locale::tr(ui, "Assign custom color")).clicked() {
             let color = self.settings.dir_color(path);
             ui.ctx().data_mut(|d| {
                 d.insert_temp(
@@ -133,7 +149,7 @@ impl EditorApp {
                     .iter()
                     .any(|color| color["path"].as_str() == Some(path.to_string_lossy().as_ref()))
             })
-            && ui.button("Reset assigned color").clicked()
+            && ui.button(locale::tr(ui, "Reset assigned color")).clicked()
         {
             self.settings.force_dir_color(path, None);
             ui.close();
@@ -144,7 +160,7 @@ impl EditorApp {
         let Some(mut state) = ctx.data_mut(|d| d.get_temp::<DirectoryColor>(id)) else {
             return;
         };
-        let complete = panels::source_colors::directory_color_dialog(
+        let complete = panels::source_colors::standalone_color_dialog(
             ctx,
             id.with("picker"),
             &mut state.rgb,
@@ -259,6 +275,12 @@ struct AtlasDrag {
     start: [i32; 2],
     button: egui::PointerButton,
 }
+enum AtlasPickerMode {
+    Tiles,
+    Rectangle,
+    EnumIcon,
+    RuleOutput { stamp: bool, opening: bool },
+}
 impl EditorApp {
     pub(super) fn with_local_atlas_state<R>(
         &mut self,
@@ -294,476 +316,526 @@ impl EditorApp {
         let Some(layer) = project.layer(key, self.layer) else {
             return;
         };
+        if layer["__type"] == "AutoLayer" {
+            let mut rect = ui.available_rect_before_wrap();
+            rect.min.y += 1.0;
+            if rect.is_positive() {
+                egui::Image::new(egui::include_image!("../../assets/img/stripes.png"))
+                    .texture_options(egui::TextureOptions::NEAREST_REPEAT)
+                    .uv(Rect::from_min_size(egui::Pos2::ZERO, rect.size() / 8.))
+                    .paint_at(ui, rect);
+                ui.painter()
+                    .hline(rect.x_range(), rect.top(), Stroke::new(1., theme::MEDIUM));
+            }
+            return;
+        }
         let layer_uid = layer["layerDefUid"].as_i64().unwrap_or(-1);
-        let layer_type = text(layer, "__type", "");
-        let mut optional_change = None;
-        let mut open_definition = None;
-        let mut source = None;
-        let mut atlas_uid = None;
-        match layer_type {
-            "IntGrid" => {
-                if let Some(def) = project.layer_def(layer_uid) {
-                    if let Some(values) = def["intGridValues"].as_array() {
-                        let search_id = ui.make_persistent_id(("intgrid-search", layer_uid));
-                        let mut search = ui
-                            .data_mut(|d| d.get_temp::<String>(search_id))
-                            .unwrap_or_default();
-                        let columns_key = format!("IntGridPaletteColumns_{layer_uid}");
-                        let project_iid = project.json["iid"].as_str();
-                        let mut columns = self
-                            .settings
-                            .ui_state_int(&columns_key, project_iid, 1)
-                            .clamp(1, 10) as usize;
-                        let previous_columns = columns;
-                        palette_search(ui, &mut search, &mut columns);
-                        if columns != previous_columns {
-                            self.settings.set_ui_state_int(
-                                &columns_key,
-                                project_iid,
-                                columns as i64,
-                            );
-                        }
-                        ui.data_mut(|d| d.insert_temp(search_id, search.clone()));
-                        let search = search.to_lowercase();
-                        let mut groups = vec![(0, "Ungrouped".to_owned(), None)];
-                        groups.extend(
-                            def["intGridValuesGroups"]
-                                .as_array()
-                                .into_iter()
-                                .flatten()
-                                .map(|g| {
-                                    (
-                                        g["uid"].as_i64().unwrap_or(0),
-                                        text(g, "identifier", "Group").to_owned(),
-                                        g["color"].as_str().map(theme::color),
-                                    )
-                                }),
-                        );
-                        let count = groups
-                            .iter()
-                            .filter(|(uid, _, _)| {
-                                values
-                                    .iter()
-                                    .any(|v| v["groupUid"].as_i64().unwrap_or(0) == *uid)
-                            })
-                            .count();
-                        for (uid, name, group_color) in groups {
-                            let group = values
-                                .iter()
-                                .filter(|v| v["groupUid"].as_i64().unwrap_or(0) == uid)
-                                .filter(|v| {
-                                    search.is_empty()
-                                        || text(v, "identifier", "")
-                                            .to_lowercase()
-                                            .contains(&search)
-                                        || v["value"].to_string().contains(&search)
-                                })
-                                .collect::<Vec<_>>();
-                            if group.is_empty() {
-                                continue;
-                            }
-                            let mut draw = |ui: &mut egui::Ui| {
-                                let width = if columns == 1 {
-                                    ui.available_width()
-                                } else {
-                                    (ui.available_width() - (columns - 1) as f32) / columns as f32
-                                };
-                                ui.horizontal_wrapped(|ui| {
-                                    ui.spacing_mut().item_spacing = egui::vec2(1., 1.);
-                                    for value in &group {
-                                        let id = value["value"].as_i64().unwrap_or(1) as i32;
-                                        let (rect, response) = ui.allocate_exact_size(
-                                            egui::vec2(
-                                                width,
-                                                if columns == 1 { 36. } else { width + 18. },
-                                            ),
-                                            Sense::click(),
-                                        );
-                                        let selected = self.int_value == id;
-                                        let color = theme::color(text(value, "color", "#ffcc00"));
-                                        ui.painter().rect_filled(
-                                            rect,
-                                            2.,
-                                            if selected {
-                                                mix_color(color, Color32::WHITE, 0.66)
-                                            } else if response.hovered() {
-                                                mix_color(color, theme::MEDIUM, 0.5)
-                                            } else {
-                                                mix_color(
-                                                    color,
-                                                    Color32::from_rgb(49, 56, 67),
-                                                    0.72,
+        let project_iid = project.json["iid"].as_str();
+        let search_keys = match text(layer, "__type", "") {
+            "Entities" => Some(("entity-palette-search", "EntityPaletteColumns")),
+            "IntGrid" => Some(("intgrid-search", "IntGridPaletteColumns")),
+            _ => None,
+        };
+        let scroll = egui::ScrollArea::vertical();
+        let (search, columns, scroll, outer_margin) =
+            if let Some((search_key, column_key)) = search_keys {
+                let search_id = ui.make_persistent_id((search_key, project_iid, layer_uid));
+                let mut search = ui
+                    .data_mut(|d| d.get_temp::<String>(search_id))
+                    .unwrap_or_default();
+                let columns_key = format!("{column_key}_{layer_uid}");
+                let previous_columns = self
+                    .settings
+                    .ui_state_int(&columns_key, project_iid, 1)
+                    .clamp(1, 10) as usize;
+                let mut columns = previous_columns;
+                palette_search(ui, &mut search, &mut columns);
+                if columns != previous_columns {
+                    self.settings
+                        .set_ui_state_int(&columns_key, project_iid, columns as i64);
+                }
+                ui.data_mut(|d| d.insert_temp(search_id, search.clone()));
+                ui.spacing_mut().scroll = egui::style::ScrollStyle {
+                    bar_width: 10.,
+                    bar_inner_margin: 0.,
+                    bar_outer_margin: 0.,
+                    ..egui::style::ScrollStyle::solid()
+                };
+                ui.visuals_mut().clip_rect_margin = 0.;
+                (
+                    search.to_lowercase(),
+                    columns,
+                    scroll.id_salt(("palette-items", project_iid, layer_uid)),
+                    // Four points of list padding plus its one-point border. The source
+                    // list overlaps the toolbar by two points and ends at the sidebar border.
+                    egui::Margin {
+                        left: 5,
+                        right: 7,
+                        top: 3,
+                        bottom: 5,
+                    },
+                )
+            } else {
+                (
+                    String::new(),
+                    1,
+                    scroll.id_salt("palette-scroll"),
+                    egui::Margin::ZERO,
+                )
+            };
+        scroll.show(ui, |ui| {
+            egui::Frame::new()
+                .inner_margin(outer_margin)
+                .show(ui, |ui| {
+                    let project = self.project.as_ref().expect("selected project");
+                    let layer = project.layer(key, self.layer).expect("selected layer");
+                    let layer_type = text(layer, "__type", "");
+                    let mut optional_change = None;
+                    let mut open_definition = None;
+                    let mut atlas_uid = None;
+                    match layer_type {
+                        "IntGrid" => {
+                            if let Some(def) = project.layer_def(layer_uid) {
+                                if let Some(values) = def["intGridValues"].as_array() {
+                                    let mut groups =
+                                        vec![(0, locale::tr(ui, "Ungrouped").to_owned(), None)];
+                                    groups.extend(
+                                        def["intGridValuesGroups"]
+                                            .as_array()
+                                            .into_iter()
+                                            .flatten()
+                                            .map(|g| {
+                                                (
+                                                    g["uid"].as_i64().unwrap_or(0),
+                                                    text(g, "identifier", locale::tr(ui, "Group"))
+                                                        .to_owned(),
+                                                    g["color"].as_str().map(theme::color),
                                                 )
-                                            },
-                                        );
-                                        let icon = Rect::from_center_size(
-                                            if columns == 1 {
-                                                egui::pos2(rect.left() + 19., rect.center().y)
-                                            } else {
-                                                egui::pos2(rect.center().x, rect.top() + width / 2.)
-                                            },
-                                            Vec2::splat(if columns == 1 {
-                                                24.
-                                            } else {
-                                                (width - 4.).max(4.)
                                             }),
+                                    );
+                                    let count = groups
+                                        .iter()
+                                        .filter(|(uid, _, _)| {
+                                            values.iter().any(|v| {
+                                                v["groupUid"].as_i64().unwrap_or(0) == *uid
+                                            })
+                                        })
+                                        .count();
+                                    for (uid, name, group_color) in groups {
+                                        let group = values
+                                            .iter()
+                                            .filter(|v| v["groupUid"].as_i64().unwrap_or(0) == uid)
+                                            .filter(|v| {
+                                                search.is_empty()
+                                                    || text(v, "identifier", "")
+                                                        .to_lowercase()
+                                                        .contains(&search)
+                                                    || v["value"].to_string().contains(&search)
+                                            })
+                                            .collect::<Vec<_>>();
+                                        if group.is_empty() {
+                                            continue;
+                                        }
+                                        let draw = |ui: &mut egui::Ui| {
+                                            let width = if columns == 1 {
+                                                ui.available_width()
+                                            } else {
+                                                (ui.available_width() - (columns - 1) as f32)
+                                                    / columns as f32
+                                            };
+                                            ui.horizontal_wrapped(|ui| {
+                                                ui.spacing_mut().item_spacing = egui::vec2(1., 1.);
+                                                for value in &group {
+                                                    let id =
+                                                        value["value"].as_i64().unwrap_or(1) as i32;
+                                                    let (rect, response) = ui.allocate_exact_size(
+                                                        egui::vec2(
+                                                            width,
+                                                            if columns == 1 {
+                                                                46.
+                                                            } else {
+                                                                width + 18.
+                                                            },
+                                                        ),
+                                                        Sense::click(),
+                                                    );
+                                                    let selected = self.int_value == id;
+                                                    let color = theme::color(text(
+                                                        value, "color", "#ffcc00",
+                                                    ));
+                                                    let text_color = palette_item(
+                                                        ui.painter(),
+                                                        rect,
+                                                        color,
+                                                        selected,
+                                                        response.hovered(),
+                                                        columns == 1,
+                                                    );
+                                                    let icon = Rect::from_center_size(
+                                                        if columns == 1 {
+                                                            egui::pos2(
+                                                                rect.left() + 33.,
+                                                                rect.center().y,
+                                                            )
+                                                        } else {
+                                                            egui::pos2(
+                                                                rect.center().x,
+                                                                rect.top() + width / 2.,
+                                                            )
+                                                        },
+                                                        Vec2::splat(if columns == 1 {
+                                                            34.
+                                                        } else {
+                                                            (width - 4.).max(4.)
+                                                        }),
+                                                    );
+                                                    let border = if columns == 1 {
+                                                        Stroke::new(
+                                                            1.,
+                                                            color
+                                                                .lerp_to_gamma(Color32::WHITE, 0.2),
+                                                        )
+                                                    } else {
+                                                        Stroke::NONE
+                                                    };
+                                                    ui.painter().rect(
+                                                        icon,
+                                                        2.,
+                                                        color.lerp_to_gamma(Color32::BLACK, 0.5),
+                                                        border,
+                                                        StrokeKind::Inside,
+                                                    );
+                                                    if !value["tile"].is_null() {
+                                                        paint_tile(
+                                                            ctx,
+                                                            ui.painter(),
+                                                            icon.shrink(border.width),
+                                                            project,
+                                                            &value["tile"],
+                                                            &mut self.assets,
+                                                        );
+                                                    }
+                                                    if let Some(name) = value["identifier"].as_str()
+                                                    {
+                                                        ui.painter().text(
+                                                            if columns == 1 {
+                                                                egui::pos2(
+                                                                    rect.left() + 58.,
+                                                                    rect.center().y,
+                                                                )
+                                                            } else {
+                                                                egui::pos2(
+                                                                    rect.center().x,
+                                                                    rect.bottom() - 9.,
+                                                                )
+                                                            },
+                                                            if columns == 1 {
+                                                                Align2::LEFT_CENTER
+                                                            } else {
+                                                                Align2::CENTER_CENTER
+                                                            },
+                                                            name,
+                                                            FontId::proportional(if columns == 1 {
+                                                                15.
+                                                            } else {
+                                                                10.
+                                                            }),
+                                                            text_color,
+                                                        );
+                                                    }
+                                                    if response.clicked() {
+                                                        self.int_value = id;
+                                                    }
+                                                }
+                                            });
+                                        };
+                                        if count > 1 {
+                                            let group_key = format!(
+                                                "{}_intGridPalette_{}_group_{}",
+                                                text(&project.json, "iid", ""),
+                                                layer_uid,
+                                                uid
+                                            );
+                                            let group_open =
+                                                self.settings.ui_state_int(&group_key, None, 1)
+                                                    != 0;
+                                            let group_next = palette_group(
+                                                ui,
+                                                group_open,
+                                                &name.to_uppercase(),
+                                                group_color.unwrap_or(theme::ACCENT),
+                                                draw,
+                                            );
+                                            if group_next != group_open {
+                                                self.settings.set_ui_state_int(
+                                                    &group_key,
+                                                    None,
+                                                    i64::from(group_next),
+                                                );
+                                            }
+                                        } else {
+                                            egui::Frame::new().inner_margin(4).show(ui, draw);
+                                        }
+                                    }
+                                }
+                                let groups = def["autoRuleGroups"]
+                                    .as_array()
+                                    .map(Vec::as_slice)
+                                    .unwrap_or(&[]);
+                                if !groups.is_empty() {
+                                    ui.separator();
+                                    ui.checkbox(
+                                        &mut self.render_auto,
+                                        locale::tr(ui, "Display auto-layer tiles"),
+                                    );
+                                }
+                                for group in groups.iter().filter(|g| g["isOptional"] == true) {
+                                    let uid = group["uid"].as_i64().unwrap_or(-1);
+                                    let mut enabled = layer["optionalRules"]
+                                        .as_array()
+                                        .is_some_and(|a| a.iter().any(|v| v.as_i64() == Some(uid)));
+                                    if ui
+                                        .checkbox(
+                                            &mut enabled,
+                                            text(group, "name", locale::tr(ui, "Optional rules")),
+                                        )
+                                        .changed()
+                                    {
+                                        optional_change = Some((uid, enabled));
+                                    }
+                                }
+                            }
+                        }
+                        "Entities" => {
+                            if let Some(entities) = project.json["defs"]["entities"].as_array() {
+                                let layer_def =
+                                    project.layer_def(layer_uid).unwrap_or(&Value::Null);
+                                let definitions = entities
+                                    .iter()
+                                    .filter(|e| entity_allowed(e, layer_def))
+                                    .collect::<Vec<_>>();
+                                if !definitions
+                                    .iter()
+                                    .any(|e| e["uid"].as_i64() == self.entity_uid)
+                                {
+                                    self.entity_uid =
+                                        definitions.first().and_then(|e| e["uid"].as_i64());
+                                }
+                                let mut tags = definitions
+                                    .iter()
+                                    .flat_map(|d| {
+                                        d["tags"]
+                                            .as_array()
+                                            .into_iter()
+                                            .flatten()
+                                            .filter_map(Value::as_str)
+                                    })
+                                    .collect::<Vec<_>>();
+                                tags.sort_by_key(|s| s.to_lowercase());
+                                tags.dedup();
+                                if definitions
+                                    .iter()
+                                    .any(|d| d["tags"].as_array().is_none_or(Vec::is_empty))
+                                {
+                                    tags.insert(0, "");
+                                }
+                                for tag in &tags {
+                                    let group = definitions
+                                        .iter()
+                                        .filter(|d| {
+                                            if tag.is_empty() {
+                                                d["tags"].as_array().is_none_or(Vec::is_empty)
+                                            } else {
+                                                d["tags"]
+                                                    .as_array()
+                                                    .is_some_and(|a| a.iter().any(|t| t == tag))
+                                            }
+                                        })
+                                        .filter(|d| {
+                                            search.is_empty()
+                                                || text(d, "identifier", "")
+                                                    .to_lowercase()
+                                                    .contains(&search)
+                                        })
+                                        .collect::<Vec<_>>();
+                                    if group.is_empty() {
+                                        continue;
+                                    }
+                                    let draw = |ui: &mut egui::Ui| {
+                                        let width = if columns == 1 {
+                                            ui.available_width()
+                                        } else {
+                                            (ui.available_width() - (columns - 1) as f32)
+                                                / columns as f32
+                                        };
+                                        ui.horizontal_wrapped(|ui| {
+                                            ui.spacing_mut().item_spacing = egui::vec2(1., 1.);
+                                            for def in &group {
+                                                let uid = def["uid"].as_i64().unwrap_or(-1);
+                                                let color =
+                                                    theme::color(text(def, "color", "#ffcc00"));
+                                                let (rect, response) = ui.allocate_exact_size(
+                                                    egui::vec2(
+                                                        width,
+                                                        if columns == 1 {
+                                                            44.
+                                                        } else {
+                                                            width + 20.
+                                                        },
+                                                    ),
+                                                    Sense::click(),
+                                                );
+                                                let selected = self.entity_uid == Some(uid);
+                                                let text_color = palette_item(
+                                                    ui.painter(),
+                                                    rect,
+                                                    color,
+                                                    selected,
+                                                    response.hovered(),
+                                                    columns == 1,
+                                                );
+                                                let preview = Rect::from_min_size(
+                                                    rect.min
+                                                        + if columns == 1 {
+                                                            egui::vec2(14., 6.)
+                                                        } else {
+                                                            egui::vec2(2., 2.)
+                                                        },
+                                                    if columns == 1 {
+                                                        Vec2::splat(32.)
+                                                    } else {
+                                                        Vec2::splat((width - 4.).max(4.))
+                                                    },
+                                                );
+                                                canvas::entity_preview(
+                                                    ctx,
+                                                    ui.painter(),
+                                                    preview,
+                                                    project,
+                                                    def,
+                                                    &mut self.assets,
+                                                );
+                                                ui.painter().text(
+                                                    if columns == 1 {
+                                                        egui::pos2(
+                                                            rect.left() + 62.,
+                                                            rect.center().y,
+                                                        )
+                                                    } else {
+                                                        egui::pos2(
+                                                            rect.center().x,
+                                                            rect.bottom() - 10.,
+                                                        )
+                                                    },
+                                                    if columns == 1 {
+                                                        Align2::LEFT_CENTER
+                                                    } else {
+                                                        Align2::CENTER_CENTER
+                                                    },
+                                                    text(
+                                                        def,
+                                                        "identifier",
+                                                        locale::tr(ui, "Entity"),
+                                                    ),
+                                                    FontId::proportional(if columns == 1 {
+                                                        16.
+                                                    } else {
+                                                        11.
+                                                    }),
+                                                    text_color,
+                                                );
+                                                if response.clicked() {
+                                                    self.entity_uid = Some(uid);
+                                                }
+                                                response
+                                                    .clone()
+                                                    .on_hover_text(text(def, "doc", ""));
+                                                response.context_menu(|ui| {
+                                                    if ui
+                                                        .button(locale::tr(
+                                                            ui,
+                                                            "Edit entity definition",
+                                                        ))
+                                                        .clicked()
+                                                    {
+                                                        self.definition_uid = Some(uid);
+                                                        open_definition = Some(uid);
+                                                        ui.close();
+                                                    }
+                                                });
+                                            }
+                                        });
+                                    };
+                                    if tags.len() > 1 {
+                                        let group_key = format!(
+                                            "{}_entityPalette_{}_tag_{}",
+                                            text(&project.json, "iid", ""),
+                                            layer_uid,
+                                            if tag.is_empty() { "null" } else { tag }
                                         );
-                                        ui.painter().rect_filled(
-                                            icon,
-                                            0.,
-                                            theme::color(text(value, "color", "#ffcc00")),
+                                        let group_open =
+                                            self.settings.ui_state_int(&group_key, None, 1) != 0;
+                                        let heading = if tag.is_empty() {
+                                            locale::tr(ui, "UNTAGGED").into()
+                                        } else {
+                                            tag.to_uppercase()
+                                        };
+                                        let group_next = palette_group(
+                                            ui,
+                                            group_open,
+                                            &heading,
+                                            theme::ACCENT,
+                                            draw,
                                         );
-                                        if !value["tile"].is_null() {
-                                            paint_tile(
-                                                ctx,
-                                                ui.painter(),
-                                                icon,
-                                                project,
-                                                &value["tile"],
-                                                &mut self.assets,
+                                        if group_next != group_open {
+                                            self.settings.set_ui_state_int(
+                                                &group_key,
+                                                None,
+                                                i64::from(group_next),
                                             );
                                         }
-                                        ui.painter().text(
-                                            if columns == 1 {
-                                                egui::pos2(rect.left() + 39., rect.center().y)
-                                            } else {
-                                                egui::pos2(rect.center().x, rect.bottom() - 9.)
-                                            },
-                                            if columns == 1 {
-                                                Align2::LEFT_CENTER
-                                            } else {
-                                                Align2::CENTER_CENTER
-                                            },
-                                            format!(
-                                                "{}  {}",
-                                                id,
-                                                text(value, "identifier", "Value")
-                                            ),
-                                            FontId::proportional(if columns == 1 {
-                                                15.
-                                            } else {
-                                                10.
-                                            }),
-                                            if selected {
-                                                Color32::BLACK
-                                            } else {
-                                                mix_color(color, Color32::WHITE, 0.3)
-                                            },
-                                        );
-                                        if response.clicked() {
-                                            self.int_value = id;
-                                        }
+                                    } else {
+                                        egui::Frame::new().inner_margin(4).show(ui, draw);
                                     }
-                                });
-                            };
-                            if count > 1 {
-                                let group_key = format!(
-                                    "{}_intGridPalette_{}_group_{}",
-                                    text(&project.json, "iid", ""),
-                                    layer_uid,
-                                    uid
-                                );
-                                let group_open =
-                                    self.settings.ui_state_int(&group_key, None, 1) != 0;
-                                let group_next = palette_group(
-                                    ui,
-                                    group_open,
-                                    &name.to_uppercase(),
-                                    group_color.unwrap_or(theme::ACCENT),
-                                    draw,
-                                );
-                                if group_next != group_open {
-                                    self.settings.set_ui_state_int(
-                                        &group_key,
-                                        None,
-                                        i64::from(group_next),
-                                    );
                                 }
-                            } else {
-                                draw(ui);
                             }
                         }
-                    }
-                    let groups = def["autoRuleGroups"]
-                        .as_array()
-                        .map(Vec::as_slice)
-                        .unwrap_or(&[]);
-                    if !groups.is_empty() {
-                        ui.separator();
-                        ui.checkbox(&mut self.render_auto, "Display auto-layer tiles");
-                    }
-                    for group in groups.iter().filter(|g| g["isOptional"] == true) {
-                        let uid = group["uid"].as_i64().unwrap_or(-1);
-                        let mut enabled = layer["optionalRules"]
-                            .as_array()
-                            .is_some_and(|a| a.iter().any(|v| v.as_i64() == Some(uid)));
-                        if ui
-                            .checkbox(&mut enabled, text(group, "name", "Optional rules"))
-                            .changed()
-                        {
-                            optional_change = Some((uid, enabled));
+                        "Tiles" => {
+                            atlas_uid = layer["overrideTilesetUid"]
+                                .as_i64()
+                                .or_else(|| layer["__tilesetDefUid"].as_i64());
                         }
+                        _ => {}
                     }
-                }
-            }
-            "Entities" => {
-                if let Some(entities) = project.json["defs"]["entities"].as_array() {
-                    let layer_def = project.layer_def(layer_uid).unwrap_or(&Value::Null);
-                    let search_id = ui.make_persistent_id(("entity-palette-search", layer_uid));
-                    let mut search = ui
-                        .data_mut(|d| d.get_temp::<String>(search_id))
-                        .unwrap_or_default();
-                    let columns_key = format!("EntityPaletteColumns_{layer_uid}");
-                    let project_iid = project.json["iid"].as_str();
-                    let mut columns = self
-                        .settings
-                        .ui_state_int(&columns_key, project_iid, 1)
-                        .clamp(1, 10) as usize;
-                    let previous_columns = columns;
-                    palette_search(ui, &mut search, &mut columns);
-                    if columns != previous_columns {
-                        self.settings
-                            .set_ui_state_int(&columns_key, project_iid, columns as i64);
+                    if let Some(uid) = open_definition {
+                        self.definition_uid = Some(uid);
+                        self.show_panel(Some(Panel::Entities));
                     }
-                    ui.data_mut(|d| d.insert_temp(search_id, search.clone()));
-                    let search = search.to_lowercase();
-                    let definitions = entities
-                        .iter()
-                        .filter(|e| entity_allowed(e, layer_def))
-                        .collect::<Vec<_>>();
-                    if !definitions
-                        .iter()
-                        .any(|e| e["uid"].as_i64() == self.entity_uid)
-                    {
-                        self.entity_uid = definitions.first().and_then(|e| e["uid"].as_i64());
-                    }
-                    let mut tags = definitions
-                        .iter()
-                        .flat_map(|d| {
-                            d["tags"]
+                    if let Some((uid, enabled)) = optional_change {
+                        let layer_index = self.layer;
+                        self.edit_level("Optional auto-layer rules changed", key, |p| {
+                            let layer = p.layer_mut(key, layer_index).ok_or_else(|| {
+                                ldtk_core::Error::Invalid("Layer is missing".into())
+                            })?;
+                            let mut groups = layer["optionalRules"]
                                 .as_array()
-                                .into_iter()
-                                .flatten()
-                                .filter_map(Value::as_str)
-                        })
-                        .collect::<Vec<_>>();
-                    tags.sort_by_key(|s| s.to_lowercase());
-                    tags.dedup();
-                    if definitions
-                        .iter()
-                        .any(|d| d["tags"].as_array().is_none_or(Vec::is_empty))
-                    {
-                        tags.insert(0, "");
-                    }
-                    for tag in &tags {
-                        let group = definitions
-                            .iter()
-                            .filter(|d| {
-                                if tag.is_empty() {
-                                    d["tags"].as_array().is_none_or(Vec::is_empty)
-                                } else {
-                                    d["tags"]
-                                        .as_array()
-                                        .is_some_and(|a| a.iter().any(|t| t == tag))
-                                }
-                            })
-                            .filter(|d| {
-                                search.is_empty()
-                                    || text(d, "identifier", "").to_lowercase().contains(&search)
-                            })
-                            .collect::<Vec<_>>();
-                        if group.is_empty() {
-                            continue;
-                        }
-                        let mut draw = |ui: &mut egui::Ui| {
-                            let width = if columns == 1 {
-                                ui.available_width()
-                            } else {
-                                (ui.available_width() - (columns - 1) as f32) / columns as f32
-                            };
-                            ui.horizontal_wrapped(|ui| {
-                                ui.spacing_mut().item_spacing = egui::vec2(1., 1.);
-                                for def in &group {
-                                    let uid = def["uid"].as_i64().unwrap_or(-1);
-                                    let color = theme::color(text(def, "color", "#ffcc00"));
-                                    let (rect, response) = ui.allocate_exact_size(
-                                        egui::vec2(
-                                            width,
-                                            if columns == 1 { 44. } else { width + 20. },
-                                        ),
-                                        Sense::click(),
-                                    );
-                                    let selected = self.entity_uid == Some(uid);
-                                    ui.painter().rect_filled(
-                                        rect,
-                                        0.,
-                                        if selected {
-                                            mix_color(color, Color32::WHITE, 0.66)
-                                        } else {
-                                            mix_color(
-                                                color,
-                                                Color32::from_rgb(49, 56, 67),
-                                                if response.hovered() { 0.5 } else { 0.72 },
-                                            )
-                                        },
-                                    );
-                                    ui.painter().rect_filled(
-                                        Rect::from_min_size(
-                                            rect.min,
-                                            egui::vec2(6., rect.height()),
-                                        ),
-                                        0.,
-                                        color,
-                                    );
-                                    if selected || response.hovered() {
-                                        ui.painter().rect_stroke(
-                                            rect,
-                                            0.,
-                                            Stroke::new(1.0_f32, Color32::WHITE),
-                                            StrokeKind::Inside,
-                                        );
-                                    }
-                                    let preview = Rect::from_min_size(
-                                        rect.min
-                                            + if columns == 1 {
-                                                egui::vec2(14., 6.)
-                                            } else {
-                                                egui::vec2(2., 2.)
-                                            },
-                                        if columns == 1 {
-                                            Vec2::splat(32.)
-                                        } else {
-                                            Vec2::splat((width - 4.).max(4.))
-                                        },
-                                    );
-                                    canvas::entity_preview(
-                                        ctx,
-                                        ui.painter(),
-                                        preview,
-                                        project,
-                                        def,
-                                        &mut self.assets,
-                                    );
-                                    ui.painter().text(
-                                        if columns == 1 {
-                                            egui::pos2(rect.left() + 62., rect.center().y)
-                                        } else {
-                                            egui::pos2(rect.center().x, rect.bottom() - 10.)
-                                        },
-                                        if columns == 1 {
-                                            Align2::LEFT_CENTER
-                                        } else {
-                                            Align2::CENTER_CENTER
-                                        },
-                                        text(def, "identifier", "Entity"),
-                                        FontId::proportional(if columns == 1 { 16. } else { 11. }),
-                                        if selected {
-                                            Color32::BLACK
-                                        } else {
-                                            mix_color(color, Color32::WHITE, 0.3)
-                                        },
-                                    );
-                                    if response.clicked() {
-                                        self.entity_uid = Some(uid);
-                                    }
-                                    response.clone().on_hover_text(text(def, "doc", ""));
-                                    response.context_menu(|ui| {
-                                        if ui.button("Edit entity definition").clicked() {
-                                            self.definition_uid = Some(uid);
-                                            open_definition = Some(uid);
-                                            ui.close();
-                                        }
-                                    });
-                                }
-                            });
-                        };
-                        if tags.len() > 1 {
-                            let group_key = format!(
-                                "{}_entityPalette_{}_tag_{}",
-                                text(&project.json, "iid", ""),
-                                layer_uid,
-                                if tag.is_empty() { "null" } else { tag }
-                            );
-                            let group_open = self.settings.ui_state_int(&group_key, None, 1) != 0;
-                            let group_next = palette_group(
-                                ui,
-                                group_open,
-                                &if tag.is_empty() {
-                                    "UNTAGGED".into()
-                                } else {
-                                    tag.to_uppercase()
-                                },
-                                theme::ACCENT,
-                                draw,
-                            );
-                            if group_next != group_open {
-                                self.settings.set_ui_state_int(
-                                    &group_key,
-                                    None,
-                                    i64::from(group_next),
-                                );
+                                .cloned()
+                                .unwrap_or_default();
+                            groups.retain(|v| v.as_i64() != Some(uid));
+                            if enabled {
+                                groups.push(serde_json::json!(uid));
                             }
-                        } else {
-                            draw(ui);
-                        }
+                            layer["optionalRules"] = serde_json::json!(groups);
+                            p.rebuild_auto_layers(key)
+                        });
                     }
-                }
-            }
-            "Tiles" | "AutoLayer" => {
-                atlas_uid = layer["overrideTilesetUid"]
-                    .as_i64()
-                    .or_else(|| layer["__tilesetDefUid"].as_i64());
-                if layer_type == "AutoLayer" {
-                    ui.label("Generated from an IntGrid layer");
-                    let source_uid = project
-                        .layer_def(layer_uid)
-                        .and_then(|d| d["autoSourceLayerDefUid"].as_i64());
-                    if let Some(uid) = source_uid
-                        && ui.button("Edit source IntGrid").clicked()
-                    {
-                        source = project
-                            .level(key)
-                            .and_then(|l| l["layerInstances"].as_array())
-                            .and_then(|layers| {
-                                layers
-                                    .iter()
-                                    .position(|l| l["layerDefUid"].as_i64() == Some(uid))
-                            });
+                    if let Some(uid) = atlas_uid {
+                        self.restore_canvas_atlas_memory(ctx, uid);
+                        self.tile_palette(ctx, ui, uid);
+                        self.remember_canvas_atlas_memory(ctx, uid);
                     }
-                }
-            }
-            _ => {}
-        }
-        if let Some(uid) = open_definition {
-            self.definition_uid = Some(uid);
-            self.show_panel(Some(Panel::Entities));
-        }
-        if let Some((uid, enabled)) = optional_change {
-            let layer_index = self.layer;
-            self.edit_level("Optional auto-layer rules changed", key, |p| {
-                let layer = p
-                    .layer_mut(key, layer_index)
-                    .ok_or_else(|| ldtk_core::Error::Invalid("Layer is missing".into()))?;
-                let mut groups = layer["optionalRules"]
-                    .as_array()
-                    .cloned()
-                    .unwrap_or_default();
-                groups.retain(|v| v.as_i64() != Some(uid));
-                if enabled {
-                    groups.push(serde_json::json!(uid));
-                }
-                layer["optionalRules"] = serde_json::json!(groups);
-                p.rebuild_auto_layers(key)
-            });
-        }
-        if let Some(index) = source {
-            self.layer = index;
-        }
-        if let Some(uid) = atlas_uid {
-            self.restore_canvas_atlas_memory(ctx, uid);
-            self.tile_palette(ctx, ui, uid);
-            self.remember_canvas_atlas_memory(ctx, uid);
-        }
+                });
+        });
     }
 
     fn canvas_atlas_memory_ids(&self, uid: i64) -> Option<(egui::Id, egui::Id, String)> {
@@ -897,50 +969,78 @@ impl EditorApp {
         self.set_atlas_selection(uid, selected);
     }
     pub(super) fn atlas_picker(&mut self, ctx: &egui::Context, ui: &mut egui::Ui, uid: i64) {
-        self.atlas_picker_mode(ctx, ui, uid, false);
+        self.atlas_picker_mode(ctx, ui, uid, AtlasPickerMode::Tiles);
     }
     pub(super) fn atlas_rect_picker(&mut self, ctx: &egui::Context, ui: &mut egui::Ui, uid: i64) {
-        self.atlas_picker_mode(ctx, ui, uid, true);
+        self.atlas_picker_mode(ctx, ui, uid, AtlasPickerMode::Rectangle);
+    }
+    pub(super) fn atlas_enum_icon_picker(
+        &mut self,
+        ctx: &egui::Context,
+        ui: &mut egui::Ui,
+        uid: i64,
+    ) {
+        self.atlas_picker_mode(ctx, ui, uid, AtlasPickerMode::EnumIcon);
+    }
+    pub(super) fn atlas_rule_output_picker(
+        &mut self,
+        ctx: &egui::Context,
+        ui: &mut egui::Ui,
+        uid: i64,
+        stamp: bool,
+        opening: bool,
+    ) -> bool {
+        self.atlas_picker_mode(ctx, ui, uid, AtlasPickerMode::RuleOutput { stamp, opening })
     }
     fn atlas_picker_mode(
         &mut self,
         ctx: &egui::Context,
         ui: &mut egui::Ui,
         uid: i64,
-        rectangle_only: bool,
-    ) {
+        mode: AtlasPickerMode,
+    ) -> bool {
+        let rule_picker = matches!(mode, AtlasPickerMode::RuleOutput { .. });
+        let rectangle_only = !matches!(
+            mode,
+            AtlasPickerMode::Tiles | AtlasPickerMode::RuleOutput { stamp: false, .. }
+        );
+        let modal_picker = rule_picker || matches!(mode, AtlasPickerMode::EnumIcon);
+        let focus_id = ui.make_persistent_id(("rule-atlas-focus", uid));
+        if matches!(mode, AtlasPickerMode::RuleOutput { opening: true, .. }) {
+            ui.data_mut(|d| d.insert_temp(focus_id, true));
+        }
         let Some(project) = &self.project else {
-            return;
+            return false;
         };
         let Some(def) = project.tileset(uid).cloned() else {
-            ui.weak("Choose a tileset");
-            return;
+            ui.weak(locale::tr(ui, "Choose a tileset"));
+            return false;
         };
         let canvas = palette_popout::canvas_view(ctx);
-        if canvas.is_none() {
-            ui.label(text(&def, "identifier", "Tileset"));
+        if canvas.is_none() && !modal_picker {
+            ui.label(text(&def, "identifier", locale::tr(ui, "Tileset")));
         }
         let texture = if let Some(path) = def["relPath"].as_str() {
             self.assets.texture(ctx, &canvas::asset_path(project, path))
         } else if !def["embedAtlas"].is_null() {
             self.assets.embedded(ctx)
         } else {
-            ui.weak("Assign an atlas image in Tilesets.");
-            return;
+            ui.weak(locale::tr(ui, "Assign an atlas image in Tilesets."));
+            return false;
         };
         let Some(texture) = texture else {
             if let Some(path) = def["relPath"].as_str() {
                 let path = canvas::asset_path(project, path);
                 if let Some(error) = self.assets.errors.get(&path).cloned() {
                     ui.colored_label(Color32::LIGHT_RED, error);
-                    if ui.button("Reload atlas").clicked() {
+                    if ui.button(locale::tr(ui, "Reload atlas")).clicked() {
                         self.assets.invalidate(&path);
                     }
-                    return;
+                    return false;
                 }
             }
             ui.spinner();
-            return;
+            return false;
         };
         let natural = texture.size_vec2();
         let grid = AtlasGrid::new(&def, natural);
@@ -958,6 +1058,28 @@ impl EditorApp {
         let viewport = ui.data_mut(|d| d.get_temp::<Rect>(viewport_id));
         let pointer = ui.input(|i| i.pointer.hover_pos());
         let mut state = egui::scroll_area::State::load(ctx, scroll_id).unwrap_or_default();
+        // The rule picker can center selections right up to the edges of the image.
+        let mut image_margin = Vec2::ZERO;
+        let mut viewport_size = Vec2::ZERO;
+        if rule_picker {
+            viewport_size = ui.available_size();
+            image_margin = viewport_size * egui::vec2(0.5, 0.25);
+            if ui
+                .data_mut(|d| d.remove_temp::<bool>(focus_id))
+                .unwrap_or(false)
+            {
+                let ids = self.selected_tile_ids_for(uid);
+                state.offset = if ids.is_empty() || grid.columns == 0 {
+                    image_margin
+                } else {
+                    let center = ids.iter().fold(Vec2::ZERO, |sum, id| {
+                        sum + egui::vec2((id % grid.columns) as f32, (id / grid.columns) as f32)
+                    }) / ids.len() as f32
+                        + Vec2::splat(0.5);
+                    (Vec2::splat(grid.padding) + center * (grid.grid + grid.spacing)) * zoom
+                };
+            }
+        }
         if let Some(viewport) = viewport
             && let Some(pointer) = pointer.filter(|p| viewport.contains(*p))
         {
@@ -1003,11 +1125,12 @@ impl EditorApp {
             d.insert_temp(zoom_id, zoom);
         });
         state.store(ctx, scroll_id);
-        let max_height = if canvas.is_some() {
+        let max_height = if canvas.is_some() || modal_picker {
             ui.available_height().max(8.)
         } else {
             600.
         };
+        let mut picked = false;
         let scroll = egui::ScrollArea::both()
             .scroll_source(egui::scroll_area::ScrollSource {
                 scroll_bar: true,
@@ -1016,12 +1139,31 @@ impl EditorApp {
             })
             .id_salt(("atlas-picker", uid))
             .max_height(max_height)
+            .auto_shrink([!modal_picker, !modal_picker])
+            .scroll_bar_visibility(if rule_picker {
+                egui::scroll_area::ScrollBarVisibility::AlwaysHidden
+            } else {
+                egui::scroll_area::ScrollBarVisibility::VisibleWhenNeeded
+            })
             .show(ui, |ui| {
-                let (rect, response) =
-                    ui.allocate_exact_size(natural * zoom, Sense::click_and_drag());
-                egui::Image::new(egui::include_image!("../../assets/img/stripes.png"))
+                let (content, response) =
+                    ui.allocate_exact_size(natural * zoom + viewport_size, Sense::click_and_drag());
+                let rect = Rect::from_min_size(content.min + image_margin, natural * zoom);
+                let (background, repeat) = if rule_picker {
+                    ui.painter().rect_filled(rect, 0., theme::MEDIUM);
+                    (
+                        egui::include_image!("../../assets/img/transparency.png"),
+                        natural / 8.,
+                    )
+                } else {
+                    (
+                        egui::include_image!("../../assets/img/stripes.png"),
+                        rect.size() / 8.,
+                    )
+                };
+                egui::Image::new(background)
                     .texture_options(egui::TextureOptions::NEAREST_REPEAT)
-                    .uv(Rect::from_min_size(egui::Pos2::ZERO, rect.size() / 8.))
+                    .uv(Rect::from_min_size(egui::Pos2::ZERO, repeat))
                     .paint_at(ui, rect);
                 ui.painter().image(
                     texture.id(),
@@ -1034,6 +1176,15 @@ impl EditorApp {
                 if panning {
                     drag = None;
                 }
+                if rule_picker
+                    && !panning
+                    && response.contains_pointer()
+                    && let Some(pos) = pointer
+                    && !rect.contains(pos)
+                    && ui.input(|i| i.pointer.primary_pressed())
+                {
+                    ui.close();
+                }
                 if !panning
                     && response.contains_pointer()
                     && let Some(pos) = ui.input(|i| i.pointer.latest_pos())
@@ -1041,15 +1192,22 @@ impl EditorApp {
                 {
                     for button in [egui::PointerButton::Primary, egui::PointerButton::Secondary] {
                         if ui.input(|i| i.pointer.button_pressed(button)) {
-                            if rectangle_only && button == egui::PointerButton::Secondary {
+                            let secondary_rectangle =
+                                rectangle_only && button == egui::PointerButton::Secondary;
+                            if secondary_rectangle {
                                 self.atlas_selection = Some((uid, vec![]));
-                                drag = None;
+                            }
+                            // TileRectAndClose still selects the dragged rectangle on release.
+                            drag = if secondary_rectangle
+                                && matches!(mode, AtlasPickerMode::Rectangle)
+                            {
+                                None
                             } else {
-                                drag = Some(AtlasDrag {
+                                Some(AtlasDrag {
                                     start: cell,
                                     button,
-                                });
-                            }
+                                })
+                            };
                         }
                     }
                 }
@@ -1092,14 +1250,14 @@ impl EditorApp {
                             .collect();
                         let modifiers = ui.input(|i| i.modifiers);
                         if rectangle_only {
-                            self.set_atlas_selection(uid, ids);
+                            picked = self.set_atlas_selection(uid, ids);
                         } else {
                             self.apply_atlas_mouse_selection(
                                 uid,
                                 ids,
                                 active.button == egui::PointerButton::Secondary,
                                 modifiers,
-                                self.panel.is_none(),
+                                self.panel.is_none() && !rule_picker,
                             );
                         }
                         drag = None;
@@ -1158,10 +1316,14 @@ impl EditorApp {
                 let selections = if let Some((selected_uid, ids)) = &self.atlas_selection
                     && *selected_uid == uid
                 {
-                    ids.iter()
-                        .filter(|id| **id >= 0 && **id < grid.columns * grid.rows)
-                        .map(|id| [*id % grid.columns.max(1), *id / grid.columns.max(1), 1, 1])
-                        .collect::<Vec<_>>()
+                    if rule_picker && rectangle_only && !ids.is_empty() {
+                        vec![self.tile_rect]
+                    } else {
+                        ids.iter()
+                            .filter(|id| **id >= 0 && **id < grid.columns * grid.rows)
+                            .map(|id| [*id % grid.columns.max(1), *id / grid.columns.max(1), 1, 1])
+                            .collect::<Vec<_>>()
+                    }
                 } else {
                     vec![self.tile_rect]
                 };
@@ -1180,28 +1342,44 @@ impl EditorApp {
                     ui.painter().rect_stroke(
                         target,
                         0.,
-                        Stroke::new(2_f32, theme::ACCENT),
+                        Stroke::new(
+                            if rule_picker { 3. } else { 2. },
+                            if rule_picker {
+                                Color32::from_rgb(153, 255, 153)
+                            } else {
+                                theme::ACCENT
+                            },
+                        ),
                         StrokeKind::Inside,
                     );
                 }
                 if let Some(pos) = response.hover_pos()
                     && let Some(cell) = grid.cell((pos - rect.min) / zoom)
                 {
-                    response.clone().on_hover_text(format!(
-                        "Tile #{}  ({}, {})",
-                        cell[0] + cell[1] * grid.columns,
-                        cell[0],
-                        cell[1]
+                    response.clone().on_hover_text(locale::format(
+                        ui,
+                        "Tile #{id}  ({x}, {y})",
+                        &[
+                            ("id", &(cell[0] + cell[1] * grid.columns).to_string()),
+                            ("x", &cell[0].to_string()),
+                            ("y", &cell[1].to_string()),
+                        ],
                     ));
                 }
             });
         ui.data_mut(|d| d.insert_temp(viewport_id, scroll.inner_rect));
-        if canvas.is_none() {
-            ui.small(format!(
-                "Tile #{} · {} × {} tiles",
-                self.tile_id, self.tile_rect[2], self.tile_rect[3]
+        if canvas.is_none() && !modal_picker {
+            ui.small(locale::format(
+                ui,
+                "Tile #{id} · {width} × {height} tiles",
+                &[
+                    ("id", &self.tile_id.to_string()),
+                    ("width", &self.tile_rect[2].to_string()),
+                    ("height", &self.tile_rect[3].to_string()),
+                ],
             ));
         }
+        picked
     }
 }
 pub(super) fn entity_allowed(entity: &Value, layer: &Value) -> bool {
@@ -1238,7 +1416,7 @@ fn project_files(dir: &std::path::Path) -> Vec<PathBuf> {
     paths.sort();
     paths
 }
-fn paint_tile(
+pub(super) fn paint_tile(
     ctx: &egui::Context,
     painter: &egui::Painter,
     rect: Rect,

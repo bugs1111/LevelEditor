@@ -97,6 +97,7 @@ impl EditorApp {
             .find(|d| d["uid"] == entity["defUid"])
             .unwrap();
         let color = canvas::entity_smart_color(project, &entity, definition, true);
+        let snapshot = self.capture_entity_render(key, self.layer);
         self.history
             .mark_entity_change(project, key, self.layer, &entity);
         let p = self.project.as_mut().unwrap();
@@ -112,6 +113,7 @@ impl EditorApp {
         };
         match result {
             Ok(()) => {
+                self.defer_entity_render(snapshot);
                 self.dirty = true;
                 self.chain_entity = None;
                 self.selection = None;
@@ -163,6 +165,8 @@ mod tests {
         let mut p = Project::new();
         p.add_layer("Actors", "Entities", 16).unwrap();
         let uid = p.add_entity_def("Actor", 16, 16).unwrap();
+        p.update_entity_definition(uid, &serde_json::json!({"pivotX":0.5,"pivotY":1}))
+            .unwrap();
         let key = p.level_keys()[0];
         if points {
             let f = p

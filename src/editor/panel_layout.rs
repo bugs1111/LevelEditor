@@ -1,8 +1,12 @@
 use super::*;
 use std::collections::BTreeMap;
 
+#[path = "external_enum_panel.rs"]
+mod external_enum_panel;
 #[path = "layer_settings.rs"]
 mod layer_settings;
+#[path = "rule_list.rs"]
+mod rule_list;
 
 #[path = "project_panel.rs"]
 mod project_panel;
@@ -10,6 +14,10 @@ mod project_panel;
 mod world_level_panel;
 
 const LIST_WIDTH: f32 = 250.;
+const TILESET_LIST_WIDTH: f32 = 300.;
+const FIELD_LIST_WIDTH: f32 = 200.;
+const FIELD_LIST_GAP: f32 = 8.;
+const FIELD_LABEL_WIDTH: f32 = 130.;
 const SOURCE_ORANGE: Color32 = Color32::from_rgb(235, 78, 0);
 const GROUP_BAR: Color32 = Color32::from_rgb(117, 130, 164);
 fn active_id() -> egui::Id {
@@ -31,32 +39,96 @@ fn title(panel: Panel) -> &'static str {
         Panel::Enums => "PROJECT ENUMS",
         Panel::Tilesets => "PROJECT TILESETS",
         Panel::Rules => "AUTO-LAYER RULES",
-        Panel::Fields => "CUSTOM FIELDS",
+        Panel::Fields => "LEVEL CUSTOM FIELDS",
         Panel::Project => "PROJECT SETTINGS",
         Panel::World => "WORLD",
         Panel::Level => "CURRENT LEVEL",
         Panel::Export => "PROJECT EXPORT",
-        Panel::Help => "HELP",
+        Panel::Help => "LDTK HELP",
         _ => "",
     }
 }
 fn image(panel: Panel) -> egui::ImageSource<'static> {
     match panel {
         Panel::Entities => egui::include_image!("../../assets/icons/entity.png"),
-        Panel::Layers | Panel::Rules => egui::include_image!("../../assets/icons/layer.png"),
+        Panel::Layers => egui::include_image!("../../assets/icons/layer.png"),
+        Panel::Rules => egui::include_image!("../../assets/icons/rule.svg"),
         Panel::Enums => egui::include_image!("../../assets/icons/enum.png"),
         Panel::Tilesets => egui::include_image!("../../assets/icons/tile.png"),
         Panel::World => egui::include_image!("../../assets/icons/world.svg"),
-        Panel::Level => egui::include_image!("../../assets/icons/level.svg"),
+        Panel::Level | Panel::Fields => egui::include_image!("../../assets/icons/level.svg"),
         Panel::Help => egui::include_image!("../../assets/icons/help.svg"),
         _ => egui::include_image!("../../assets/icons/projectSettings.png"),
     }
 }
+fn source_panel_header(
+    ui: &mut egui::Ui,
+    panel: Panel,
+    width: f32,
+    header_height: f32,
+    heading: &str,
+) -> bool {
+    let rules = panel == Panel::Rules;
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(width, header_height), Sense::hover());
+    ui.painter().rect_filled(
+        rect,
+        egui::CornerRadius {
+            nw: 4,
+            ne: 4,
+            sw: 0,
+            se: 0,
+        },
+        theme::LIGHT,
+    );
+    let icon_size = if rules { 22. } else { 40. };
+    let icon = egui::Image::new(image(panel)).fit_to_exact_size(Vec2::splat(icon_size));
+    let icon = if panel == Panel::Fields {
+        icon.tint(theme::ACCENT)
+    } else {
+        icon
+    };
+    ui.put(
+        Rect::from_min_size(
+            rect.min + egui::vec2(20., (header_height - icon_size) / 2.),
+            Vec2::splat(icon_size),
+        ),
+        icon,
+    );
+    ui.painter().text(
+        rect.min + egui::vec2(if rules { 54. } else { 72. }, header_height / 2.),
+        Align2::LEFT_CENTER,
+        heading,
+        FontId::new(20., egui::FontFamily::Name("panel-title".into())),
+        Color32::WHITE,
+    );
+    ui.put(
+        Rect::from_min_size(
+            egui::pos2(
+                rect.right() - if rules { 52. } else { 57. },
+                rect.top() + 8.,
+            ),
+            Vec2::splat(if rules { 31. } else { 36. }),
+        ),
+        egui::Button::new(
+            RichText::new("×")
+                .size(if rules || panel == Panel::Help {
+                    24.
+                } else {
+                    28.
+                })
+                .color(Color32::WHITE),
+        )
+        .fill(theme::LIGHT)
+        .stroke(Stroke::new(1_f32, theme::DARK)),
+    )
+    .clicked()
+}
+
 fn orange(ui: &mut egui::Ui, label: &str, size: Vec2) -> egui::Response {
     source_controls::add_sized_button(
         ui,
         size,
-        egui::Button::new(RichText::new(label).color(Color32::WHITE))
+        egui::Button::new(RichText::new(locale::tr(ui, label)).color(Color32::WHITE))
             .fill(SOURCE_ORANGE)
             .corner_radius(2.),
     )
@@ -114,14 +186,25 @@ fn row(ui: &mut egui::Ui, label: &str, body: impl FnOnce(&mut egui::Ui)) {
     row_width(ui, label, 124., body);
 }
 fn row_width(ui: &mut egui::Ui, label: &str, label_width: f32, body: impl FnOnce(&mut egui::Ui)) {
+    row_width_with_label(
+        ui,
+        label_width,
+        |ui| source_controls::property_label_with_width(ui, label, label, label_width),
+        body,
+    );
+}
+fn row_width_with_label(
+    ui: &mut egui::Ui,
+    label_width: f32,
+    label: impl FnOnce(&mut egui::Ui),
+    body: impl FnOnce(&mut egui::Ui),
+) {
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 0.;
         ui.allocate_ui_with_layout(
             egui::vec2(label_width, 30.),
             egui::Layout::right_to_left(egui::Align::Center),
-            |ui| {
-                source_controls::property_label(ui, label, label);
-            },
+            label,
         );
         ui.add_space(10.);
         ui.allocate_ui_with_layout(
@@ -138,38 +221,6 @@ fn source_checkbox(ui: &mut egui::Ui, value: &mut bool, label: &str) -> egui::Re
     source_controls::checkbox(ui, value, label)
 }
 
-fn source_form(ui: &mut egui::Ui, value: &Value, properties: &[P]) -> Value {
-    let mut patch = json!({});
-    let mut start = 0;
-    for (index, property) in properties.iter().enumerate() {
-        if matches!(property.2, W::Bool) {
-            if start < index {
-                patch.as_object_mut().unwrap().extend(
-                    form(ui, value, &properties[start..index])
-                        .as_object()
-                        .unwrap()
-                        .clone(),
-                );
-            }
-            row(ui, property.1, |ui| {
-                let mut selected = value[property.0].as_bool().unwrap_or(false);
-                if source_checkbox(ui, &mut selected, "").changed() {
-                    patch[property.0] = json!(selected);
-                }
-            });
-            start = index + 1;
-        }
-    }
-    if start < properties.len() {
-        patch.as_object_mut().unwrap().extend(
-            form(ui, value, &properties[start..])
-                .as_object()
-                .unwrap()
-                .clone(),
-        );
-    }
-    patch
-}
 fn source_text(
     ui: &mut egui::Ui,
     key: impl std::hash::Hash,
@@ -193,7 +244,7 @@ fn source_text(
 }
 fn section(
     ui: &mut egui::Ui,
-    title: &str,
+    title: impl Into<egui::WidgetText>,
     mut open: bool,
     body: impl FnOnce(&mut egui::Ui),
 ) -> bool {
@@ -222,31 +273,26 @@ fn section(
                     theme::LIGHT
                 },
             );
-            let arrow = if open {
-                [
-                    egui::vec2(7., -3.),
-                    egui::vec2(12., 2.),
-                    egui::vec2(17., -3.),
-                ]
+            let icon = if open {
+                egui::include_image!("../../assets/icons/expanded.svg")
             } else {
-                [egui::vec2(9., -5.), egui::vec2(14., 0.), egui::vec2(9., 5.)]
+                egui::include_image!("../../assets/icons/collapsed.svg")
             };
-            for line in arrow.windows(2) {
-                ui.painter().line_segment(
-                    [rect.left_center() + line[0], rect.left_center() + line[1]],
-                    Stroke::new(2_f32, Color32::WHITE),
-                );
-            }
-            ui.painter().text(
-                rect.left_center() + egui::vec2(24., 0.),
-                Align2::LEFT_CENTER,
+            egui::Image::new(icon).paint_at(
+                ui,
+                Rect::from_center_size(rect.left_center() + egui::vec2(12., 0.), Vec2::splat(24.)),
+            );
+            let ink = if open || hovered { Color32::BLACK } else { theme::ACCENT };
+            let title = locale::widget(ui, title.into()).color(ink).into_galley(
+                ui,
+                Some(egui::TextWrapMode::Truncate),
+                (rect.width() - 24.).max(0.),
+                FontId::new(17.333, egui::FontFamily::Name("panel-title".into())),
+            );
+            ui.painter().galley(
+                rect.left_center() + egui::vec2(24., -title.size().y / 2.),
                 title,
-                FontId::new(17., egui::FontFamily::Name("panel-title".into())),
-                if open || hovered {
-                    Color32::BLACK
-                } else {
-                    theme::ACCENT
-                },
+                ink,
             );
             if response.clicked() {
                 open = !open;
@@ -273,7 +319,16 @@ impl EditorApp {
             .data_mut(|d| d.get_temp::<bool>(active_id()))
             .unwrap_or(false)
     }
+    #[cfg(test)]
     pub(in crate::app) fn source_panel(&mut self, ctx: &egui::Context, panel: Panel) -> bool {
+        self.source_panel_with_canvas_input(ctx, panel, false)
+    }
+    pub(in crate::app) fn source_panel_with_canvas_input(
+        &mut self,
+        ctx: &egui::Context,
+        panel: Panel,
+        level_point_picker_was_open: bool,
+    ) -> bool {
         self.prepare_color_context(ctx);
         if !matches!(
             panel,
@@ -309,15 +364,8 @@ impl EditorApp {
                     .as_array()
                     .is_some_and(|a| a.iter().any(|d| d["uid"].as_i64() == self.definition_uid));
                 if !internal && !external {
-                    self.definition_uid = defs
-                        .first()
-                        .and_then(|d| d["uid"].as_i64())
-                        .or_else(|| project.json["defs"]["externalEnums"][0]["uid"].as_i64());
+                    self.definition_uid = defs.first().and_then(|d| d["uid"].as_i64());
                 }
-                let external = project.json["defs"]["externalEnums"]
-                    .as_array()
-                    .is_some_and(|a| a.iter().any(|d| d["uid"].as_i64() == self.definition_uid));
-                ctx.data_mut(|d| d.insert_temp(egui::Id::new("source-external-enum"), external));
             } else if !defs
                 .iter()
                 .filter(allowed)
@@ -337,9 +385,30 @@ impl EditorApp {
         }
         let screen = ctx.content_rect();
         let width = source_panel_width(panel).min(screen.width());
+        let rules = panel == Panel::Rules;
+        let heading = if rules {
+            self.project
+                .as_ref()
+                .and_then(|p| p.layer_def(self.definition_uid?))
+                .map(|def| {
+                    let name = text(def, "identifier", "").to_uppercase();
+                    locale::format_ctx(ctx, "RULES: {name}", &[("name", &name)])
+                })
+                .unwrap_or_else(|| locale::tr_ctx(ctx, "RULES").to_owned())
+        } else {
+            locale::tr_ctx(ctx, title(panel)).to_owned()
+        };
+        let header_height = if rules { 46. } else { 53. };
         let single_column = matches!(panel, Panel::Project | Panel::World | Panel::Level);
         let height = (screen.height() - 34.).max(100.);
-        let body_height = (height - 69.).max(40.);
+        let body_top = if rules {
+            17
+        } else if panel == Panel::Level {
+            24
+        } else {
+            16
+        };
+        let body_height = (height - header_height - f32::from(body_top)).max(40.);
         let outside_click = ctx.input(|input| {
             input
                 .pointer
@@ -347,7 +416,9 @@ impl EditorApp {
                 .then(|| input.pointer.interact_pos())
                 .flatten()
         });
-        let mut close = panel != Panel::World
+        let mut close = !rules
+            && panel != Panel::World
+            && !(panel == Panel::Level && level_point_picker_was_open)
             && outside_click.is_some_and(|pos| {
                 pos.x > width
                     && pos.y >= 34.
@@ -355,11 +426,9 @@ impl EditorApp {
                         .layer_id_at(pos)
                         .is_none_or(|layer| layer.order == egui::Order::Background)
             });
-        let dimmer = ctx.layer_painter(egui::LayerId::new(
-            egui::Order::Foreground,
-            egui::Id::new("source-panel-dimmer"),
-        ));
-        if panel != Panel::World {
+        let panel_id = egui::Id::new("source-definition-panel");
+        let dimmer = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, panel_id));
+        if !rules && panel != Panel::World {
             dimmer.rect_filled(
                 Rect::from_min_max(egui::pos2(width, 34.), screen.max),
                 0.,
@@ -386,7 +455,7 @@ impl EditorApp {
                 );
             }
         }
-        egui::Area::new(egui::Id::new("source-definition-panel"))
+        egui::Area::new(panel_id)
             .order(egui::Order::Foreground)
             .fixed_pos(egui::pos2(0., 34.))
             .constrain(false)
@@ -408,80 +477,121 @@ impl EditorApp {
                         theme::MEDIUM
                     })
                     .corner_radius(4.)
+                    .shadow(if rules || panel == Panel::Help {
+                        egui::epaint::Shadow {
+                            offset: [8, 0],
+                            blur: 0,
+                            spread: 0,
+                            color: theme::DARK,
+                        }
+                    } else {
+                        egui::epaint::Shadow::NONE
+                    })
                     .show(ui, |ui| {
-                        let (rect, _) =
-                            ui.allocate_exact_size(egui::vec2(width, 53.), Sense::hover());
-                        ui.painter().rect_filled(
-                            rect,
-                            egui::CornerRadius {
-                                nw: 4,
-                                ne: 4,
-                                sw: 0,
-                                se: 0,
-                            },
-                            theme::LIGHT,
-                        );
-                        ui.put(
-                            Rect::from_min_size(rect.min + egui::vec2(20., 6.5), Vec2::splat(40.)),
-                            egui::Image::new(image(panel)).fit_to_exact_size(Vec2::splat(40.)),
-                        );
-                        ui.painter().text(
-                            rect.min + egui::vec2(72., 26.5),
-                            Align2::LEFT_CENTER,
-                            title(panel),
-                            FontId::new(20., egui::FontFamily::Name("panel-title".into())),
-                            Color32::WHITE,
-                        );
-                        close |= ui
-                            .put(
-                                Rect::from_min_size(
-                                    egui::pos2(rect.right() - 57., rect.top() + 8.),
-                                    Vec2::splat(36.),
-                                ),
-                                egui::Button::new(
-                                    RichText::new("×").size(28.).color(Color32::WHITE),
-                                )
-                                .fill(theme::LIGHT)
-                                .stroke(Stroke::new(1_f32, theme::DARK)),
-                            )
-                            .clicked();
+                        if panel == Panel::Help {
+                            ui.set_height(height);
+                            ui.spacing_mut().scroll = egui::style::ScrollStyle {
+                                bar_width: 10.,
+                                bar_inner_margin: 0.,
+                                bar_outer_margin: 0.,
+                                ..egui::style::ScrollStyle::solid()
+                            };
+                            egui::ScrollArea::vertical()
+                                .id_salt("source-help-panel")
+                                .max_height(height)
+                                .auto_shrink([false, false])
+                                .show(ui, |ui| {
+                                    let width = (width - 10.).max(80.);
+                                    ui.set_width(width);
+                                    close |= source_panel_header(
+                                        ui,
+                                        panel,
+                                        width,
+                                        header_height,
+                                        &heading,
+                                    );
+                                    egui::Frame::new()
+                                        .inner_margin(egui::Margin {
+                                            left: 20,
+                                            right: 20,
+                                            top: 40,
+                                            bottom: 20,
+                                        })
+                                        .show(ui, |ui| {
+                                            ui.set_width((width - 40.).max(80.));
+                                            self.help_contents(ui);
+                                        });
+                                });
+                            return;
+                        }
+                        close |= source_panel_header(ui, panel, width, header_height, &heading);
+                        let world_panel = panel == Panel::World;
                         egui::Frame::new()
-                            .inner_margin(egui::Margin {
-                                left: if panel == Panel::World { 16 } else { 20 },
-                                right: if panel == Panel::World { 16 } else { 20 },
-                                top: 16,
-                                bottom: 0,
+                            .inner_margin(if world_panel {
+                                egui::Margin::ZERO
+                            } else {
+                                egui::Margin {
+                                    left: if rules { 8 } else { 20 },
+                                    right: if rules { 8 } else { 20 },
+                                    top: body_top,
+                                    bottom: 0,
+                                }
                             })
                             .show(ui, |ui| {
-                                if panel == Panel::Help {
-                                    ui.set_width((width - 40.).max(80.));
-                                    egui::ScrollArea::vertical()
-                                        .id_salt("source-help-body")
-                                        .max_height(body_height)
-                                        .auto_shrink([false, false])
-                                        .show(ui, |ui| self.help_contents(ui));
+                                if rules {
+                                    ui.set_width((width - 16.).max(0.));
+                                    self.rule_list(ui, body_height);
                                     return;
                                 }
                                 if single_column {
-                                    let inner_width =
-                                        width - if panel == Panel::World { 32. } else { 40. };
+                                    let inner_width = width - if world_panel { 0. } else { 40. };
                                     ui.set_width(inner_width);
                                     ui.set_max_width(inner_width);
+                                    let scroll_height = if world_panel {
+                                        ui.spacing_mut().scroll = egui::style::ScrollStyle {
+                                            bar_width: 10.,
+                                            bar_inner_margin: 0.,
+                                            bar_outer_margin: 0.,
+                                            ..egui::style::ScrollStyle::solid()
+                                        };
+                                        ui.visuals_mut().clip_rect_margin = 0.;
+                                        height - 53.
+                                    } else {
+                                        body_height
+                                    };
+                                    let mut world_viewport = world_panel.then(|| {
+                                        // Keep animated scrollbar width inside the fixed panel.
+                                        let (_, rect) = ui
+                                            .allocate_space(egui::vec2(inner_width, scroll_height));
+                                        let mut viewport =
+                                            ui.new_child(egui::UiBuilder::new().max_rect(rect));
+                                        viewport
+                                            .set_clip_rect(rect.intersect(viewport.clip_rect()));
+                                        viewport
+                                    });
+                                    let ui = world_viewport.as_mut().unwrap_or(ui);
                                     ui.ctx()
                                         .data_mut(|data| data.insert_temp(active_id(), true));
                                     egui::ScrollArea::vertical()
                                         .id_salt(("source-panel-body", title(panel)))
-                                        .max_height(body_height)
+                                        .max_height(scroll_height)
                                         .auto_shrink([false, false])
                                         .show(ui, |ui| {
-                                            let content_width = ui.available_width();
-                                            ui.set_width(content_width);
-                                            ui.set_max_width(content_width);
-                                            match panel {
-                                                Panel::World => self.source_world_form(ui),
-                                                Panel::Level => self.source_level_form(ui),
-                                                Panel::Project => self.source_project_form(ui),
-                                                _ => unreachable!(),
+                                            let mut body = |ui: &mut egui::Ui| {
+                                                let content_width = ui.available_width();
+                                                ui.set_width(content_width);
+                                                ui.set_max_width(content_width);
+                                                match panel {
+                                                    Panel::World => self.source_world_form(ui),
+                                                    Panel::Level => self.source_level_form(ui),
+                                                    Panel::Project => self.source_project_form(ui),
+                                                    _ => unreachable!(),
+                                                }
+                                            };
+                                            if world_panel {
+                                                egui::Frame::new().inner_margin(16).show(ui, body);
+                                            } else {
+                                                body(ui);
                                             }
                                         });
                                     ui.ctx()
@@ -489,19 +599,27 @@ impl EditorApp {
                                     return;
                                 }
                                 ui.horizontal_top(|ui| {
+                                    let (list_width, gap) = match panel {
+                                        Panel::Tilesets => {
+                                            (TILESET_LIST_WIDTH.min(width * 0.35), 16.)
+                                        }
+                                        Panel::Fields => {
+                                            (FIELD_LIST_WIDTH.min(width * 0.28), FIELD_LIST_GAP)
+                                        }
+                                        _ => (LIST_WIDTH.min(width * 0.28), 16.),
+                                    };
                                     ui.allocate_ui_with_layout(
-                                        egui::vec2(LIST_WIDTH.min(width * 0.28), body_height),
+                                        egui::vec2(list_width, body_height),
                                         egui::Layout::top_down(egui::Align::Min),
                                         |ui| {
-                                            ui.set_width(LIST_WIDTH.min(width * 0.28));
-                                            ui.set_max_width(LIST_WIDTH.min(width * 0.28));
+                                            ui.set_width(list_width);
+                                            ui.set_max_width(list_width);
                                             ui.set_min_height(body_height);
                                             self.source_sidebar(ui, panel, body_height);
                                         },
                                     );
-                                    ui.add_space(16.);
-                                    let right =
-                                        (width - 40. - LIST_WIDTH.min(width * 0.28) - 16.).max(80.);
+                                    ui.add_space(gap);
+                                    let right = (width - 40. - list_width - gap).max(80.);
                                     ui.allocate_ui_with_layout(
                                         egui::vec2(right, body_height),
                                         egui::Layout::top_down(egui::Align::Min),
@@ -518,17 +636,8 @@ impl EditorApp {
                                                     ui.set_width((right - 10.).max(60.));
                                                     if panel == Panel::Entities {
                                                         self.source_entity_form(ui);
-                                                    } else if panel == Panel::Enums
-                                                        && ui
-                                                            .ctx()
-                                                            .data_mut(|d| {
-                                                                d.get_temp::<bool>(egui::Id::new(
-                                                                    "source-external-enum",
-                                                                ))
-                                                            })
-                                                            .unwrap_or(false)
-                                                    {
-                                                        self.source_external_enum_form(ui);
+                                                    } else if panel == Panel::Enums {
+                                                        self.source_enum_form(ui);
                                                     } else {
                                                         self.properties(ui, panel);
                                                     }
@@ -542,41 +651,61 @@ impl EditorApp {
                     });
             });
         self.rule_wizard(ctx);
+        if rules {
+            self.rule_detail_dialog(ctx);
+        }
         self.entity_transfer_dialog(ctx);
         self.group_remap_dialog(ctx);
         self.group_policy_dialog(ctx);
         self.source_field_type_picker(ctx);
         self.source_layer_type_picker(ctx);
         if close {
-            self.show_panel(None);
+            self.dismiss_panel();
         }
         true
     }
     fn source_sidebar(&mut self, ui: &mut egui::Ui, panel: Panel, height: f32) {
-        ui.set_width(LIST_WIDTH.min(ui.available_width()));
-        ui.set_max_width(LIST_WIDTH);
+        let width = match panel {
+            Panel::Tilesets => TILESET_LIST_WIDTH,
+            Panel::Fields => FIELD_LIST_WIDTH,
+            _ => LIST_WIDTH,
+        };
+        ui.set_width(width.min(ui.available_width()));
+        ui.set_max_width(width);
         ui.spacing_mut().item_spacing = egui::vec2(4., 4.);
         if panel == Panel::Rules {
-            self.source_rule_list(ui, height);
+            self.rule_list(ui, height);
             return;
         }
         if let Some(kind) = panel_kind(panel) {
+            if panel == Panel::Enums {
+                ui.add_space(2.);
+            }
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 2.;
-                if orange(
-                    ui,
-                    "⊞",
-                    egui::vec2(
-                        if panel == Panel::Entities {
-                            165.
-                        } else {
-                            ui.available_width()
-                        },
-                        41.,
-                    ),
-                )
-                .on_hover_text("Create definition")
-                .clicked()
+                let create = if panel == Panel::Enums {
+                    let width = ui.available_width() - 72.;
+                    source_controls::add_sized_button(
+                        ui,
+                        [width, 43.],
+                        egui::Button::image(
+                            egui::Image::new(egui::include_image!("../../assets/icons/add.svg"))
+                                .fit_to_exact_size(Vec2::splat(20.)),
+                        )
+                        .fill(SOURCE_ORANGE)
+                        .corner_radius(2.),
+                    )
+                } else {
+                    let width = if panel == Panel::Entities {
+                        165.
+                    } else {
+                        ui.available_width()
+                    };
+                    orange(ui, "⊞", egui::vec2(width, 41.))
+                };
+                if create
+                    .on_hover_text(locale::tr(ui, "Create definition"))
+                    .clicked()
                 {
                     if panel == Panel::Layers {
                         ui.ctx().data_mut(|d| {
@@ -592,22 +721,30 @@ impl EditorApp {
                         ui.spacing_mut().button_padding = egui::vec2(6., 10.);
                         ui.visuals_mut().widgets.inactive.weak_bg_fill = SOURCE_ORANGE;
                         ui.visuals_mut().widgets.inactive.bg_fill = SOURCE_ORANGE;
-                        ui.menu_button(RichText::new("PRESETS").color(Color32::WHITE), |ui| {
-                            if source_controls::button(ui, "Rectangle region").clicked() {
-                                self.source_create_definition("entities", Some(false));
-                                ui.close();
-                            }
-                            if source_controls::button(ui, "Circle region").clicked() {
-                                self.source_create_definition("entities", Some(true));
-                                ui.close();
-                            }
-                        });
+                        ui.menu_button(
+                            RichText::new(locale::tr(ui, "PRESETS")).color(Color32::WHITE),
+                            |ui| {
+                                if source_controls::button(ui, "Rectangle region").clicked() {
+                                    self.source_create_definition("entities", Some(false));
+                                    ui.close();
+                                }
+                                if source_controls::button(ui, "Circle region").clicked() {
+                                    self.source_create_definition("entities", Some(true));
+                                    ui.close();
+                                }
+                            },
+                        );
+                    });
+                } else if panel == Panel::Enums {
+                    ui.scope(|ui| {
+                        ui.spacing_mut().interact_size = egui::vec2(70., 43.);
+                        ui.spacing_mut().button_padding = egui::vec2(8., 6.);
+                        ui.visuals_mut().widgets.inactive.weak_bg_fill = SOURCE_ORANGE;
+                        ui.visuals_mut().widgets.inactive.bg_fill = SOURCE_ORANGE;
+                        self.import_enum_menu(ui, locale::tr(ui, "IMPORT"));
                     });
                 }
             });
-            if panel == Panel::Enums {
-                self.import_enum_menu(ui);
-            }
             let filter_id = ui.make_persistent_id(("source-definition-search", kind));
             let mut filter = ui
                 .ctx()
@@ -627,7 +764,7 @@ impl EditorApp {
                         ui.add(
                             egui::TextEdit::singleline(&mut filter)
                                 .frame(false)
-                                .hint_text("Search…")
+                                .hint_text(locale::tr(ui, "Search…"))
                                 .desired_width(ui.available_width()),
                         );
                     });
@@ -675,42 +812,52 @@ impl EditorApp {
                     }
                 }
             }
-            egui::ScrollArea::vertical()
-                .id_salt(("source-definition-list", kind))
-                .max_height((height - 88.).max(40.))
-                .auto_shrink([false, false])
-                .show(ui, |ui| {
-                    for (name, definitions) in groups {
-                        ui.set_width(LIST_WIDTH);
-                        self.source_definition_group(ui, kind, &name, &definitions, false);
-                    }
-                    if panel == Panel::Enums {
-                        let external = self
-                            .project
-                            .as_ref()
-                            .and_then(|p| p.json["defs"]["externalEnums"].as_array())
-                            .cloned()
-                            .unwrap_or_default();
-                        let mut sources = BTreeMap::<String, Vec<Value>>::new();
-                        for def in external {
-                            if text(&def, "identifier", "")
-                                .to_lowercase()
-                                .contains(&filter.to_lowercase())
-                            {
-                                sources
-                                    .entry(
-                                        text(&def, "externalRelPath", "External enums").to_owned(),
-                                    )
-                                    .or_default()
-                                    .push(def);
+            let frame = if panel == Panel::Enums {
+                egui::Frame::new()
+                    .fill(theme::DARK)
+                    .stroke(Stroke::new(1., theme::LIGHT))
+                    .inner_margin(4)
+            } else {
+                egui::Frame::NONE
+            };
+            frame.show(ui, |ui| {
+                egui::ScrollArea::vertical()
+                    .id_salt(("source-definition-list", kind))
+                    .max_height((height - if panel == Panel::Enums { 98. } else { 88. }).max(40.))
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        for (name, definitions) in groups {
+                            ui.set_width(width.min(ui.available_width()));
+                            self.source_definition_group(ui, kind, &name, &definitions);
+                        }
+                        if panel == Panel::Enums {
+                            let external = self
+                                .project
+                                .as_ref()
+                                .and_then(|p| p.json["defs"]["externalEnums"].as_array())
+                                .cloned()
+                                .unwrap_or_default();
+                            let mut sources = BTreeMap::<String, Vec<Value>>::new();
+                            for def in external {
+                                if text(&def, "identifier", "")
+                                    .to_lowercase()
+                                    .contains(&filter.to_lowercase())
+                                {
+                                    sources
+                                        .entry(
+                                            text(&def, "externalRelPath", "External enums")
+                                                .to_owned(),
+                                        )
+                                        .or_default()
+                                        .push(def);
+                                }
+                            }
+                            for (path, defs) in sources {
+                                self.source_external_enum_group(ui, &path, &defs);
                             }
                         }
-                        for (path, defs) in sources {
-                            let name = path.rsplit(['/', '\\']).next().unwrap_or(&path);
-                            self.source_definition_group(ui, "externalEnums", name, &defs, true);
-                        }
-                    }
-                });
+                    })
+            });
         } else if panel == Panel::Fields {
             self.source_field_list(ui, self.field_owner, height);
         } else {
@@ -728,7 +875,7 @@ impl EditorApp {
                 if source_controls::add_sized_button(
                     ui,
                     [ui.available_width(), 36.],
-                    egui::Button::new(label).selected(panel == target),
+                    egui::Button::new(locale::tr(ui, label)).selected(panel == target),
                 )
                 .clicked()
                 {
@@ -767,9 +914,8 @@ impl EditorApp {
         kind: &str,
         name: &str,
         definitions: &[Value],
-        external: bool,
     ) {
-        ui.set_width(LIST_WIDTH);
+        ui.set_width(ui.available_width());
         egui::Frame::new()
             .fill(theme::DARK)
             .stroke(Stroke::new(1_f32, theme::LIGHT))
@@ -790,35 +936,48 @@ impl EditorApp {
                     source_kind,
                     if name == "Other" { "null" } else { name }
                 );
-                let mut open = self.settings.ui_state_int(&key, None, 1) != 0;
-                let (rect, response) =
-                    ui.allocate_exact_size(egui::vec2(ui.available_width(), 20.), Sense::click());
-                ui.painter().rect_filled(rect, 0., GROUP_BAR);
-                let points = if open {
-                    [
-                        egui::vec2(7., -3.),
-                        egui::vec2(12., 2.),
-                        egui::vec2(17., -3.),
-                    ]
-                } else {
-                    [egui::vec2(9., -5.), egui::vec2(14., 0.), egui::vec2(9., 5.)]
-                };
-                for line in points.windows(2) {
-                    ui.painter().line_segment(
-                        [rect.left_center() + line[0], rect.left_center() + line[1]],
-                        Stroke::new(2_f32, Color32::WHITE),
+                let show_header = kind != "layers" || name != kind;
+                let mut open = !show_header || self.settings.ui_state_int(&key, None, 1) != 0;
+                if show_header {
+                    let (rect, response) = ui
+                        .allocate_exact_size(egui::vec2(ui.available_width(), 20.), Sense::click());
+                    ui.painter().rect_filled(rect, 0., GROUP_BAR);
+                    let points = if open {
+                        [
+                            egui::vec2(7., -3.),
+                            egui::vec2(12., 2.),
+                            egui::vec2(17., -3.),
+                        ]
+                    } else {
+                        [egui::vec2(9., -5.), egui::vec2(14., 0.), egui::vec2(9., 5.)]
+                    };
+                    for line in points.windows(2) {
+                        ui.painter().line_segment(
+                            [rect.left_center() + line[0], rect.left_center() + line[1]],
+                            Stroke::new(2_f32, Color32::WHITE),
+                        );
+                    }
+                    let heading = if name == "Other"
+                        && definitions.iter().all(|def| {
+                            def["tags"]
+                                .as_array()
+                                .is_none_or(|tags| tags.iter().all(|tag| tag != name))
+                        }) {
+                        locale::tr(ui, name)
+                    } else {
+                        name
+                    };
+                    ui.painter().text(
+                        rect.left_center() + egui::vec2(24., 0.),
+                        Align2::LEFT_CENTER,
+                        heading.to_uppercase(),
+                        FontId::new(14., egui::FontFamily::Name("panel-title".into())),
+                        theme::ACCENT,
                     );
-                }
-                ui.painter().text(
-                    rect.left_center() + egui::vec2(24., 0.),
-                    Align2::LEFT_CENTER,
-                    name.to_uppercase(),
-                    FontId::new(14., egui::FontFamily::Name("panel-title".into())),
-                    theme::ACCENT,
-                );
-                if response.clicked() {
-                    open = !open;
-                    self.settings.set_ui_state_int(&key, None, i64::from(open));
+                    if response.clicked() {
+                        open = !open;
+                        self.settings.set_ui_state_int(&key, None, i64::from(open));
+                    }
                 }
                 if open {
                     egui::Frame::new()
@@ -827,9 +986,17 @@ impl EditorApp {
                             for def in definitions {
                                 let uid = def["uid"].as_i64().unwrap_or(-1);
                                 let selected = self.definition_uid == Some(uid);
-                                let color = theme::color(text(def, "color", "#687487"));
+                                let color_key = if kind == "layers" { "uiColor" } else { "color" };
+                                let color = theme::color(text(def, color_key, "#687487"));
                                 let fill = if selected {
-                                    tint(color, Color32::WHITE, 0.65)
+                                    if kind == "layers" {
+                                        def["uiColor"]
+                                            .as_str()
+                                            .map(theme::color)
+                                            .unwrap_or(theme::ACCENT)
+                                    } else {
+                                        tint(color, Color32::WHITE, 0.65)
+                                    }
                                 } else {
                                     tint(theme::MEDIUM, color, 0.22)
                                 };
@@ -844,9 +1011,7 @@ impl EditorApp {
                                                 )
                                                 .sense(Sense::drag()),
                                             );
-                                            if !external {
-                                                handle.dnd_set_drag_payload((kind.to_owned(), uid));
-                                            }
+                                            handle.dnd_set_drag_payload((kind.to_owned(), uid));
                                             let (rect, _) = ui.allocate_exact_size(
                                                 Vec2::splat(32.),
                                                 Sense::hover(),
@@ -887,76 +1052,39 @@ impl EditorApp {
                                                     self.field_owner = Some(uid);
                                                     self.field_uid = None;
                                                 }
-                                                ui.ctx().data_mut(|d| {
-                                                    d.insert_temp(
-                                                        egui::Id::new("source-external-enum"),
-                                                        external,
-                                                    )
-                                                });
                                             }
                                             source_menu(ui, |ui| {
-                                                if external {
-                                                    if source_controls::button(ui, "Sync source…")
-                                                        .clicked()
-                                                    {
-                                                        let base = self
-                                                            .project
-                                                            .as_ref()
-                                                            .unwrap()
-                                                            .path
-                                                            .as_ref()
-                                                            .and_then(|p| p.parent())
-                                                            .unwrap_or(std::path::Path::new("."));
-                                                        self.begin_enum_sync(
-                                                            ui.ctx(),
-                                                            base.join(text(
-                                                                def,
-                                                                "externalRelPath",
-                                                                "",
-                                                            )),
-                                                        );
-                                                        ui.close();
-                                                    }
-                                                } else {
-                                                    self.clipboard_menu(
-                                                        ui,
-                                                        ClipTarget::Definition {
-                                                            kind: kind.to_owned(),
-                                                            uid: Some(uid),
-                                                        },
+                                                self.clipboard_menu(
+                                                    ui,
+                                                    ClipTarget::Definition {
+                                                        kind: kind.to_owned(),
+                                                        uid: Some(uid),
+                                                    },
+                                                );
+                                                if source_controls::button(ui, "Move up").clicked()
+                                                {
+                                                    let index = self.definition_index(kind, uid);
+                                                    self.source_reorder_definition(
+                                                        kind,
+                                                        uid,
+                                                        index.saturating_sub(1),
                                                     );
-                                                    if source_controls::button(ui, "Move up")
-                                                        .clicked()
-                                                    {
-                                                        let index =
-                                                            self.definition_index(kind, uid);
-                                                        self.source_reorder_definition(
-                                                            kind,
-                                                            uid,
-                                                            index.saturating_sub(1),
-                                                        );
-                                                        ui.close();
-                                                    }
-                                                    if source_controls::button(ui, "Move down")
-                                                        .clicked()
-                                                    {
-                                                        let index =
-                                                            self.definition_index(kind, uid);
-                                                        let count = self
-                                                            .project
-                                                            .as_ref()
-                                                            .unwrap()
-                                                            .json["defs"][kind]
-                                                            .as_array()
-                                                            .map_or(0, Vec::len);
-                                                        self.source_reorder_definition(
-                                                            kind,
-                                                            uid,
-                                                            (index + 1)
-                                                                .min(count.saturating_sub(1)),
-                                                        );
-                                                        ui.close();
-                                                    }
+                                                    ui.close();
+                                                }
+                                                if source_controls::button(ui, "Move down")
+                                                    .clicked()
+                                                {
+                                                    let index = self.definition_index(kind, uid);
+                                                    let count = self.project.as_ref().unwrap().json
+                                                        ["defs"][kind]
+                                                        .as_array()
+                                                        .map_or(0, Vec::len);
+                                                    self.source_reorder_definition(
+                                                        kind,
+                                                        uid,
+                                                        (index + 1).min(count.saturating_sub(1)),
+                                                    );
+                                                    ui.close();
                                                 }
                                             });
                                         });
@@ -1003,6 +1131,11 @@ impl EditorApp {
         rect: Rect,
         color: Color32,
     ) {
+        if kind == "layers" {
+            egui::Image::new(layer_settings::layer_type_icon(text(def, "type", "")))
+                .paint_at(ui, Rect::from_center_size(rect.center(), Vec2::splat(24.)));
+            return;
+        }
         let tile = if def["uiTileRect"].is_object() {
             &def["uiTileRect"]
         } else {
@@ -1117,57 +1250,6 @@ impl EditorApp {
             }
         }
     }
-    fn source_external_enum_form(&mut self, ui: &mut egui::Ui) {
-        let Some(def) = self
-            .project
-            .as_ref()
-            .and_then(|p| p.json["defs"]["externalEnums"].as_array())
-            .and_then(|a| a.iter().find(|d| d["uid"].as_i64() == self.definition_uid))
-            .cloned()
-        else {
-            return;
-        };
-        ui.heading(text(&def, "identifier", "External enum"));
-        ui.label(text(&def, "externalRelPath", ""));
-        if source_controls::button(ui, "Synchronize source…").clicked() {
-            let base = self
-                .project
-                .as_ref()
-                .unwrap()
-                .path
-                .as_ref()
-                .and_then(|p| p.parent())
-                .unwrap_or(std::path::Path::new("."));
-            self.begin_enum_sync(ui.ctx(), base.join(text(&def, "externalRelPath", "")));
-        }
-        let remove_id = egui::Id::new(("remove-external-source", def["uid"].as_i64()));
-        if source_controls::button(ui, "Remove this external source…").clicked() {
-            ui.ctx().data_mut(|d| d.insert_temp(remove_id, true));
-        }
-        if ui
-            .ctx()
-            .data_mut(|d| d.get_temp::<bool>(remove_id))
-            .unwrap_or(false)
-        {
-            let mut remove = false;
-            let mut cancel = false;
-            egui::Modal::new(remove_id).show(ui.ctx(),|ui|{ui.heading("Remove external enum source");ui.label("Removing this source removes all enums imported from the same file and their custom fields in every level. The source file stays on disk.");ui.horizontal(|ui|{if source_controls::button(ui,"Remove all enums from this source").clicked(){remove=true;}
-if source_controls::button(ui,"Cancel").clicked(){cancel=true;}});});
-            if remove {
-                let rel = text(&def, "externalRelPath", "");
-                self.edit_recoverable("External source enums deleted", |p| {
-                    p.remove_external_enum_source(rel)
-                });
-                self.definition_uid = None;
-            }
-            if remove || cancel {
-                ui.ctx().data_mut(|d| d.remove::<bool>(remove_id));
-            }
-        }
-        for value in def["values"].as_array().into_iter().flatten() {
-            ui.label(text(value, "id", ""));
-        }
-    }
     fn source_entity_form(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
         let key = ui.make_persistent_id(("entity-options-atlas", self.definition_uid));
@@ -1175,7 +1257,7 @@ if source_controls::button(ui,"Cancel").clicked(){cancel=true;}});});
     }
     fn source_entity_form_inner(&mut self, ui: &mut egui::Ui) {
         let Some(def) = self.definition_picker(ui, "entities") else {
-            ui.label("Create an entity using the + button.");
+            ui.label(locale::tr(ui, "Create an entity using the + button."));
             return;
         };
         let uid = def["uid"].as_i64().unwrap();
@@ -1210,6 +1292,7 @@ if source_controls::button(ui,"Cancel").clicked(){cancel=true;}});});
             .data_mut(|d| d.get_temp::<bool>(egui::Id::new(("entity-advanced", uid))))
             .unwrap_or(false);
         let settings_open = self.settings.ui_state_int("extraEntityDetails", None, 1) != 0;
+        let mut tag_change = None;
         let settings_next = section(ui, "ENTITY SETTINGS", settings_open, |ui| {
             ui.spacing_mut().item_spacing.y = 12.;
             row(ui, "Misc options", |ui| {
@@ -1238,67 +1321,13 @@ if source_controls::button(ui,"Cancel").clicked(){cancel=true;}});});
                 }
             });
             row(ui, "Tags", |ui| {
-                let mut tags = def["tags"].as_array().cloned().unwrap_or_default();
-                let mut remove = None;
-                for (index, tag) in tags.iter().enumerate() {
-                    egui::Frame::new()
-                        .fill(Color32::from_rgb(165, 119, 79))
-                        .corner_radius(7.)
-                        .inner_margin(egui::Margin::symmetric(5, 3))
-                        .show(ui, |ui| {
-                            ui.horizontal(|ui| {
-                                ui.label(
-                                    RichText::new(tag.as_str().unwrap_or(""))
-                                        .italics()
-                                        .color(Color32::WHITE),
-                                );
-                                if source_controls::small_button(ui, "×").clicked() {
-                                    remove = Some(index);
-                                }
-                            });
-                        });
-                }
-                if let Some(index) = remove {
-                    tags.remove(index);
-                    patch["tags"] = json!(tags);
-                }
-                ui.menu_button("+", |ui| {
-                    let key = ui.make_persistent_id(("new-entity-tag", uid));
-                    let mut value = ui
-                        .ctx()
-                        .data_mut(|d| d.get_temp::<String>(key))
-                        .unwrap_or_default();
-                    ui.text_edit_singleline(&mut value);
-                    ui.ctx().data_mut(|d| d.insert_temp(key, value.clone()));
-                    if source_controls::button(ui, "Add tag").clicked() && !value.trim().is_empty()
-                    {
-                        let value = json!(value.trim());
-                        if !tags.contains(&value) {
-                            tags.push(value);
-                        }
-                        patch["tags"] = json!(tags);
-                        ui.close();
-                    }
-                });
-                ui.menu_button("⌄", |ui| {
-                    let existing = self.project.as_ref().unwrap().json["defs"]["entities"]
-                        .as_array()
-                        .into_iter()
-                        .flatten()
-                        .flat_map(|d| d["tags"].as_array().into_iter().flatten())
-                        .filter_map(Value::as_str)
-                        .collect::<std::collections::BTreeSet<_>>();
-                    for tag in existing {
-                        let mut active = tags.contains(&json!(tag));
-                        if ui.checkbox(&mut active, tag).changed() {
-                            tags.retain(|v| v != tag);
-                            if active {
-                                tags.push(json!(tag));
-                            }
-                            patch["tags"] = json!(tags);
-                        }
-                    }
-                });
+                tag_change = tag_editor::show(
+                    ui,
+                    self.project.as_ref().unwrap(),
+                    tag_editor::Field::Definition("entities"),
+                    uid,
+                    &def["tags"],
+                );
             });
             row(ui, "Size", |ui| {
                 for (key, label) in [("width", ""), ("height", "×")] {
@@ -1325,7 +1354,7 @@ if source_controls::button(ui,"Cancel").clicked(){cancel=true;}});});
                         ("maxWidth", "Max:", def["resizableX"] == true),
                         ("maxHeight", "×", def["resizableY"] == true),
                     ] {
-                        ui.label(label);
+                        ui.label(locale::tr(ui, label));
                         ui.add_enabled_ui(enabled, |ui| {
                             ui.scope(|ui| {
                                 ui.spacing_mut().text_edit_width = 45.;
@@ -1337,7 +1366,8 @@ if source_controls::button(ui,"Cancel").clicked(){cancel=true;}});});
                                     .unwrap_or(current.clone());
                                 let response = ui.add_sized(
                                     [48., 30.],
-                                    egui::TextEdit::singleline(&mut draft).hint_text("None"),
+                                    egui::TextEdit::singleline(&mut draft)
+                                        .hint_text(locale::tr(ui, "None")),
                                 );
                                 if response.lost_focus()
                                     || response.has_focus()
@@ -1356,7 +1386,7 @@ if source_controls::button(ui,"Cancel").clicked(){cancel=true;}});});
                 });
             }
             row(ui, "", |ui| {
-                ui.label("Resizable:");
+                ui.label(locale::tr(ui, "Resizable:"));
                 for (key, label) in [
                     ("resizableX", "Width"),
                     ("resizableY", "Height"),
@@ -1388,11 +1418,14 @@ if source_controls::button(ui,"Cancel").clicked(){cancel=true;}});});
                 };
                 let old_visual = visual;
                 let name = if visual < 0 {
-                    match visual {
-                        -2 => "Ellipse",
-                        -3 => "Cross",
-                        _ => "Rectangle",
-                    }
+                    locale::tr(
+                        ui,
+                        match visual {
+                            -2 => "Ellipse",
+                            -3 => "Cross",
+                            _ => "Rectangle",
+                        },
+                    )
                 } else {
                     options
                         .iter()
@@ -1401,24 +1434,24 @@ if source_controls::button(ui,"Cancel").clicked(){cancel=true;}});});
                             if d["embedAtlas"].is_null() {
                                 text(d, "identifier", "Tileset")
                             } else {
-                                "Internal icons by FinalBossB"
+                                locale::tr(ui, "Internal icons by FinalBossB")
                             }
                         })
-                        .unwrap_or("Choose tileset")
+                        .unwrap_or_else(|| locale::tr(ui, "Choose tileset"))
                 };
                 egui::ComboBox::from_id_salt(("source-entity-atlas", uid))
                     .selected_text(name)
                     .width(200.)
                     .show_ui(ui, |ui| {
                         for (id, name) in [(-1, "Rectangle"), (-2, "Ellipse"), (-3, "Cross")] {
-                            ui.selectable_value(&mut visual, id, name);
+                            ui.selectable_value(&mut visual, id, locale::tr(ui, name));
                         }
                         ui.separator();
                         for d in &options {
                             ui.selectable_value(
                                 &mut visual,
                                 d["uid"].as_i64().unwrap_or(-1),
-                                text(d, "identifier", "Tileset"),
+                                text(d, "identifier", locale::tr(ui, "Tileset")),
                             );
                         }
                     });
@@ -1447,33 +1480,45 @@ if source_controls::button(ui,"Cancel").clicked(){cancel=true;}});});
                         patch["lineOpacity"] = json!(if visual >= 0 { 0. } else { 1. });
                     }
                 }
-                if visual < 0 {
+                let has_image_field = def["fieldDefs"].as_array().is_some_and(|fields| {
+                    fields.iter().any(|field| {
+                        field["__type"] == "FilePath"
+                            && field["isArray"] != true
+                            && field["editorDisplayMode"] == "EntityTile"
+                    })
+                });
+                if visual < 0 && !has_image_field {
                     return;
                 }
-                let (rect, response) = ui.allocate_exact_size(Vec2::splat(32.), Sense::click());
-                self.source_definition_thumbnail(
-                    ui,
-                    &def,
-                    "entities",
-                    rect,
-                    theme::color(text(&def, "color", "#FFFFFF")),
-                );
-                if response.clicked() {
-                    ui.ctx().data_mut(|d| {
-                        d.insert_temp(egui::Id::new(("entity-tile-picker", uid)), true)
-                    });
+                if visual >= 0 {
+                    let (rect, response) = ui.allocate_exact_size(Vec2::splat(32.), Sense::click());
+                    self.source_definition_thumbnail(
+                        ui,
+                        &def,
+                        "entities",
+                        rect,
+                        theme::color(text(&def, "color", "#FFFFFF")),
+                    );
+                    if response.clicked() {
+                        ui.ctx().data_mut(|d| {
+                            d.insert_temp(egui::Id::new(("entity-tile-picker", uid)), true)
+                        });
+                    }
                 }
                 let mut mode = text(&def, "tileRenderMode", "FitInside").to_owned();
                 let old = mode.clone();
                 egui::ComboBox::from_id_salt(("source-entity-fit", uid))
-                    .selected_text(match mode.as_str() {
-                        "FitInside" => "Fit inside bounds",
-                        "Stretch" => "Stretch",
-                        "Cover" => "Cover bounds",
-                        "Repeat" => "Repeat",
-                        "NineSlice" => "Nine slice",
-                        _ => &mode,
-                    })
+                    .selected_text(locale::tr(
+                        ui,
+                        match mode.as_str() {
+                            "FitInside" => "Fit inside bounds",
+                            "Stretch" => "Stretch",
+                            "Cover" => "Cover bounds",
+                            "Repeat" => "Repeat",
+                            "NineSlice" => "Nine slice",
+                            _ => &mode,
+                        },
+                    ))
                     .width(178.)
                     .show_ui(ui, |ui| {
                         for (value, label) in [
@@ -1485,7 +1530,7 @@ if source_controls::button(ui,"Cancel").clicked(){cancel=true;}});});
                             ("FullSizeUncropped", "Full size uncropped"),
                             ("NineSlice", "Nine slice"),
                         ] {
-                            ui.selectable_value(&mut mode, value.to_owned(), label);
+                            ui.selectable_value(&mut mode, value.to_owned(), locale::tr(ui, label));
                         }
                     });
                 if mode != old {
@@ -1498,7 +1543,7 @@ if source_controls::button(ui,"Cancel").clicked(){cancel=true;}});});
                     ("fillOpacity", "Fill="),
                     ("lineOpacity", "Line="),
                 ] {
-                    ui.label(label);
+                    ui.label(locale::tr(ui, label));
                     let mut percent = number(&def, key, 1.) * 100.;
                     if ui
                         .add(
@@ -1525,7 +1570,7 @@ if source_controls::button(ui,"Cancel").clicked(){cancel=true;}});});
                     borders.resize(4, json!(2));
                     let mut any = false;
                     for (i, label) in ["Top", "Right", "Bottom", "Left"].iter().enumerate() {
-                        ui.label(*label);
+                        ui.label(locale::tr(ui, label));
                         let mut n = borders[i].as_i64().unwrap_or(2);
                         if ui
                             .add_sized([42., 30.], egui::DragValue::new(&mut n).range(0..=65536))
@@ -1554,15 +1599,19 @@ if source_controls::button(ui,"Cancel").clicked(){cancel=true;}});});
                             .iter()
                             .find(|d| d["uid"] == chosen)
                             .map(|d| text(d, "identifier", "Tileset"))
-                            .unwrap_or("Use default editor visual"),
+                            .unwrap_or_else(|| locale::tr(ui, "Use default editor visual")),
                     )
                     .show_ui(ui, |ui| {
-                        ui.selectable_value(&mut chosen, -1, "Use default editor visual");
+                        ui.selectable_value(
+                            &mut chosen,
+                            -1,
+                            locale::tr(ui, "Use default editor visual"),
+                        );
                         for def in &options {
                             ui.selectable_value(
                                 &mut chosen,
                                 def["uid"].as_i64().unwrap_or(-1),
-                                text(def, "identifier", "Tileset"),
+                                text(def, "identifier", locale::tr(ui, "Tileset")),
                             );
                         }
                     });
@@ -1580,48 +1629,24 @@ if source_controls::button(ui,"Cancel").clicked(){cancel=true;}});});
                 }
             });
             row(ui, "Pivot point", |ui| {
-                let (grid, _) = ui.allocate_exact_size(Vec2::splat(60.), Sense::hover());
-                for y in 0..3 {
-                    for x in 0..3 {
-                        let px = x as f64 / 2.;
-                        let py = y as f64 / 2.;
-                        let selected = def["pivotX"].as_f64() == Some(px)
-                            && def["pivotY"].as_f64() == Some(py);
-                        let rect = Rect::from_min_size(
-                            grid.min + egui::vec2(x as f32 * 20., y as f32 * 20.),
-                            Vec2::splat(20.),
-                        );
-                        ui.painter().rect_filled(
-                            rect,
-                            0.,
-                            if selected {
-                                theme::ACCENT
-                            } else {
-                                theme::MEDIUM
-                            },
-                        );
-                        ui.painter().rect_stroke(
-                            rect,
-                            0.,
-                            Stroke::new(1_f32, GROUP_BAR),
-                            StrokeKind::Inside,
-                        );
-                        if ui
-                            .interact(rect, ui.id().with(("pivot", x, y)), Sense::click())
-                            .clicked()
-                        {
-                            patch["pivotX"] = json!(px);
-                            patch["pivotY"] = json!(py);
-                        }
-                    }
+                let pivot = [
+                    def["pivotX"].as_f64().unwrap_or(f64::NAN),
+                    def["pivotY"].as_f64().unwrap_or(f64::NAN),
+                ];
+                if let Some([x, y]) = source_controls::pivot_grid(ui, pivot) {
+                    patch["pivotX"] = json!(x);
+                    patch["pivotY"] = json!(y);
                 }
                 if ui
                     .link(
-                        RichText::new(if advanced {
-                            "Hide advanced options"
-                        } else {
-                            "Show advanced options"
-                        })
+                        RichText::new(locale::tr(
+                            ui,
+                            if advanced {
+                                "Hide advanced options"
+                            } else {
+                                "Show advanced options"
+                            },
+                        ))
                         .color(theme::ACCENT)
                         .underline(),
                     )
@@ -1632,7 +1657,7 @@ if source_controls::button(ui,"Cancel").clicked(){cancel=true;}});});
             });
             if advanced {
                 row(ui, "", |ui| {
-                    ui.label("Float:");
+                    ui.label(locale::tr(ui, "Float:"));
                     for (key, size) in [
                         ("pivotX", number(&def, "width", 16.)),
                         ("pivotY", number(&def, "height", 16.)),
@@ -1651,7 +1676,7 @@ if source_controls::button(ui,"Cancel").clicked(){cancel=true;}});});
                         }
                         let _ = size;
                     }
-                    ui.label("OR Pixels:");
+                    ui.label(locale::tr(ui, "OR Pixels:"));
                     for (key, size) in [
                         ("pivotX", number(&def, "width", 16.)),
                         ("pivotY", number(&def, "height", 16.)),
@@ -1683,11 +1708,14 @@ if source_controls::button(ui,"Cancel").clicked(){cancel=true;}});});
                 let mut scope = text(&def, "limitScope", "PerLevel").to_owned();
                 let old = scope.clone();
                 egui::ComboBox::from_id_salt(("source-limit-scope", uid))
-                    .selected_text(match scope.as_str() {
-                        "PerWorld" => "in the world",
-                        "PerLayer" => "in the layer",
-                        _ => "in the level",
-                    })
+                    .selected_text(locale::tr(
+                        ui,
+                        match scope.as_str() {
+                            "PerWorld" => "in the world",
+                            "PerLayer" => "in the layer",
+                            _ => "in the level",
+                        },
+                    ))
                     .width(92.)
                     .show_ui(ui, |ui| {
                         for (value, label) in [
@@ -1695,21 +1723,28 @@ if source_controls::button(ui,"Cancel").clicked(){cancel=true;}});});
                             ("PerLayer", "in the layer"),
                             ("PerWorld", "in the world"),
                         ] {
-                            ui.selectable_value(&mut scope, value.to_owned(), label);
+                            ui.selectable_value(
+                                &mut scope,
+                                value.to_owned(),
+                                locale::tr(ui, label),
+                            );
                         }
                     });
                 if scope != old {
                     patch["limitScope"] = json!(scope);
                 }
-                ui.label(", and");
+                ui.label(locale::tr(ui, ", and"));
                 let mut behavior = text(&def, "limitBehavior", "MoveLastOne").to_owned();
                 let old = behavior.clone();
                 egui::ComboBox::from_id_salt(("source-limit-behavior", uid))
-                    .selected_text(match behavior.as_str() {
-                        "MoveLastOne" => "move the last one",
-                        "PreventAdding" => "prevent adding",
-                        _ => "discard old ones",
-                    })
+                    .selected_text(locale::tr(
+                        ui,
+                        match behavior.as_str() {
+                            "MoveLastOne" => "move the last one",
+                            "PreventAdding" => "prevent adding",
+                            _ => "discard old ones",
+                        },
+                    ))
                     .width(108.)
                     .show_ui(ui, |ui| {
                         for (value, label) in [
@@ -1717,14 +1752,18 @@ if source_controls::button(ui,"Cancel").clicked(){cancel=true;}});});
                             ("PreventAdding", "prevent adding"),
                             ("DiscardOldOnes", "discard old ones"),
                         ] {
-                            ui.selectable_value(&mut behavior, value.to_owned(), label);
+                            ui.selectable_value(
+                                &mut behavior,
+                                value.to_owned(),
+                                locale::tr(ui, label),
+                            );
                         }
                     });
                 if old != behavior {
                     patch["limitBehavior"] = json!(behavior);
                 }
-                ui.add(egui::Label::new("when max is reached.").truncate())
-                    .on_hover_text("when max is reached.");
+                ui.add(egui::Label::new(locale::tr(ui, "when max is reached.")).truncate())
+                    .on_hover_text(locale::tr(ui, "when max is reached."));
             });
         });
         if settings_next != settings_open {
@@ -1740,6 +1779,18 @@ if source_controls::button(ui,"Cancel").clicked(){cancel=true;}});});
                 p.update_entity_definition(uid, &patch)
             });
         }
+        if let Some(change) = tag_change {
+            self.edit("Entity tags changed", |p| match change {
+                tag_editor::Change::Set(value) => {
+                    p.update_entity_definition(uid, &json!({"tags":value}))
+                }
+                tag_editor::Change::Rename {
+                    old,
+                    new,
+                    everywhere,
+                } => p.rename_definition_tag("entities", uid, &old, &new, everywhere),
+            });
+        }
         let picker_id = egui::Id::new(("entity-tile-picker", uid));
         let mut picker = ui
             .ctx()
@@ -1749,7 +1800,7 @@ if source_controls::button(ui,"Cancel").clicked(){cancel=true;}});});
         self.with_local_atlas_state(&picker_ctx, picker_id, |app| {
             if picker {
                 let mut apply = false;
-                egui::Window::new("Entity tile")
+                egui::Window::new(locale::tr_ctx(&picker_ctx, "Entity tile"))
                     .id(picker_id)
                     .open(&mut picker)
                     .default_width(440.)
@@ -1760,7 +1811,7 @@ if source_controls::button(ui,"Cancel").clicked(){cancel=true;}});});
                                 apply = true;
                             }
                         } else {
-                            ui.label("Choose a tileset in Editor visual first.");
+                            ui.label(locale::tr(ui, "Choose a tileset in Editor visual first."));
                         }
                     });
                 if apply && let Some(rect) = app.selected_tile_rect_for(atlas) {
@@ -1785,7 +1836,7 @@ if source_controls::button(ui,"Cancel").clicked(){cancel=true;}});});
             if ui_picker {
                 let mut apply = false;
                 let ui_atlas = def["uiTileRect"]["tilesetUid"].as_i64().unwrap_or(-1);
-                egui::Window::new("Alternate UI icon")
+                egui::Window::new(locale::tr_ctx(&picker_ctx, "Alternate UI icon"))
                     .id(ui_picker_id)
                     .open(&mut ui_picker)
                     .default_width(440.)
@@ -1809,26 +1860,21 @@ if source_controls::button(ui,"Cancel").clicked(){cancel=true;}});});
         });
         ui.add_space(24.);
         ui.horizontal_top(|ui| {
+            ui.spacing_mut().item_spacing.x = 0.;
             ui.allocate_ui_with_layout(
-                egui::vec2(200., 400.),
+                egui::vec2(FIELD_LIST_WIDTH, 400.),
                 egui::Layout::top_down(egui::Align::Min),
                 |ui| {
-                    ui.set_width(200.);
-                    ui.set_max_width(200.);
+                    ui.set_width(FIELD_LIST_WIDTH);
+                    ui.set_max_width(FIELD_LIST_WIDTH);
                     self.source_field_list(ui, Some(uid), 400.);
                 },
             );
-            ui.add_space(8.);
+            ui.add_space(FIELD_LIST_GAP);
             ui.allocate_ui_with_layout(
                 egui::vec2(ui.available_width(), 400.),
                 egui::Layout::top_down(egui::Align::Min),
                 |ui| {
-                    ui.label(
-                        RichText::new("GENERAL SETTINGS")
-                            .size(18.)
-                            .color(theme::ACCENT),
-                    );
-                    ui.separator();
                     ui.spacing_mut().text_edit_width = 170.;
                     self.field_properties(ui);
                 },
@@ -1855,7 +1901,11 @@ if source_controls::button(ui,"Cancel").clicked(){cancel=true;}});});
         if !fields.iter().any(|f| f["uid"].as_i64() == self.field_uid) {
             self.field_uid = fields.first().and_then(|f| f["uid"].as_i64());
         }
+        ui.spacing_mut().item_spacing.y = FIELD_LIST_GAP;
+        let button_row_height = 40.;
         ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 4.;
+            ui.spacing_mut().button_padding.x = 4.;
             for (array, label) in [(false, "+ SINGLE VALUE"), (true, "+ ARRAY")] {
                 if orange(
                     ui,
@@ -1866,7 +1916,7 @@ if source_controls::button(ui,"Cancel").clicked(){cancel=true;}});});
                         } else {
                             (ui.available_width() - 74.).max(90.)
                         },
-                        34.,
+                        button_row_height,
                     ),
                 )
                 .clicked()
@@ -1887,7 +1937,7 @@ if source_controls::button(ui,"Cancel").clicked(){cancel=true;}});});
             .show(ui, |ui| {
                 egui::ScrollArea::vertical()
                     .id_salt(("source-field-list", owner))
-                    .max_height((height - 42.).max(40.))
+                    .max_height((height - button_row_height - FIELD_LIST_GAP - 10.).max(40.))
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
                         for (index, field) in fields.iter().enumerate() {
@@ -1987,7 +2037,7 @@ if source_controls::button(ui,"Cancel").clicked(){cancel=true;}});});
                                             if source_controls::add_enabled_button(
                                                 ui,
                                                 index > 0,
-                                                egui::Button::new("Move up"),
+                                                egui::Button::new(locale::tr(ui, "Move up")),
                                             )
                                             .clicked()
                                             {
@@ -1999,7 +2049,7 @@ if source_controls::button(ui,"Cancel").clicked(){cancel=true;}});});
                                             if source_controls::add_enabled_button(
                                                 ui,
                                                 index + 1 < fields.len(),
-                                                egui::Button::new("Move down"),
+                                                egui::Button::new(locale::tr(ui, "Move down")),
                                             )
                                             .clicked()
                                             {
@@ -2038,15 +2088,60 @@ if source_controls::button(ui,"Cancel").clicked(){cancel=true;}});});
     }
 }
 
+fn field_display_select<'a>(
+    ui: &mut egui::Ui,
+    id: &str,
+    width: f32,
+    value: &mut &'a str,
+    options: impl Iterator<Item = (&'a str, &'a str)> + Clone,
+) {
+    let label = options
+        .clone()
+        .find(|(key, _)| key == value)
+        .or_else(|| options.clone().next())
+        .map_or("", |(_, label)| label);
+    ui.allocate_ui_with_layout(
+        egui::vec2(width, 32.),
+        egui::Layout::left_to_right(egui::Align::Center),
+        |ui| {
+            ui.set_max_width(width);
+            egui::ComboBox::from_id_salt(id)
+                .selected_text(locale::tr(ui, label))
+                .width(width)
+                .truncate()
+                .show_ui(ui, |ui| {
+                    for (key, label) in options {
+                        ui.selectable_value(value, key, locale::tr(ui, label));
+                    }
+                });
+        },
+    );
+}
+
 impl EditorApp {
     pub(super) fn source_field_properties(&mut self, ui: &mut egui::Ui, def: &Value) {
+        let previous_spacing = ui.spacing().item_spacing.y;
+        ui.spacing_mut().item_spacing.y = 10.;
+        source_controls::form_heading_line(ui, "General settings");
         let uid = def["uid"].as_i64().unwrap();
         let public = text(def, "__type", "Int");
         let kind = public.trim_start_matches("Array<").trim_end_matches('>');
         let array = def["isArray"] == true;
-        row(ui, "Type", |ui| {
-            ui.label(public);
-            if source_controls::button(ui, "Convert…").clicked() {
+        source_controls::form_row_wrapped(ui, "Type", "Type", FIELD_LABEL_WIDTH, |ui| {
+            ui.spacing_mut().item_spacing.x = 0.;
+            ui.spacing_mut().button_padding.x = 4.;
+            let type_width = (ui.available_width() - 73.).max(40.);
+            let (rect, _) = ui.allocate_exact_size(egui::vec2(type_width, 33.), Sense::hover());
+            let painter = ui.painter().with_clip_rect(rect.intersect(ui.clip_rect()));
+            painter.rect_stroke(rect, 0., Stroke::new(1., theme::LIGHT), StrokeKind::Inside);
+            painter.text(
+                rect.left_center() + egui::vec2(8., 0.),
+                Align2::LEFT_CENTER,
+                public,
+                FontId::monospace(14.),
+                theme::TEXT.gamma_multiply(0.6),
+            );
+            if orange(ui, "CONVERT", egui::vec2(73., 33.)).clicked() {
                 ui.ctx().data_mut(|d| {
                     d.insert_temp(
                         egui::Id::new("source-field-type-picker"),
@@ -2057,7 +2152,7 @@ impl EditorApp {
         });
         let mut properties = vec![
             P("identifier", "Field identifier", W::Text),
-            P("doc", "Documentation", W::Multiline),
+            P("doc", "Documentation", W::Text),
         ];
         if self.field_owner.is_some() {
             properties.push(P("exportToToc", "Export to ToC", W::Bool));
@@ -2065,27 +2160,68 @@ impl EditorApp {
         if matches!(kind, "String" | "Multilines") || kind.contains("Enum.") {
             properties.push(P("searchable", "Searchable", W::Bool));
         }
-        let mut patch = source_form(ui, def, &properties);
-        ui.add_space(12.);
-        ui.label(
-            RichText::new("VALUE SPECIFICATIONS")
-                .color(theme::ACCENT)
-                .size(18.),
-        );
-        ui.separator();
-        if !matches!(kind, "Point" | "EntityRef") {
-            ui.label("Default value");
-            if let Ok(instance) = self.project.as_ref().unwrap().make_field_instance(def)
-                && let Some(value) = scalar_editor(
-                    ui,
-                    self.project.as_ref().unwrap(),
-                    kind,
-                    &instance["__value"],
-                    def,
-                )
+        let mut patch = form_with_label_width(ui, def, &properties, FIELD_LABEL_WIDTH);
+        source_controls::form_heading_line(ui, "Value specifications");
+        if !matches!(kind, "Point" | "EntityRef")
+            && let Ok(instance) = self.project.as_ref().unwrap().make_field_instance(def)
+        {
+            let label = match kind {
+                "Bool" => "Default state",
+                "Color" => "Default color",
+                _ => "Default value",
+            };
+            if let Some(value) =
+                source_controls::form_row_wrapped(ui, label, label, FIELD_LABEL_WIDTH, |ui| {
+                    ui.vertical(|ui| {
+                        if matches!(kind, "Int" | "Float") {
+                            let toggle_width = if def["canBeNull"] == true { 25. } else { 0. };
+                            let width = (ui.available_width() - toggle_width).max(36.);
+                            ui.spacing_mut().interact_size = egui::vec2(width, 33.);
+                        }
+                        scalar_editor(
+                            ui,
+                            self.project.as_ref().unwrap(),
+                            kind,
+                            &instance["__value"],
+                            def,
+                        )
+                    })
+                    .inner
+                })
             {
                 self.edit("Field default changed", |p| p.set_field_default(uid, value));
             }
+        }
+        if matches!(kind, "Int" | "Float") {
+            source_controls::form_row_wrapped(ui, "Limits", "Limits", FIELD_LABEL_WIDTH, |ui| {
+                ui.spacing_mut().item_spacing.x = 4.;
+                let width = ((ui.available_width() - 24.) / 2.).max(40.);
+                for key in ["min", "max"] {
+                    if key == "max" {
+                        ui.label(locale::tr(ui, "to"));
+                    }
+                    let current = def[key].as_f64().map(|value| value.to_string());
+                    if let Some(raw) = ui_fields::buffered_text_sized(
+                        ui,
+                        key,
+                        current.as_deref().unwrap_or(""),
+                        egui::vec2(width, 33.),
+                    ) {
+                        patch[key] = raw
+                            .trim()
+                            .parse::<f64>()
+                            .ok()
+                            .filter(|value| value.is_finite())
+                            .map_or(Value::Null, |value| {
+                                if kind == "Int" {
+                                    json!(value.trunc() as i32)
+                                } else {
+                                    json!(value)
+                                }
+                            });
+                    }
+                }
+            });
         }
         let mut properties = Vec::new();
         if kind != "Bool" {
@@ -2101,12 +2237,6 @@ impl EditorApp {
                 W::Bool,
             ));
         }
-        if matches!(kind, "Int" | "Float") {
-            properties.extend([
-                P("min", "Minimum", W::Float(-1e9, 1e9)),
-                P("max", "Maximum", W::Float(-1e9, 1e9)),
-            ]);
-        }
         if kind == "FilePath" {
             properties.push(P("acceptFileTypes", "File extensions", W::Text));
         }
@@ -2116,27 +2246,37 @@ impl EditorApp {
         if kind == "Multilines" {
             let previous = def["textLanguageMode"].as_str().map(str::to_owned);
             let mut language = previous.clone();
-            row(ui, "Language", |ui| {
-                egui::ComboBox::from_id_salt(("field-language", uid))
-                    .selected_text(language.as_deref().unwrap_or("Plain text"))
-                    .show_ui(ui, |ui| {
-                        ui.selectable_value(&mut language, None, "Plain text");
-                        for (mode, label) in [
-                            ("LangJson", "JSON"),
-                            ("LangXml", "XML/HTML"),
-                            ("LangMarkdown", "Markdown"),
-                            ("LangRuby", "Ruby"),
-                            ("LangPython", "Python"),
-                            ("LangHaxe", "Haxe"),
-                            ("LangJS", "Javascript"),
-                            ("LangLua", "Lua"),
-                            ("LangC", "C/C++/C#"),
-                            ("LangLog", "Log file"),
-                        ] {
-                            ui.selectable_value(&mut language, Some(mode.to_owned()), label);
-                        }
-                    });
-            });
+            source_controls::form_row_wrapped(
+                ui,
+                "Language",
+                "textLanguageMode",
+                FIELD_LABEL_WIDTH,
+                |ui| {
+                    egui::ComboBox::from_id_salt(("field-language", uid))
+                        .selected_text(locale::tr(ui, language.as_deref().unwrap_or("Plain text")))
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(&mut language, None, locale::tr(ui, "Plain text"));
+                            for (mode, label) in [
+                                ("LangJson", "JSON"),
+                                ("LangXml", "XML/HTML"),
+                                ("LangMarkdown", "Markdown"),
+                                ("LangRuby", "Ruby"),
+                                ("LangPython", "Python"),
+                                ("LangHaxe", "Haxe"),
+                                ("LangJS", "Javascript"),
+                                ("LangLua", "Lua"),
+                                ("LangC", "C/C++/C#"),
+                                ("LangLog", "Log file"),
+                            ] {
+                                ui.selectable_value(
+                                    &mut language,
+                                    Some(mode.to_owned()),
+                                    locale::tr(ui, label),
+                                );
+                            }
+                        });
+                },
+            );
             if language != previous {
                 patch["textLanguageMode"] = language.map(Value::String).unwrap_or(Value::Null);
             }
@@ -2180,7 +2320,9 @@ impl EditorApp {
                     .unwrap_or_default()
             );
         }
-        if let Some(obj) = source_form(ui, &specs, &properties).as_object() {
+        if let Some(obj) =
+            form_with_label_width(ui, &specs, &properties, FIELD_LABEL_WIDTH).as_object()
+        {
             patch.as_object_mut().unwrap().extend(obj.clone());
         }
         if kind == "FilePath"
@@ -2209,7 +2351,7 @@ impl EditorApp {
                         .as_array()
                         .and_then(|a| a.iter().find(|d| d["uid"] == entity))
                         .map(|d| text(d, "identifier", "Entity"))
-                        .unwrap_or("Choose entity"),
+                        .unwrap_or_else(|| locale::tr(ui, "Choose entity")),
                 )
                 .show_ui(ui, |ui| {
                     for entity_def in self.project.as_ref().unwrap().json["defs"]["entities"]
@@ -2221,7 +2363,7 @@ impl EditorApp {
                             ui.selectable_value(
                                 &mut entity,
                                 uid,
-                                text(entity_def, "identifier", "Entity"),
+                                text(entity_def, "identifier", locale::tr(ui, "Entity")),
                             );
                         }
                     }
@@ -2230,82 +2372,344 @@ impl EditorApp {
                 patch["allowedRefsEntityUid"] = json!(entity);
             }
         }
-        ui.add_space(12.);
-        ui.label(RichText::new("DISPLAY").color(theme::ACCENT).size(18.));
-        ui.separator();
-        let mut modes = vec!["Hidden", "ValueOnly", "NameAndValue"];
-        if array {
-            modes.extend(["ArrayCountNoLabel", "ArrayCountWithLabel"]);
-        }
-        if kind == "Point" {
-            modes.extend(["Points", "PointStar", "PointPath", "PointPathLoop"]);
-        }
-        if kind == "EntityRef" {
-            modes.extend(["RefLinkBetweenPivots", "RefLinkBetweenCenters"]);
-        }
-        if kind == "Tile" {
-            modes.extend(["EntityTile", "LevelTile"]);
-        }
-        if matches!(kind, "Int" | "Float") {
-            modes.extend(["RadiusPx", "RadiusGrid"]);
-        }
-        let mut mode = text(def, "editorDisplayMode", "Hidden").to_owned();
-        egui::ComboBox::from_id_salt(("field-display-mode", uid))
-            .selected_text(&mode)
-            .show_ui(ui, |ui| {
-                for value in modes {
-                    ui.selectable_value(&mut mode, value.to_owned(), value);
-                }
-            });
-        if mode != text(def, "editorDisplayMode", "Hidden") {
-            patch["editorDisplayMode"] = json!(mode);
-        }
-        let mut properties = vec![
-            P(
-                "editorDisplayPos",
-                "Position",
-                W::Choice(&["Above", "Center", "Beneath"]),
-            ),
-            P("editorShowInWorld", "Show in world view", W::Bool),
-            P("editorDisplayScale", "Display scale", W::Float(0.1, 10.)),
-            P("editorDisplayColor", "Display color", W::Color),
-            P("editorAlwaysShow", "Always show", W::Bool),
-        ];
-        if kind == "EntityRef" {
-            properties.push(P(
-                "editorLinkStyle",
-                "Link style",
-                W::Choice(&[
-                    "StraightArrow",
-                    "CurvedArrow",
-                    "ZigZag",
-                    "DashedLine",
-                    "ArrowsLine",
-                    "StraightDottedLine",
-                ]),
-            ));
-        }
-        if matches!(kind, "Int" | "Float") {
-            properties.extend([
-                P("editorTextPrefix", "Prefix", W::Text),
-                P("editorTextSuffix", "Suffix", W::Text),
-            ]);
-        }
-        if matches!(kind, "String" | "Multilines") {
-            properties.push(P("editorCutLongValues", "Only show excerpt", W::Bool));
-        }
-        if kind == "Color" || kind.contains("Enum.") {
-            properties.push(P("useForSmartColor", "Override parent color", W::Bool));
-        }
-        if let Some(obj) = source_form(ui, def, &properties).as_object() {
-            patch.as_object_mut().unwrap().extend(obj.clone());
-        }
+        source_controls::form_heading_line(ui, "Display");
+        ui.push_id(uid, |ui| {
+            self.source_field_display(ui, def, kind, array, &mut patch)
+        });
+        ui.spacing_mut().item_spacing.y = previous_spacing;
         if changed(&patch) {
             self.edit("Field definition changed", |p| {
                 p.update_field_definition(uid, &patch)
             });
         }
     }
+    fn source_field_display(
+        &self,
+        ui: &mut egui::Ui,
+        def: &Value,
+        kind: &str,
+        array: bool,
+        patch: &mut Value,
+    ) {
+        let entity = self.field_owner.is_some();
+        let point = kind == "Point";
+        let reference = kind == "EntityRef";
+        let number = matches!(kind, "Int" | "Float");
+        let enumeration = kind.contains("Enum.");
+        let tile = kind == "Tile" || enumeration;
+        let path = kind == "FilePath";
+        let identifier = text(def, "identifier", "Field");
+        let name_and_value = if array {
+            locale::format(
+                ui,
+                r#"Show "{identifier}=[...values...]""#,
+                &[("identifier", identifier)],
+            )
+        } else {
+            locale::format(
+                ui,
+                r#"Show "{identifier}=...""#,
+                &[("identifier", identifier)],
+            )
+        };
+        let value_only = if array {
+            "Show values only"
+        } else {
+            "Show value only"
+        };
+        let isolated_point = if array {
+            "Show isolated points"
+        } else {
+            "Show isolated point"
+        };
+        let connected_point = if array {
+            "Show star of points"
+        } else {
+            "Show connected point"
+        };
+        let entity_tile = if path {
+            "Replace entity tile (image file only)"
+        } else {
+            "Replace entity tile"
+        };
+        let options = [
+            ("Hidden", "Do not show", true),
+            ("ValueOnly", value_only, !point),
+            ("NameAndValue", &name_and_value, true),
+            (
+                "EntityTile",
+                entity_tile,
+                entity && (tile || path && !array),
+            ),
+            (
+                "LevelTile",
+                "Replace level render in world view",
+                !entity && tile,
+            ),
+            ("Points", isolated_point, entity && point),
+            ("PointStar", connected_point, entity && point),
+            ("PointPath", "Show path of points", entity && point && array),
+            (
+                "PointPathLoop",
+                "Show path of points (looping)",
+                entity && point && array,
+            ),
+            (
+                "RadiusPx",
+                "As a radius (pixels)",
+                entity && number && !array,
+            ),
+            (
+                "RadiusGrid",
+                "As a radius (grid-based)",
+                entity && number && !array,
+            ),
+            ("ArrayCountWithLabel", "Show array length with label", array),
+            ("ArrayCountNoLabel", "Show array length only", array),
+            (
+                "RefLinkBetweenPivots",
+                "Reference link (using pivot coord)",
+                reference,
+            ),
+            (
+                "RefLinkBetweenCenters",
+                "Reference link (using center coord)",
+                reference,
+            ),
+        ];
+        let current = text(def, "editorDisplayMode", "Hidden");
+        let mut mode = current;
+        let text_mode = matches!(
+            current,
+            "ValueOnly" | "NameAndValue" | "ArrayCountWithLabel" | "ArrayCountNoLabel"
+        );
+        let link = matches!(
+            current,
+            "PointStar"
+                | "PointPath"
+                | "PointPathLoop"
+                | "RefLinkBetweenPivots"
+                | "RefLinkBetweenCenters"
+        );
+        let color = !matches!(current, "Hidden" | "EntityTile" | "LevelTile");
+        source_controls::form_row_wrapped(
+            ui,
+            "Display in editor",
+            "editorDisplayMode",
+            FIELD_LABEL_WIDTH,
+            |ui| {
+                ui.spacing_mut().item_spacing.x = 4.;
+                ui.horizontal_wrapped(|ui| {
+                    let position_width = if entity && text_mode { 86. } else { 0. };
+                    let link_width = if link { 137. } else { 0. };
+                    let world_width = if entity { 0. } else { 185. };
+                    let scale_width = if text_mode { 62. } else { 0. };
+                    let color_width = if color { 66. } else { 0. };
+                    let accessory_width =
+                        position_width + link_width + world_width + scale_width + color_width;
+                    let mode_width = (ui.available_width() - accessory_width).max(64.);
+                    field_display_select(
+                        ui,
+                        "field-display-mode",
+                        mode_width,
+                        &mut mode,
+                        options
+                            .into_iter()
+                            .filter_map(|(key, label, allowed)| allowed.then_some((key, label))),
+                    );
+                    if entity && text_mode {
+                        let original = text(def, "editorDisplayPos", "Above");
+                        let mut position = original;
+                        field_display_select(
+                            ui,
+                            "field-display-position",
+                            position_width - 4.,
+                            &mut position,
+                            ["Above", "Center", "Beneath"]
+                                .into_iter()
+                                .map(|option| (option, option)),
+                        );
+                        if position != original {
+                            patch["editorDisplayPos"] = json!(position);
+                        }
+                    }
+                    if link {
+                        let original = text(def, "editorLinkStyle", "ZigZag");
+                        let mut style = original;
+                        field_display_select(
+                            ui,
+                            "field-link-style",
+                            link_width - 4.,
+                            &mut style,
+                            [
+                                ("ZigZag", "Zig-zag"),
+                                ("StraightArrow", "Straight arrow"),
+                                ("CurvedArrow", "Curved arrow"),
+                                ("ArrowsLine", "Line of arrows"),
+                                ("DashedLine", "Dashed line"),
+                            ]
+                            .into_iter(),
+                        );
+                        if style != original {
+                            patch["editorLinkStyle"] = json!(style);
+                        }
+                    }
+                    if !entity {
+                        let mut world_view = def["editorShowInWorld"].as_bool().unwrap_or(true);
+                        let checkbox = ui.allocate_ui_with_layout(
+                            egui::vec2(world_width - 4., 32.),
+                            egui::Layout::left_to_right(egui::Align::Center),
+                            |ui| source_checkbox(ui, &mut world_view, "Show in world view"),
+                        );
+                        if checkbox.inner.changed() {
+                            patch["editorShowInWorld"] = json!(world_view);
+                        }
+                    }
+                    if text_mode {
+                        let before =
+                            (def["editorDisplayScale"].as_f64().unwrap_or(1.) * 100.).round();
+                        let mut percent = before;
+                        ui_commit::prepare_editor(ui.ctx(), ui.next_auto_id());
+                        let response = ui.add_sized(
+                            [scale_width - 4., 32.],
+                            egui::DragValue::new(&mut percent)
+                                .speed(1.)
+                                .range(10. ..=3_276_700.)
+                                .clamp_existing_to_range(false)
+                                .max_decimals(0)
+                                .update_while_editing(false)
+                                .custom_parser(|raw| {
+                                    Some(
+                                        raw.trim()
+                                            .trim_end_matches('%')
+                                            .trim_end()
+                                            .parse::<f64>()
+                                            .ok()
+                                            .filter(|value| value.is_finite())
+                                            .unwrap_or(100.)
+                                            .round(),
+                                    )
+                                }),
+                        );
+                        ui_commit::track_editor(ui.ctx(), &response);
+                        response.on_hover_text(locale::tr(ui, "Display scale (%)"));
+                        if percent != before {
+                            patch["editorDisplayScale"] = json!(percent.round() / 100.);
+                        }
+                    }
+                    if color {
+                        let project = self.project.as_ref().unwrap();
+                        let inherited = if let Some(owner) = self.field_owner {
+                            let entity = &project.json["defs"]["entities"];
+                            let entity = entity
+                                .as_array()
+                                .into_iter()
+                                .flatten()
+                                .find(|def| def["uid"] == owner);
+                            entity
+                                .and_then(|def| def["color"].as_str())
+                                .map_or(theme::TEXT, theme::color)
+                        } else {
+                            let background = self
+                                .selected
+                                .and_then(|key| project.level(key))
+                                .map_or_else(
+                                    || {
+                                        theme::color(text(
+                                            &project.json,
+                                            "defaultLevelBgColor",
+                                            "#696A79",
+                                        ))
+                                    },
+                                    |level| canvas::level_smart_color(project, level),
+                                );
+                            background.lerp_to_gamma(Color32::WHITE, 0.45)
+                        };
+                        let mut value = def["editorDisplayColor"]
+                            .as_str()
+                            .map(theme::color)
+                            .map(|c| [c.r(), c.g(), c.b()]);
+                        if source_colors::inherited_color_editor(ui, &mut value, inherited)
+                            .changed()
+                        {
+                            patch["editorDisplayColor"] = value.map_or(Value::Null, |[r, g, b]| {
+                                json!(format!("#{r:02X}{g:02X}{b:02X}"))
+                            });
+                        }
+                    }
+                });
+            },
+        );
+        if mode != current {
+            patch["editorDisplayMode"] = json!(mode);
+        }
+        if number {
+            source_controls::form_row_wrapped(
+                ui,
+                "Prefix/suffix",
+                "editorTextPrefix",
+                FIELD_LABEL_WIDTH,
+                |ui| {
+                    ui.spacing_mut().item_spacing.x = 4.;
+                    let width = ((ui.available_width() - 39.) / 2.).max(30.);
+                    let affix_size = egui::vec2(width, 33.);
+                    for (key, prefix) in [("editorTextPrefix", true), ("editorTextSuffix", false)] {
+                        if !prefix {
+                            ui.label("1234");
+                        }
+                        if let Some(value) =
+                            ui_fields::buffered_text_sized(ui, key, text(def, key, ""), affix_size)
+                        {
+                            let value = if prefix {
+                                value.trim_start()
+                            } else {
+                                value.trim_end()
+                            };
+                            patch[key] = if value.is_empty() {
+                                Value::Null
+                            } else {
+                                json!(value)
+                            };
+                        }
+                    }
+                },
+            );
+        }
+        let color_label = if entity {
+            "Override entity color"
+        } else {
+            "Override level color"
+        };
+        for (key, label, visible, enabled) in [
+            ("editorAlwaysShow", "Always show", true, mode != "Hidden"),
+            (
+                "editorCutLongValues",
+                "Only show an excerpt in editor",
+                matches!(kind, "String" | "Multilines"),
+                true,
+            ),
+            (
+                "useForSmartColor",
+                color_label,
+                kind == "Color" || enumeration,
+                true,
+            ),
+        ] {
+            if visible {
+                source_controls::form_row_wrapped(ui, label, key, FIELD_LABEL_WIDTH, |ui| {
+                    let mut checked = def[key].as_bool().unwrap_or(false);
+                    if ui
+                        .add_enabled_ui(enabled, |ui| source_checkbox(ui, &mut checked, ""))
+                        .inner
+                        .changed()
+                    {
+                        patch[key] = json!(checked);
+                    }
+                });
+            }
+        }
+    }
+
     fn source_field_type_picker(&mut self, ctx: &egui::Context) {
         let id = egui::Id::new("source-field-type-picker");
         let Some((owner, array, convert, mut chosen)) =
@@ -2316,13 +2720,71 @@ impl EditorApp {
         let mut open = true;
         let mut dismiss = false;
         let mut apply = None;
-        egui::Window::new(if convert.is_some(){"Convert field type"}else if array{"Create array field"}else{"Create single value field"}).id(id).open(&mut open).resizable(false).show(ctx,|ui|{
-            ui.horizontal_wrapped(|ui|{for kind in ["Int","Float","Bool","String","Multilines","Color","FilePath","Tile","EntityRef","Point"]{if owner.is_none()&&matches!(kind,"EntityRef"|"Point"){continue;}
-if source_controls::add_sized_button(ui,[95.,44.],egui::Button::new(kind)).clicked(){chosen=Some(kind.into());if convert.is_none(){apply=chosen.clone();}}}});
-            ui.separator();ui.label("Enums");let p=self.project.as_ref().unwrap();for group in ["enums","externalEnums"]{for def in p.json["defs"][group].as_array().into_iter().flatten(){let name=text(def,"identifier","Enum");if source_controls::button(ui,name).clicked(){chosen=Some(format!("{}.{}",if group=="enums"{"LocalEnum"}else{"ExternEnum"},name));if convert.is_none(){apply=chosen.clone();}}}}
-            if p.json["defs"]["enums"].as_array().is_none_or(Vec::is_empty)&&p.json["defs"]["externalEnums"].as_array().is_none_or(Vec::is_empty){ui.label("Create an enum in the Enum panel first.");if source_controls::button(ui,"Open enum panel").clicked(){self.show_panel(Some(Panel::Enums));dismiss=true;}}
-            if convert.is_some()&&let Some(kind)=chosen.as_ref(){ui.separator();ui.colored_label(theme::ACCENT,"Converting changes existing values and defaults. Values incompatible with the chosen type will be cleared.");ui.label(format!("Convert to {kind}"));if source_controls::button(ui,"Convert all values").clicked(){apply=chosen.clone();}}
-        });
+        let title = if convert.is_some() {
+            "Convert field type"
+        } else if array {
+            "Create array field"
+        } else {
+            "Create single value field"
+        };
+        egui::Window::new(locale::tr_ctx(ctx, title))
+            .id(id)
+            .open(&mut open)
+            .resizable(false)
+            .show(ctx, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    for kind in [
+                        "Int", "Float", "Bool", "String", "Multilines", "Color", "FilePath",
+                        "Tile", "EntityRef", "Point",
+                    ] {
+                        if owner.is_none() && matches!(kind, "EntityRef" | "Point") {
+                            continue;
+                        }
+                        let button = egui::Button::new(locale::tr(ui, kind));
+                        if source_controls::add_sized_button(ui, [95., 44.], button).clicked() {
+                            chosen = Some(kind.into());
+                            if convert.is_none() {
+                                apply = chosen.clone();
+                            }
+                        }
+                    }
+                });
+                ui.separator();
+                ui.label(locale::tr(ui, "Enums"));
+                let project = self.project.as_ref().unwrap();
+                for (group, prefix) in [("enums", "LocalEnum"), ("externalEnums", "ExternEnum")] {
+                    for def in project.json["defs"][group].as_array().into_iter().flatten() {
+                        let name = text(def, "identifier", "Enum");
+                        if source_controls::button(ui, RichText::new(name)).clicked() {
+                            chosen = Some(format!("{prefix}.{name}"));
+                            if convert.is_none() {
+                                apply = chosen.clone();
+                            }
+                        }
+                    }
+                }
+                if project.json["defs"]["enums"].as_array().is_none_or(Vec::is_empty)
+                    && project.json["defs"]["externalEnums"].as_array().is_none_or(Vec::is_empty)
+                {
+                    ui.label(locale::tr(ui, "Create an enum in the Enum panel first."));
+                    if source_controls::button(ui, "Open enum panel").clicked() {
+                        self.show_panel(Some(Panel::Enums));
+                        dismiss = true;
+                    }
+                }
+                if convert.is_some() && let Some(kind) = &chosen {
+                    ui.separator();
+                    ui.colored_label(
+                        theme::ACCENT,
+                        locale::tr(ui, "Converting changes existing values and defaults. Values incompatible with the chosen type will be cleared."),
+                    );
+                    let label = if kind.contains('.') { kind } else { locale::tr(ui, kind) };
+                    ui.label(locale::format(ui, "Convert to {kind}", &[("kind", label)]));
+                    if source_controls::button(ui, "Convert all values").clicked() {
+                        apply = chosen.clone();
+                    }
+                }
+            });
         if dismiss {
             open = false;
         }
@@ -2379,7 +2841,7 @@ impl EditorApp {
             return;
         }
         let mut chosen = None;
-        egui::Window::new("Create a layer")
+        egui::Window::new(locale::tr_ctx(ctx, "Create a layer"))
             .id(id)
             .open(&mut open)
             .resizable(false)
@@ -2399,12 +2861,16 @@ impl EditorApp {
                         "Tiles rendered automatically using rules and a source IntGrid layer.",
                     ),
                 ] {
-                    if source_controls::add_sized_button(ui, [140., 42.], egui::Button::new(kind))
-                        .clicked()
+                    if source_controls::add_sized_button(
+                        ui,
+                        [140., 42.],
+                        egui::Button::new(locale::tr(ui, kind)),
+                    )
+                    .clicked()
                     {
                         chosen = Some(kind);
                     }
-                    ui.label(description);
+                    ui.label(locale::tr(ui, description));
                     ui.add_space(8.);
                 }
             });
@@ -2414,232 +2880,6 @@ impl EditorApp {
             open = false;
         }
         ctx.data_mut(|d| d.insert_temp(id, open));
-    }
-    fn source_rule_list(&mut self, ui: &mut egui::Ui, height: f32) {
-        let definitions = self
-            .project
-            .as_ref()
-            .and_then(|p| p.json["defs"]["layers"].as_array())
-            .cloned()
-            .unwrap_or_default();
-        egui::ComboBox::from_id_salt("source-rule-layer")
-            .width(230.)
-            .selected_text(
-                definitions
-                    .iter()
-                    .find(|d| d["uid"].as_i64() == self.definition_uid)
-                    .map(|d| text(d, "identifier", "Layer"))
-                    .unwrap_or("Choose a layer"),
-            )
-            .show_ui(ui, |ui| {
-                for d in &definitions {
-                    if matches!(text(d, "type", ""), "IntGrid" | "AutoLayer") {
-                        let uid = d["uid"].as_i64();
-                        if ui
-                            .selectable_value(
-                                &mut self.definition_uid,
-                                uid,
-                                text(d, "identifier", "Layer"),
-                            )
-                            .changed()
-                        {
-                            self.rule_group_uid = None;
-                            self.rule_uid = None;
-                        }
-                    }
-                }
-            });
-        let Some(layer) = self.definition_uid else {
-            return;
-        };
-        ui.horizontal(|ui| {
-            if orange(ui, "+ GROUP", egui::vec2(155., 41.)).clicked()
-                && let Some(uid) = self.edit("Rule group created", |p| {
-                    p.add_auto_rule_group(layer, "New group")
-                })
-            {
-                self.rule_group_uid = Some(uid);
-                self.rule_uid = None;
-            }
-            if orange(ui, "WIZARD", egui::vec2(89., 41.)).clicked() {
-                self.begin_rule_wizard(ui.ctx(), layer, None);
-            }
-        });
-        let groups = definitions
-            .iter()
-            .find(|d| d["uid"] == layer)
-            .and_then(|d| d["autoRuleGroups"].as_array())
-            .cloned()
-            .unwrap_or_default();
-        egui::ScrollArea::vertical()
-            .id_salt("source-rule-groups")
-            .max_height((height - 85.).max(40.))
-            .show(ui, |ui| {
-                for (index, group) in groups.iter().enumerate() {
-                    let gid = group["uid"].as_i64().unwrap_or(-1);
-                    let open_id = egui::Id::new(("source-rule-group-expanded", layer, gid));
-                    let mut expanded = ui
-                        .ctx()
-                        .data_mut(|d| d.get_temp::<bool>(open_id))
-                        .unwrap_or(false);
-                    ui.set_width(250.);
-                    let item = egui::Frame::new()
-                        .fill(theme::DARK)
-                        .stroke(Stroke::new(1_f32, theme::LIGHT))
-                        .inner_margin(4)
-                        .show(ui, |ui| {
-                            ui.horizontal(|ui| {
-                                ui.add(egui::Label::new("≡").sense(Sense::drag()))
-                                    .dnd_set_drag_payload((layer, gid));
-                                if source_controls::add_sized_button(
-                                    ui,
-                                    [170., 28.],
-                                    egui::Button::new(text(group, "name", "Group"))
-                                        .selected(self.rule_group_uid == Some(gid))
-                                        .truncate(),
-                                )
-                                .clicked()
-                                {
-                                    expanded = !expanded;
-                                    self.rule_group_uid = Some(gid);
-                                    self.rule_uid = None;
-                                    self.clipboard_focus(
-                                        ui.ctx(),
-                                        ClipTarget::Rule {
-                                            layer,
-                                            group: gid,
-                                            rule: None,
-                                        },
-                                    );
-                                }
-                                source_menu(ui, |ui| {
-                                    self.clipboard_menu(
-                                        ui,
-                                        ClipTarget::Rule {
-                                            layer,
-                                            group: gid,
-                                            rule: None,
-                                        },
-                                    );
-                                    if ui
-                                        .button("Edit out-of-bounds policy for all rules…")
-                                        .clicked()
-                                    {
-                                        self.begin_group_policy(ui.ctx(), layer, gid);
-                                        ui.close();
-                                    }
-                                    if source_controls::button(ui, "Duplicate and remap…").clicked()
-                                    {
-                                        self.begin_group_remap(ui.ctx(), layer, gid);
-                                        ui.close();
-                                    }
-                                    if ui
-                                        .button(if expanded { "Collapse" } else { "Expand" })
-                                        .clicked()
-                                    {
-                                        expanded = !expanded;
-                                        ui.close();
-                                    }
-                                    if source_controls::button(ui, "Edit with wizard…").clicked()
-                                    {
-                                        self.begin_rule_wizard(ui.ctx(), layer, Some(gid));
-                                        ui.close();
-                                    }
-                                });
-                            });
-                            if expanded {
-                                for (rule_index, rule) in
-                                    group["rules"].as_array().into_iter().flatten().enumerate()
-                                {
-                                    let rid = rule["uid"].as_i64().unwrap_or(-1);
-                                    let response = source_controls::add_sized_button(
-                                        ui,
-                                        [236., 32.],
-                                        egui::Button::new(format!(
-                                            "≡ Rule {}  {}",
-                                            rule_index + 1,
-                                            if rule["active"] == false {
-                                                "(disabled)"
-                                            } else {
-                                                ""
-                                            }
-                                        ))
-                                        .selected(
-                                            self.rule_uid == Some(rid)
-                                                && self.rule_group_uid == Some(gid),
-                                        )
-                                        .sense(Sense::click_and_drag()),
-                                    );
-                                    response.dnd_set_drag_payload((layer, gid, rid));
-                                    if response.clicked() {
-                                        self.rule_group_uid = Some(gid);
-                                        self.rule_uid = Some(rid);
-                                        self.clipboard_focus(
-                                            ui.ctx(),
-                                            ClipTarget::Rule {
-                                                layer,
-                                                group: gid,
-                                                rule: Some(rid),
-                                            },
-                                        );
-                                    }
-                                    if let Some(payload) =
-                                        response.dnd_release_payload::<(i64, i64, i64)>()
-                                        && payload.0 == layer
-                                        && payload.2 != rid
-                                    {
-                                        self.edit("Rule reordered", |p| {
-                                            p.move_auto_rule_to_group(
-                                                layer, payload.1, gid, payload.2, rule_index,
-                                            )
-                                        });
-                                    }
-                                    response.context_menu(|ui| {
-                                        self.clipboard_menu(
-                                            ui,
-                                            ClipTarget::Rule {
-                                                layer,
-                                                group: gid,
-                                                rule: Some(rid),
-                                            },
-                                        )
-                                    });
-                                }
-                                if source_controls::add_sized_button(
-                                    ui,
-                                    [236., 28.],
-                                    egui::Button::new("+ RULE"),
-                                )
-                                .clicked()
-                                    && let Some(uid) = self
-                                        .edit("Rule created", |p| p.add_auto_rule(layer, gid, 3))
-                                {
-                                    self.rule_group_uid = Some(gid);
-                                    self.rule_uid = Some(uid);
-                                }
-                            }
-                        });
-                    ui.ctx().data_mut(|d| d.insert_temp(open_id, expanded));
-                    if let Some(payload) = item.response.dnd_release_payload::<(i64, i64, i64)>()
-                        && payload.0 == layer
-                        && payload.1 != gid
-                    {
-                        let count = group["rules"].as_array().map_or(0, Vec::len);
-                        self.edit("Rule moved to group", |p| {
-                            p.move_auto_rule_to_group(layer, payload.1, gid, payload.2, count)
-                        });
-                    }
-                    if let Some(payload) = item.response.dnd_release_payload::<(i64, i64)>()
-                        && payload.0 == layer
-                        && payload.1 != gid
-                    {
-                        self.edit("Rule group reordered", |p| {
-                            p.reorder_auto_rule_group(layer, payload.1, index)
-                        });
-                    }
-                    ui.add_space(8.);
-                }
-            });
     }
 }
 
@@ -2746,6 +2986,176 @@ mod tests {
             );
         }
     }
+    #[test]
+    fn world_level_operations_follow_the_source_button_strip() {
+        let ctx = egui::Context::default();
+        theme::configure(&ctx);
+        let mut app = EditorApp::empty();
+        app.set_project(Project::new());
+        let mut draw = |time| {
+            ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1440., 800.),
+                    )),
+                    time: Some(time),
+                    ..Default::default()
+                },
+                |ctx| assert!(app.source_panel(ctx, Panel::World)),
+            )
+        };
+        draw(0.);
+        draw(1.);
+        let output = draw(2.);
+        let rects = output.shapes.iter().filter_map(|shape| match &shape.shape {
+            egui::Shape::Rect(rect) => Some(rect),
+            _ => None,
+        });
+
+        let button_rects = rects
+            .clone()
+            .filter(|shape| {
+                let [r, g, b, _] = shape.fill.to_array();
+                r > 100
+                    && u16::from(r) > u16::from(g) * 2
+                    && b < 50
+                    && shape.rect.top() < 111.
+                    && shape.rect.height() >= 40.
+            })
+            .map(|shape| (shape.rect.min, shape.rect.size()))
+            .collect::<Vec<_>>();
+        let expected = [
+            (egui::pos2(17., 106.), egui::vec2(266.69, 42.66)),
+            (egui::pos2(285.69, 106.), egui::vec2(42.66, 42.66)),
+            (egui::pos2(330.34, 106.), egui::vec2(42.66, 42.66)),
+        ];
+        assert_eq!(button_rects.len(), expected.len());
+        for (&(position, size), (source_position, source_size)) in button_rects.iter().zip(expected) {
+            assert!((position - source_position).abs().max_elem() <= 1.);
+            assert!((size - source_size).abs().max_elem() <= 1.);
+        }
+        assert!(
+            rects.clone().any(|shape| {
+                shape.fill == GROUP_BAR
+                    && (shape.rect.min - egui::pos2(17., 166.)).abs().max_elem() <= 1.
+            }),
+            "World settings starts after the source 16 point gutter"
+        );
+    }
+
+    #[test]
+    fn multi_world_panel_uses_the_source_action_rows() {
+        let ctx = egui::Context::default();
+        theme::configure(&ctx);
+        let mut app = EditorApp::empty();
+        let mut project = Project::new();
+        project.add_world("Away").unwrap();
+        app.set_project(project);
+        let mut draw = |time| {
+            ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1440., 900.),
+                    )),
+                    time: Some(time),
+                    ..Default::default()
+                },
+                |ctx| assert!(app.source_panel(ctx, Panel::World)),
+            )
+        };
+        draw(0.);
+        draw(1.);
+        let output = draw(2.);
+        let rects: Vec<_> = output
+            .shapes
+            .iter()
+            .filter_map(|shape| match &shape.shape {
+                egui::Shape::Rect(rect) => Some((rect.fill, rect.rect)),
+                _ => None,
+            })
+            .collect();
+        for (color, x, y, width, height) in [
+            (theme::LIGHT, 16., 105., 269., 45.),
+            (Color32::from_rgb(227, 77, 0), 286., 106., 43., 43.),
+            (Color32::from_rgb(121, 17, 5), 330., 106., 43., 43.),
+            (Color32::from_rgb(227, 77, 0), 17., 159., 266., 43.),
+            (GROUP_BAR, 17., 218., 356., 28.),
+        ] {
+            assert!(
+                rects.iter().any(|(fill, rect)| {
+                    *fill == color
+                        && (rect.min - egui::pos2(x, y)).abs().max_elem() <= 1.
+                        && (rect.size() - egui::vec2(width, height)).abs().max_elem() <= 1.
+                }),
+                "missing action or heading at ({x}, {y}) with size ({width}, {height}); same-color controls: {:?}",
+                rects.iter().filter(|(fill, _)| *fill == color).collect::<Vec<_>>()
+            );
+        }
+    }
+
+    #[test]
+    fn world_and_level_forms_anchor_controls_and_reserve_the_world_scrollbar() {
+        for (panel, xs) in [
+            (Panel::World, &[143., 135.][..]),
+            (Panel::Level, &[139.][..]),
+        ] {
+            let ctx = egui::Context::default();
+            theme::configure(&ctx);
+            let mut app = EditorApp::empty();
+            app.set_project(Project::new());
+            let mut draw = |time| {
+                ctx.run(
+                    egui::RawInput {
+                        screen_rect: Some(Rect::from_min_size(
+                            egui::Pos2::ZERO,
+                            egui::vec2(1440., 800.),
+                        )),
+                        time: Some(time),
+                        ..Default::default()
+                    },
+                    |ctx| assert!(app.source_panel(ctx, panel)),
+                )
+            };
+            draw(0.);
+            draw(1.);
+            let output = draw(2.);
+            let rects = output.shapes.iter().filter_map(|shape| match &shape.shape {
+                egui::Shape::Rect(shape) => Some(shape),
+                _ => None,
+            });
+            for x in xs {
+                assert!(
+                    rects.clone().any(|shape| {
+                        shape.rect.left() == *x
+                            && shape.rect.width() == 60.
+                            && shape.rect.height() == 33.
+                    }),
+                    "missing source-sized numeric box at x={x}"
+                );
+            }
+            if panel == Panel::World {
+                let headers = rects
+                    .filter(|shape| shape.fill == GROUP_BAR && shape.rect.height() == 28.)
+                    .map(|shape| (shape.rect.left(), shape.rect.right()))
+                    .collect::<Vec<_>>();
+                assert_eq!(
+                    headers,
+                    [(17., 373.); 3],
+                    "World forms reserve the 10 point scrollbar"
+                );
+            } else {
+                assert!(
+                    rects.clone().any(|shape| {
+                        shape.fill == GROUP_BAR && shape.rect.min == egui::pos2(21., 112.)
+                    }),
+                    "Current level keeps the source gutter below its header"
+                );
+            }
+        }
+    }
+
     fn draw_fields(
         app: &mut EditorApp,
         ctx: &egui::Context,
@@ -2797,6 +3207,362 @@ mod tests {
             );
         }
     }
+    #[test]
+    fn custom_field_world_view_checkbox_is_visible_only_for_level_fields() {
+        let mut project = Project::new();
+        let entity = project.add_entity_def("Actor", 16, 16).unwrap();
+        for owner in [None, Some(entity)] {
+            project
+                .add_field_definition(owner, "Caption", "String", false)
+                .unwrap();
+        }
+        let mut app = EditorApp::empty();
+        app.set_project(project);
+        for (owner, panel) in [(None, Panel::Fields), (Some(entity), Panel::Entities)] {
+            app.field_owner = owner;
+            let ctx = egui::Context::default();
+            theme::configure(&ctx);
+            let mut draw = |time| {
+                ctx.run(
+                    egui::RawInput {
+                        time: Some(time),
+                        screen_rect: Some(Rect::from_min_size(
+                            egui::Pos2::ZERO,
+                            egui::vec2(1440., 1200.),
+                        )),
+                        ..Default::default()
+                    },
+                    |ctx| {
+                        assert!(app.source_panel(ctx, panel));
+                    },
+                )
+            };
+            draw(0.);
+            let output = draw(1.);
+            let has_label = |label| {
+                output
+                    .shapes
+                    .iter()
+                    .any(|shape| text_center(&shape.shape, label).is_some())
+            };
+            assert!(has_label("Always show"), "field form must be visible");
+            assert_eq!(has_label("Show in world view"), owner.is_none());
+        }
+    }
+
+    #[test]
+    fn field_display_controls_follow_the_owner_and_mode_in_one_row() {
+        let mut project = Project::new();
+        let entity = project.add_entity_def("Actor", 16, 16).unwrap();
+        let health = project
+            .add_field_definition(None, "Health", "Int", false)
+            .unwrap();
+        project.set_field_default(health, json!(5)).unwrap();
+        project
+            .update_field_definition(
+                health,
+                &json!({"editorDisplayMode":"NameAndValue","editorDisplayScale":1.25,
+                    "editorShowInWorld":true,"editorDisplayPos":"Beneath"}),
+            )
+            .unwrap();
+        let path = project
+            .add_field_definition(Some(entity), "Path", "Point", true)
+            .unwrap();
+        project
+            .update_field_definition(
+                path,
+                &json!({"editorDisplayMode":"PointPath","editorLinkStyle":"CurvedArrow",
+                    "editorDisplayScale":1.25,"editorDisplayPos":"Beneath"}),
+            )
+            .unwrap();
+        for (owner, panel) in [(None, Panel::Fields), (Some(entity), Panel::Entities)] {
+            let ctx = egui::Context::default();
+            theme::configure(&ctx);
+            let mut app = EditorApp::empty();
+            app.set_project(project.clone());
+            app.field_owner = owner;
+            app.settings.set_ui_state_int("extraEntityDetails", None, 0);
+            let draw = |app: &mut EditorApp, time| {
+                ctx.run(
+                    egui::RawInput {
+                        screen_rect: Some(Rect::from_min_size(
+                            egui::Pos2::ZERO,
+                            egui::vec2(1440., 900.),
+                        )),
+                        time: Some(time),
+                        ..Default::default()
+                    },
+                    |ctx| assert!(app.source_panel(ctx, panel)),
+                )
+            };
+            draw(&mut app, 0.);
+            let output = draw(&mut app, 1.);
+            let at = |label| {
+                output
+                    .shapes
+                    .iter()
+                    .find_map(|shape| text_center(&shape.shape, label))
+            };
+            assert!(at("Beneath").is_none(), "unavailable text position");
+            if owner.is_none() {
+                let world = at("Show in world view").unwrap();
+                assert!(world.y < 500., "Display row is too low: {}", world.y);
+                let scale = at("125").expect("scale displayed as a percentage");
+                assert!((world.y - scale.y).abs() <= 2.);
+                assert!(at("1234").is_some(), "paired prefix and suffix preview");
+            } else {
+                let mode = at("Show path of points").unwrap();
+                let style = at("Curved arrow").unwrap();
+                assert!((mode.y - style.y).abs() <= 2.);
+                assert!(at("125").is_none(), "graphical modes have no text scale");
+                assert!(at("Show in world view").is_none());
+            }
+        }
+    }
+
+    #[test]
+    fn level_point_picker_keeps_the_form_open_through_cancel_and_canvas_commit() {
+        let mut project = Project::new();
+        project.add_layer("Actors", "Entities", 16).unwrap();
+        let level = project.level_keys()[0];
+        let uid = project
+            .add_field_definition(None, "Target", "Point", false)
+            .unwrap();
+        let original = json!({"cx":10,"cy":8});
+        project
+            .set_field_editor_value(level, None, uid, original.clone())
+            .unwrap();
+        let mut app = EditorApp::empty();
+        app.set_project(project);
+        app.show_panel(Some(Panel::Level));
+        app.fit = false;
+        app.viewport.center = [128., 128.];
+        app.viewport.zoom = 1.;
+        let ctx = egui::Context::default();
+        theme::configure(&ctx);
+        let screen = Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1440., 900.));
+        let draw = |app: &mut EditorApp, events| {
+            ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(screen),
+                    events,
+                    ..Default::default()
+                },
+                |ctx| {
+                    app.shortcuts(ctx);
+                    let level_point_picker_was_open = app.picking_point_in_level_panel();
+                    egui::CentralPanel::default()
+                        .frame(egui::Frame::NONE)
+                        .show(ctx, |ui| {
+                            let (rect, response) =
+                                ui.allocate_exact_size(ui.available_size(), Sense::click_and_drag());
+                            app.canvas_input(ctx, rect, &response);
+                        });
+                    app.dialogs(ctx, level_point_picker_was_open);
+                },
+            )
+        };
+        let click = |app: &mut EditorApp, pos| {
+            draw(app, vec![egui::Event::PointerMoved(pos)]);
+            for pressed in [true, false] {
+                draw(
+                    app,
+                    vec![egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: Default::default(),
+                    }],
+                );
+            }
+        };
+        let control = |output: &egui::FullOutput, label| {
+            output.shapes
+                .iter()
+                .find_map(|shape| text_center(&shape.shape, label))
+                .unwrap()
+        };
+        let value = |app: &EditorApp| {
+            app.project.as_ref().unwrap().level(level).unwrap()["fieldInstances"][0]["__value"]
+                .clone()
+        };
+        draw(&mut app, vec![]);
+        let pick = control(&draw(&mut app, vec![]), "10,8");
+        click(&mut app, pick);
+        assert!(app.picking_point());
+        assert_eq!(app.panel, Some(Panel::Level));
+        let cancel = control(&draw(&mut app, vec![]), "CANCEL");
+        click(&mut app, cancel);
+        assert!(!app.picking_point());
+        assert_eq!(value(&app), original);
+
+        click(&mut app, pick);
+        let point = app
+            .viewport
+            .to_screen([104., 120.], screen.min.into(), screen.size().into());
+        click(&mut app, point.into());
+        assert_eq!(value(&app), json!({"cx":6,"cy":7}));
+        assert!(!app.picking_point());
+        assert_eq!(app.panel, Some(Panel::Level));
+        let updated = control(&draw(&mut app, vec![]), "6,7");
+        click(&mut app, updated);
+        let close = control(&draw(&mut app, vec![]), "×");
+        click(&mut app, close);
+        assert!(!app.picking_point());
+        assert!(app.panel.is_none());
+    }
+
+    #[test]
+    fn level_field_panel_returns_to_current_level_when_dismissed() {
+        let mut app = EditorApp::empty();
+        app.set_project(Project::new());
+        let ctx = egui::Context::default();
+        theme::configure(&ctx);
+        let draw = |app: &mut EditorApp, events| {
+            ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1440., 900.),
+                    )),
+                    events,
+                    ..Default::default()
+                },
+                |ctx| {
+                    app.shortcuts(ctx);
+                    if let Some(panel) = app.panel {
+                        app.source_panel(ctx, panel);
+                    }
+                },
+            )
+        };
+        app.show_panel(Some(Panel::Fields));
+        draw(&mut app, Vec::new());
+        let output = draw(&mut app, Vec::new());
+        let close = output
+            .shapes
+            .iter()
+            .find_map(|shape| text_center(&shape.shape, "×"))
+            .unwrap();
+        draw(&mut app, vec![egui::Event::PointerMoved(close)]);
+        for pressed in [true, false] {
+            draw(
+                &mut app,
+                vec![
+                    egui::Event::PointerMoved(close),
+                    egui::Event::PointerButton {
+                        pos: close,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: Default::default(),
+                    },
+                ],
+            );
+        }
+        assert_eq!(app.panel, Some(Panel::Level));
+
+        app.show_panel(Some(Panel::Fields));
+        draw(
+            &mut app,
+            vec![egui::Event::Key {
+                key: Key::Escape,
+                physical_key: Some(Key::Escape),
+                pressed: true,
+                repeat: false,
+                modifiers: Default::default(),
+            }],
+        );
+        assert_eq!(app.panel, Some(Panel::Level));
+    }
+
+    #[test]
+    fn entity_and_level_field_definitions_share_one_control_column() {
+        fn text_x(shape: &egui::Shape, label: &str) -> Option<f32> {
+            match shape {
+                egui::Shape::Text(text) if text.galley.job.text == label => Some(text.pos.x),
+                egui::Shape::Vec(shapes) => shapes
+                    .iter()
+                    .filter_map(|shape| text_x(shape, label))
+                    .max_by(f32::total_cmp),
+                _ => None,
+            }
+        }
+
+        let mut project = Project::new();
+        let entity = project.add_entity_def("Actor", 16, 16).unwrap();
+        for owner in [None, Some(entity)] {
+            let field = project
+                .add_field_definition(owner, "Caption", "String", false)
+                .unwrap();
+            project
+                .update_field_definition(
+                    field,
+                    &json!({"doc":"Example documentation","canBeNull":false}),
+                )
+                .unwrap();
+            project
+                .set_field_default(field, json!("Original caption"))
+                .unwrap();
+        }
+        for (owner, panel) in [(None, Panel::Fields), (Some(entity), Panel::Entities)] {
+            let ctx = egui::Context::default();
+            theme::configure(&ctx);
+            let mut app = EditorApp::empty();
+            app.set_project(project.clone());
+            app.field_owner = owner;
+            app.settings.set_ui_state_int("extraEntityDetails", None, 0);
+            let mut draw = |time| {
+                ctx.run(
+                    egui::RawInput {
+                        time: Some(time),
+                        screen_rect: Some(Rect::from_min_size(
+                            egui::Pos2::ZERO,
+                            egui::vec2(1440., 900.),
+                        )),
+                        ..Default::default()
+                    },
+                    |ctx| assert!(app.source_panel(ctx, panel)),
+                )
+            };
+            draw(0.);
+            draw(1.);
+            let output = draw(2.);
+            let column = |label| {
+                output
+                    .shapes
+                    .iter()
+                    .filter_map(|item| text_x(&item.shape, label))
+                    .max_by(f32::total_cmp)
+                    .unwrap_or_else(|| panic!("{label} is missing in {}", title(panel)))
+            };
+            if owner.is_none() {
+                assert!(
+                    output.shapes.iter().any(|item| {
+                        matches!(&item.shape, egui::Shape::Rect(shape) if
+                            shape.fill == theme::LIGHT
+                            && shape.rect == Rect::from_min_size(egui::pos2(0., 34.), egui::vec2(790., 53.))
+                        )
+                    }),
+                    "level field definitions use a 750-point body with 20-point side padding"
+                );
+                let form_x = column("GENERAL SETTINGS");
+                assert!(
+                    (form_x - 228.).abs() <= 1.,
+                    "field properties start at x={form_x}, expected x=228"
+                );
+            }
+            let identifier = column("Caption");
+            for control in ["Example documentation", "Original caption"] {
+                let x = column(control);
+                assert!(
+                    (x - identifier).abs() <= 1.,
+                    "{control} starts at {x}, but the field identifier starts at {identifier} in {}",
+                    title(panel)
+                );
+            }
+        }
+    }
+
     #[test]
     fn file_extension_editor_preserves_source_array_schema_and_normalization() {
         let mut p = Project::new();
@@ -2920,8 +3686,8 @@ mod tests {
             .find(|(_, text)| text.galley.job.text == "GENERAL SETTINGS")
             .unwrap()
             .1;
-        for label in ["Field identifier", "Documentation", "Minimum", "Maximum"] {
-            let (clip, text) = items
+        let field_text = |label| {
+            items
                 .iter()
                 .find(|(_, text)| {
                     text.pos.y > general.pos.y
@@ -2934,7 +3700,10 @@ mod tests {
                             .join(" ")
                             == label
                 })
-                .unwrap_or_else(|| panic!("missing third-column label {label}"));
+                .unwrap_or_else(|| panic!("missing third-column label {label}"))
+        };
+        for label in ["Field identifier", "Documentation", "Limits", "Can be null"] {
+            let (clip, text) = field_text(label);
             let bounds = Rect::from_min_size(text.pos, text.galley.size());
             assert!(
                 bounds.left() >= general.pos.x - 0.1,
@@ -2946,9 +3715,8 @@ mod tests {
                 "{label} is clipped instead of readable: text {bounds:?}, clip {clip:?}"
             );
             assert!(text.galley.rows.len() <= 2, "{label} wraps inside words");
-            let reserve = if label == "Maximum" { 8. } else { 32. };
             assert!(
-                bounds.right() <= general.pos.x + 124. - reserve + 0.1,
+                bounds.right() <= general.pos.x + FIELD_LABEL_WIDTH - 32. + 0.1,
                 "{label} overlaps its label-cell padding/info pill: {bounds:?}"
             );
             assert!(
@@ -2956,6 +3724,12 @@ mod tests {
                 "source dt labels use 9.5pt"
             );
         }
+        let (_, default) = field_text("Default value");
+        let (_, limits) = field_text("Limits");
+        let (_, nullable) = field_text("Can be null");
+        let (_, range_separator) = field_text("to");
+        assert!(default.pos.y < limits.pos.y && limits.pos.y < nullable.pos.y);
+        assert!((limits.pos.y - range_separator.pos.y).abs() <= 3.);
         let body = output
             .shapes
             .iter()

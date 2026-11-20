@@ -8,6 +8,7 @@ use serde_json::{Value, json};
 pub enum FieldArrayEdit {
     Set { index: usize, value: Value },
     Insert { index: usize },
+    InsertValue { index: usize, value: Value },
     Remove { index: usize },
     Move { from: usize, to: usize },
     Reset { index: usize },
@@ -580,9 +581,11 @@ impl Project {
             let values = f["realEditorValues"]
                 .as_array_mut()
                 .ok_or_else(|| invalid("field editor values missing"))?;
+            let insert = matches!(edit, FieldArrayEdit::InsertValue { .. });
             match edit {
-                FieldArrayEdit::Set { index, value } => {
-                    if index >= values.len() {
+                FieldArrayEdit::Set { index, value }
+                | FieldArrayEdit::InsertValue { index, value } => {
+                    if index > values.len() || !insert && index == values.len() {
                         return Err(invalid("array index outside field"));
                     }
                     let mut value = value;
@@ -601,7 +604,12 @@ impl Project {
                     if base(&d) == "EntityRef" {
                         validate_refs(p, key, entity, &d, std::slice::from_ref(&value))?;
                     }
-                    values[index] = wrapper(&d, &value, 2)?;
+                    let value = wrapper(&d, &value, 2)?;
+                    if insert {
+                        values.insert(index, value);
+                    } else {
+                        values[index] = value;
+                    }
                 }
                 FieldArrayEdit::Insert { index } => {
                     if index > values.len() {
@@ -1504,7 +1512,7 @@ pub(crate) fn offset_point_fields(
                     let is_array = kind.starts_with("Array<");
                     let mut out = vec![];
                     let mut wrappers = vec![];
-                    for v in f["realEditorValues"]
+                    for mut v in f["realEditorValues"]
                         .as_array()
                         .cloned()
                         .unwrap_or_default()
@@ -1531,7 +1539,10 @@ pub(crate) fn offset_point_fields(
                         let y = coords[1] + dy;
                         if x >= 0 && y >= 0 && x < width && y < height {
                             out.push(json!({"cx":x,"cy":y}));
-                            wrappers.push(json!({"id":"V_String","params":[format!("{x},{y}")]}));
+                            if dx != 0 || dy != 0 {
+                                v["params"][0] = json!(format!("{x},{y}"));
+                            }
+                            wrappers.push(v);
                         }
                     }
                     f["__value"] = if is_array {

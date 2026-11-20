@@ -1,11 +1,15 @@
 //! Common layer settings from the pinned LDtk EditLayerDefs form.
-use super::world_level_panel::text_input;
+use super::world_level_panel::form_text_input;
 use super::*;
 
-fn group(ui: &mut egui::Ui, title: &str, body: impl FnOnce(&mut egui::Ui)) {
-    let id = ui.make_persistent_id(title);
+#[path = "intgrid_settings.rs"]
+mod intgrid_settings;
+
+fn group(ui: &mut egui::Ui, title: &str, body: impl FnOnce(&mut egui::Ui)) -> bool {
+    let id = egui::Id::new(("layer-settings-section", title));
     let open = ui.data_mut(|d| d.get_temp::<bool>(id)).unwrap_or(true);
-    let open = section(ui, title, open, |ui| {
+    let title = locale::tr(ui, title).to_uppercase();
+    let open = section(ui, &title, open, |ui| {
         egui::Frame::new()
             .inner_margin(egui::Margin::symmetric(8, 4))
             .show(ui, |ui| {
@@ -14,9 +18,30 @@ fn group(ui: &mut egui::Ui, title: &str, body: impl FnOnce(&mut egui::Ui)) {
             });
     });
     ui.data_mut(|d| d.insert_temp(id, open));
+    open
 }
+fn layer_row(ui: &mut egui::Ui, label: &str, body: impl FnOnce(&mut egui::Ui)) {
+    // The row helper adds a 10-point gutter to the source's 160-point track.
+    row_width(ui, label, 150., body);
+}
+
+fn unit(ui: &mut egui::Ui, label: &str) {
+    ui.label(RichText::new(locale::tr(ui, label)).color(Color32::from_white_alpha(128)));
+}
+
+pub(super) fn layer_type_icon(kind: &str) -> egui::ImageSource<'static> {
+    match kind {
+        "Entities" => egui::include_image!("../../assets/icons/entity.png"),
+        "IntGrid" => egui::include_image!("../../assets/icons/intGrid.png"),
+        "AutoLayer" => egui::include_image!("../../assets/icons/autoLayer.svg"),
+        _ => egui::include_image!("../../assets/icons/tile.png"),
+    }
+}
+
 fn checkbox(ui: &mut egui::Ui, def: &Value, patch: &mut Value, key: &str, label: &str) {
-    let mut value = def[key].as_bool().unwrap_or(false);
+    let mut value = def[key]
+        .as_bool()
+        .unwrap_or(matches!(key, "renderInWorldView" | "canSelectWhenInactive"));
     if source_controls::checkbox(ui, &mut value, label).changed() {
         patch[key] = json!(value);
     }
@@ -28,7 +53,13 @@ fn integer(ui: &mut egui::Ui, def: &Value, patch: &mut Value, key: &str, min: i6
     } else {
         current.to_string()
     };
-    if let Some(draft) = text_input(ui, key, &display, 56.) {
+    let placeholder = match key {
+        "guideGridWid" => Some("(width)"),
+        "guideGridHei" => Some("(height)"),
+        _ => None,
+    };
+    let style = source_controls::NumberStyle::Plain { placeholder };
+    if let Some(draft) = source_controls::number_input(ui, key, &display, style) {
         let value = if draft.trim().is_empty() {
             Some(0)
         } else {
@@ -44,9 +75,17 @@ fn integer(ui: &mut egui::Ui, def: &Value, patch: &mut Value, key: &str, min: i6
     }
 }
 fn percent(ui: &mut egui::Ui, def: &Value, patch: &mut Value, key: &str, min: f64, max: f64) {
-    let current = def[key].as_f64().unwrap_or(0.);
+    let current = def[key]
+        .as_f64()
+        .unwrap_or(if key == "guideOpacity" { 0.33 } else { 0. });
     let display = format!("{:.0}", (current * 100. + 0.5).floor());
-    if let Some(draft) = text_input(ui, key, &display, 56.) {
+    let style = match key {
+        "displayOpacity" | "inactiveOpacity" | "guideOpacity" => {
+            source_controls::NumberStyle::PercentSlider { min, max }
+        }
+        _ => source_controls::NumberStyle::Percent,
+    };
+    if let Some(draft) = source_controls::number_input(ui, key, &display, style) {
         let value = if key == "parallaxFactorY" && draft.trim().is_empty() {
             def["parallaxFactorX"].as_f64().map(|x| x * 100.)
         } else {
@@ -63,7 +102,36 @@ fn percent(ui: &mut egui::Ui, def: &Value, patch: &mut Value, key: &str, min: f6
             patch[key] = json!((value.clamp(min, max) + 0.5).floor() / 100.);
         }
     }
-    ui.label("%");
+}
+
+fn layer_color(ui: &mut egui::Ui, def: &Value, patch: &mut Value, key: &str) -> bool {
+    ui.spacing_mut().item_spacing.x = 4.;
+    let mut color = def[key]
+        .as_str()
+        .map(theme::color)
+        .map(|c| [c.r(), c.g(), c.b()]);
+    if source_colors::form_color_editor(ui, &mut color).changed()
+        && let Some([r, g, b]) = color
+    {
+        patch[key] = json!(format!("#{r:02X}{g:02X}{b:02X}"));
+    }
+    color.is_some()
+}
+
+fn reset_layer_color(ui: &mut egui::Ui, patch: &mut Value, key: &str) {
+    let response = ui.add_sized(
+        [54., 32.],
+        egui::Button::image(
+            egui::Image::new(egui::include_image!("../../assets/icons/reset.svg"))
+                .fit_to_exact_size(Vec2::splat(22.)),
+        )
+        .frame(false),
+    );
+    let label = locale::tr(ui, "Reset assigned color");
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label));
+    if response.on_hover_text(label).clicked() {
+        patch[key] = Value::Null;
+    }
 }
 
 impl EditorApp {
@@ -73,19 +141,50 @@ impl EditorApp {
         let mut selected = def["tilesetDefUid"].as_i64().unwrap_or(-1);
         let previous = selected;
         self.tileset_choice(ui, "Tileset", &mut selected);
-        if selected != previous
-            && let Some(discarded) = self.edit_recoverable("Tileset assigned", |p| {
-                p.assign_tileset_with_policy(
-                    uid,
-                    (selected >= 0).then_some(selected),
-                    options.mode,
-                    options.clear_overrides,
-                    options.allow_loss,
-                )
-            })
-            && discarded > 0
+        if selected != previous {
+            self.apply_layer_tileset(uid, (selected >= 0).then_some(selected), options);
+        }
+    }
+
+    fn apply_layer_tileset(&mut self, uid: i64, atlas: Option<i64>, options: RemapOptions) {
+        if let Some(discarded) = self.edit_recoverable("Tileset assigned", |p| {
+            p.assign_tileset_with_policy(
+                uid,
+                atlas,
+                options.mode,
+                options.clear_overrides,
+                options.allow_loss,
+            )
+        }) && discarded > 0
         {
             self.status = format!("Tileset assigned; removed {discarded} references");
+        }
+    }
+
+    fn layer_tag_row(
+        &mut self,
+        ui: &mut egui::Ui,
+        def: &Value,
+        label: &str,
+        field: tag_editor::Field<'_>,
+    ) {
+        let uid = def["uid"].as_i64().unwrap();
+        let key = field.key();
+        let mut change = None;
+        layer_row(ui, label, |ui| {
+            change = tag_editor::show(ui, self.project.as_ref().unwrap(), field, uid, &def[key]);
+        });
+        if let Some(change) = change {
+            self.edit("Layer tags changed", |p| match change {
+                tag_editor::Change::Set(value) => {
+                    p.update_layer_properties(uid, &json!({key:value}))
+                }
+                tag_editor::Change::Rename {
+                    old,
+                    new,
+                    everywhere,
+                } => p.rename_definition_tag("layers", uid, &old, &new, everywhere),
+            });
         }
     }
 
@@ -97,52 +196,97 @@ impl EditorApp {
         let mut patch = json!({});
         let kind = text(def, "type", "");
         ui.push_id(("layer-settings", def["uid"].as_i64()), |ui| {
-            group(ui, "General layer settings", |ui| {
-                row(ui, "Type", |ui| {
-                    let icon = match kind {
-                        "Entities" => egui::include_image!("../../assets/icons/entity.png"),
-                        "IntGrid" => egui::include_image!("../../assets/icons/intGrid.png"),
-                        "AutoLayer" => egui::include_image!("../../assets/icons/autoLayer.svg"),
-                        _ => egui::include_image!("../../assets/icons/tile.png"),
-                    };
-                    ui.add(egui::Image::new(icon).fit_to_exact_size(Vec2::splat(16.)));
-                    ui.label(kind);
-                });
+            let general_open = group(ui, "General layer settings", |ui| {
+                row_width_with_label(
+                    ui,
+                    150.,
+                    |ui| {
+                        ui.add_space(8.);
+                        ui.label(RichText::new(locale::tr(ui, "Type")).size(12.667));
+                    },
+                    |ui| {
+                        let muted = Color32::from_white_alpha(128);
+                        let icon_size = 36.667;
+                        ui.add_space(4.);
+                        ui.add(
+                            egui::Image::new(layer_type_icon(kind))
+                                .fit_to_exact_size(Vec2::splat(icon_size))
+                                .tint(muted),
+                        );
+                        let description = match kind {
+                            "IntGrid" => "Integer grid",
+                            "AutoLayer" => "Auto-layer",
+                            "Tiles" => "Tiles",
+                            _ => "Entities",
+                        };
+                        ui.label(
+                            RichText::new(locale::tr(ui, description))
+                                .size(16.)
+                                .color(muted),
+                        );
+                        ui.add_space(11.);
+                        ui.allocate_ui_with_layout(
+                            egui::vec2(ui.available_width(), icon_size),
+                            egui::Layout::left_to_right(egui::Align::Min),
+                            |ui| {
+                                ui.spacing_mut().item_spacing.x = 2.;
+                                let width = ((ui.available_width() - 2.) / 2.).max(24.);
+                                for (label, url) in [
+                                    (
+                                        "Tile layer tutorial",
+                                        "https://ldtk.io/docs/tutorials/tile-layers",
+                                    ),
+                                    (
+                                        "Auto-layer tutorial",
+                                        "https://ldtk.io/docs/tutorials/auto-layers",
+                                    ),
+                                ] {
+                                    source_controls::form_help_link(ui, width, label, url);
+                                }
+                            },
+                        );
+                    },
+                );
+                ui.add_space(9.);
                 for (key, label) in [("identifier", "Layer identifier"), ("doc", "Documentation")] {
-                    row(ui, label, |ui| {
+                    layer_row(ui, label, |ui| {
                         if let Some(value) =
-                            text_input(ui, key, text(def, key, ""), ui.available_width())
+                            form_text_input(ui, key, text(def, key, ""), ui.available_width())
                         {
                             patch[key] = json!(value);
                         }
                     });
                 }
                 if kind == "Tiles" {
-                    row(ui, "Default tileset", |ui| {
+                    layer_row(ui, "Default tileset", |ui| {
                         ui.vertical(|ui| self.layer_tileset_assignment(ui, def));
                     });
                 }
-                row(ui, "Grid size", |ui| {
-                    integer(ui, def, &mut patch, "gridSize", 1, 1024);
-                    ui.label("px");
+                layer_row(ui, "Grid size", |ui| {
+                    ui.add_enabled_ui(kind != "AutoLayer", |ui| {
+                        integer(ui, def, &mut patch, "gridSize", 1, 1024);
+                    });
+                    unit(ui, "px");
                 });
-                row(ui, "Offsets", |ui| {
-                    ui.label("X=");
+                layer_row(ui, "Offsets", |ui| {
+                    unit(ui, "X=");
                     integer(ui, def, &mut patch, "pxOffsetX", -32768, 32767);
-                    ui.label("px, Y=");
+                    unit(ui, "px, Y=");
                     integer(ui, def, &mut patch, "pxOffsetY", -32768, 32767);
-                    ui.label("px");
+                    unit(ui, "px");
                 });
-                row(ui, "Opacity", |ui| {
-                    ui.label("Base:");
+                layer_row(ui, "Opacity", |ui| {
+                    unit(ui, "Base:");
                     percent(ui, def, &mut patch, "displayOpacity", 10., 100.);
-                    ui.label("Inactive:");
+                    unit(ui, "%");
+                    unit(ui, "Inactive:");
                     percent(ui, def, &mut patch, "inactiveOpacity", 0., 100.);
+                    unit(ui, "%");
                 });
-                row(ui, "Parallax", |ui| {
-                    ui.label("X=");
+                layer_row(ui, "Parallax", |ui| {
+                    unit(ui, "X=");
                     percent(ui, def, &mut patch, "parallaxFactorX", -100., 100.);
-                    ui.label(", Y=");
+                    unit(ui, "%, Y=");
                     ui.add_enabled_ui(!def["parallaxScaling"].as_bool().unwrap_or(false), |ui| {
                         ui.scope(|ui| {
                             if def["parallaxFactorX"] == def["parallaxFactorY"] {
@@ -151,6 +295,7 @@ impl EditorApp {
                             percent(ui, def, &mut patch, "parallaxFactorY", -100., 100.);
                         });
                     });
+                    unit(ui, "%");
                     checkbox(ui, def, &mut patch, "parallaxScaling", "Scale ?");
                 });
                 // Source X edits follow Y while the axes are equal. Scaling always requires equal factors.
@@ -163,67 +308,137 @@ impl EditorApp {
                         .unwrap_or(&def["parallaxFactorX"])
                         .clone();
                 }
+                // The source form retains the last row's bottom margin.
+                ui.expand_to_include_y(ui.cursor().top());
             });
-            ui.add_space(12.);
-            group(ui, "Display options", |ui| {
-                row(ui, "Color in layers list", |ui| {
-                    let mut color = def["uiColor"]
-                        .as_str()
-                        .map(theme::color)
-                        .map(|c| [c.r(), c.g(), c.b()]);
-                    if source_colors::nullable_color_editor(ui, &mut color).changed() {
-                        patch["uiColor"] = color
-                            .map(|c| json!(format!("#{:02X}{:02X}{:02X}", c[0], c[1], c[2])))
-                            .unwrap_or(Value::Null);
-                    }
-                    if color.is_some() && source_controls::small_button(ui, "Reset").clicked() {
-                        patch["uiColor"] = Value::Null;
+            if general_open {
+                ui.add_space(6.);
+            }
+            let display_open = group(ui, "Display options", |ui| {
+                layer_row(ui, "Color in layers list", |ui| {
+                    if layer_color(ui, def, &mut patch, "uiColor") {
+                        reset_layer_color(ui, &mut patch, "uiColor");
                     }
                 });
-                row(ui, "Visual options", |ui| {
-                    ui.vertical(|ui| {
-                        checkbox(ui, def, &mut patch, "hideInList", "Hide in list");
-                        if kind != "Entities" {
-                            checkbox(
-                                ui,
-                                def,
-                                &mut patch,
-                                "renderInWorldView",
-                                "Show in world view",
-                            );
+                layer_row(ui, "Visual options", |ui| {
+                    ui.spacing_mut().item_spacing = egui::vec2(3., 9.);
+                    ui.add_space(4.);
+                    ui.columns(2, |columns| {
+                        for column in &mut *columns {
+                            column.add_space(3.);
                         }
-                        if kind != "AutoLayer" {
-                            checkbox(
-                                ui,
-                                def,
-                                &mut patch,
-                                "canSelectWhenInactive",
-                                "Allow selections when inactive",
-                            );
-                        }
+                        checkbox(
+                            &mut columns[0],
+                            def,
+                            &mut patch,
+                            "hideInList",
+                            "Hide in list",
+                        );
+                        checkbox(
+                            &mut columns[1],
+                            def,
+                            &mut patch,
+                            "renderInWorldView",
+                            "Show in world view",
+                        );
+                        checkbox(
+                            &mut columns[0],
+                            def,
+                            &mut patch,
+                            "canSelectWhenInactive",
+                            "Allow selections when inactive",
+                        );
+                        checkbox(
+                            &mut columns[1],
+                            def,
+                            &mut patch,
+                            "useAsyncRender",
+                            "Asynchronous render",
+                        );
                     });
                 });
-                row(ui, "Optional \"guide\" grid", |ui| {
+                ui.add_space(3.);
+                layer_row(ui, "Optional \"guide\" grid", |ui| {
+                    ui.spacing_mut().item_spacing.x = 3.;
                     integer(ui, def, &mut patch, "guideGridWid", 0, 1024);
-                    ui.label("x");
+                    unit(ui, "x");
                     integer(ui, def, &mut patch, "guideGridHei", 0, 1024);
-                    ui.label("px");
+                    unit(ui, "px");
                 });
-                row(ui, "UI tags", |ui| {
-                    if let Some(value) = tags(ui, "", &def["uiFilterTags"]) {
-                        patch["uiFilterTags"] = value;
+                layer_row(ui, "Guide grid color", |ui| {
+                    if layer_color(ui, def, &mut patch, "guideColor") {
+                        unit(ui, "Opacity:");
+                        percent(ui, def, &mut patch, "guideOpacity", 0., 100.);
+                        unit(ui, "%");
+                        reset_layer_color(ui, &mut patch, "guideColor");
                     }
                 });
+                self.layer_tag_row(ui, def, "UI tags", tag_editor::Field::LayerUi);
             });
+            if display_open {
+                ui.add_space(6.);
+            }
             if kind == "Entities" || kind == "Tiles" {
-                ui.add_space(12.);
                 group(ui, &format!("{kind} settings"), |ui| {
                     if kind == "Entities" {
-                        row(ui, "Hide entity fields when inactive", |ui| {
+                        layer_row(ui, "Entity depth sorting", |ui| {
+                            let choices = [
+                                (
+                                    "Manual",
+                                    "Manual (CTRL-UP/CTRL-DOWN to change an entity depth)",
+                                ),
+                                ("YAscending", "Y ascending (higher Y in front)"),
+                                ("YDescending", "Y descending (lower Y in front)"),
+                            ];
+                            let current = text(def, "entityDepthSorting", "Manual");
+                            let mut selected = current;
+                            let label = choices
+                                .iter()
+                                .find(|(value, _)| *value == current)
+                                .map_or(choices[0].1, |(_, label)| label);
+                            egui::ComboBox::from_id_salt("entity-depth-sorting")
+                                .width(ui.available_width())
+                                .selected_text(locale::tr(ui, label))
+                                .show_ui(ui, |ui| {
+                                    for (value, label) in choices {
+                                        ui.selectable_value(
+                                            &mut selected,
+                                            value,
+                                            locale::tr(ui, label),
+                                        );
+                                    }
+                                });
+                            if selected != current {
+                                patch["entityDepthSorting"] = json!(selected);
+                            }
+                        });
+                        layer_row(ui, "Hide entity fields when inactive", |ui| {
                             checkbox(ui, def, &mut patch, "hideFieldsWhenInactive", "");
                         });
+                        self.layer_tag_row(
+                            ui,
+                            def,
+                            "Required tags",
+                            tag_editor::Field::RequiredEntities,
+                        );
+                        self.layer_tag_row(
+                            ui,
+                            def,
+                            "Excluded tags",
+                            tag_editor::Field::ExcludedEntities,
+                        );
+                        layer_row(ui, "Advanced operations", |ui| {
+                            let label = locale::tr(ui, "Move existing entities to another layer")
+                                .to_uppercase();
+                            let size = egui::vec2(ui.available_width(), 33.);
+                            if crate::app::project_dialogs::button(ui, &label, size, false, 13.333)
+                                .clicked()
+                            {
+                                self.begin_entity_transfer(ui.ctx(), def["uid"].as_i64().unwrap());
+                            }
+                        });
                     } else {
-                        row(ui, "Tile pivot point", |ui| {
+                        layer_row(ui, "Tile pivot point", |ui| {
                             let pivot =
                                 [number(def, "tilePivotX", 0.), number(def, "tilePivotY", 0.)];
                             let (rect, response) =
@@ -268,4 +483,344 @@ impl EditorApp {
         });
         patch
     }
+
+    pub(in super::super) fn source_generated_layer_settings(
+        &mut self,
+        ui: &mut egui::Ui,
+        def: &Value,
+    ) {
+        let intgrid = def["type"] == "IntGrid";
+        group(
+            ui,
+            if intgrid {
+                "IntGrid settings"
+            } else {
+                "Autolayer settings"
+            },
+            |ui| {
+                if intgrid {
+                    self.int_grid_values(ui, def);
+                }
+                self.auto_layer_controls(ui, def);
+            },
+        );
+    }
+
+    fn auto_layer_controls(&mut self, ui: &mut egui::Ui, def: &Value) {
+        let uid = def["uid"].as_i64().unwrap();
+        let project = self.project.as_ref().unwrap();
+        let layers = project.json["defs"]["layers"]
+            .as_array()
+            .map(Vec::as_slice)
+            .unwrap_or_default();
+        let fields = project.json["defs"]["levelFields"]
+            .as_array()
+            .map(Vec::as_slice)
+            .unwrap_or_default();
+        let tilesets = project.json["defs"]["tilesets"]
+            .as_array()
+            .map(Vec::as_slice)
+            .unwrap_or_default();
+        let auto = def["type"] == "AutoLayer";
+        let atlas = def["tilesetDefUid"].as_i64();
+        let mut new_atlas = atlas;
+        let source = def["autoSourceLayerDefUid"].as_i64();
+        let mut patch = json!({});
+        let mut edit_rules = false;
+        let mut bake = false;
+        if auto {
+            layer_row(ui, "Auto-Layer source", |ui| {
+                ui.vertical(|ui| {
+                    let mut selected = source;
+                    let candidates = layers.iter().filter(|layer| layer["type"] == "IntGrid");
+                    let placeholder = locale::tr(ui, "-- Select an IntGrid layer --");
+                    egui::ComboBox::from_id_salt(("auto-layer-source", uid))
+                        .width(ui.available_width())
+                        .selected_text(
+                            candidates
+                                .clone()
+                                .find(|layer| layer["uid"].as_i64() == source)
+                                .map(|layer| text(layer, "identifier", placeholder))
+                                .unwrap_or(placeholder),
+                        )
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(&mut selected, None, placeholder);
+                            for layer in candidates {
+                                ui.selectable_value(
+                                    &mut selected,
+                                    layer["uid"].as_i64(),
+                                    text(layer, "identifier", locale::tr(ui, "Layer")),
+                                );
+                            }
+                        });
+                    if selected != source {
+                        patch["autoSourceLayerDefUid"] = json!(selected);
+                    }
+                    let green = Color32::from_rgb(101, 178, 117);
+                    let width = ui.available_width();
+                    let text = ui.painter().layout(
+                        locale::tr(
+                            ui,
+                            "This auto-layer will use the INTGRID layer above to apply its rules.",
+                        )
+                        .into(),
+                        FontId::new(15., egui::FontFamily::Name("panel-title".into())),
+                        green,
+                        (width - 72.).max(40.),
+                    );
+                    ui.add_space(3.);
+                    let (hint, _) = ui.allocate_exact_size(
+                        egui::vec2(width, (text.size().y + 12.).max(41.)),
+                        Sense::hover(),
+                    );
+                    let painter = ui.painter_at(hint);
+                    let border = hint.shrink(0.5);
+                    painter.extend(egui::Shape::dashed_line(
+                        &[
+                            border.left_top(),
+                            border.right_top(),
+                            border.right_bottom(),
+                            border.left_bottom(),
+                            border.left_top(),
+                        ],
+                        Stroke::new(1., green),
+                        3.,
+                        3.,
+                    ));
+                    let icon = hint.left_center() + egui::vec2(30., 10.);
+                    painter.circle_filled(icon, 20., green);
+                    painter.text(
+                        icon,
+                        Align2::CENTER_CENTER,
+                        "?",
+                        FontId::proportional(28.),
+                        theme::MEDIUM,
+                    );
+                    painter.galley(
+                        hint.left_center() + egui::vec2(62., -text.size().y / 2.),
+                        text,
+                        green,
+                    );
+                    ui.add_space(9.);
+                });
+            });
+        }
+        layer_row(ui, "Auto-layer tileset", |ui| {
+            let can_edit_rules = atlas.is_some() && (!auto || source.is_some());
+            let width = ui.available_width() - if can_edit_rules { 104. } else { 0. };
+            let internal_icons = locale::tr(ui, "⚙ Internal icons by FinalBossBlues");
+            let name = |def: &Value| {
+                if def["embedAtlas"] == "LdtkIcons" {
+                    internal_icons
+                } else {
+                    text(def, "identifier", "Tileset")
+                }
+                .to_owned()
+            };
+            egui::ComboBox::from_id_salt(("auto-layer-tileset", uid))
+                .width(width.max(40.))
+                .selected_text(
+                    tilesets
+                        .iter()
+                        .find(|def| def["uid"].as_i64() == atlas)
+                        .map(name)
+                        .unwrap_or_else(|| locale::tr(ui, "-- Select a tileset --").into()),
+                )
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(
+                        &mut new_atlas,
+                        None,
+                        locale::tr(ui, "-- Select a tileset --"),
+                    );
+                    for def in tilesets {
+                        ui.selectable_value(&mut new_atlas, def["uid"].as_i64(), name(def));
+                    }
+                });
+            edit_rules = can_edit_rules && orange(ui, "EDIT RULES", egui::vec2(98., 29.)).clicked();
+        });
+        layer_row(ui, "Biome enum", |ui| {
+            let biome_fields = fields
+                .iter()
+                .filter_map(|field| {
+                    let kind = text(field, "__type", "");
+                    let (_, name) = kind.split_once("Enum.")?;
+                    let name = name.trim_end_matches('>');
+                    Some((
+                        field["uid"].as_i64()?,
+                        format!("{} ({name})", text(field, "identifier", "Biome")),
+                    ))
+                })
+                .collect::<Vec<_>>();
+            let old = def["biomeFieldUid"].as_i64();
+            let mut selected = old;
+            let response = ui.add_enabled_ui(!biome_fields.is_empty(), |ui| {
+                egui::ComboBox::from_id_salt(("auto-layer-biome", uid))
+                    .width(ui.available_width())
+                    .selected_text(
+                        biome_fields
+                            .iter()
+                            .find(|(id, _)| Some(*id) == old)
+                            .map_or_else(|| locale::tr(ui, "No biome enum"), |(_, label)| label),
+                    )
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(&mut selected, None, locale::tr(ui, "No biome enum"));
+                        for (id, label) in &biome_fields {
+                            ui.selectable_value(&mut selected, Some(*id), label);
+                        }
+                    })
+                    .response
+            });
+            if biome_fields.is_empty() {
+                source_controls::disabled_hatch(ui, response.inner.rect);
+            }
+            if selected != old {
+                patch["biomeFieldUid"] = json!(selected);
+            }
+        });
+        if auto || atlas.is_some() {
+            layer_row(
+                ui,
+                "Prevent auto-tiling here if another layer contains a value",
+                |ui| {
+                    ui.vertical(|ui| {
+                        if let Some(blockers) = auto_layer_blockers(ui, def, layers, uid) {
+                            patch["layerUidsPreventingAutoTilingHere"] = json!(blockers);
+                        }
+                    });
+                },
+            );
+            layer_row(ui, "Advanced operations", |ui| {
+                let icon = egui::Image::new(egui::include_image!("../../assets/icons/flatten.svg"))
+                    .fit_to_exact_size(egui::vec2(16., 18.));
+                bake = source_controls::add_sized_button(
+                    ui,
+                    egui::vec2(ui.available_width(), 35.),
+                    egui::Button::image_and_text(icon, locale::tr(ui, "BAKE AUTO-LAYER"))
+                        .fill(SOURCE_ORANGE)
+                        .corner_radius(2.),
+                )
+                .clicked();
+            });
+        }
+        let options = remap_options(ui, ("layer", uid), true, ldtk_core::TilesetRemap::TileIds);
+        if new_atlas != atlas {
+            self.apply_layer_tileset(uid, new_atlas, options);
+        }
+        if changed(&patch) {
+            let apply = |p: &mut Project| p.update_layer_properties(uid, &patch);
+            if patch.get("biomeFieldUid").is_some()
+                && def["autoRuleGroups"]
+                    .as_array()
+                    .is_some_and(|groups| !groups.is_empty())
+            {
+                self.edit_recoverable("Auto-layer biome changed", apply);
+            } else {
+                self.edit("Auto-layer settings changed", apply);
+            }
+        }
+        if edit_rules {
+            let index = self.selected.and_then(|key| {
+                self.project.as_ref()?.level(key)?["layerInstances"]
+                    .as_array()?
+                    .iter()
+                    .position(|layer| layer["layerDefUid"] == uid)
+            });
+            if let Some(index) = index {
+                self.switch_layer(index);
+            }
+            self.definition_uid = Some(uid);
+            self.rule_uid = None;
+            self.rule_group_uid = None;
+            self.show_panel(Some(Panel::Rules));
+        }
+        if bake {
+            self.begin_layer_bake(uid);
+        }
+    }
+}
+
+fn auto_layer_blockers(
+    ui: &mut egui::Ui,
+    def: &Value,
+    layers: &[Value],
+    uid: i64,
+) -> Option<Vec<i64>> {
+    let mut blockers = def["layerUidsPreventingAutoTilingHere"]
+        .as_array()
+        .map(|values| values.iter().filter_map(Value::as_i64).collect::<Vec<_>>())
+        .unwrap_or_else(|| {
+            def["autoTilesKilledByOtherLayerUid"]
+                .as_i64()
+                .into_iter()
+                .collect()
+        });
+    let mut add = None;
+    egui::ComboBox::from_id_salt(("auto-blocker", uid))
+        .width(ui.available_width())
+        .selected_text(locale::tr(ui, "-- Add a layer --"))
+        .show_ui(ui, |ui| {
+            for layer in layers {
+                if let Some(other) = layer["uid"].as_i64()
+                    && other != uid
+                    && !blockers.contains(&other)
+                    && matches!(layer["type"].as_str(), Some("Tiles" | "IntGrid"))
+                    && ui
+                        .selectable_label(false, text(layer, "identifier", "Layer"))
+                        .clicked()
+                {
+                    add = Some(other);
+                }
+            }
+        });
+    let mut remove = None;
+    ui.scope(|ui| {
+        ui.spacing_mut().item_spacing.y = 4.;
+        ui.add_space(3.);
+        for &blocker in &blockers {
+            let Some(layer) = layers.iter().find(|layer| layer["uid"] == blocker) else {
+                continue;
+            };
+            egui::Frame::new()
+                .stroke(Stroke::new(1., theme::LIGHT))
+                .inner_margin(3)
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.add(
+                            egui::Image::new(layer_type_icon(text(layer, "type", "")))
+                                .fit_to_exact_size(Vec2::splat(21.)),
+                        );
+                        ui.allocate_ui_with_layout(
+                            egui::vec2(215., 23.),
+                            egui::Layout::left_to_right(egui::Align::Center),
+                            |ui| {
+                                ui.set_min_width(215.);
+                                ui.add(
+                                    egui::Label::new(text(layer, "identifier", "Layer")).truncate(),
+                                )
+                            },
+                        );
+                        let image =
+                            egui::Image::new(egui::include_image!("../../assets/icons/delete.svg"))
+                                .fit_to_exact_size(Vec2::splat(14.));
+                        if source_controls::add_sized_button(
+                            ui,
+                            [27., 26.],
+                            egui::Button::image(image).fill(SOURCE_ORANGE),
+                        )
+                        .on_hover_text(locale::tr(ui, "Remove blocker"))
+                        .clicked()
+                        {
+                            remove = Some(blocker);
+                        }
+                    });
+                });
+        }
+    });
+    if let Some(uid) = add {
+        blockers.push(uid);
+    }
+    if let Some(uid) = remove {
+        blockers.retain(|value| *value != uid);
+    }
+    (add.is_some() || remove.is_some()).then_some(blockers)
 }

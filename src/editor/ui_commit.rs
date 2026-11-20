@@ -12,10 +12,10 @@ pub(super) enum DeferredUiAction {
     World(Option<usize>),
     FollowEntity(String),
     Search(search::Destination),
-    Wheel {
+    Zoom {
         rect: Rect,
         pointer: egui::Pos2,
-        scroll: f32,
+        deltas: Vec<f32>,
     },
 }
 
@@ -158,11 +158,11 @@ impl EditorApp {
                 self.follow_entity(&iid);
             }
             DeferredUiAction::Search(destination) => self.select_search_destination(destination),
-            DeferredUiAction::Wheel {
+            DeferredUiAction::Zoom {
                 rect,
                 pointer,
-                scroll,
-            } => self.wheel_zoom(ctx, rect, pointer, scroll),
+                deltas,
+            } => self.zoom_from_input(ctx, rect, pointer, deltas),
         }
         self.ui_commit.flushing = false;
     }

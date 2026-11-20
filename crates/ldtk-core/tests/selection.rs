@@ -139,6 +139,10 @@ fn manual_tile_killer_layer_invalidates_auto_tiles() {
     p.assign_tileset(killer, ts).unwrap();
     let src = p.add_layer("Source", "IntGrid", 16).unwrap();
     p.json["defs"]["layers"][0]["tilesetDefUid"] = json!(ts);
+    p.json["defs"]["layers"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("layerUidsPreventingAutoTilingHere");
     p.json["defs"]["layers"][0]["autoTilesKilledByOtherLayerUid"] = json!(killer);
     p.json["defs"]["layers"][0]["autoRuleGroups"] = json!([{"uid":100,"active":true,"rules":[{"uid":101,"active":true,"size":1,"pattern":[1],"tileRectsIds":[[0]],"chance":1}]}]);
     p.paint_int_grid_cells(K, 0, &[([0, 0], 1)]).unwrap();

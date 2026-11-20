@@ -21,17 +21,21 @@ class BuildCommandTests(unittest.TestCase):
         (self.root / "scripts").mkdir()
         if (ROOT / "scripts/build.py").exists():
             shutil.copy2(ROOT / "scripts/build.py", self.root / "scripts/build.py")
-        self.tools = self.root / ".tools/cargo/bin"
-        self.tools.mkdir(parents=True)
+        self.tools = self.root / "shared-bin"
+        self.tools.mkdir()
+        legacy_cargo = self.root / ".tools/cargo/bin/cargo"
+        legacy_cargo.parent.mkdir(parents=True)
+        legacy_cargo.write_text("#!/bin/sh\necho 'Selected the legacy project-local Cargo' >&2\nexit 91\n")
+        legacy_cargo.chmod(0o755)
         cargo = self.tools / "cargo"
         cargo.write_text(f"#!{sys.executable}\n" + '''
-import json, os, pathlib, sys
-root = pathlib.Path(__file__).resolve().parents[3]
+import json, os, pathlib, shutil, sys
+root = pathlib.Path(__file__).resolve().parents[1]
 if sys.argv[1:] == ['-vV']:
     print('host: aarch64-apple-darwin')
     sys.exit(0)
 with (root / 'calls.jsonl').open('a') as log:
-    log.write(json.dumps({'args': sys.argv[1:], 'linker': os.getenv('CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER'), 'rustflags': os.getenv('RUSTFLAGS')}) + '\\n')
+    log.write(json.dumps({'args': sys.argv[1:], 'linker': os.getenv('CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER'), 'rustflags': os.getenv('RUSTFLAGS'), 'zigbuild': shutil.which('cargo-zigbuild')}) + '\\n')
 if os.getenv('BUILD_TEST_EXIT'):
     sys.exit(int(os.environ['BUILD_TEST_EXIT']))
 args = sys.argv[1:]
@@ -51,16 +55,21 @@ folder.mkdir(parents=True, exist_ok=True)
         linker = self.tools / "x86_64-w64-mingw32-gcc"
         linker.write_text("#!/bin/sh\nexit 0\n")
         linker.chmod(0o755)
-        cross = self.root / ".tools/cross/bin"
-        cross.mkdir(parents=True)
-        (cross / "cargo-zigbuild").touch()
-        (cross / "python3").symlink_to(sys.executable)
-        (cross.parent / "versions.txt").write_text("cargo-zigbuild==0.21.8\nziglang==0.15.2\n")
+        self.home = self.root / "user"
+        self.cross = self.home / ".cargo/cross"
+        for cross in (self.root / ".tools/cross", self.cross):
+            (cross / "bin").mkdir(parents=True)
+            for tool in ("cargo-zigbuild", "python-zig"):
+                (cross / "bin" / tool).touch(mode=0o755)
+            (cross / "bin/python3").symlink_to(sys.executable)
+            (cross / "versions.txt").write_text("cargo-zigbuild==0.21.8\nziglang==0.15.2\n")
         for name in ["assets/icon.png", "examples/original/example.ldtk", "LICENSE", "THIRD_PARTY_NOTICES.md"]:
             path = self.root / name
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(name)
         self.env = os.environ.copy()
+        self.env["HOME"] = str(self.home)
+        self.env.pop("CARGO_HOME", None)
         self.env["PATH"] = str(self.tools) + os.pathsep + self.env["PATH"]
 
     def run_build(self, *args):
@@ -90,6 +99,11 @@ folder.mkdir(parents=True, exist_ok=True)
                     if platform == "win":
                         self.assertEqual(call["linker"], str(self.tools / "x86_64-w64-mingw32-gcc"))
                         self.assertIn("+crt-static", call["rustflags"])
+                    if platform == "linux":
+                        self.assertEqual(call["zigbuild"], str(self.cross / "bin/cargo-zigbuild"))
+                        for tool, launcher in (("cargo-zigbuild", "cargo-zigbuild"), ("zig", "python-zig")):
+                            entry = self.home / ".cargo/bin" / tool
+                            self.assertEqual(entry.resolve(strict=True), self.cross / "bin" / launcher)
                     out = self.root / "dist" / platform / mode
                     binary = out / ("ldtk-rs.exe" if platform == "win" else "ldtk-rs")
                     self.assertEqual(binary.read_bytes(), b"compiled executable")

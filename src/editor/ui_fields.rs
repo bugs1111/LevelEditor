@@ -1,6 +1,9 @@
 use super::*;
 use serde_json::json;
 
+#[path = "enum_picker.rs"]
+pub(super) mod enum_picker;
+
 pub(super) enum Widget {
     Text,
     Multiline,
@@ -38,6 +41,7 @@ pub(super) fn prepare_dialog_context(app: &mut EditorApp, ctx: &egui::Context) {
         app.settings
             .store_ui_dir(choice.project.as_deref(), &choice.ui_id, &choice.path);
     }
+    enum_picker::prepare(app, ctx);
     ctx.data_mut(|d| {
         d.insert_temp(
             dialog_context_id(),
@@ -52,7 +56,7 @@ pub(super) fn pick_file(ui: &egui::Ui, ui_id: &str, extensions: &[&str]) -> Opti
     let context = ui
         .ctx()
         .data_mut(|d| d.get_temp::<DialogContext>(dialog_context_id()));
-    let mut dialog = rfd::FileDialog::new();
+    let mut dialog = FileDialog::new();
     if !extensions.is_empty() {
         dialog = dialog.add_filter("File", extensions);
     }
@@ -100,7 +104,16 @@ pub(super) fn buffered_text(
     key: impl std::hash::Hash,
     current: &str,
 ) -> Option<String> {
-    buffered_text_kind(ui, key, current, false)
+    buffered_text_kind(ui, key, current, false, None, None)
+}
+
+pub(super) fn buffered_text_sized(
+    ui: &mut egui::Ui,
+    key: impl std::hash::Hash,
+    current: &str,
+    size: egui::Vec2,
+) -> Option<String> {
+    buffered_text_kind(ui, key, current, false, Some(size), None)
 }
 
 fn buffered_text_kind(
@@ -108,6 +121,8 @@ fn buffered_text_kind(
     key: impl std::hash::Hash,
     current: &str,
     multiline: bool,
+    size: Option<egui::Vec2>,
+    hint: Option<&str>,
 ) -> Option<String> {
     let id = ui.make_persistent_id(key);
     let (mut original, mut draft) = ui
@@ -123,7 +138,15 @@ fn buffered_text_kind(
         egui::TextEdit::singleline(&mut draft)
     };
     ui_commit::prepare_editor(ui.ctx(), id);
-    let response = ui.add(edit.id(id).desired_width(240.0));
+    let mut edit = edit.id(id);
+    if let Some(hint) = hint {
+        edit = edit.hint_text(hint);
+    }
+    let response = if let Some(size) = size {
+        ui.add_sized(size, edit.desired_width(f32::INFINITY).min_size(size))
+    } else {
+        ui.add(edit.desired_width(240.0))
+    };
     ui_commit::track_editor(ui.ctx(), &response);
     track_default_editor(ui, &response);
     let commit = (response.lost_focus()
@@ -140,183 +163,220 @@ fn buffered_text_kind(
 }
 
 pub(super) fn form(ui: &mut egui::Ui, value: &Value, properties: &[Property]) -> Value {
+    use super::panels::source_controls;
     let mut patch = serde_json::Map::new();
     egui::Grid::new(
         ui.id()
             .with(("property-form", properties.first().map(|p| p.0))),
     )
     .num_columns(2)
-    .min_col_width(super::panels::source_controls::PROPERTY_LABEL_WIDTH)
+    .min_col_width(source_controls::PROPERTY_LABEL_WIDTH)
     .spacing([18.0, 8.0])
     .show(ui, |ui| {
         for Property(key, label, widget) in properties {
-            super::panels::source_controls::property_label(ui, label, key);
-            let mut current = value[*key].clone();
-            let changed = match widget {
-                Widget::Text => {
-                    if let Some(v) = buffered_text(ui, *key, current.as_str().unwrap_or("")) {
-                        current = json!(v);
-                        true
-                    } else {
-                        false
-                    }
-                }
-                Widget::Multiline => {
-                    if let Some(v) =
-                        buffered_text_kind(ui, *key, current.as_str().unwrap_or(""), true)
-                    {
-                        current = json!(v);
-                        true
-                    } else {
-                        false
-                    }
-                }
-                Widget::Int(min, max) => {
-                    let mut v = current.as_i64().unwrap_or(0).clamp(*min, *max);
-                    let mut c = false;
-                    ui.horizontal(|ui| {
-                        let optional = numeric_optional(key);
-                        let mut enabled = !current.is_null();
-                        if optional && ui.checkbox(&mut enabled, "").changed() {
-                            current = if enabled { json!(v) } else { Value::Null };
-                            c = true;
-                        }
-                        ui_commit::prepare_editor(ui.ctx(), ui.next_auto_id());
-                        let response = ui.add_enabled(
-                            !optional || enabled,
-                            egui::DragValue::new(&mut v)
-                                .range(*min..=*max)
-                                .update_while_editing(false),
-                        );
-                        ui_commit::track_editor(ui.ctx(), &response);
-                        if response.changed() {
-                            current = json!(v);
-                            c = true;
-                        }
-                    });
-                    c
-                }
-                Widget::Float(min, max) => {
-                    let mut v = current.as_f64().unwrap_or(0.0).clamp(*min, *max);
-                    let mut c = false;
-                    ui.horizontal(|ui| {
-                        let optional = numeric_optional(key);
-                        let mut enabled = !current.is_null();
-                        if optional && ui.checkbox(&mut enabled, "").changed() {
-                            current = if enabled { json!(v) } else { Value::Null };
-                            c = true;
-                        }
-                        ui_commit::prepare_editor(ui.ctx(), ui.next_auto_id());
-                        let response = ui.add_enabled(
-                            !optional || enabled,
-                            egui::DragValue::new(&mut v)
-                                .speed(0.01)
-                                .range(*min..=*max)
-                                .update_while_editing(false),
-                        );
-                        ui_commit::track_editor(ui.ctx(), &response);
-                        if response.changed() {
-                            current = json!(v);
-                            c = true;
-                        }
-                    });
-                    c
-                }
-                Widget::Bool => {
-                    let mut v = current.as_bool().unwrap_or(false);
-                    let c = ui.checkbox(&mut v, "").changed();
-                    if c {
-                        current = json!(v);
-                    }
-                    c
-                }
-                Widget::Color => {
-                    let col = theme::color(current.as_str().unwrap_or("#FFFFFF"));
-                    let mut rgb = [col.r(), col.g(), col.b()];
-                    let c = super::panels::source_colors::color_editor_tag(
-                        ui,
-                        &mut rgb,
-                        if *key == "bgColor" { Some("bg") } else { None },
-                    )
-                    .changed();
-                    if c {
-                        current = json!(format!("#{:02X}{:02X}{:02X}", rgb[0], rgb[1], rgb[2]));
-                    }
-                    c
-                }
-                Widget::NullableColor => {
-                    let mut rgb = current
-                        .as_str()
-                        .map(theme::color)
-                        .map(|c| [c.r(), c.g(), c.b()]);
-                    if super::panels::source_colors::nullable_color_editor(ui, &mut rgb).changed() {
-                        current = rgb
-                            .map(|rgb| {
-                                json!(format!("#{:02X}{:02X}{:02X}", rgb[0], rgb[1], rgb[2]))
-                            })
-                            .unwrap_or(Value::Null);
-                        true
-                    } else {
-                        false
-                    }
-                }
-                Widget::Choice(choices) => {
-                    let mut v = current.as_str().unwrap_or(choices[0]).to_owned();
-                    let old = v.clone();
-                    egui::ComboBox::from_id_salt(ui.id().with(*key))
-                        .selected_text(&v)
-                        .show_ui(ui, |ui| {
-                            for option in *choices {
-                                ui.selectable_value(&mut v, (*option).into(), *option);
-                            }
-                        });
-                    if v != old {
-                        current = json!(v);
-                        true
-                    } else {
-                        false
-                    }
-                }
-                Widget::Path => {
-                    let mut v = current.as_str().unwrap_or("").to_owned();
-                    let mut c = false;
-                    ui.horizontal(|ui| {
-                        if let Some(next) = buffered_text(ui, *key, &v) {
-                            v = next;
-                            c = true;
-                        }
-                        if super::panels::source_controls::small_button(ui, "…").clicked()
-                            && let Some(p) = pick_file(
-                                ui,
-                                if *key == "bgRelPath" || *key == "relPath" {
-                                    "PickImage"
-                                } else {
-                                    key
-                                },
-                                &[],
-                            )
-                        {
-                            v = p.to_string_lossy().into_owned();
-                            c = true;
-                        }
-                        if super::panels::source_controls::small_button(ui, "×").clicked() {
-                            v.clear();
-                            c = true;
-                        }
-                    });
-                    if c {
-                        current = if v.is_empty() { Value::Null } else { json!(v) };
-                    }
-                    c
-                }
-            };
-            if changed {
-                patch.insert((*key).into(), current);
+            source_controls::property_label(ui, label, key);
+            if let Some(next) = property_value(ui, key, widget, &value[*key]) {
+                patch.insert((*key).into(), next);
             }
             ui.end_row();
         }
     });
     Value::Object(patch)
+}
+
+pub(super) fn form_with_label_width(
+    ui: &mut egui::Ui,
+    value: &Value,
+    properties: &[Property],
+    label_width: f32,
+) -> Value {
+    use super::panels::source_controls;
+    let mut patch = serde_json::Map::new();
+    for Property(key, label, widget) in properties {
+        let next = source_controls::form_row_wrapped(ui, label, key, label_width, |ui| {
+            if matches!(widget, Widget::Bool) {
+                let mut checked = value[*key].as_bool().unwrap_or(false);
+                source_controls::checkbox(ui, &mut checked, "")
+                    .changed()
+                    .then(|| json!(checked))
+            } else if matches!(widget, Widget::Text) {
+                let size = egui::vec2(ui.available_width(), 33.);
+                buffered_text_sized(ui, key, value[*key].as_str().unwrap_or(""), size)
+                    .map(Value::String)
+            } else {
+                property_value(ui, key, widget, &value[*key])
+            }
+        });
+        if let Some(next) = next {
+            patch.insert((*key).into(), next);
+        }
+    }
+    Value::Object(patch)
+}
+
+pub(super) fn property_value(
+    ui: &mut egui::Ui,
+    key: &str,
+    widget: &Widget,
+    current: &Value,
+) -> Option<Value> {
+    let mut current = current.clone();
+    let changed = match widget {
+        Widget::Text => {
+            if let Some(v) = buffered_text(ui, key, current.as_str().unwrap_or("")) {
+                current = json!(v);
+                true
+            } else {
+                false
+            }
+        }
+        Widget::Multiline => {
+            if let Some(v) = buffered_text_kind(ui, key, current.as_str().unwrap_or(""), true, None, None)
+            {
+                current = json!(v);
+                true
+            } else {
+                false
+            }
+        }
+        Widget::Int(min, max) => {
+            let mut v = current.as_i64().unwrap_or(0).clamp(*min, *max);
+            let mut c = false;
+            ui.horizontal(|ui| {
+                let optional = numeric_optional(key);
+                let mut enabled = !current.is_null();
+                if optional && ui.checkbox(&mut enabled, "").changed() {
+                    current = if enabled { json!(v) } else { Value::Null };
+                    c = true;
+                }
+                ui_commit::prepare_editor(ui.ctx(), ui.next_auto_id());
+                let response = ui.add_enabled(
+                    !optional || enabled,
+                    egui::DragValue::new(&mut v)
+                        .range(*min..=*max)
+                        .update_while_editing(false),
+                );
+                ui_commit::track_editor(ui.ctx(), &response);
+                if response.changed() {
+                    current = json!(v);
+                    c = true;
+                }
+            });
+            c
+        }
+        Widget::Float(min, max) => {
+            let mut v = current.as_f64().unwrap_or(0.0).clamp(*min, *max);
+            let mut c = false;
+            ui.horizontal(|ui| {
+                let optional = numeric_optional(key);
+                let mut enabled = !current.is_null();
+                if optional && ui.checkbox(&mut enabled, "").changed() {
+                    current = if enabled { json!(v) } else { Value::Null };
+                    c = true;
+                }
+                ui_commit::prepare_editor(ui.ctx(), ui.next_auto_id());
+                let response = ui.add_enabled(
+                    !optional || enabled,
+                    egui::DragValue::new(&mut v)
+                        .speed(0.01)
+                        .range(*min..=*max)
+                        .update_while_editing(false),
+                );
+                ui_commit::track_editor(ui.ctx(), &response);
+                if response.changed() {
+                    current = json!(v);
+                    c = true;
+                }
+            });
+            c
+        }
+        Widget::Bool => {
+            let mut v = current.as_bool().unwrap_or(false);
+            let c = ui.checkbox(&mut v, "").changed();
+            if c {
+                current = json!(v);
+            }
+            c
+        }
+        Widget::Color => {
+            let col = theme::color(current.as_str().unwrap_or("#FFFFFF"));
+            let mut rgb = [col.r(), col.g(), col.b()];
+            let c = super::panels::source_colors::color_editor_tag(
+                ui,
+                &mut rgb,
+                if key == "bgColor" { Some("bg") } else { None },
+            )
+            .changed();
+            if c {
+                current = json!(format!("#{:02X}{:02X}{:02X}", rgb[0], rgb[1], rgb[2]));
+            }
+            c
+        }
+        Widget::NullableColor => {
+            let mut rgb = current
+                .as_str()
+                .map(theme::color)
+                .map(|c| [c.r(), c.g(), c.b()]);
+            if super::panels::source_colors::nullable_color_editor(ui, &mut rgb).changed() {
+                current = rgb
+                    .map(|rgb| json!(format!("#{:02X}{:02X}{:02X}", rgb[0], rgb[1], rgb[2])))
+                    .unwrap_or(Value::Null);
+                true
+            } else {
+                false
+            }
+        }
+        Widget::Choice(choices) => {
+            let mut v = current.as_str().unwrap_or(choices[0]).to_owned();
+            let old = v.clone();
+            egui::ComboBox::from_id_salt(ui.id().with(key))
+                .selected_text(locale::tr(ui, &v))
+                .show_ui(ui, |ui| {
+                    for option in *choices {
+                        ui.selectable_value(&mut v, (*option).into(), locale::tr(ui, option));
+                    }
+                });
+            if v != old {
+                current = json!(v);
+                true
+            } else {
+                false
+            }
+        }
+        Widget::Path => {
+            let mut v = current.as_str().unwrap_or("").to_owned();
+            let mut c = false;
+            ui.horizontal(|ui| {
+                if let Some(next) = buffered_text(ui, key, &v) {
+                    v = next;
+                    c = true;
+                }
+                if super::panels::source_controls::small_button(ui, "…").clicked()
+                    && let Some(p) = pick_file(
+                        ui,
+                        if key == "bgRelPath" || key == "relPath" {
+                            "PickImage"
+                        } else {
+                            key
+                        },
+                        &[],
+                    )
+                {
+                    v = p.to_string_lossy().into_owned();
+                    c = true;
+                }
+                if super::panels::source_controls::small_button(ui, "×").clicked() {
+                    v.clear();
+                    c = true;
+                }
+            });
+            if c {
+                current = if v.is_empty() { Value::Null } else { json!(v) };
+            }
+            c
+        }
+    };
+    changed.then_some(current)
 }
 
 pub(super) fn apply_patch(target: &mut Value, patch: &Value) {
@@ -500,7 +560,20 @@ fn scalar_editor_inner(
                 .unwrap_or("")
                 .replace("\\\\", "\\")
                 .replace("\\n", "\n");
-            if let Some(v) = buffered_text_kind(ui, "field-text", &decoded, false) {
+            let (initial, hint) = if using_default {
+                let hint = if current.is_null() {
+                    locale::tr(ui, "(null)")
+                } else if decoded.is_empty() {
+                    locale::tr(ui, "(empty string)")
+                } else {
+                    &decoded
+                };
+                ("", Some(hint))
+            } else {
+                (decoded.as_str(), None)
+            };
+            let size = (!null_toggle).then(|| egui::vec2(ui.available_width().max(20.), 32.));
+            if let Some(v) = buffered_text_kind(ui, "field-text", initial, false, size, hint) {
                 modified = true;
                 current = json!(v);
             }
@@ -584,45 +657,75 @@ fn scalar_editor_inner(
         "EntityRef" => {
             let mut selected = current["entityIid"].as_str().unwrap_or("").to_owned();
             let old = selected.clone();
-            let mut options = vec![(String::new(), "None".to_owned(), Value::Null)];
+            let mut options = Vec::new();
             for key in project.level_keys() {
                 if let Some(level) = project.level(key)
                     && let Some(layers) = level["layerInstances"].as_array()
                 {
                     for layer in layers {
-                        if let Some(entities) = layer["entityInstances"].as_array() {
-                            for entity in entities {
-                                if let Some(iid) = entity["iid"].as_str() {
-                                    let world = key
-                                        .world
-                                        .and_then(|i| project.json["worlds"].get(i))
-                                        .map(|w| w["iid"].clone())
-                                        .unwrap_or_else(|| project.json["dummyWorldIid"].clone());
-                                    options.push((iid.to_owned(),format!("{} / {} ({}, {})",text(level,"identifier","Level"),text(entity,"__identifier","Entity"),entity["px"][0],entity["px"][1]),json!({"entityIid":iid,"layerIid":layer["iid"],"levelIid":level["iid"],"worldIid":world})));
-                                }
+                        for entity in layer["entityInstances"].as_array().into_iter().flatten() {
+                            if let Some(iid) = entity["iid"].as_str() {
+                                options.push((iid, entity, layer, level, key.world));
                             }
                         }
                     }
                 }
             }
+            let label_for = |entity: &Value, level: &Value| {
+                format!(
+                    "{} / {} ({}, {})",
+                    text(level, "identifier", "Level"),
+                    text(entity, "__identifier", "Entity"),
+                    entity["px"][0],
+                    entity["px"][1]
+                )
+            };
             let label = options
                 .iter()
-                .find(|(iid, _, _)| *iid == selected)
-                .map(|(_, s, _)| s.as_str())
-                .unwrap_or("None");
+                .find(|(iid, _, _, _, _)| *iid == selected)
+                .map(|(_, entity, _, level, _)| label_for(entity, level))
+                .unwrap_or_else(|| "None".to_owned());
             egui::ComboBox::from_id_salt(ui.id().with("ref"))
                 .selected_text(label)
                 .show_ui(ui, |ui| {
-                    for (iid, label, _) in &options {
-                        ui.selectable_value(&mut selected, iid.clone(), label);
-                    }
+                    let count = options.len() + 1;
+                    let spacing = ui.spacing().item_spacing.y;
+                    let row_height = ui.spacing().interact_size.y.max(
+                        ui.text_style_height(&egui::TextStyle::Button)
+                            + 2. * ui.spacing().button_padding.y,
+                    ) + spacing;
+                    let top = ui.max_rect().top();
+                    let clip = ui.clip_rect();
+                    let first =
+                        (((clip.top() - top) / row_height).floor().max(0.) as usize).min(count);
+                    let last = (((clip.bottom() - top) / row_height).ceil().max(0.) as usize + 1)
+                        .min(count);
+                    ui.set_height((row_height * count as f32 - spacing).max(0.));
+                    let rect = Rect::from_x_y_ranges(
+                        ui.max_rect().x_range(),
+                        (top + first as f32 * row_height)..=(top + last as f32 * row_height),
+                    );
+                    ui.scope_builder(egui::UiBuilder::new().max_rect(rect), |ui| {
+                        ui.skip_ahead_auto_ids(first);
+                        for index in first..last {
+                            if index == 0 {
+                                ui.selectable_value(&mut selected, String::new(), "None");
+                            } else {
+                                let (iid, entity, _, level, _) = options[index - 1];
+                                ui.selectable_value(
+                                    &mut selected,
+                                    iid.to_owned(),
+                                    label_for(entity, level),
+                                );
+                            }
+                        }
+                    });
                 });
             if selected != old {
-                current = options
-                    .into_iter()
-                    .find(|(iid, _, _)| *iid == selected)
-                    .map(|(_, _, v)| v)
-                    .unwrap_or(Value::Null);
+                current = options.into_iter().find(|(iid, _, _, _, _)| *iid == selected).map(|(iid, _, layer, level, world)| {
+                    let world = world.and_then(|i| project.json["worlds"].get(i)).map(|w| w["iid"].clone()).unwrap_or_else(|| project.json["dummyWorldIid"].clone());
+                    json!({"entityIid":iid,"layerIid":layer["iid"],"levelIid":level["iid"],"worldIid":world})
+                }).unwrap_or(Value::Null);
                 modified = true;
             }
         }
@@ -681,73 +784,7 @@ fn scalar_editor_inner(
                 .into_iter()
                 .find(|d| d["identifier"].as_str() == Some(name))
             {
-                let mut v = current.as_str().unwrap_or("").to_owned();
-                let old = v.clone();
-                let uid = def["uid"].as_i64().unwrap_or(-1);
-                let selected = project.enum_value(uid, &v);
-                let display =
-                    selected
-                        .map(|value| text(value, "id", &v))
-                        .unwrap_or(if v.is_empty() {
-                            if definition["canBeNull"] == true {
-                                "-- null --"
-                            } else {
-                                "[ Value required ]"
-                            }
-                        } else {
-                            &v
-                        });
-                let label = if using_default && !definition["defaultOverride"].is_null() {
-                    format!("{display} (default)")
-                } else {
-                    display.to_owned()
-                };
-                let mut reset = false;
-                ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = 2.;
-                    if let Some(icon) = selected.and_then(|value| enum_icon(project, def, value)) {
-                        ui.add(icon);
-                    }
-                    egui::ComboBox::from_id_salt(ui.id().with("enum"))
-                        .width(ui.available_width().max(20.))
-                        .truncate()
-                        .selected_text(label)
-                        .show_ui(ui, |ui| {
-                            if definition["canBeNull"] == true || current.is_null() {
-                                ui.selectable_value(&mut v, String::new(), "-- null --");
-                            }
-                            if !definition["defaultOverride"].is_null() {
-                                let mut scalar = definition.clone();
-                                scalar["isArray"] = json!(false);
-                                if let Ok(default) = project.make_field_instance(&scalar) {
-                                    let label = format!(
-                                        "{} (default)",
-                                        default["__value"].as_str().unwrap_or("null")
-                                    );
-                                    if ui.selectable_label(using_default, label).clicked() {
-                                        reset = true;
-                                    }
-                                }
-                            }
-                            if let Some(values) = def["values"].as_array() {
-                                for value in values {
-                                    ui.horizontal(|ui| {
-                                        if let Some(icon) = enum_icon(project, def, value) {
-                                            ui.add(icon);
-                                        }
-                                        let id = text(value, "id", "");
-                                        ui.selectable_value(&mut v, id.to_owned(), id);
-                                    });
-                                }
-                            }
-                        });
-                });
-                modified = reset || v != old;
-                current = if reset || v.is_empty() {
-                    Value::Null
-                } else {
-                    json!(v)
-                };
+                return enum_picker::show(ui, project, def, definition, &current, using_default);
             }
         }
         _ => {
@@ -807,6 +844,40 @@ fn enum_icon(project: &Project, definition: &Value, value: &Value) -> Option<egu
             .fit_to_exact_size(egui::vec2(20., 20.))
             .texture_options(egui::TextureOptions::NEAREST),
     )
+}
+
+pub(super) fn reference_target<'a>(
+    project: &'a Project,
+    reference: &Value,
+) -> Option<(LevelKey, &'a Value, &'a Value)> {
+    let iid = reference["entityIid"].as_str()?;
+    project.level_keys().into_iter().find_map(|key| {
+        let level = project.level(key)?;
+        let entity = canvas::values(&level["layerInstances"])
+            .iter()
+            .flat_map(|layer| canvas::values(&layer["entityInstances"]))
+            .find(|entity| entity["iid"] == iid)?;
+        Some((key, level, entity))
+    })
+}
+
+pub(super) fn reference_preview<'a>(
+    project: &'a Project,
+    entity: &Value,
+) -> Option<(&'a Value, Option<Value>)> {
+    let def = project.json["defs"]["entities"]
+        .as_array()?
+        .iter()
+        .find(|def| def["uid"] == entity["defUid"])?;
+    let valid_tile = |tile: &Value| {
+        number(tile, "w", 0.) > 0.
+            && number(tile, "h", 0.) > 0.
+            && tile["tilesetUid"].as_i64().is_some_and(|uid| project.tileset(uid).is_some())
+    };
+    let tile = canvas::entity_field_tile(project, entity, def)
+        .filter(|tile| *tile != def["tileRect"] && valid_tile(tile))
+        .or_else(|| valid_tile(&def["uiTileRect"]).then(|| def["uiTileRect"].clone()));
+    Some((def, tile))
 }
 
 #[derive(Clone, Default)]
@@ -915,7 +986,7 @@ fn instance_scalar_editor(
         ui.painter().text(
             rect.right_center() - egui::vec2(8., 0.),
             Align2::RIGHT_CENTER,
-            "Default",
+            locale::tr(ui, "Default"),
             FontId::proportional(11.),
             Color32::from_rgb(115, 127, 157),
         );
@@ -977,7 +1048,7 @@ fn instance_scalar_editor(
                     )
                     .frame(false),
                 )
-                .on_hover_text("Reset to default")
+                .on_hover_text(locale::tr(ui, "Reset to default"))
                 .clicked()
         {
             changed = Some(Value::Null);
@@ -1033,6 +1104,29 @@ pub(super) fn field_value_editor(
                                     .on_hover_text("Drag to reorder");
                                 },
                             );
+                            if inner == "EntityRef"
+                                && let Some((_, _, entity)) = reference_target(project, item)
+                                && let Some((def, tile)) = reference_preview(project, entity)
+                            {
+                                let tile = tile.as_ref().unwrap_or(&def["tileRect"]);
+                                if let Some(icon) = tile["tilesetUid"].as_i64().and_then(|uid| {
+                                    enum_icon(
+                                        project,
+                                        &json!({"iconTilesetUid": uid}),
+                                        &json!({"tileRect": tile}),
+                                    )
+                                }) {
+                                    ui.add(icon);
+                                } else {
+                                    let (rect, _) = ui
+                                        .allocate_exact_size(egui::vec2(20., 20.), Sense::hover());
+                                    ui.painter().rect_filled(
+                                        rect,
+                                        2.,
+                                        theme::color(text(def, "color", "#ffcc00")),
+                                    );
+                                }
+                            }
                             let width = (ui.available_width() - 24.).max(20.);
                             ui.allocate_ui_with_layout(
                                 egui::vec2(width, 29.),
@@ -1195,6 +1289,34 @@ mod tests {
         frame(ctx, p, uid, vec![]);
         frame(ctx, p, uid, vec![]);
     }
+    #[test]
+    fn preview_154_reference_array_preview_prefers_instance_tile_then_custom_icon() {
+        let mut p = Project::new();
+        p.add_layer("Actors", "Entities", 16).unwrap();
+        let def = p.add_entity_def("Actor", 16, 16).unwrap();
+        let atlas = p.ensure_embedded_icons().unwrap();
+        let field = p
+            .add_field_definition(Some(def), "Icon", "Tile", false)
+            .unwrap();
+        p.update_field_definition(field, &json!({"editorDisplayMode":"EntityTile","tilesetUid":atlas}))
+            .unwrap();
+        p.add_entity(LEVEL, 0, def, 16, 16).unwrap();
+        let iid = p.layer(LEVEL, 0).unwrap()["entityInstances"][0]["iid"].clone();
+        p.json["defs"]["entities"][0]["uiTileRect"] =
+            json!({"tilesetUid":atlas,"x":16,"y":0,"w":16,"h":16});
+        let reference = json!({"entityIid":iid});
+        let preview_x = |project: &Project| {
+            let (_, _, entity) = reference_target(project, &reference).unwrap();
+            reference_preview(project, entity).unwrap().1.unwrap()["x"].clone()
+        };
+        assert_eq!(preview_x(&p), 16);
+        p.set_field_editor_value(
+            LEVEL, iid.as_str(), field, json!({"tilesetUid":atlas,"x":32,"y":0,"w":16,"h":16}),
+        ).unwrap();
+        assert_eq!(preview_x(&p), 32);
+        assert!(reference_target(&p, &json!({"entityIid":"missing"})).is_none());
+    }
+
     #[test]
     fn implicit_nonnullable_numeric_default_keeps_a_working_compact_reset() {
         let mut p = Project::new();
@@ -1541,5 +1663,280 @@ mod tests {
                 Some(-35.)
             );
         }
+    }
+    #[test]
+    fn preview_154_large_reference_menu_scrolls_and_selects_last_entity() {
+        let mut project = Project::new();
+        let entities = (0..1000).map(|index| json!({"iid":format!("entity-{index}"),"__identifier":format!("Actor{index}"),"px":[0,0]})).collect::<Vec<_>>();
+        project.json["levels"][0]["layerInstances"] =
+            json!([{"iid":"layer","entityInstances":entities}]);
+        let ctx = egui::Context::default();
+        let mut style = (*ctx.style()).clone();
+        style
+            .text_styles
+            .insert(egui::TextStyle::Button, egui::FontId::proportional(22.));
+        ctx.set_style(style);
+        let chosen = std::cell::RefCell::new(None);
+        let draw = |events| {
+            ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(900., 600.),
+                    )),
+                    events,
+                    ..Default::default()
+                },
+                |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        if let Some(value) = scalar_editor(
+                            ui,
+                            &project,
+                            "EntityRef",
+                            &Value::Null,
+                            &json!({"canBeNull":false}),
+                        ) {
+                            *chosen.borrow_mut() = Some(value);
+                        }
+                    });
+                },
+            )
+        };
+        let find = |output: &egui::FullOutput, text: &str| {
+            output.shapes.iter().find_map(|shape| match &shape.shape {
+                egui::Shape::Text(label) if label.galley.text().contains(text) => {
+                    Some(label.pos + label.galley.size() * 0.5)
+                }
+                _ => None,
+            })
+        };
+        let initial = draw(vec![]);
+        let button = find(&initial, "None").unwrap();
+        draw(vec![egui::Event::PointerMoved(button), click(button, true)]);
+        draw(vec![click(button, false)]);
+        let menu = draw(vec![]);
+        let first = find(&menu, "Actor0").expect("first option visible");
+        draw(vec![
+            egui::Event::PointerMoved(first),
+            egui::Event::MouseWheel {
+                unit: egui::MouseWheelUnit::Point,
+                delta: egui::vec2(0., -100000.),
+                modifiers: egui::Modifiers::NONE,
+            },
+        ]);
+        let mut last = None;
+        for _ in 0..5 {
+            last = last.or_else(|| find(&draw(vec![]), "Actor999"));
+        }
+        let last = last.expect("last option visible after scrolling");
+        draw(vec![egui::Event::PointerMoved(last), click(last, true)]);
+        draw(vec![click(last, false)]);
+        let value = chosen.into_inner().expect("last option selected");
+        assert_eq!(value["entityIid"], "entity-999");
+        assert_eq!(value["layerIid"], "layer");
+        assert_eq!(value["levelIid"], project.json["levels"][0]["iid"]);
+    }
+
+    #[test]
+    #[ignore = "controlled large entity reference menu benchmark"]
+    fn benchmark_large_entity_reference_menu() {
+        let mut project = Project::new();
+        let entities = (0..5000).map(|index| json!({"iid":format!("entity-{index}"),"__identifier":format!("Actor{index}"),"px":[0,0]})).collect::<Vec<_>>();
+        project.json["levels"][0]["layerInstances"] =
+            json!([{"iid":"layer","entityInstances":entities}]);
+        let ctx = egui::Context::default();
+        let draw = |events| {
+            ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(900., 600.),
+                    )),
+                    events,
+                    ..Default::default()
+                },
+                |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        scalar_editor(
+                            ui,
+                            &project,
+                            "EntityRef",
+                            &Value::Null,
+                            &json!({"canBeNull":false}),
+                        );
+                    });
+                },
+            )
+        };
+        let initial = draw(vec![]);
+        let pos = initial
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) if text.galley.text() == "None" => {
+                    Some(text.pos + text.galley.size() * 0.5)
+                }
+                _ => None,
+            })
+            .unwrap();
+        draw(vec![egui::Event::PointerMoved(pos), click(pos, true)]);
+        draw(vec![click(pos, false)]);
+        let started = std::time::Instant::now();
+        let mut seen = false;
+        for _ in 0..5 {
+            let output = draw(vec![]);
+            seen |= output.shapes.iter().any(|shape| matches!(&shape.shape, egui::Shape::Text(text) if text.galley.text().contains("Actor0")));
+        }
+        assert!(seen, "entity reference menu did not open");
+        eprintln!(
+            "5000 entity options, five open-menu frames: {:?}",
+            started.elapsed()
+        );
+    }
+    #[test]
+    fn preview_154_large_enum_menu_keeps_special_options_and_selects_last_value() {
+        let mut project = Project::new();
+        let values = (0..1000).map(|index| json!({"id":format!("Entry{index}"),"tileRect": if index % 2 == 0 { json!({"x":0,"y":0,"w":16,"h":16}) } else { Value::Null }})).collect::<Vec<_>>();
+        project.json["defs"]["tilesets"] =
+            json!([{"uid":2,"embedAtlas":"LdtkIcons","pxWid":256,"pxHei":256}]);
+        project.json["defs"]["enums"] =
+            json!([{"uid":1,"identifier":"Big","iconTilesetUid":2,"values":values}]);
+        let definition = json!({"uid":100,"__type":"LocalEnum.Big","type":{"id":"F_Enum","params":[1]},"isArray":false,"canBeNull":true,"defaultOverride":{"id":"V_String","params":["Entry0"]}});
+        let ctx = egui::Context::default();
+        let chosen = std::cell::RefCell::new(None);
+        let draw = |events| {
+            ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(900., 600.),
+                    )),
+                    events,
+                    ..Default::default()
+                },
+                |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        if let Some(value) = scalar_editor(
+                            ui,
+                            &project,
+                            "LocalEnum.Big",
+                            &json!("Entry0"),
+                            &definition,
+                        ) {
+                            *chosen.borrow_mut() = Some(value);
+                        }
+                    });
+                },
+            )
+        };
+        let find = |output: &egui::FullOutput, text: &str| {
+            output.shapes.iter().find_map(|shape| match &shape.shape {
+                egui::Shape::Text(label) if label.galley.text() == text => {
+                    Some(label.pos + label.galley.size() * 0.5)
+                }
+                _ => None,
+            })
+        };
+        let initial = draw(vec![]);
+        let button = find(&initial, "Entry0").unwrap();
+        draw(vec![egui::Event::PointerMoved(button), click(button, true)]);
+        draw(vec![click(button, false)]);
+        let menu = draw(vec![]);
+        assert!(find(&menu, "Search").is_some());
+        assert!(find(&menu, "-- null --").is_some());
+        assert!(find(&menu, "Entry0 (default)").is_some());
+        let first = find(&menu, "Entry1").expect("first enum options visible");
+        draw(vec![
+            egui::Event::PointerMoved(first),
+            egui::Event::MouseWheel {
+                unit: egui::MouseWheelUnit::Point,
+                delta: egui::vec2(0., -100000.),
+                modifiers: egui::Modifiers::NONE,
+            },
+        ]);
+        let mut last = None;
+        for _ in 0..5 {
+            last = last.or_else(|| find(&draw(vec![]), "Entry999"));
+        }
+        let last = last.expect("last enum option visible after scrolling");
+        draw(vec![egui::Event::PointerMoved(last), click(last, true)]);
+        draw(vec![click(last, false)]);
+        assert_eq!(*chosen.borrow(), Some(json!("Entry999")));
+        chosen.borrow_mut().take();
+        draw(vec![]);
+
+        draw(vec![egui::Event::PointerMoved(button), click(button, true)]);
+        draw(vec![click(button, false)]);
+        let menu = draw(vec![]);
+        assert!(find(&menu, "Search").is_some());
+        let filtered = draw(vec![egui::Event::Text("e999".into())]);
+        assert!(find(&filtered, "Entry999").is_some());
+        assert!(find(&filtered, "Entry998").is_none());
+        draw(vec![egui::Event::Key {
+            key: Key::Enter,
+            physical_key: Some(Key::Enter),
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        }]);
+        assert_eq!(chosen.into_inner(), Some(json!("Entry999")));
+    }
+
+    #[test]
+    #[ignore = "controlled large enum menu benchmark"]
+    fn benchmark_large_enum_menu() {
+        let mut project = Project::new();
+        let values = (0..5000)
+            .map(|index| json!({"id":format!("Entry{index}")}))
+            .collect::<Vec<_>>();
+        project.json["defs"]["enums"] = json!([{"uid":1,"identifier":"Big","values":values}]);
+        let ctx = egui::Context::default();
+        let draw = |events| {
+            ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(900., 600.),
+                    )),
+                    events,
+                    ..Default::default()
+                },
+                |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        scalar_editor(
+                            ui,
+                            &project,
+                            "LocalEnum.Big",
+                            &json!("Entry0"),
+                            &json!({"canBeNull":false}),
+                        );
+                    });
+                },
+            )
+        };
+        let initial = draw(vec![]);
+        let pos = initial
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) if text.galley.text() == "Entry0" => {
+                    Some(text.pos + text.galley.size() * 0.5)
+                }
+                _ => None,
+            })
+            .unwrap();
+        draw(vec![egui::Event::PointerMoved(pos), click(pos, true)]);
+        draw(vec![click(pos, false)]);
+        let started = std::time::Instant::now();
+        let mut seen = false;
+        for _ in 0..5 {
+            let output = draw(vec![]);
+            seen |= output.shapes.iter().any(|shape| matches!(&shape.shape, egui::Shape::Text(text) if text.galley.text()=="Entry1"));
+        }
+        assert!(seen, "enum menu did not open");
+        eprintln!(
+            "5000 enum options, five open-menu frames: {:?}",
+            started.elapsed()
+        );
     }
 }

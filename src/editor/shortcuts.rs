@@ -1,5 +1,55 @@
 use super::*;
+
+pub(super) fn single_layer_shortcut_needs_shift(navigation: &str) -> bool {
+    !matches!(navigation, "Arrows" | "Zqsd")
+}
+
+pub(super) fn save_tile_shortcut_needs_shift(navigation: &str) -> bool {
+    navigation != "Arrows"
+}
 use serde_json::json;
+
+#[derive(Clone, Copy, Default)]
+struct HeldZoomKeys {
+    equals: bool,
+    plus: bool,
+    minus: bool,
+}
+
+fn track_zoom_keys(ctx: &egui::Context, search_open: bool) {
+    let id = egui::Id::new("held-camera-zoom-keys");
+    let mut keys = ctx
+        .data(|data| data.get_temp::<HeldZoomKeys>(id))
+        .unwrap_or_default();
+    ctx.input(|input| {
+        if search_open || !input.focused {
+            keys = HeldZoomKeys::default();
+            return;
+        }
+        for event in &input.events {
+            match event {
+                egui::Event::WindowFocused(_) => keys = HeldZoomKeys::default(),
+                egui::Event::Key {
+                    key,
+                    physical_key,
+                    pressed,
+                    ..
+                } => {
+                    // Shift can be released before the Equals key. Its logical
+                    // key then changes from Plus to Equals on key release.
+                    match physical_key.unwrap_or(*key) {
+                        Key::Equals => keys.equals = *pressed,
+                        Key::Plus => keys.plus = *pressed,
+                        Key::Minus => keys.minus = *pressed,
+                        _ => {}
+                    }
+                }
+                _ => {}
+            }
+        }
+    });
+    ctx.data_mut(|data| data.insert_temp(id, keys));
+}
 
 impl EditorApp {
     pub(super) fn normalize_entity_palette(&mut self) {
@@ -63,7 +113,7 @@ impl EditorApp {
         else {
             return;
         };
-        if matches!(text(layer, "__type", ""), "Tiles" | "AutoLayer") {
+        if layer["__type"] == "Tiles" {
             let Some(atlas) = layer["__tilesetDefUid"]
                 .as_i64()
                 .and_then(|uid| project.tileset(uid))
@@ -263,9 +313,15 @@ impl EditorApp {
         if self.layer == index {
             return;
         }
-        self.layer_notification = Some((
+        let icon = match layer["__type"].as_str() {
+            Some("Entities") => egui::include_image!("../../assets/icons/entity.png"),
+            Some("IntGrid") => egui::include_image!("../../assets/icons/intGrid.png"),
+            Some("AutoLayer") => egui::include_image!("../../assets/icons/autoLayer.svg"),
+            _ => egui::include_image!("../../assets/icons/tile.png"),
+        };
+        self.quick_notification = Some((
             text(layer, "__identifier", "").to_owned(),
-            text(layer, "__type", "Tiles").to_owned(),
+            Some(icon),
             Instant::now(),
         ));
         self.finish_gesture();
@@ -279,6 +335,9 @@ impl EditorApp {
     }
 
     pub(super) fn undo_action(&mut self, redo: bool) {
+        if !self.settle_deferred_auto_paint() {
+            return;
+        }
         self.chain_entity = None;
         self.finish_gesture();
         self.finish_stroke();
@@ -298,6 +357,7 @@ impl EditorApp {
             };
             self.dirty |= changed;
             if changed {
+                self.async_paint = None;
                 feedback = bounds.map(|bounds| (key, bounds));
             }
             if changed
@@ -323,21 +383,42 @@ impl EditorApp {
         ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(!active));
     }
 
+    pub(super) fn world_depth_bounds(&self) -> Option<(i64, i64)> {
+        let project = self.project.as_ref()?;
+        Some(
+            project
+                .level_keys()
+                .into_iter()
+                .filter(|key| key.world == self.active_world)
+                .filter_map(|key| project.level(key)?["worldDepth"].as_i64())
+                .fold((0, 0), |(min, max), depth| (min.min(depth), max.max(depth))),
+        )
+    }
+
+    pub(super) fn select_world_depth(&mut self, depth: i64) {
+        if self.world_depth != depth {
+            self.finish_gesture();
+            self.finish_stroke();
+            self.world_depth = depth;
+        }
+    }
+
     fn change_depth(&mut self, delta: i64, move_level: bool) {
-        self.finish_gesture();
-        self.finish_stroke();
-        self.world_depth += delta;
-        if move_level && let Some(key) = self.selected {
-            let depth = self.world_depth;
-            self.edit("Level world depth changed", |p| {
-                let l = p.level(key).unwrap();
-                p.move_level(
-                    key,
-                    number(l, "worldX", 0.0) as i32,
-                    number(l, "worldY", 0.0) as i32,
-                    depth as i32,
-                )
-            });
+        if self.project.is_none() {
+            return;
+        }
+        if !self.world {
+            self.show_panel(Some(Panel::World));
+            return;
+        }
+        if move_level {
+            self.move_selected_level_world_depth(delta);
+            return;
+        }
+        if let Some((min, max)) = self.world_depth_bounds()
+            && ((delta > 0 && self.world_depth < max) || (delta < 0 && self.world_depth > min))
+        {
+            self.select_world_depth(self.world_depth + delta);
         }
     }
 
@@ -348,6 +429,9 @@ impl EditorApp {
         let Some(layer) = self.selected.and_then(|k| project.layer(k, self.layer)) else {
             return;
         };
+        if layer["__type"] != "Tiles" {
+            return;
+        }
         let Some(uid) = layer["__tilesetDefUid"].as_i64() else {
             return;
         };
@@ -404,7 +488,134 @@ impl EditorApp {
         }
     }
 
+    fn change_entity_depth(&mut self, up: bool, extreme: bool) {
+        if self.world || self.panel.is_some_and(|panel| panel != Panel::Entity) {
+            return;
+        }
+        let Some(group) = self
+            .selection_group
+            .as_ref()
+            .filter(|group| group["elementCount"] == 1)
+        else {
+            return;
+        };
+        let Some(entry) = group["layers"].as_array().and_then(|layers| {
+            layers.iter().find(|entry| {
+                entry["clipboard"]["entityInstances"]
+                    .as_array()
+                    .is_some_and(|entities| !entities.is_empty())
+            })
+        }) else {
+            return;
+        };
+        let Some(iid) = entry["clipboard"]["entityInstances"][0]["iid"]
+            .as_str()
+            .map(str::to_owned)
+        else {
+            return;
+        };
+        let (Some(project), Some(key)) = (&self.project, self.selected) else {
+            return;
+        };
+        let Some(layer) = project.layer(key, self.layer) else {
+            return;
+        };
+        if layer["layerDefUid"] != entry["layerDefUid"]
+            || project
+                .layer_def(layer["layerDefUid"].as_i64().unwrap_or(-1))
+                .is_none_or(|def| {
+                    def["entityDepthSorting"].as_str().unwrap_or("Manual") != "Manual"
+                })
+        {
+            return;
+        }
+        let Some(entities) = layer["entityInstances"].as_array() else {
+            return;
+        };
+        let Some(index) = entities.iter().position(|entity| entity["iid"] == iid) else {
+            return;
+        };
+        let target = if extreme {
+            if up { entities.len() - 1 } else { 0 }
+        } else if up {
+            (index + 1).min(entities.len() - 1)
+        } else {
+            index.saturating_sub(1)
+        };
+        if target == index {
+            return;
+        }
+        let layer_index = self.layer;
+        if self
+            .edit_level("Entity depth changed", key, |p| {
+                let entities = p.layer_mut(key, layer_index).unwrap()["entityInstances"]
+                    .as_array_mut()
+                    .unwrap();
+                let entity = entities.remove(index);
+                entities.insert(target, entity);
+                Ok(())
+            })
+            .is_some()
+        {
+            self.entity_index = Some(target);
+        }
+    }
+
+    pub(super) fn keyboard_zoom(&mut self, ctx: &egui::Context, rect: Rect) {
+        let keys = ctx
+            .data(|data| data.get_temp::<HeldZoomKeys>(egui::Id::new("held-camera-zoom-keys")))
+            .unwrap_or_default();
+        let zoom_in = keys.equals || keys.plus;
+        if self.command_palette || self.selected.is_none() || !zoom_in && !keys.minus {
+            return;
+        }
+        let focus = ctx.memory(|memory| memory.focused());
+        if focus.is_some_and(|id| egui::TextEdit::load_state(ctx, id).is_some()) {
+            return;
+        }
+        let Some(tmod) = self.camera_motion.frame_tmod(
+            ctx.cumulative_frame_nr(),
+            ctx.input(|input| input.unstable_dt),
+        ) else {
+            return;
+        };
+        let delta = 0.45 * tmod * 0.15;
+        let deltas = [zoom_in.then_some(delta), keys.minus.then_some(-delta)]
+            .into_iter()
+            .flatten()
+            .collect();
+        let mut pointer = rect.center();
+        if self.world
+            && let (Some(project), Some(level)) = (&self.project, self.selected)
+            && let Some((_, bounds)) = canvas::placements(project, level)
+                .into_iter()
+                .find(|(key, _)| *key == level)
+        {
+            // The original reconstructs a page coordinate from the current
+            // level render, whose origin is snapped to a backing pixel.
+            let density = f64::from(ctx.pixels_per_point());
+            let zoom = f64::from(self.viewport.zoom) * density;
+            let page_coordinate = |axis: usize, extent: f32, min: f32| {
+                let world = f64::from(self.viewport.center[axis]) - f64::from(bounds[axis]);
+                let offset = world * zoom;
+                let origin = (f64::from(extent) * density * 0.5 - offset).round();
+                (f64::from(min) + (origin + offset) / density).trunc() as f32
+            };
+            pointer = egui::pos2(
+                page_coordinate(0, rect.width(), rect.left()),
+                page_coordinate(1, rect.height(), rect.top()),
+            );
+        }
+        self.zoom_from_input(ctx, rect, pointer, deltas);
+        ctx.request_repaint();
+    }
+
     pub(super) fn shortcuts(&mut self, ctx: &egui::Context) {
+        let enum_picker_open = ui_fields::enum_picker::is_open(ctx);
+        track_zoom_keys(ctx, self.command_palette || enum_picker_open);
+        if enum_picker_open {
+            return;
+        }
         if update_dialog::is_open(ctx) {
             return;
         }
@@ -412,6 +623,17 @@ impl EditorApp {
             return;
         }
         if help::changelog_is_open(ctx) {
+            return;
+        }
+        if self.enum_sync_is_open()
+            || self.layer_bake.is_some()
+            || self.int_grid_removal.is_some()
+            || self.rule_draft.is_some()
+            || self.panel == Some(Panel::Rules) && ctx.memory(|m| m.top_modal_layer().is_some())
+        {
+            return;
+        }
+        if self.panel == Some(Panel::Layers) && ctx.memory(|mem| mem.top_modal_layer().is_some()) {
             return;
         }
         if text_editor::is_open(ctx) && ctx.input(|i| i.key_pressed(Key::Escape)) {
@@ -425,10 +647,33 @@ impl EditorApp {
             || self.pending.is_some()
             || self.suggest_backups
             || self.command_open
-            || !self.resource_missing.is_empty()
             || self.crash.is_some()
             || self.clicktrap
         {
+            return;
+        }
+        if !self.resource_missing.is_empty() {
+            if self.external_changes.is_none()
+                && let Some(save_as) = ctx.input(|input| {
+                    input.events.iter().find_map(|event| match event {
+                        egui::Event::Key {
+                            key: Key::S,
+                            pressed: true,
+                            repeat: false,
+                            modifiers,
+                            ..
+                        } if modifiers.command
+                            && !modifiers.alt
+                            && !(cfg!(target_os = "macos") && modifiers.ctrl) =>
+                        {
+                            Some(modifiers.shift)
+                        }
+                        _ => None,
+                    })
+                })
+            {
+                self.save(save_as);
+            }
             return;
         }
         if self.definition_clipboard_shortcuts(ctx) {
@@ -477,9 +722,8 @@ impl EditorApp {
                     .space_pressed
                     .take()
                     .is_some_and(|t| t.elapsed().as_secs_f32() <= 0.2)
-                    && !self.space_dragged
                 {
-                    self.fit = true;
+                    self.space_fit_pending = true;
                 }
                 continue;
             }
@@ -487,6 +731,16 @@ impl EditorApp {
                 continue;
             }
             if key == Key::Escape {
+                if self.command_palette {
+                    self.command_palette = false;
+                    ctx.input_mut(|input| input.consume_key(modifiers, Key::Escape));
+                    ctx.memory_mut(|memory| {
+                        if let Some(id) = memory.focused() {
+                            memory.surrender_focus(id);
+                        }
+                    });
+                    continue;
+                }
                 self.chain_entity = None;
                 if self.world_context.picking {
                     self.cancel_world_context();
@@ -508,7 +762,7 @@ impl EditorApp {
                     self.selection_group = None;
                     self.stamp = None;
                     self.command_palette = false;
-                    self.show_panel(None);
+                    self.dismiss_panel();
                     self.entity_index = None;
                 }
                 continue;
@@ -535,14 +789,12 @@ impl EditorApp {
                     Key::N => self.request(ctx, Action::New),
                     Key::W => self.request(ctx, Action::Close),
                     Key::Q => self.request(ctx, Action::Quit),
-                    Key::F | Key::K => {
+                    Key::F | Key::K | Key::P if self.project.is_some() => {
+                        if !self.command_palette {
+                            self.search_index = 0;
+                            self.search_show_all = false;
+                        }
                         self.command_palette = true;
-                        self.search.clear();
-                        self.search_focus = false;
-                    }
-                    Key::P if modifiers.shift => {
-                        self.command_palette = true;
-                        self.search.clear();
                         self.search_focus = false;
                     }
                     Key::M if cfg!(target_os = "macos") => {
@@ -566,6 +818,9 @@ impl EditorApp {
                     Key::C if !focus => self.copy_selection(ctx, false),
                     Key::X if !focus => self.copy_selection(ctx, true),
                     Key::V if !focus => self.stamp = self.clipboard.clone(),
+                    Key::ArrowUp | Key::ArrowDown if !focus && !self.command_palette => {
+                        self.change_entity_depth(key == Key::ArrowUp, modifiers.shift)
+                    }
                     Key::PageUp if !focus => self.change_depth(1, true),
                     Key::PageDown if !focus => self.change_depth(-1, true),
                     _ => {}
@@ -683,26 +938,30 @@ impl EditorApp {
                 );
                 continue;
             }
+            let tile_tool = self
+                .selected
+                .and_then(|key| self.project.as_ref()?.layer(key, self.layer))
+                .is_some_and(|layer| layer["__type"] == "Tiles");
             match key {
                 Key::G => self.grid = !self.grid,
                 Key::Tab => self.zen = !self.zen,
                 Key::R if modifiers.shift => self.render_auto = !self.render_auto,
-                Key::R => self.random_tiles = !self.random_tiles,
+                Key::R if tile_tool => self.random_tiles = !self.random_tiles,
                 Key::T if modifiers.shift => self.tile_stacking = !self.tile_stacking,
                 Key::E if modifiers.shift => {
                     self.set_empty_selection(!self.settings.bool("emptySpaceSelection"));
                 }
-                Key::A if modifiers.shift || self.settings.value["navigationKeys"] != "Wasd" => {
+                Key::A if modifiers.shift || !single_layer_shortcut_needs_shift(navigation) => {
                     self.set_single_layer_mode(!self.single_layer)
                 }
                 Key::H if modifiers.shift && cfg!(target_os = "macos") => {
                     self.set_details(!self.details)
                 }
-                Key::X => self.flips ^= 1,
-                Key::Y => self.flips ^= 2,
-                Key::H if modifiers.shift => self.flips ^= 1,
-                Key::V if modifiers.shift => self.flips ^= 2,
-                Key::S if modifiers.shift || self.settings.value["navigationKeys"] == "Arrows" => {
+                Key::X if tile_tool => self.flips ^= 1,
+                Key::Y if tile_tool => self.flips ^= 2,
+                Key::H if modifiers.shift && tile_tool => self.flips ^= 1,
+                Key::V if modifiers.shift && tile_tool => self.flips ^= 2,
+                Key::S if modifiers.shift || !save_tile_shortcut_needs_shift(navigation) => {
                     self.tile_selection_memory(false)
                 }
                 Key::L if modifiers.shift => self.tile_selection_memory(true),
@@ -719,6 +978,255 @@ impl EditorApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn keyboard_zoom_frame(
+        app: &mut EditorApp,
+        ctx: &egui::Context,
+        time: f64,
+        focused: bool,
+        events: Vec<egui::Event>,
+    ) {
+        let mut input = egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1440., 900.),
+            )),
+            time: Some(time),
+            focused,
+            modifiers: events
+                .iter()
+                .find_map(|event| match event {
+                    egui::Event::Key { modifiers, .. } => Some(*modifiers),
+                    _ => None,
+                })
+                .unwrap_or_default(),
+            events,
+            ..Default::default()
+        };
+        eframe::App::raw_input_hook(app, ctx, &mut input);
+        let _ = ctx.run(input, |ctx| {
+            eframe::App::update(app, ctx, &mut eframe::Frame::_new_kittest());
+        });
+        assert!(app.crash.is_none(), "{:?}", app.crash);
+    }
+
+    fn keyboard_zoom_editor() -> (EditorApp, egui::Context) {
+        let mut project = Project::new();
+        let selected = project.level_keys()[0];
+        project.move_level(selected, 1024, 2048, 0).unwrap();
+        let ctx = egui::Context::default();
+        theme::configure(&ctx);
+        let mut app = EditorApp::empty();
+        app.repaint = Some(ctx.clone());
+        app.apply_initial_preferences(&ctx);
+        app.set_project(project);
+        keyboard_zoom_frame(&mut app, &ctx, 1., true, vec![]);
+        (app, ctx)
+    }
+
+    fn key_event(
+        key: Key,
+        physical: Key,
+        pressed: bool,
+        modifiers: egui::Modifiers,
+    ) -> egui::Event {
+        egui::Event::Key {
+            key,
+            physical_key: Some(physical),
+            pressed,
+            repeat: false,
+            modifiers,
+        }
+    }
+
+    #[test]
+    fn held_keyboard_zoom_uses_frame_time_and_releases_shifted_equals_by_physical_key() {
+        let (mut app, ctx) = keyboard_zoom_editor();
+        app.settings.value["mouseWheelSpeed"] = json!(2.);
+        app.viewport.zoom = 2.;
+        app.viewport.center = [80., 112.];
+        let start = app.viewport.center;
+        let delta = 0.45 * 0.15 * 1.5;
+        let mut zoom = 2.;
+        keyboard_zoom_frame(
+            &mut app,
+            &ctx,
+            1.025,
+            true,
+            vec![
+                egui::Event::PointerMoved(egui::pos2(40., 400.)),
+                key_event(Key::Plus, Key::Equals, true, egui::Modifiers::SHIFT),
+            ],
+        );
+        zoom *= 1. + delta;
+        assert!(
+            (app.viewport.zoom - zoom).abs() < 0.0001,
+            "{} != {zoom}",
+            app.viewport.zoom
+        );
+        for time in [1.05, 1.8] {
+            keyboard_zoom_frame(&mut app, &ctx, time, true, vec![]);
+            zoom *= 1. + delta;
+            assert!((app.viewport.zoom - zoom).abs() < 0.0001);
+        }
+        keyboard_zoom_frame(
+            &mut app,
+            &ctx,
+            1.825,
+            true,
+            vec![key_event(
+                Key::Equals,
+                Key::Equals,
+                false,
+                egui::Modifiers::NONE,
+            )],
+        );
+        assert!((app.viewport.zoom - zoom).abs() < 0.0001);
+        assert_eq!(app.viewport.center, start);
+
+        keyboard_zoom_frame(
+            &mut app,
+            &ctx,
+            1.85,
+            true,
+            vec![
+                key_event(Key::Equals, Key::Equals, true, egui::Modifiers::COMMAND),
+                key_event(Key::Plus, Key::Plus, true, egui::Modifiers::COMMAND),
+                key_event(Key::Minus, Key::Minus, true, egui::Modifiers::COMMAND),
+            ],
+        );
+        zoom *= (1. + delta) * (1. - delta);
+        assert!((app.viewport.zoom - zoom).abs() < 0.0001);
+        keyboard_zoom_frame(
+            &mut app,
+            &ctx,
+            1.875,
+            true,
+            vec![
+                key_event(Key::Equals, Key::Equals, false, egui::Modifiers::COMMAND),
+                key_event(Key::Minus, Key::Minus, false, egui::Modifiers::COMMAND),
+            ],
+        );
+        zoom *= 1. + delta;
+        assert!((app.viewport.zoom - zoom).abs() < 0.0001);
+        assert_eq!(ctx.zoom_factor(), 1.);
+    }
+
+    #[test]
+    fn keyboard_zoom_uses_the_sources_page_coordinate_at_a_world_level_edge() {
+        let (mut app, ctx) = keyboard_zoom_editor();
+        let anchor = app.selected.unwrap();
+        let project = app.project.as_mut().unwrap();
+        project.move_level(anchor, 1024, 2048, 1).unwrap();
+        let left = project.add_level(None, "Left", 256, 256).unwrap();
+        project.move_level(left, 896, 2048, 0).unwrap();
+        let right = project.add_level(None, "Right", 256, 256).unwrap();
+        project.move_level(right, 1152, 2048, 0).unwrap();
+        app.world = true;
+        app.panel = Some(Panel::World);
+        app.world_depth = 0;
+        app.viewport.center = [1152., 2176.];
+        app.viewport.zoom = 1.498;
+
+        keyboard_zoom_frame(
+            &mut app,
+            &ctx,
+            1.025,
+            true,
+            vec![key_event(
+                Key::Equals,
+                Key::Equals,
+                true,
+                egui::Modifiers::NONE,
+            )],
+        );
+        assert!(!app.world);
+        assert_eq!(app.selected, Some(left));
+    }
+
+    #[test]
+    fn held_keyboard_zoom_respects_focus_and_uses_the_same_world_transition_as_wheel_zoom() {
+        let (mut app, ctx) = keyboard_zoom_editor();
+        let selected = app.selected;
+        app.viewport.zoom = 1.6;
+        keyboard_zoom_frame(
+            &mut app,
+            &ctx,
+            1.025,
+            true,
+            vec![key_event(
+                Key::Minus,
+                Key::Minus,
+                true,
+                egui::Modifiers::NONE,
+            )],
+        );
+        assert!(app.world);
+        assert_eq!(app.panel, Some(Panel::World));
+        assert_eq!(app.selected, selected);
+        assert_eq!(app.viewport.center, [1152., 2176.]);
+        let zoom = app.viewport.zoom;
+
+        keyboard_zoom_frame(
+            &mut app,
+            &ctx,
+            1.05,
+            false,
+            vec![egui::Event::WindowFocused(false)],
+        );
+        keyboard_zoom_frame(
+            &mut app,
+            &ctx,
+            1.075,
+            true,
+            vec![egui::Event::WindowFocused(true)],
+        );
+        keyboard_zoom_frame(&mut app, &ctx, 1.1, true, vec![]);
+        assert_eq!(app.viewport.zoom, zoom);
+
+        keyboard_zoom_frame(
+            &mut app,
+            &ctx,
+            1.125,
+            true,
+            vec![key_event(Key::P, Key::P, true, egui::Modifiers::COMMAND)],
+        );
+        assert!(app.command_palette);
+        keyboard_zoom_frame(
+            &mut app,
+            &ctx,
+            1.15,
+            true,
+            vec![
+                key_event(Key::Plus, Key::Plus, true, egui::Modifiers::NONE),
+                egui::Event::Text("+".into()),
+            ],
+        );
+        assert_eq!(app.search, "+");
+        assert_eq!(app.viewport.zoom, zoom);
+        assert!(app.world);
+
+        keyboard_zoom_frame(
+            &mut app,
+            &ctx,
+            1.175,
+            true,
+            vec![key_event(
+                Key::Escape,
+                Key::Escape,
+                true,
+                egui::Modifiers::NONE,
+            )],
+        );
+        keyboard_zoom_frame(&mut app, &ctx, 1.2, true, vec![]);
+        assert!(!app.command_palette);
+        assert!(app.world);
+        assert_eq!(app.panel, Some(Panel::World));
+        assert_eq!(app.selected, selected);
+        assert_eq!(app.viewport.zoom, zoom);
+        assert_eq!(app.viewport.center, [1152., 2176.]);
+    }
+
     fn atlas_app() -> (EditorApp, i64) {
         let mut p = Project::new();
         let layer = p.add_layer("Tiles", "Tiles", 16).unwrap();
@@ -820,6 +1328,117 @@ mod tests {
         app.navigate_palette(1, 0);
         assert_eq!(app.atlas_selection, Some((atlas, vec![3, 7])));
         assert!(app.random_tiles);
+    }
+    #[test]
+    fn preview_154_command_p_opens_search_and_preserves_query() {
+        let mut app = EditorApp::empty();
+        app.set_project(Project::new());
+        app.search = "previous".into();
+        let ctx = egui::Context::default();
+        let modifiers = egui::Modifiers {
+            ctrl: true,
+            command: true,
+            ..Default::default()
+        };
+        let input = egui::RawInput {
+            events: vec![egui::Event::Key {
+                key: Key::P,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers,
+            }],
+            ..Default::default()
+        };
+        let _ = ctx.run(input, |ctx| app.shortcuts(ctx));
+        assert!(app.command_palette);
+        assert_eq!(app.search, "previous");
+    }
+
+    #[test]
+    fn preview_154_manual_entity_depth_shortcuts_preserve_selection_and_undo() {
+        let mut p = Project::new();
+        let layer_uid = p.add_layer("Actors", "Entities", 16).unwrap();
+        let def = p.add_entity_def("Actor", 16, 16).unwrap();
+        let level = p.level_keys()[0];
+        for x in [16, 32, 48] {
+            p.add_entity(level, 0, def, x, 16).unwrap();
+        }
+        let ids: Vec<_> = p.layer(level, 0).unwrap()["entityInstances"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| e["iid"].clone())
+            .collect();
+        let mut app = EditorApp::empty();
+        app.set_project(p);
+        app.entity_index = Some(1);
+        app.selection_group = Some(
+            json!({"elementCount": 1, "layers": [{"layerDefUid": layer_uid, "clipboard": {"entityInstances": [{"iid": ids[1]}]}}]}),
+        );
+        let ctx = egui::Context::default();
+        let send = |app: &mut EditorApp, key, shift| {
+            let modifiers = egui::Modifiers {
+                ctrl: true,
+                command: true,
+                shift,
+                ..Default::default()
+            };
+            let raw = egui::RawInput {
+                events: vec![egui::Event::Key {
+                    key,
+                    physical_key: None,
+                    pressed: true,
+                    repeat: false,
+                    modifiers,
+                }],
+                ..Default::default()
+            };
+            let _ = ctx.run(raw, |ctx| app.shortcuts(ctx));
+            let release = egui::RawInput {
+                events: vec![egui::Event::Key {
+                    key,
+                    physical_key: None,
+                    pressed: false,
+                    repeat: false,
+                    modifiers,
+                }],
+                ..Default::default()
+            };
+            let _ = ctx.run(release, |ctx| app.shortcuts(ctx));
+        };
+        app.project.as_mut().unwrap().json["defs"]["layers"][0]["entityDepthSorting"] =
+            json!("YAscending");
+        send(&mut app, Key::ArrowUp, false);
+        assert_eq!(
+            app.project.as_ref().unwrap().layer(level, 0).unwrap()["entityInstances"][1]["iid"],
+            ids[1]
+        );
+        app.project.as_mut().unwrap().json["defs"]["layers"][0]["entityDepthSorting"] =
+            json!("Manual");
+        app.selection_group.as_mut().unwrap()["elementCount"] = json!(2);
+        send(&mut app, Key::ArrowUp, false);
+        assert_eq!(
+            app.project.as_ref().unwrap().layer(level, 0).unwrap()["entityInstances"][1]["iid"],
+            ids[1]
+        );
+        app.selection_group.as_mut().unwrap()["elementCount"] = json!(1);
+        send(&mut app, Key::ArrowUp, false);
+        assert_eq!(
+            app.project.as_ref().unwrap().layer(level, 0).unwrap()["entityInstances"][2]["iid"],
+            ids[1]
+        );
+        assert_eq!(app.entity_index, Some(2));
+        send(&mut app, Key::ArrowDown, true);
+        assert_eq!(
+            app.project.as_ref().unwrap().layer(level, 0).unwrap()["entityInstances"][0]["iid"],
+            ids[1]
+        );
+        app.undo_action(false);
+        assert_eq!(
+            app.project.as_ref().unwrap().layer(level, 0).unwrap()["entityInstances"][2]["iid"],
+            ids[1]
+        );
     }
     #[test]
     fn function_layer_keys_follow_filtered_list_but_number_keys_use_actual_order() {

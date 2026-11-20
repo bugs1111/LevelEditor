@@ -1,4 +1,5 @@
 //! Explicit editor migration; raw project loading deliberately remains lossless.
+use crate::grid_presence::GridPresence;
 use crate::{Error, Project, Result};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
@@ -17,6 +18,19 @@ fn defaults(v: &mut Value, template: &Value) {
             if !v.contains_key(k) {
                 v.insert(k.clone(), value.clone());
             }
+        }
+    }
+}
+fn default_world_dimensions(world: &mut Value, template: &Value) {
+    for (default_size, grid_step) in [
+        ("defaultLevelWidth", "worldGridWidth"),
+        ("defaultLevelHeight", "worldGridHeight"),
+    ] {
+        if world[default_size].is_null() {
+            world[default_size] = template[default_size].clone();
+        }
+        if world[grid_step].is_null() {
+            world[grid_step] = world[default_size].clone();
         }
     }
 }
@@ -109,7 +123,6 @@ fn field_type(field: &mut Value, enums: &[(i64, String, bool)]) {
     );
 }
 fn field_instance(fi: &mut Value, defs: &BTreeMap<i64, Value>) {
-    alias(fi, "defId", "defUid");
     if fi["realEditorValues"].is_null() {
         let raw = fi
             .get_mut("realEditorValue")
@@ -161,22 +174,92 @@ fn field_instance(fi: &mut Value, defs: &BTreeMap<i64, Value>) {
         fi["__tile"] = Value::Null;
     }
 }
+fn reconcile_field_instances(
+    instances: &mut Value,
+    owner_defs: Option<&[Value]>,
+    field_defs: &BTreeMap<i64, Value>,
+) -> Result<()> {
+    if instances.is_null() {
+        *instances = json!([]);
+    }
+    let fields = instances
+        .as_array_mut()
+        .ok_or_else(|| Error::Invalid("field instances must be an array".into()))?;
+    if fields.iter().any(|field| !field.is_object()) {
+        return Err(Error::Invalid("field instance must be an object".into()));
+    }
+    let mut present = owner_defs.map(|defs| {
+        defs.iter()
+            .filter_map(|def| Some((def["uid"].as_i64()?, false)))
+            .collect::<BTreeMap<_, _>>()
+    });
+    fields.retain_mut(|field| {
+        alias(field, "defId", "defUid");
+        if let Some(present) = &mut present
+            && let Some(uid) = field["defUid"].as_i64()
+        {
+            let Some(present) = present.get_mut(&uid) else {
+                return false;
+            };
+            *present = true;
+        }
+        field_instance(field, field_defs);
+        true
+    });
+    for (uid, present) in present.into_iter().flatten() {
+        if !present {
+            // Leave overrides empty so future edits to the definition's default still apply.
+            fields.push(json!({"defUid":uid,"realEditorValues":[]}));
+        }
+    }
+    Ok(())
+}
 impl Project {
     /// Apply the source loader's historical aliases, missing defaults, UUIDs and pre-CSV/tile migrations.
     /// Unknown properties remain intact; callers choose whether to persist this upgraded document.
     pub fn migrate_to_current(&mut self) -> Result<bool> {
-        let old = self.json.clone();
-        let old_external = self.external_levels.clone();
+        let version = s(&self.json, "jsonVersion");
+        let parts = version
+            .split('.')
+            .map(str::parse::<u32>)
+            .collect::<std::result::Result<Vec<_>, _>>();
+        if let Ok(parts) = parts
+            && parts.len() == 3
+            && (parts[0], parts[1], parts[2]) > (1, 5, 4)
+        {
+            return Err(Error::Invalid(format!(
+                "Project JSON version {version} is newer than the supported 1.5.4"
+            )));
+        }
         let mut p = self.clone();
         let version = s(&p.json, "jsonVersion").to_owned();
         let template = Project::new();
         alias(&mut p.json, "advancedOptionFlags", "flags");
-        if let Some(export) = p.json.as_object_mut().unwrap().remove("exportPng") {
+        if !p.json["flags"]
+            .as_array()
+            .is_some_and(|flags| flags.iter().any(|flag| flag == "MultiWorlds"))
+        {
+            default_world_dimensions(&mut p.json, &template.json);
+        }
+        if let Some(export) = p.json.as_object_mut().unwrap().remove("exportPng")
+            && !export.is_null()
+        {
             p.json["imageExportMode"] = json!(if export == true {
                 "OneImagePerLayer"
             } else {
                 "None"
             });
+        }
+        if p.json.get("jsonStyle").is_none() {
+            p.json["jsonStyle"] = json!("Compact");
+        }
+        if !p.json["defaultLevelBgColor"].is_string() {
+            p.json["defaultLevelBgColor"] = p
+                .json
+                .get("bgColor")
+                .filter(|color| color.is_string())
+                .unwrap_or(&template.json["bgColor"])
+                .clone();
         }
         defaults(&mut p.json, &template.json);
         uuid(&mut p.json);
@@ -212,7 +295,7 @@ impl Project {
         if let Some(flags) = p.json["flags"].as_array_mut() {
             flags.retain(|v| v != "DiscardPreCsvIntGrid");
         }
-        if before(&version, 0, 6) && old.get("worldLayout").is_none() {
+        if before(&version, 0, 6) && self.json.get("worldLayout").is_none() {
             p.json["worldLayout"] = json!("LinearHorizontal");
         }
         // Default records are the same complete definitions used by native creation.
@@ -240,6 +323,16 @@ impl Project {
             .map(|t| (n(t, "uid"), t.clone()))
             .collect();
         for d in p.json["defs"]["layers"].as_array_mut().unwrap() {
+            if d["layerUidsPreventingAutoTilingHere"].is_null() {
+                d["layerUidsPreventingAutoTilingHere"] =
+                    match d["autoTilesKilledByOtherLayerUid"].as_i64() {
+                        Some(uid) => json!([uid]),
+                        None => json!([]),
+                    };
+            }
+            d.as_object_mut()
+                .unwrap()
+                .remove("autoTilesKilledByOtherLayerUid");
             alias(d, "tilesetDefId", "tilesetDefUid");
             if d["tilesetDefUid"].is_null() {
                 alias(d, "autoTilesetDefUid", "tilesetDefUid");
@@ -380,7 +473,8 @@ impl Project {
             .iter()
             .map(|d| (n(d, "uid"), d.clone()))
             .collect();
-        let field_defs: BTreeMap<_, _> = array(&p.json["defs"]["levelFields"])
+        let level_field_defs = array(&p.json["defs"]["levelFields"]).to_vec();
+        let field_defs: BTreeMap<_, _> = level_field_defs
             .iter()
             .chain(
                 entity_defs
@@ -390,6 +484,7 @@ impl Project {
             .map(|f| (n(f, "uid"), f.clone()))
             .collect();
         let bg = p.json["defaultLevelBgColor"].clone();
+        let mut grid_presence = std::mem::take(&mut p.grid_presence);
         let mut positions: BTreeMap<Option<usize>, i64> = BTreeMap::new();
         let world_layout = s(&p.json, "worldLayout").to_owned();
         for key in p.level_keys() {
@@ -421,9 +516,11 @@ impl Project {
             if l["__bgColor"].is_null() {
                 l["__bgColor"] = bg.clone();
             }
-            for fi in l["fieldInstances"].as_array_mut().unwrap() {
-                field_instance(fi, &field_defs);
-            }
+            reconcile_field_instances(
+                &mut l["fieldInstances"],
+                Some(&level_field_defs),
+                &field_defs,
+            )?;
             let level_uid = l["uid"].clone();
             let (w, h) = (n(l, "pxWid"), n(l, "pxHei"));
             for li in l["layerInstances"].as_array_mut().ok_or_else(|| {
@@ -450,6 +547,7 @@ impl Project {
                     &json!({"pxOffsetX":0,"pxOffsetY":0,"visible":true,"optionalRules":[],"seed":0,"overrideTilesetUid":null,"autoLayerTiles":[],"gridTiles":[],"entityInstances":[]}),
                 );
                 if li["intGridCsv"].is_null() {
+                    let mut presence = GridPresence::empty();
                     let mut csv = if d["type"] == "IntGrid" {
                         vec![0; (cw * ch).max(0) as usize]
                     } else {
@@ -459,7 +557,14 @@ impl Project {
                         let coord = n(cell, "coordId");
                         if coord >= 0 && (coord as usize) < csv.len() {
                             csv[coord as usize] = n(cell, "v") + 1;
+                            presence.set(coord as usize, csv[coord as usize] == 0);
                         }
+                    }
+                    if d["type"] == "IntGrid" {
+                        grid_presence.insert(
+                            li["iid"].as_str().expect("migrated layer IID").into(),
+                            presence,
+                        );
                     }
                     li["intGridCsv"] = json!(csv);
                 }
@@ -502,24 +607,40 @@ impl Project {
                     if e.get("x").is_some() {
                         e["px"] = json!([n(e, "x"), n(e, "y")]);
                     }
-                    if let Some(d) = entity_defs.get(&n(e, "defUid")) {
+                    let definition = entity_defs.get(&n(e, "defUid"));
+                    if let Some(d) = definition {
                         defaults(
                             e,
                             &json!({"width":d["width"],"height":d["height"],"fieldInstances":[],"__tile":d["tileRect"],"__smartColor":d["color"]}),
                         );
                     }
-                    for fi in e["fieldInstances"].as_array_mut().unwrap() {
-                        field_instance(fi, &field_defs);
-                    }
+                    reconcile_field_instances(
+                        &mut e["fieldInstances"],
+                        definition.map(|d| array(&d["fieldDefs"])),
+                        &field_defs,
+                    )?;
                 }
             }
         }
         for world in p.json["worlds"].as_array_mut().into_iter().flatten() {
             uuid(world);
+            default_world_dimensions(world, &template.json);
         }
-        p.json["jsonVersion"] = json!("1.5.3");
+        p.json["jsonVersion"] = json!("1.5.4");
+        p.grid_presence = grid_presence;
         p.refresh_derived_data()?;
-        let changed = p.json != old || p.external_levels != old_external;
+        let mut changed = p.json != self.json || p.external_levels != self.external_levels;
+        if changed && self.json["jsonVersion"] == "1.5.4" {
+            let compatibility = super::OutputCompatibility::new(&p.json);
+            if !compatibility.multiline && !compatibility.text_arrays.is_empty() {
+                // Current files may use String for F_Text. Hydrate the editor
+                // type without requiring a save when this is the only difference.
+                compatibility.apply_project_text_types(&mut p, false);
+                changed = p.json != self.json || p.external_levels != self.external_levels;
+                compatibility.apply_project_text_types(&mut p, true);
+            }
+        }
+        changed |= std::mem::take(&mut p.repaired_external_paths);
         *self = p;
         Ok(changed)
     }

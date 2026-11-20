@@ -6,6 +6,7 @@ pub(super) fn options(hidden: &HashSet<i64>, selected: LevelKey) -> RenderOption
         selected,
         active_layer: 0,
         world: false,
+        world_multi_selection: false,
         grid: true,
         details: true,
         single_layer: false,
@@ -20,6 +21,7 @@ pub(super) fn options(hidden: &HashSet<i64>, selected: LevelKey) -> RenderOption
         parallax: true,
         rulers: true,
         guides: true,
+        async_paint: None,
     }
 }
 fn frame(
@@ -39,11 +41,71 @@ fn frame(
         |ctx| {
             assets.poll(ctx);
             let painter = ctx.layer_painter(egui::LayerId::background());
-            count = draw(ctx, &painter, rect, project, view, options, assets);
+            count = draw(ctx, &painter, rect, project, view, options, None, assets);
         },
     );
     (count, output)
 }
+
+#[test]
+fn classic_tiles_with_an_unavailable_atlas_mark_each_occupied_cell_in_level_view() {
+    let mut project = Project::new();
+    let key = project.level_keys()[0];
+    project.resize_level(key, 64, 48, 0, 0).unwrap();
+    project.add_layer("Ground", "Tiles", 16).unwrap();
+    let def = &mut project.json["defs"]["layers"][0];
+    def["tilePivotX"] = serde_json::json!(0.5);
+    def["tilePivotY"] = serde_json::json!(0.25);
+    let layer = project.layer_mut(key, 0).unwrap();
+    layer["__pxTotalOffsetX"] = serde_json::json!(7);
+    layer["__pxTotalOffsetY"] = serde_json::json!(11);
+    layer["gridTiles"] = serde_json::json!([
+        {"px":[0,0],"src":[0,0],"t":0,"f":0,"d":[0]},
+        {"px":[0,0],"src":[16,0],"t":1,"f":1,"d":[0]},
+        {"px":[32,16],"src":[48,0],"t":3,"f":3,"d":[6]}
+    ]);
+    let ctx = egui::Context::default();
+    let mut assets = Assets::default();
+    let hidden = HashSet::new();
+    let mut draw_options = options(&hidden, key);
+    draw_options.grid = false;
+    draw_options.details = false;
+    let view = Viewport {
+        center: [32., 24.],
+        zoom: 1.,
+    };
+    let (_, output) = frame(&ctx, &project, &view, &draw_options, &mut assets);
+    let marker = output
+        .textures_delta
+        .set
+        .iter()
+        .find_map(|(id, delta)| {
+            let egui::ImageData::Color(image) = &delta.image;
+            (image.size == [16, 16]
+                && image.pixels[0] == Color32::from_rgb(136, 0, 0)
+                && image.pixels[7 * 16 + 7] == Color32::RED)
+                .then_some(*id)
+        })
+        .expect("missing atlas marker texture");
+    let quads = output
+        .shapes
+        .iter()
+        .filter_map(|shape| match &shape.shape {
+            egui::Shape::Mesh(mesh) if mesh.texture_id == marker => {
+                Some(mesh.vertices.chunks_exact(4).map(|quad| quad[0].pos))
+            }
+            _ => None,
+        })
+        .flatten()
+        .collect::<Vec<_>>();
+    assert_eq!(quads, [egui::pos2(476., 334.), egui::pos2(508., 350.)]);
+    draw_options.world = true;
+    let (_, output) = frame(&ctx, &project, &view, &draw_options, &mut assets);
+    assert!(!output.shapes.iter().any(|shape| {
+        matches!(&shape.shape, egui::Shape::Mesh(mesh) if mesh.texture_id == marker)
+    }));
+}
+
 #[test]
 #[ignore = "requires original sample resources under .reference/ldtk"]
 fn official_examples_render_real_meshes_without_mutating_document() {
@@ -63,7 +125,7 @@ fn official_examples_render_real_meshes_without_mutating_document() {
         let hidden = HashSet::new();
         let draw_options = options(&hidden, key);
         let mut view = Viewport::default();
-        view.fit(bounds(&project, key, false), [1000., 700.]);
+        view.fit(bounds(&project, key, false), [1000., 700.], 1.0);
         let start = Instant::now();
         let mut count = 0;
         let mut primitives = 0;
@@ -83,7 +145,7 @@ fn official_examples_render_real_meshes_without_mutating_document() {
         let mut world_options = options(&hidden, key);
         world_options.world = true;
         let mut world_view = Viewport::default();
-        world_view.fit(bounds(&project, key, true), [1000., 700.]);
+        world_view.fit(bounds(&project, key, true), [1000., 700.], 1.0);
         let (_, world_output) = frame(&ctx, &project, &world_view, &world_options, &mut assets);
         assert!(
             !ctx.tessellate(world_output.shapes, world_output.pixels_per_point)
@@ -151,7 +213,7 @@ fn original_large_project_frame_cost() {
     let options = options(&hidden, key);
     let mut assets = Assets::default();
     let mut view = Viewport::default();
-    view.fit(bounds(&project, key, false), [1000., 700.]);
+    view.fit(bounds(&project, key, false), [1000., 700.], 1.0);
     for _ in 0..20 {
         frame(&ctx, &project, &view, &options, &mut assets);
         std::thread::sleep(Duration::from_millis(5));
@@ -325,6 +387,47 @@ fn world_simplification_does_not_reveal_tiles_under_transparent_stack_top() {
         fills.contains(&Color32::GREEN),
         "transparent topmost stack must expose next layer, not earlier tiles in same stack"
     );
+}
+
+#[test]
+fn world_view_excludes_entity_layers_even_when_enabled() {
+    let mut project = Project::new();
+    project.json["defs"]["layers"] = serde_json::json!([
+        {"uid":1,"type":"Entities","renderInWorldView":true}
+    ]);
+    project.json["defs"]["entities"] = serde_json::json!([
+        {"uid":2,"color":"#FF0000","fillOpacity":1.,"lineOpacity":0.}
+    ]);
+    project.json["levels"] = serde_json::json!([{
+        "pxWid":32,"pxHei":32,
+        "layerInstances":[{
+            "layerDefUid":1,"__type":"Entities","__gridSize":16,
+            "entityInstances":[{"defUid":2,"px":[0,0],"width":16,"height":16}]
+        }]
+    }]);
+    let key = project.level_keys()[0];
+    let hidden = HashSet::new();
+    let mut options = options(&hidden, key);
+    options.details = false;
+    let ctx = egui::Context::default();
+    let view = Viewport {
+        center: [16., 16.],
+        zoom: 4.,
+    };
+    let mut assets = Assets::default();
+    let has_entity = |output: egui::FullOutput| {
+        output.shapes.iter().any(
+            |shape| matches!(&shape.shape, egui::Shape::Rect(rect) if rect.fill == Color32::RED),
+        )
+    };
+
+    assert!(has_entity(
+        frame(&ctx, &project, &view, &options, &mut assets).1
+    ));
+    options.world = true;
+    assert!(!has_entity(
+        frame(&ctx, &project, &view, &options, &mut assets).1
+    ));
 }
 
 #[test]
@@ -675,6 +778,78 @@ fn geometry_aware_ghost_flip_mirrors_inside_each_entry_and_brush_grid_is_outline
 }
 
 #[test]
+fn preview_154_point_path_loop_counts_null_slots_when_returning_to_the_entity() {
+    let mut project = Project::new();
+    project.add_layer("Actors", "Entities", 16).unwrap();
+    let actor = project.add_entity_def("Actor", 16, 16).unwrap();
+    let field = project
+        .add_field_definition(Some(actor), "Path", "Point", true)
+        .unwrap();
+    project
+        .update_field_definition(
+            field,
+            &serde_json::json!({
+                "canBeNull":true,"editorAlwaysShow":true,"editorDisplayMode":"PointPathLoop",
+                "editorLinkStyle":"DashedLine","editorDisplayColor":"#CC1166"
+            }),
+        )
+        .unwrap();
+    let key = project.level_keys()[0];
+    project.add_entity(key, 0, actor, 16, 16).unwrap();
+    let iid = project.layer(key, 0).unwrap()["entityInstances"][0]["iid"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let hidden = HashSet::new();
+    let mut draw_options = options(&hidden, key);
+    draw_options.guides = false;
+    draw_options.grid = false;
+    let view = Viewport {
+        center: [128., 128.],
+        zoom: 1.,
+    };
+    let ctx = egui::Context::default();
+    let mut assets = Assets::default();
+    let clip = [1000., 700.];
+    let start = view.to_screen([24., 24.], [0., 0.], clip);
+    let end = view.to_screen([72., 24.], [0., 0.], clip);
+    for value in [
+        serde_json::json!([{"cx":4,"cy":1}]),
+        serde_json::json!([null,{"cx":4,"cy":1}]),
+    ] {
+        let has_loop = value.as_array().unwrap().len() > 1;
+        project
+            .set_field_editor_value(key, Some(&iid), field, value)
+            .unwrap();
+        let (_, output) = frame(&ctx, &project, &view, &draw_options, &mut assets);
+        let direction = |forward: bool| {
+            output.shapes.iter().any(|item| {
+                let egui::Shape::LineSegment { points, stroke } = &item.shape else {
+                    return false;
+                };
+                stroke.color.r() > 130
+                    && stroke.color.b() > 55
+                    && stroke.color.g() < 35
+                    && points
+                        .iter()
+                        .all(|p| p.y == start[1] && (start[0]..=end[0]).contains(&p.x))
+                    && (if forward {
+                        points[1].x > points[0].x
+                    } else {
+                        points[1].x < points[0].x
+                    })
+            })
+        };
+        assert!(direction(true), "point path didn't reach its visible point");
+        assert_eq!(
+            direction(false),
+            has_loop,
+            "return segment for {has_loop} loop slots"
+        );
+    }
+}
+
+#[test]
 fn point_ghosts_draw_selected_circles_and_move_links_but_copy_has_no_links() {
     let mut project = Project::new();
     project.add_layer("Entities", "Entities", 16).unwrap();
@@ -755,4 +930,118 @@ fn source_ruler_font_scales_with_level_root_not_screen_field_root() {
     let _ = ctx.run(egui::RawInput::default(), |_| {});
     assert_eq!(ruler_scale(&ctx, 1., 816.), 2.);
     assert_eq!(ruler_scale(&ctx, 0.5, 100.), 0.5);
+}
+
+#[test]
+fn preview_154_guide_grid_uses_custom_color_and_opacity_only_when_color_is_set() {
+    assert_eq!(
+        guide_grid_color(&serde_json::json!({"guideOpacity":0.8}), Color32::WHITE),
+        Color32::WHITE.gamma_multiply(0.33)
+    );
+    assert_eq!(
+        guide_grid_color(&serde_json::json!({}), Color32::BLACK),
+        Color32::BLACK.gamma_multiply(0.33)
+    );
+    assert_eq!(
+        guide_grid_color(
+            &serde_json::json!({"guideColor":"#FF0000","guideOpacity":0.5}),
+            Color32::BLACK
+        ),
+        Color32::from_rgb(255, 0, 0).gamma_multiply(0.5)
+    );
+    assert_eq!(
+        guide_grid_color(&serde_json::json!({"guideColor":"#FF0000"}), Color32::WHITE),
+        Color32::from_rgb(255, 0, 0).gamma_multiply(0.33)
+    );
+}
+
+#[test]
+fn preview_154_custom_guide_color_reaches_actual_canvas_shapes() {
+    let mut project = Project::new();
+    let layer = project.add_layer("Grid", "IntGrid", 16).unwrap();
+    project.update_layer_properties(layer, &serde_json::json!({"guideGridWid":32,"guideGridHei":32,"guideColor":"#FF0000","guideOpacity":0.5})).unwrap();
+    let key = project.level_keys()[0];
+    let hidden = HashSet::new();
+    let options = options(&hidden, key);
+    let ctx = egui::Context::default();
+    let mut view = Viewport::default();
+    view.fit(bounds(&project, key, false), [1000., 700.], 1.0);
+    let (_, out) = frame(&ctx, &project, &view, &options, &mut Assets::default());
+    let expected = Color32::from_rgb(255, 0, 0).gamma_multiply(0.5);
+    assert!(out.shapes.iter().any(|shape| matches!(&shape.shape, egui::Shape::LineSegment { stroke, .. } if stroke.color == expected)), "custom guide grid lines must reach the canvas output");
+}
+
+#[test]
+fn preview_154_filepath_field_renders_external_image_as_entity_tile() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("decal.png");
+    image::save_buffer(&path, &[255; 8 * 4 * 4], 8, 4, image::ColorType::Rgba8).unwrap();
+    let mut project = Project::new();
+    project.path = Some(temp.path().join("fixture.ldtk"));
+    project.add_layer("Actors", "Entities", 16).unwrap();
+    let def = project.add_entity_def("Actor", 16, 16).unwrap();
+    let field = project
+        .add_field_definition(Some(def), "Image", "FilePath", false)
+        .unwrap();
+    project
+        .update_field_definition(
+            field,
+            &serde_json::json!({"editorDisplayMode":"EntityTile"}),
+        )
+        .unwrap();
+    let key = project.level_keys()[0];
+    project.add_entity(key, 0, def, 32, 32).unwrap();
+    let iid = project.layer(key, 0).unwrap()["entityInstances"][0]["iid"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    project
+        .set_field_editor_value(key, Some(&iid), field, serde_json::json!("decal.png"))
+        .unwrap();
+    let ctx = egui::Context::default();
+    let mut assets = Assets::default();
+    let hidden = HashSet::new();
+    let opts = options(&hidden, key);
+    let view = Viewport {
+        center: [32., 32.],
+        zoom: 4.,
+    };
+    let started = Instant::now();
+    loop {
+        let (_, out) = frame(&ctx, &project, &view, &opts, &mut assets);
+        if let Some(texture) = assets.texture(&ctx, &path) {
+            assert!(out.shapes.iter().any(|s| matches!(&s.shape, egui::Shape::Mesh(m) if m.texture_id == texture.id() && !m.vertices.is_empty())));
+            break;
+        }
+        assert!(
+            started.elapsed() < Duration::from_secs(3),
+            "{:?}",
+            assets.errors
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+#[test]
+fn preview_154_world_multiselection_hides_current_level_highlight() {
+    let project = Project::new();
+    let key = project.level_keys()[0];
+    let ctx = egui::Context::default();
+    let mut assets = Assets::default();
+    let hidden = HashSet::new();
+    let mut opts = options(&hidden, key);
+    opts.world = true;
+    opts.details = false;
+    let view = Viewport {
+        center: [128., 128.],
+        zoom: 1.,
+    };
+    let has_highlight = |output: &egui::FullOutput| {
+        output.shapes.iter().any(|shape| matches!(&shape.shape, egui::Shape::Rect(rect) if rect.stroke.color == theme::ACCENT))
+    };
+    let (_, single) = frame(&ctx, &project, &view, &opts, &mut assets);
+    assert!(has_highlight(&single));
+    opts.world_multi_selection = true;
+    let (_, multiple) = frame(&ctx, &project, &view, &opts, &mut assets);
+    assert!(!has_highlight(&multiple));
 }

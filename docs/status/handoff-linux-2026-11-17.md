@@ -50,6 +50,7 @@ Linux 渲染后端为 Vulkan；真实桌面使用其已安装的硬件驱动。�
 
 ```sh
 scripts/bootstrap-rust
+. "$HOME/.cargo/env"
 scripts/cargo -vV
 scripts/cargo fetch --locked
 scripts/run
@@ -65,7 +66,7 @@ just run examples/original/Typical_2D_platformer_example.ldtk
 
 `scripts/run` 与 `just run` 等价。首次检出需要下载依赖，不要一开始就加 `--offline`。Mac 已验证 Cargo/Rust 1.100.0；Linux 使用能够构建当前 `Cargo.lock` 的工具链，先记录版本，不擅自升级锁文件中的 GUI/GPU 依赖。
 
-**不要复制 Mac 的 `.tools/cargo`、`.tools/rustup`、`.tools/cross` 或 `target` 来当 Linux 工具链。** `scripts/cargo` 优先选择项目内 `.tools/cargo/bin/cargo`，复制 Mac 缓存会选中错误架构的可执行文件。新克隆不会带入这些忽略目录。
+Rust 工具链按主机架构安装到当前用户的 `~/.cargo` 和 `~/.rustup`，`scripts/cargo` 通过 `PATH` 调用 Cargo。用于构建 Linux 包的 Zig 工具和缓存位于用户的 `~/.cargo/cross`，已设置 `CARGO_HOME` 时使用其 `cross` 子目录。
 
 `just build -t win|mac|linux -m debug|release` 是用户要求的 **Mac 主机交叉编译入口**，脚本明确拒绝 Linux 主机。在 Linux 上原生构建用：
 

@@ -318,6 +318,9 @@ fn layer_history_restores_dependency_output_but_not_unrelated_layers() {
             def["autoSourceLayerDefUid"] = json!(active);
         }
         if def["uid"] == killer {
+            def.as_object_mut()
+                .unwrap()
+                .remove("layerUidsPreventingAutoTilingHere");
             def["autoTilesKilledByOtherLayerUid"] = json!(active);
         }
     }
@@ -553,4 +556,48 @@ fn structural_invalidation_clears_level_undo_redo_but_keeps_project_history() {
     h.clear_level_timelines();
     assert!(!h.commit(&p));
     assert_eq!(p.level(K).unwrap()["worldX"], 30);
+}
+
+#[test]
+fn preview_154_blocker_layer_history_restores_dependent_output() {
+    let mut p = Project::new();
+    let blocker = p.add_layer("Blocker", "IntGrid", 16).unwrap();
+    let auto = p.add_layer("Auto", "IntGrid", 16).unwrap();
+    p.update_layer_properties(
+        auto,
+        &json!({"layerUidsPreventingAutoTilingHere":[blocker]}),
+    )
+    .unwrap();
+    let index = p.level(K).unwrap()["layerInstances"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .position(|l| l["layerDefUid"] == blocker)
+        .unwrap();
+    let mut h = History::default();
+    h.begin_layer(&p, K, index);
+    for layer in p.level_mut(K).unwrap()["layerInstances"]
+        .as_array_mut()
+        .unwrap()
+    {
+        if layer["layerDefUid"] == blocker {
+            layer["intGridCsv"][0] = json!(1);
+        }
+        if layer["layerDefUid"] == auto {
+            layer["autoLayerTiles"] = json!([{"t":42}]);
+        }
+    }
+    assert!(h.commit(&p));
+    assert!(h.undo_level(&mut p, K));
+    let layers = p.level(K).unwrap()["layerInstances"].as_array().unwrap();
+    assert_eq!(
+        layers.iter().find(|l| l["layerDefUid"] == auto).unwrap()["autoLayerTiles"],
+        json!([])
+    );
+    assert!(h.redo_level(&mut p, K));
+    let layers = p.level(K).unwrap()["layerInstances"].as_array().unwrap();
+    assert_eq!(
+        layers.iter().find(|l| l["layerDefUid"] == auto).unwrap()["autoLayerTiles"],
+        json!([{"t":42}])
+    );
 }

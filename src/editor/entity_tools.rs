@@ -7,11 +7,15 @@ pub(super) fn drag_position(
     end: [f32; 2],
     grid: f32,
     scale: f32,
+    snap: bool,
 ) -> [i32; 2] {
     std::array::from_fn(|axis| {
-        origin[axis]
-            + (((end[axis] / grid).floor() - (start[axis] / grid).floor()) * grid * scale).trunc()
-                as i32
+        let delta = if snap {
+            ((end[axis] / grid).floor() - (start[axis] / grid).floor()) * grid * scale
+        } else {
+            (end[axis] - start[axis]) * scale
+        };
+        origin[axis] + delta.trunc() as i32
     })
 }
 

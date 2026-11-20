@@ -7,6 +7,7 @@ description = "Native Rust port of the LDtk level editor (in development)"
 
 [workspace]
 members = ["crates/ldtk-core"]
+exclude = ["vendor/winit"]
 resolver = "2"
 
 [dependencies]
@@ -23,6 +24,9 @@ zip = { version = "4.6", default-features = false, features = ["deflate"] }
 sha2 = "0.10"
 semver = "1"
 
+[build-dependencies]
+cc = "1"
+
 [dev-dependencies]
 tempfile = "3"
 
@@ -35,7 +39,12 @@ objc2-foundation = { version = "=0.3.2", default-features = false, features = ["
 wgpu = { version = "27", default-features = false, features = ["std", "dx12", "wgsl"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
+libloading = "0.8.9"
 wgpu = { version = "27", default-features = false, features = ["std", "vulkan", "wgsl"] }
+
+[patch.crates-io]
+# Winit 0.30.13 with the upstream X11 wheel-release fix backported.
+winit = { path = "vendor/winit" }
 
 [profile.release]
 lto = "thin"

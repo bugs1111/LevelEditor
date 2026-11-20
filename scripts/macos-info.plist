@@ -3,7 +3,7 @@
 <plist version="1.0"><dict>
   <key>CFBundleExecutable</key><string>ldtk-rs</string>
   <key>CFBundleIdentifier</key><string>io.ldtk.rust-port</string>
-  <key>CFBundleIconFile</key><string>LDtk.icns</string>
+  <key>CFBundleIconFile</key><string>LevelEditor.icns</string>
   <key>CFBundleName</key><string>LevelEditor</string>
   <key>CFBundleDisplayName</key><string>LevelEditor</string>
   <key>CFBundlePackageType</key><string>APPL</string>

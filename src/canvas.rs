@@ -8,6 +8,19 @@ pub fn submit_pending_gpu_uploads() {
         state.queue.submit(std::iter::empty());
     }
 }
+pub fn begin_picker_filter(painter: &egui::Painter, active: bool) -> Option<usize> {
+    if active {
+        Some(blur::begin(painter))
+    } else {
+        blur::release_picker();
+        None
+    }
+}
+pub fn finish_picker_filter(painter: &egui::Painter, start: Option<usize>, rect: egui::Rect) {
+    if let Some(start) = start {
+        blur::finish_picker(painter, start, rect);
+    }
+}
 #[path = "bitmap_font.rs"]
 mod bitmap_font;
 #[path = "render_entities.rs"]
@@ -28,11 +41,36 @@ use crate::{
     viewport::{Viewport, tile_uv},
 };
 use eframe::egui::{self, Color32, Mesh, Painter, Pos2, Rect, Stroke, StrokeKind};
-pub(crate) use entities::entity_smart_color;
-pub(crate) use fields::draw_entity_ref_link;
+pub(crate) use entities::{entity_field_tile, entity_smart_color};
+pub(crate) use fields::{draw_entity_ref_link, level_smart_color};
 use ldtk_core::{LevelKey, Project};
 use serde_json::Value;
 use std::{collections::HashSet, path::PathBuf};
+
+pub(crate) fn entity_display_order(layer: &Value, def: &Value) -> Vec<usize> {
+    entity_order(values(&layer["entityInstances"]), def)
+}
+
+fn entity_order(entities: &[Value], def: &Value) -> Vec<usize> {
+    let mut order: Vec<usize> = (0..entities.len()).collect();
+    match def["entityDepthSorting"].as_str() {
+        Some("YAscending") => order.sort_by_key(|&i| entities[i]["px"][1].as_i64().unwrap_or(0)),
+        Some("YDescending") => {
+            order.sort_by_key(|&i| std::cmp::Reverse(entities[i]["px"][1].as_i64().unwrap_or(0)))
+        }
+        _ => {}
+    }
+    order
+}
+
+fn guide_grid_color(def: &Value, base: Color32) -> Color32 {
+    match def["guideColor"].as_str() {
+        Some(color) => {
+            theme::color(color).gamma_multiply(number(def, "guideOpacity", 0.33).clamp(0., 1.))
+        }
+        None => base.gamma_multiply(0.33),
+    }
+}
 
 pub fn number(value: &Value, field: &str, fallback: f32) -> f32 {
     value[field].as_f64().map(|v| v as f32).unwrap_or(fallback)
@@ -137,11 +175,46 @@ fn screen_rect(view: &Viewport, canvas: Rect, bounds: [f32; 4]) -> Rect {
     Rect::from_min_max(a.into(), b.into())
 }
 
+pub(crate) struct AsyncPaintPreview {
+    pub level: LevelKey,
+    pub deadline: f64,
+    pub layers: std::collections::HashMap<i64, AsyncLayerPreview>,
+    pub hint_grid: Option<f32>,
+    pub hints: std::collections::BTreeMap<[i32; 2], Color32>,
+}
+
+#[derive(Default)]
+pub(crate) struct AsyncLayerPreview {
+    pub old_intgrid: std::collections::BTreeMap<[i32; 2], i64>,
+    pub old_intgrid_cells: Option<Vec<Value>>,
+    pub old_tiles: Option<Vec<Value>>,
+    pub old_entities: Option<Vec<Value>>,
+}
+
+impl AsyncPaintPreview {
+    pub fn is_active_for(&self, level: LevelKey, now: f64) -> bool {
+        self.level == level && now < self.deadline
+    }
+}
+
+pub(crate) fn cached_tile_average(tileset: &Value, tile_id: usize) -> Option<[u8; 4]> {
+    let colors = tileset["cachedPixelData"]["averageColors"].as_str()?;
+    let start = tile_id.checked_mul(4)?;
+    let n = u16::from_str_radix(colors.get(start..start.checked_add(4)?)?, 16).ok()?;
+    Some([
+        ((n >> 8) & 15) as u8 * 17,
+        ((n >> 4) & 15) as u8 * 17,
+        (n & 15) as u8 * 17,
+        ((n >> 12) & 15) as u8 * 17,
+    ])
+}
+
 #[derive(Clone)]
 pub struct RenderOptions<'a> {
     pub selected: LevelKey,
     pub active_layer: usize,
     pub world: bool,
+    pub world_multi_selection: bool,
     pub grid: bool,
     pub details: bool,
     pub single_layer: bool,
@@ -156,6 +229,7 @@ pub struct RenderOptions<'a> {
     pub parallax: bool,
     pub rulers: bool,
     pub guides: bool,
+    pub(crate) async_paint: Option<&'a AsyncPaintPreview>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -585,16 +659,16 @@ impl Scene<'_> {
         }
         color.gamma_multiply(alpha * if self.options.tile_tags { 0.5 } else { 1. })
     }
-    fn background(&mut self, painter: &Painter, level: &Value, origin: [f32; 2]) {
-        let Some(path) = level["bgRelPath"].as_str() else {
-            return;
-        };
-        let Some(texture) = self
+    fn background(
+        &mut self,
+        painter: &Painter,
+        level: &Value,
+        origin: [f32; 2],
+    ) -> Option<blur::LayerRaster> {
+        let path = level["bgRelPath"].as_str()?;
+        let texture = self
             .assets
-            .texture(self.ctx, &asset_path(self.project, path))
-        else {
-            return;
-        };
+            .texture(self.ctx, &asset_path(self.project, path))?;
         let size = texture.size_vec2();
         let bounds = Rect::from_min_size(
             origin.into(),
@@ -633,6 +707,14 @@ impl Scene<'_> {
         } else {
             1.
         };
+        let raster = quads.first()
+            .filter(|quad| alpha < 1. && blur::available() && quad.src.is_positive() && quad.dst.is_positive())
+            .map(|quad| blur::LayerRaster {
+                origin: self.point(quad.dst.min.into()),
+                points_per_pixel: (quad.dst.size() / quad.src.size()) * self.view.zoom,
+                opacity: alpha,
+            });
+        let draw_alpha = if raster.is_some() { 1. } else { alpha };
         let mut mesh = Mesh::with_texture(texture.id());
         for q in quads {
             mesh.add_rect_with_uv(
@@ -641,10 +723,11 @@ impl Scene<'_> {
                     (q.src.min.to_vec2() / size).to_pos2(),
                     (q.src.max.to_vec2() / size).to_pos2(),
                 ),
-                Color32::WHITE.gamma_multiply(alpha),
+                Color32::WHITE.gamma_multiply(draw_alpha),
             );
         }
         painter.add(egui::Shape::mesh(mesh));
+        raster
     }
     fn intgrid(
         &self,
@@ -687,12 +770,20 @@ impl Scene<'_> {
             .ceil()
             .max(0.) as usize)
             .min(height);
+        let pending = self
+            .options
+            .async_paint
+            .and_then(|preview| preview.layers.get(&layer["layerDefUid"].as_i64()?));
+        let cells = pending
+            .and_then(|p| p.old_intgrid_cells.as_deref())
+            .unwrap_or(cells);
         let mut count = 0;
         for y in y0..y1 {
             for x in x0..x1 {
-                let value = cells
-                    .get(x + y * width)
-                    .and_then(Value::as_i64)
+                let value = pending
+                    .and_then(|preview| preview.old_intgrid.get(&[x as i32, y as i32]))
+                    .copied()
+                    .or_else(|| cells.get(x + y * width).and_then(Value::as_i64))
                     .unwrap_or(0);
                 if value == 0 {
                     continue;
@@ -715,21 +806,72 @@ impl Scene<'_> {
         }
         count
     }
-    fn tiles(
+    #[allow(clippy::too_many_arguments)]
+    fn missing_atlas_tiles(
         &mut self,
         painter: &Painter,
+        level: &Value,
         layer: &Value,
         def: &Value,
         transform: Transform,
         alpha: f32,
-        active: bool,
+        tiles: &[Value],
     ) -> usize {
-        self.tiles_in_region(painter, layer, def, transform, alpha, active, None)
+        let grid = def["gridSize"]
+            .as_i64()
+            .or_else(|| layer["__gridSize"].as_i64())
+            .unwrap_or(16)
+            .max(1);
+        let width = level["pxWid"]
+            .as_i64()
+            .unwrap_or(0)
+            .saturating_sub(layer["pxOffsetX"].as_i64().unwrap_or(0));
+        let height = level["pxHei"]
+            .as_i64()
+            .unwrap_or(0)
+            .saturating_sub(layer["pxOffsetY"].as_i64().unwrap_or(0));
+        if width <= 0 || height <= 0 || alpha <= 0. || tiles.is_empty() {
+            return 0;
+        }
+        let Some(texture) = self.assets.unavailable_classic_atlas(self.ctx, grid) else {
+            return 0;
+        };
+        // The level renderer places its error markers in the layer mask using only the X pivot.
+        let base = transform.offset([
+            -number(layer, "__pxTotalOffsetX", 0.),
+            -number(layer, "__pxTotalOffsetY", 0.),
+        ]);
+        let clip = Rect::from_min_size(Pos2::ZERO, egui::vec2(width as f32, height as f32));
+        let painter = painter.with_clip_rect(self.screen(base.rect(clip)));
+        let columns = 1 + (width - 1) / grid;
+        let rows = 1 + (height - 1) / grid;
+        let side = grid as f32;
+        let shift = egui::Vec2::splat(number(def, "tilePivotX", 0.) * side);
+        let mut occupied = HashSet::new();
+        let mut mesh = Mesh::with_texture(texture.id());
+        let uv = Rect::from_min_max(Pos2::ZERO, egui::pos2(1., 1.));
+        let tint = Color32::WHITE.gamma_multiply(alpha);
+        for tile in tiles {
+            let [x, y] = ldtk_core::exports::classic_tile_cell(tile, columns, grid);
+            if x < 0 || x >= columns || y < 0 || y >= rows || !occupied.insert([x, y]) {
+                continue;
+            }
+            let position = egui::pos2(x as f32 * side, y as f32 * side) + shift;
+            let destination =
+                self.screen(base.rect(Rect::from_min_size(position, egui::Vec2::splat(side))));
+            if destination.intersects(painter.clip_rect()) {
+                mesh.add_rect_with_uv(destination, uv, tint);
+            }
+        }
+        let count = mesh.vertices.len() / 4;
+        painter.add(egui::Shape::mesh(mesh));
+        count
     }
     #[allow(clippy::too_many_arguments)]
     fn tiles_in_region(
         &mut self,
         painter: &Painter,
+        level: &Value,
         layer: &Value,
         def: &Value,
         transform: Transform,
@@ -742,21 +884,43 @@ impl Scene<'_> {
             .as_i64()
             .or_else(|| layer["__tilesetDefUid"].as_i64())
             .or_else(|| def["tilesetDefUid"].as_i64());
-        let Some(tileset) = uid.and_then(|uid| self.project.tileset(uid)) else {
-            return 0;
-        };
-        let Some(texture) = self.texture(tileset) else {
-            return 0;
+        let grid_tiles = self
+            .options
+            .async_paint
+            .and_then(|preview| preview.layers.get(&layer["layerDefUid"].as_i64()?))
+            .and_then(|preview| preview.old_tiles.as_deref())
+            .unwrap_or_else(|| values(&layer["gridTiles"]));
+        let tileset = uid.and_then(|uid| self.project.tileset(uid));
+        let Some((tileset, texture)) =
+            tileset.and_then(|tileset| self.texture(tileset).map(|texture| (tileset, texture)))
+        else {
+            if region.is_some()
+                || layer["__type"] != "Tiles"
+                || tileset
+                    .and_then(|td| td["relPath"].as_str())
+                    .is_some_and(|path| {
+                        !self
+                            .assets
+                            .errors
+                            .contains_key(&asset_path(self.project, path))
+                    })
+            {
+                return 0;
+            }
+            return self
+                .missing_atlas_tiles(painter, level, layer, def, transform, alpha, grid_tiles);
         };
         let tile_size = number(tileset, "tileGridSize", grid);
         let atlas = texture.size_vec2();
         let mut mesh = Mesh::with_texture(texture.id());
         let mut count = 0;
-        for field in ["autoLayerTiles", "gridTiles"] {
-            if field == "autoLayerTiles" && !self.options.render_auto {
+        let tile_groups = [values(&layer["autoLayerTiles"]), grid_tiles];
+        for (index, group) in tile_groups.into_iter().enumerate() {
+            let auto = index == 0;
+            if auto && !self.options.render_auto {
                 continue;
             }
-            for tile in values(&layer[field]) {
+            for tile in group {
                 if region.is_some_and(|r| {
                     let px = pair(&tile["px"], [0.; 2]);
                     px[0] < r.left() || px[0] >= r.right() || px[1] < r.top() || px[1] >= r.bottom()
@@ -770,7 +934,7 @@ impl Scene<'_> {
                     tile_size,
                     [number(def, "tilePivotX", 0.), number(def, "tilePivotY", 0.)],
                     flips,
-                    field == "autoLayerTiles",
+                    auto,
                 )));
                 if !dst.intersects(painter.clip_rect()) {
                     continue;
@@ -791,14 +955,14 @@ impl Scene<'_> {
         }
         painter.add(egui::Shape::mesh(mesh));
         if self.options.tile_tags {
-            self.tile_tags(painter, layer, def, tileset, transform, grid);
+            self.tile_tags(painter, tile_groups, def, tileset, transform, grid);
         }
         count
     }
     fn tile_tags(
         &self,
         painter: &Painter,
-        layer: &Value,
+        tile_groups: [&[Value]; 2],
         def: &Value,
         tileset: &Value,
         transform: Transform,
@@ -814,10 +978,7 @@ impl Scene<'_> {
         else {
             return;
         };
-        for tile in values(&layer["autoLayerTiles"])
-            .iter()
-            .chain(values(&layer["gridTiles"]))
-        {
+        for tile in tile_groups.into_iter().flatten() {
             let mut n = 0.;
             for value in values(&en["values"]) {
                 if values(&tileset["enumTags"]).iter().any(|tag| {
@@ -868,9 +1029,19 @@ impl Scene<'_> {
             self.canvas.min.into(),
             self.canvas.size().into(),
         );
+        let bg = theme::color(text(&self.project.json, "bgColor", "#40465B"));
+        let luminance = (0.299 * (bg.r() as f32 / 255.).powi(2)
+            + 0.587 * (bg.g() as f32 / 255.).powi(2)
+            + 0.114 * (bg.b() as f32 / 255.).powi(2))
+        .sqrt();
+        let base = if luminance >= 0.8 {
+            Color32::BLACK
+        } else {
+            Color32::WHITE
+        };
         for (axis, limit) in [(0, w), (1, h)] {
-            for (step, alpha) in [
-                (grid, 0.07),
+            for (step, color) in [
+                (grid, base.gamma_multiply(0.07)),
                 (
                     if self.options.guides {
                         number(
@@ -885,7 +1056,7 @@ impl Scene<'_> {
                     } else {
                         0.
                     },
-                    0.33,
+                    guide_grid_color(def, base),
                 ),
             ] {
                 if step <= 1. || step * self.view.zoom * transform.scale < 4. {
@@ -910,7 +1081,7 @@ impl Scene<'_> {
                             self.point(transform.point(a)),
                             self.point(transform.point(b)),
                         ],
-                        Stroke::new(1.0_f32, Color32::WHITE.gamma_multiply(alpha)),
+                        Stroke::new(1.0_f32, color),
                     );
                 }
             }
@@ -1009,6 +1180,7 @@ pub fn draw(
     project: &Project,
     view: &Viewport,
     options: &RenderOptions<'_>,
+    linear_drag: Option<(LevelKey, [i32; 2])>,
     assets: &mut Assets,
 ) -> usize {
     painter.rect_filled(
@@ -1072,10 +1244,17 @@ pub fn draw(
         });
     }
     let mut count = 0;
-    for (key, bounds) in levels {
+    for (key, mut bounds) in levels {
         let Some(level) = project.level(key) else {
             continue;
         };
+        if options.world
+            && let Some((dragged, position)) = linear_drag
+            && dragged == key
+        {
+            let [x, y] = position.map(|value| value as f32);
+            bounds = [x, y, x + bounds[2] - bounds[0], y + bounds[3] - bounds[1]];
+        }
         let depth = level["worldDepth"].as_i64().unwrap_or(0);
         let active_depth = options
             .world_depth
@@ -1116,6 +1295,7 @@ pub fn draw(
             neighbor_options.tile_tags = false;
             neighbor_options.render_auto = true;
             neighbor_options.parallax = false;
+            neighbor_options.async_paint = None;
             let mut neighbor = Scene {
                 ctx,
                 project,
@@ -1186,6 +1366,7 @@ pub fn draw(
                             ]);
                             count += neighbor.tiles_in_region(
                                 &content,
+                                level,
                                 layer,
                                 def,
                                 transform,
@@ -1243,14 +1424,14 @@ pub fn draw(
             let first = blur::begin(painter);
             let mut bg_painter = clipped.clone();
             bg_painter.multiply_opacity(bg_alpha);
-            scene.background(&bg_painter, level, origin);
-            if options.single_layer && !options.world {
+            if let Some(raster) = scene.background(&bg_painter, level, origin) {
                 blur::finish(
                     painter,
                     first,
                     canvas,
                     options.single_layer_intensity,
                     (number(level, "uid", 0.) as u64) << 32,
+                    raster,
                 );
             }
         }
@@ -1270,6 +1451,8 @@ pub fn draw(
                 }
                 let active = key == options.selected && index == options.active_layer;
                 let alpha = scene.layer_alpha(layer, def, active);
+                let filtered = options.single_layer && !active && blur::available();
+                let draw_alpha = if filtered { 1. } else { alpha };
                 let base = scene.layer_transform(level, layer, def, origin);
                 let transform = base.offset([
                     number(layer, "__pxTotalOffsetX", 0.),
@@ -1280,28 +1463,58 @@ pub fn draw(
                 let autotile = kind == "AutoLayer"
                     || (kind == "IntGrid" && !layer["__tilesetDefUid"].is_null());
                 if kind == "IntGrid" && (!autotile || !options.render_auto) {
-                    count += scene.intgrid(&clipped, layer, def, transform, alpha);
+                    count += scene.intgrid(&clipped, layer, def, transform, draw_alpha);
                 }
                 if kind == "Tiles" || (autotile && options.render_auto) {
-                    count += scene.tiles(&clipped, layer, def, transform, alpha, active);
+                    count += scene.tiles_in_region(
+                        &clipped, level, layer, def, transform, draw_alpha, active, None,
+                    );
                 }
                 if kind == "Entities" {
-                    for entity in values(&layer["entityInstances"]) {
-                        scene.entity(painter, entity, def, transform, alpha, active, key);
+                    let entities = options
+                        .async_paint
+                        .filter(|preview| preview.level == key)
+                        .and_then(|preview| preview.layers.get(&uid))
+                        .and_then(|preview| preview.old_entities.as_deref())
+                        .unwrap_or_else(|| values(&layer["entityInstances"]));
+                    for index in entity_order(entities, def) {
+                        let entity = &entities[index];
+                        scene.entity(painter, entity, def, transform, draw_alpha, active, key);
                     }
                 }
-                if options.single_layer && !active {
+                if filtered {
                     blur::finish(
                         painter,
                         first,
                         canvas,
                         options.single_layer_intensity,
                         ((number(level, "uid", 0.) as u64) << 32) ^ (uid as u64 + 1),
+                        blur::LayerRaster {
+                            origin: scene.point(transform.origin),
+                            points_per_pixel: egui::Vec2::splat(view.zoom * transform.scale),
+                            opacity: alpha,
+                        },
                     );
                 }
             }
         }
         if key == options.selected && !options.world {
+            if let Some(preview) = options.async_paint
+                && let Some(grid) = preview.hint_grid
+            {
+                for (&[x, y], &color) in &preview.hints {
+                    let cell = Rect::from_min_size(
+                        [x as f32 * grid, y as f32 * grid].into(),
+                        egui::Vec2::splat(grid),
+                    );
+                    let dst = scene.screen(Transform { origin, scale: 1. }.rect(cell));
+                    if dst.intersects(clipped.clip_rect()) {
+                        let color = color.gamma_multiply(0.7);
+                        let additive = Color32::from_rgb_additive(color.r(), color.g(), color.b());
+                        clipped.rect_filled(dst, 0., additive);
+                    }
+                }
+            }
             if options.grid
                 && options.details
                 && let Some(layer) = layers.get(options.active_layer)
@@ -1345,7 +1558,7 @@ pub fn draw(
                         StrokeKind::Inside,
                     );
                 }
-                if key == options.selected && depth_delta == 0 {
+                if key == options.selected && depth_delta == 0 && !options.world_multi_selection {
                     painter.rect_stroke(
                         rect.expand(if options.details { 2. } else { 0.5 }),
                         0.,
@@ -1438,6 +1651,7 @@ pub fn draw_group_ghost(
         selected: key,
         active_layer: 0,
         world: false,
+        world_multi_selection: false,
         grid: false,
         details: false,
         single_layer: false,
@@ -1452,6 +1666,7 @@ pub fn draw_group_ghost(
         parallax: true,
         rulers: false,
         guides: false,
+        async_paint: None,
     };
     let mut scene = Scene {
         ctx,

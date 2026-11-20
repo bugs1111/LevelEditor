@@ -52,6 +52,9 @@ pub(super) fn record(ctx: &egui::Context, settings: Option<&Path>, message: &str
         return;
     }
     ctx.data_mut(|d| d.insert_temp(key, (message.to_owned(), error)));
+    if message.is_empty() {
+        return;
+    }
     let timestamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()

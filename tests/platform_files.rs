@@ -228,7 +228,7 @@ mod mac {
         )
         .unwrap();
         let assets = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets");
-        for name in ["LDtk.icns", "project.icns"] {
+        for name in ["LevelEditor.icns", "project.icns"] {
             std::fs::copy(assets.join(name), contents.join("Resources").join(name)).unwrap();
         }
         let plist = contents.join("Info.plist");

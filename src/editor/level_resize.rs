@@ -30,7 +30,7 @@ fn handle_position(size: [i32; 2], handle: [i32; 2]) -> [f32; 2] {
         _ => (size[axis] / 2) as f32,
     })
 }
-fn cursor(handle: [i32; 2]) -> egui::CursorIcon {
+pub(super) fn cursor(handle: [i32; 2]) -> egui::CursorIcon {
     match handle {
         [0, _] => egui::CursorIcon::ResizeVertical,
         [_, 0] => egui::CursorIcon::ResizeHorizontal,
@@ -69,6 +69,7 @@ impl EditorApp {
         ctx: &egui::Context,
         rect: Rect,
         response: &egui::Response,
+        picker_press: Option<egui::Pos2>,
     ) -> bool {
         if self.project.as_ref().is_some_and(Project::is_backup) {
             return false;
@@ -99,7 +100,7 @@ impl EditorApp {
         }
         if self.gesture.is_some()
             || self.stroke
-            || self.field_pick.is_some()
+            || self.field_pick.is_some() && !self.picking_point()
             || !response.hovered()
             || ctx.input(|i| i.modifiers.any() || i.key_down(Key::Space))
         {
@@ -127,17 +128,21 @@ impl EditorApp {
             .find(|(candidate, _)| *candidate == key)
             .map(|(_, bounds)| [bounds[0] as i32, bounds[1] as i32])
             .unwrap_or([0, 0]);
-        let world = self
-            .viewport
-            .to_world(pointer.into(), rect.min.into(), rect.size().into());
-        let local = std::array::from_fn(|axis| {
-            (world[axis] + 0.5).floor()
-                - if self.world {
-                    world_origin[axis] as f32
-                } else {
-                    0.
-                }
-        });
+        let to_local = |screen: egui::Pos2| {
+            let world = self
+                .viewport
+                .to_world(screen.into(), rect.min.into(), rect.size().into());
+            std::array::from_fn(|axis| {
+                (world[axis] + 0.5).floor()
+                    - if self.world {
+                        world_origin[axis] as f32
+                    } else {
+                        0.
+                    }
+            })
+        };
+        let screen_start = picker_press.unwrap_or(pointer);
+        let local = to_local(screen_start);
         if !self.world
             && local[0] >= 0.
             && local[1] >= 0.
@@ -172,15 +177,15 @@ impl EditorApp {
             self.level_resize = Some(LevelResize {
                 key,
                 start: local,
-                end: local,
-                screen_start: pointer,
+                end: to_local(pointer),
+                screen_start,
                 handle,
                 size,
                 world_origin,
                 depth,
                 grid,
                 world_grid,
-                moved: false,
+                moved: pointer.distance(screen_start) >= 4.,
             });
         }
         true

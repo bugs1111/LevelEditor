@@ -12,7 +12,7 @@ impl Default for Settings {
             value: json!({
                 "zenMode":false,"grid":true,"emptySpaceSelection":true,"tileStacking":true,
                 "tileEnumOverlays":false,"showDetails":true,"useBestGPU":true,"startFullScreen":false,
-                "colorBlind":false,"blurMask":true,"navigationKeys":"Wasd","singleLayerMode":false,
+                "colorBlind":false,"blurMask":true,"navigationKeys":"Wasd","singleLayerMode":false,"language":"en",
                 "singleLayerModeIntensity":0.75,"openLastProject":false,"lastProject":null,
                 "autoWorldModeSwitch":"ZoomInAndOut","fieldsRender":"FR_Outline",
                 "nearbyTilesRenderingDist":1.0,"appUiScale":1.0,"editorUiScale":1.0,"mouseWheelSpeed":1.0,
@@ -23,20 +23,29 @@ impl Default for Settings {
 }
 impl Settings {
     pub fn load() -> Self {
-        let root = std::env::var_os("LDTK_CONFIG_DIR")
-            .map(PathBuf::from)
-            .or_else(|| {
-                std::env::var_os("HOME").map(|home| {
-                    let home = PathBuf::from(home);
-                    if cfg!(target_os = "macos") {
-                        home.join("Library/Application Support/LDtk Rust")
-                    } else {
-                        home.join(".config/ldtk-rust")
-                    }
-                })
+        let root = std::env::var_os("LDTK_CONFIG_DIR").map(PathBuf::from).or_else(|| {
+            let legacy = std::env::var_os("HOME").map(|home| {
+                let home = PathBuf::from(home);
+                if cfg!(target_os = "macos") {
+                    home.join("Library/Application Support/LDtk Rust")
+                } else {
+                    home.join(".config/ldtk-rust")
+                }
             });
+            if cfg!(windows)
+                && !legacy.as_ref().is_some_and(|p| p.join("settings.json").is_file())
+                && let Some(appdata) = std::env::var_os("APPDATA")
+            {
+                return Some(PathBuf::from(appdata).join("LDtk Rust"));
+            }
+            legacy
+        });
+        Self::load_at(root.map(|p| p.join("settings.json")))
+    }
+
+    pub(super) fn load_at(path: Option<PathBuf>) -> Self {
         let mut settings = Self {
-            path: root.map(|p| p.join("settings.json")),
+            path,
             ..Self::default()
         };
         if let Some(path) = &settings.path
@@ -49,6 +58,9 @@ impl Settings {
             }
         }
         settings
+    }
+    pub(super) fn language(&self) -> super::locale::Language {
+        super::locale::Language::from_code(self.value["language"].as_str())
     }
     pub fn save(&self) -> std::io::Result<()> {
         let Some(path) = &self.path else {
@@ -214,6 +226,13 @@ impl Settings {
         let list = self.value["projectTrusts"].as_array_mut().unwrap();
         list.retain(|p| p["iid"] != iid);
         list.push(json!({"iid":iid,"trusted":trusted}));
+        let _ = self.save();
+    }
+    pub fn clear_trust(&mut self, iid: &str) {
+        self.value["projectTrusts"]
+            .as_array_mut()
+            .unwrap()
+            .retain(|p| p["iid"] != iid);
         let _ = self.save();
     }
 }

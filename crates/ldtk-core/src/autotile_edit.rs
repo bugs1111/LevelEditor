@@ -322,8 +322,23 @@ impl Project {
     ) -> Result<()> {
         self.edit_auto_definition(layer_uid, |p| {
             let group = group_mut(p, layer_uid, group_uid)?;
+            let was_optional = group["isOptional"] == true;
             patch(group, changes, &["uid", "rules"])?;
-            validate_group(group)
+            validate_group(group)?;
+            if was_optional && group["isOptional"] != true {
+                for key in p.level_keys() {
+                    let Some(layers) = p.level_mut(key)
+                        .and_then(|level| level["layerInstances"].as_array_mut()) else { continue };
+                    for layer in layers {
+                        if layer["layerDefUid"] == layer_uid
+                            && let Some(optional) = layer["optionalRules"].as_array_mut()
+                        {
+                            optional.retain(|uid| *uid != group_uid);
+                        }
+                    }
+                }
+            }
+            Ok(())
         })
     }
     pub fn remove_auto_rule(

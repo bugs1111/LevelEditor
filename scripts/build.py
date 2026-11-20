@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Build portable Windows, macOS and Linux executables from a Mac."""
 import argparse
+from contextlib import suppress
+import fcntl
 import os
 from pathlib import Path
 import shutil
@@ -13,16 +15,39 @@ ROOT = Path(__file__).resolve().parents[1]
 CROSS_VERSIONS = "cargo-zigbuild==0.21.8\nziglang==0.15.2\n"
 
 
+def configure_linux_cross(env):
+    cargo_home = Path(env.get("CARGO_HOME") or Path.home() / ".cargo").expanduser().resolve()
+    shared_bin = cargo_home / "bin"
+    shared_bin.mkdir(parents=True, exist_ok=True)
+    cross = cargo_home / "cross"
+    cross_bin = cross / "bin"
+    python = cross_bin / "python3"
+    versions = cross / "versions.txt"
+    launchers = {"cargo-zigbuild": "cargo-zigbuild", "zig": "python-zig"}
+    with (cargo_home / "cross.lock").open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        if not versions.is_file() or versions.read_text() != CROSS_VERSIONS or not all(
+            (cross_bin / launcher).is_file() for launcher in launchers.values()
+        ):
+            if not (cross_bin / "pip").is_file():
+                subprocess.run([sys.executable, "-m", "venv", str(cross)], check=True)
+            subprocess.run([str(python), "-m", "pip", "install", "--disable-pip-version-check", *CROSS_VERSIONS.splitlines()], check=True)
+            versions.write_text(CROSS_VERSIONS)
+        for tool, launcher in launchers.items():
+            # Keep a tool the user already installed under this name.
+            with suppress(FileExistsError):
+                (shared_bin / tool).symlink_to(Path("../cross/bin") / launcher)
+    env["PATH"] = str(cross_bin) + os.pathsep + env["PATH"]
+    env["CARGO_ZIGBUILD_CACHE_DIR"] = str(cross / "cache")
+    env["ZIG_GLOBAL_CACHE_DIR"] = str(cross / "zig-cache")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("-t", choices=["win", "mac", "linux"], required=True)
     parser.add_argument("-m", choices=["debug", "release"], required=True)
     args = parser.parse_args()
     env = os.environ.copy()
-    local_cargo = ROOT / ".tools/cargo/bin"
-    if (local_cargo / "cargo").is_file():
-        env.update(CARGO_HOME=str(ROOT / ".tools/cargo"), RUSTUP_HOME=str(ROOT / ".tools/rustup"))
-        env["PATH"] = str(local_cargo) + os.pathsep + env["PATH"]
     cargo = str(ROOT / "scripts/cargo")
     host = next(line.removeprefix("host: ") for line in subprocess.check_output(
         [cargo, "-vV"], env=env, text=True).splitlines() if line.startswith("host: "))
@@ -43,17 +68,7 @@ def main():
         env["CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER"] = shutil.which("x86_64-w64-mingw32-gcc", path=env["PATH"])
         env["RUSTFLAGS"] = (env.get("RUSTFLAGS", "") + " -C target-feature=+crt-static").strip()
     elif args.t == "linux":
-        cross = ROOT / ".tools/cross"
-        python = cross / "bin/python3"
-        versions = cross / "versions.txt"
-        if not (cross / "bin/cargo-zigbuild").is_file() or not versions.is_file() or versions.read_text() != CROSS_VERSIONS:
-            if not python.exists():
-                subprocess.run([sys.executable, "-m", "venv", str(cross)], check=True)
-            subprocess.run([str(python), "-m", "pip", "install", "--disable-pip-version-check", *CROSS_VERSIONS.splitlines()], check=True)
-            versions.write_text(CROSS_VERSIONS)
-        env["PATH"] = str(cross / "bin") + os.pathsep + env["PATH"]
-        env["CARGO_ZIGBUILD_CACHE_DIR"] = str(cross / "cache")
-        env["ZIG_GLOBAL_CACHE_DIR"] = str(cross / "zig-cache")
+        configure_linux_cross(env)
         command[1] = "zigbuild"
     if args.t != "mac":
         build_root /= "build/" + args.t

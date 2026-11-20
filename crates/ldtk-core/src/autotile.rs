@@ -9,6 +9,8 @@ pub(crate) use editing::clipboard_rule;
 #[path = "autotile_noise.rs"]
 mod noise;
 
+const MAX_PATTERN_SIZE: i32 = 9;
+
 fn int(v: &Value, k: &str, default: i32) -> i32 {
     v[k].as_i64().map_or(default, |n| n as i32)
 }
@@ -28,14 +30,136 @@ fn number(n: f64) -> Value {
         json!(n)
     }
 }
+pub(crate) fn blocks_auto_layer(def: &Value, uid: i64) -> bool {
+    match def
+        .get("layerUidsPreventingAutoTilingHere")
+        .and_then(Value::as_array)
+    {
+        Some(uids) => uids.iter().any(|v| v.as_i64() == Some(uid)),
+        None => def["autoTilesKilledByOtherLayerUid"].as_i64() == Some(uid),
+    }
+}
 fn find_uid(values: &Value, uid: i64) -> Option<&Value> {
     arr(values).iter().find(|v| v["uid"].as_i64() == Some(uid))
 }
 
+/// Collects generated updates for one level while a brush or its cooldown is active.
+#[derive(Default)]
+pub struct DeferredAutoLayers {
+    targets: BTreeMap<i64, Option<[i32; 4]>>,
+}
+
+impl DeferredAutoLayers {
+    pub fn is_empty(&self) -> bool {
+        self.targets.is_empty()
+    }
+
+    fn merge(&mut self, uid: i64, rect: [i32; 4]) {
+        self.targets
+            .entry(uid)
+            .and_modify(|old| {
+                if let Some(old) = old {
+                    let left = old[0].min(rect[0]);
+                    let top = old[1].min(rect[1]);
+                    let right = (old[0] + old[2]).max(rect[0] + rect[2]);
+                    let bottom = (old[1] + old[3]).max(rect[1] + rect[3]);
+                    *old = [left, top, right - left, bottom - top];
+                }
+            })
+            .or_insert(Some(rect));
+    }
+}
+
+fn auto_render_is_deferred(project: &Project, def: &Value, source: Option<i64>) -> bool {
+    def["useAsyncRender"] == true
+        || source
+            .and_then(|uid| project.layer_def(uid))
+            .is_some_and(|ld| ld["useAsyncRender"] == true)
+}
+
 impl Project {
+    /// Update immediate targets and queue only the opted-in generated targets.
+    pub(crate) fn update_auto_layers_after_paint(
+        &mut self,
+        key: LevelKey,
+        painted_uid: i64,
+        rect: [i32; 4],
+        pending: Option<&mut DeferredAutoLayers>,
+    ) -> Result<()> {
+        let Some(pending) = pending else {
+            return self.rebuild_auto_layers_area(key, painted_uid, rect);
+        };
+        let mut delayed = Vec::new();
+        self.rebuild_auto_selected(key, |project, uid, def, source| {
+            if source != Some(painted_uid) && !blocks_auto_layer(def, painted_uid) {
+                return None;
+            }
+            if auto_render_is_deferred(project, def, source) {
+                delayed.push(uid);
+                None
+            } else {
+                Some(Some(rect))
+            }
+        })?;
+        for uid in delayed {
+            pending.merge(uid, rect);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn update_auto_layers_after_selection(
+        &mut self,
+        key: LevelKey,
+        changed: &BTreeSet<i64>,
+        pending: &mut DeferredAutoLayers,
+    ) -> Result<()> {
+        let mut delayed = Vec::new();
+        self.rebuild_auto_selected(key, |project, uid, def, source| {
+            if !source.is_some_and(|uid| changed.contains(&uid))
+                && !changed.iter().any(|&uid| blocks_auto_layer(def, uid))
+            {
+                return None;
+            }
+            if auto_render_is_deferred(project, def, source) {
+                delayed.push(uid);
+                None
+            } else {
+                Some(None)
+            }
+        })?;
+        pending
+            .targets
+            .extend(delayed.into_iter().map(|uid| (uid, None)));
+        Ok(())
+    }
+
+    /// Settle queued targets atomically before publishing a stroke or document snapshot.
+    pub fn settle_auto_layers(
+        &mut self,
+        key: LevelKey,
+        pending: &mut DeferredAutoLayers,
+    ) -> Result<()> {
+        self.rebuild_auto_selected(key, |_, uid, _, _| pending.targets.get(&uid).copied())?;
+        pending.targets.clear();
+        Ok(())
+    }
+
     /// Regenerate every auto layer in a level, committing only after all layers succeed.
     pub fn rebuild_auto_layers(&mut self, key: LevelKey) -> Result<()> {
         self.rebuild_auto(key, None)
+    }
+    pub fn rebuild_auto_layer(&mut self, key: LevelKey, uid: i64) -> Result<()> {
+        self.rebuild_auto_filtered(key, None, Some(uid))
+    }
+    pub fn randomize_auto_layer(&mut self, key: LevelKey, index: usize) -> Result<()> {
+        self.edit_document(|p| {
+            let layer = p.layer_mut(key, index)
+                .ok_or_else(|| Error::Invalid("Layer instance not found".into()))?;
+            let uid = layer["layerDefUid"].as_i64()
+                .ok_or_else(|| Error::Invalid("Layer definition not found".into()))?;
+            layer["seed"] = json!((uuid::Uuid::new_v4().as_u128() % 9_999_999) as u32);
+            p.rebuild_auto_layer(key, uid)
+        })
     }
     /// Re-evaluate cells affected by a source IntGrid rectangle [x,y,width,height].
     /// Existing cache entries outside the expanded rule footprint are preserved.
@@ -64,6 +188,23 @@ impl Project {
         area: Option<(i64, [i32; 4])>,
         only_uid: Option<i64>,
     ) -> Result<()> {
+        self.rebuild_auto_selected(key, |_, uid, def, source| {
+            if only_uid.is_some_and(|only| uid != only)
+                || area.is_some_and(|(painted, _)| {
+                    source != Some(painted) && !blocks_auto_layer(def, painted)
+                })
+            {
+                return None;
+            }
+            Some(area.map(|(_, rect)| rect))
+        })
+    }
+
+    fn rebuild_auto_selected(
+        &mut self,
+        key: LevelKey,
+        mut select: impl FnMut(&Project, i64, &Value, Option<i64>) -> Option<Option<[i32; 4]>>,
+    ) -> Result<()> {
         let level = self
             .level(key)
             .ok_or_else(|| Error::Invalid("missing level".into()))?;
@@ -72,13 +213,10 @@ impl Project {
             .ok_or_else(|| Error::Invalid("missing layer instances".into()))?;
         let mut updates = Vec::new();
         for (index, li) in layers.iter().enumerate() {
-            if only_uid.is_some() && li["layerDefUid"].as_i64() != only_uid {
+            let Some(uid) = li["layerDefUid"].as_i64() else {
                 continue;
-            }
-            let Some(ld) = find_uid(
-                &self.json["defs"]["layers"],
-                li["layerDefUid"].as_i64().unwrap_or(-1),
-            ) else {
+            };
+            let Some(ld) = find_uid(&self.json["defs"]["layers"], uid) else {
                 continue;
             };
             let kind = ld["type"].as_str().unwrap_or("");
@@ -93,12 +231,9 @@ impl Project {
             } else {
                 ld["autoSourceLayerDefUid"].as_i64()
             };
-            if let Some((uid, _)) = area
-                && source_uid != Some(uid)
-                && ld["autoTilesKilledByOtherLayerUid"].as_i64() != Some(uid)
-            {
+            let Some(rect) = select(self, uid, ld, source_uid) else {
                 continue;
-            }
+            };
             let source = layers
                 .iter()
                 .find(|l| l["layerDefUid"].as_i64() == source_uid);
@@ -111,8 +246,16 @@ impl Project {
             let atlas_uid = li["overrideTilesetUid"].as_i64().or(tileset_uid).unwrap();
             let atlas = find_uid(&self.json["defs"]["tilesets"], atlas_uid)
                 .ok_or_else(|| Error::Invalid(format!("missing auto-layer tileset {atlas_uid}")))?;
+            if atlas["relPath"].is_null()
+                && atlas["embedAtlas"].is_null()
+                && atlas["pxWid"] == 0
+                && atlas["pxHei"] == 0
+            {
+                updates.push((index, json!([])));
+                continue;
+            }
             let mut engine = Engine::new(level, layers, li, ld, source, source_def, atlas)?;
-            updates.push((index, engine.render(area.map(|(_, r)| r))?));
+            updates.push((index, engine.render(rect)?));
         }
         let level = self.level_mut(key).expect("validated level");
         for (index, tiles) in updates {
@@ -138,7 +281,10 @@ impl<'a> Rule<'a> {
             .iter()
             .map(|x| x.as_i64().unwrap_or(0) as i32)
             .collect::<Vec<_>>();
-        if !(1..=9).contains(&size) || size % 2 == 0 || pattern.len() != (size * size) as usize {
+        if !(1..=MAX_PATTERN_SIZE).contains(&size)
+            || size % 2 == 0
+            || pattern.len() != (size * size) as usize
+        {
             return Err(Error::Invalid("invalid auto-layer rule pattern".into()));
         }
         if int(v, "xModulo", 1) <= 0 || int(v, "yModulo", 1) <= 0 {
@@ -225,7 +371,7 @@ struct Engine<'a> {
     killed: BTreeSet<(i32, i32)>,
     seed: i32,
 }
-fn group_applied(group: &Value, level: &Value, li: &Value, ld: &Value) -> bool {
+pub(crate) fn group_applied(group: &Value, level: &Value, li: &Value, ld: &Value) -> bool {
     let active = flag(group, "active", true);
     let required = arr(&group["requiredBiomeValues"]);
     if active
@@ -318,17 +464,30 @@ impl<'a> Engine<'a> {
             }
         }
         let mut killed = BTreeSet::new();
-        if let Some(killer) = layers.iter().find(|l| {
-            !ld["autoTilesKilledByOtherLayerUid"].is_null()
-                && l["layerDefUid"] == ld["autoTilesKilledByOtherLayerUid"]
+        for blocker in layers.iter().filter(|l| {
+            l["layerDefUid"]
+                .as_i64()
+                .is_some_and(|uid| blocks_auto_layer(ld, uid))
         }) {
-            for tile in arr(&killer["gridTiles"]) {
-                let px = arr(&tile["px"]);
-                if px.len() == 2 {
-                    killed.insert((
-                        px[0].as_i64().unwrap_or(0) as i32 / grid_size,
-                        px[1].as_i64().unwrap_or(0) as i32 / grid_size,
-                    ));
+            let blocker_grid = int(blocker, "__gridSize", grid_size).max(1);
+            if blocker["__type"] == "IntGrid" {
+                let width = int(blocker, "__cWid", 0);
+                if width > 0 {
+                    for (index, value) in arr(&blocker["intGridCsv"]).iter().enumerate() {
+                        if value.as_i64().unwrap_or(0) != 0 {
+                            killed.insert((index as i32 % width, index as i32 / width));
+                        }
+                    }
+                }
+            } else if blocker["__type"] == "Tiles" || blocker["__type"].is_null() {
+                for tile in arr(&blocker["gridTiles"]) {
+                    let px = arr(&tile["px"]);
+                    if px.len() == 2 {
+                        killed.insert((
+                            px[0].as_i64().unwrap_or(0) as i32 / blocker_grid,
+                            px[1].as_i64().unwrap_or(0) as i32 / blocker_grid,
+                        ));
+                    }
                 }
             }
         }
@@ -407,18 +566,20 @@ impl<'a> Engine<'a> {
     }
     fn render(&mut self, area: Option<[i32; 4]>) -> Result<Value> {
         let area = area.filter(|_| self.li["autoLayerTiles"].is_array());
-        let radius = self.rules.iter().map(|r| r.size / 2).max().unwrap_or(0);
+        // LDtk expands incremental updates by its maximum supported pattern radius.
+        let padding = MAX_PATTERN_SIZE / 2;
         let [left, top, right, bottom] =
             area.map_or([0, 0, self.width, self.height], |[x, y, w, h]| {
                 [
-                    x.saturating_sub(radius).max(0),
-                    y.saturating_sub(radius).max(0),
-                    x.saturating_add(w).saturating_add(radius).min(self.width),
-                    y.saturating_add(h).saturating_add(radius).min(self.height),
+                    x.saturating_sub(padding).max(0),
+                    y.saturating_sub(padding).max(0),
+                    x.saturating_add(w).saturating_add(padding).min(self.width),
+                    y.saturating_add(h).saturating_add(padding).min(self.height),
                 ]
             });
         // Relevance counts need only the 10-cell source buckets touched by rule
         // footprints. A brush update does not scan or copy the whole IntGrid.
+        let radius = self.rules.iter().map(|r| r.size / 2).max().unwrap_or(0);
         let ax = (left.saturating_sub(radius) / 10 * 10).max(0);
         let ay = (top.saturating_sub(radius) / 10 * 10).max(0);
         let bx = ((right.saturating_add(radius) / 10 + 1) * 10).min(self.sw);

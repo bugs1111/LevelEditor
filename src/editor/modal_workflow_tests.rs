@@ -25,7 +25,7 @@ mod acceptance_review_repro {
         app.ui_commit_raw_input(ctx, &mut input);
         ctx.run(input, |ctx| {
             app.shortcuts(ctx);
-            app.dialogs(ctx);
+            app.dialogs(ctx, false);
             app.palette_dialog(ctx);
             app.flush_ui_action(ctx);
         })
@@ -114,8 +114,8 @@ mod acceptance_review_repro {
         assert_eq!(app.entity_index, None);
         assert_eq!(app.panel, None);
         assert!(
-            app.fit,
-            "Search fits the destination level and flashes its entity"
+            !app.fit && app.camera_motion.is_active(),
+            "Search starts fitting the destination after committing the draft"
         );
     }
 }

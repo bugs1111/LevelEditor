@@ -76,6 +76,7 @@ impl EditorApp {
                 if !self.dirty
                     && let Some(action) = self.pending.take()
                 {
+                    self.clear_save_progress();
                     self.execute(ctx, action);
                 }
             }
@@ -147,18 +148,43 @@ impl EditorApp {
     }
 
     pub(super) fn save_async_at(&mut self, path: PathBuf) {
+        if !self.settle_deferred_auto_paint() {
+            return;
+        }
+        self.finish_stroke();
         let Some(mut project) = self.project.clone() else {
             return;
         };
         let (tx, rx) = mpsc::channel();
         self.saving = Some(rx);
+        self.save_attempt = Some(path.clone());
+        let progress = Arc::new(Mutex::new(save_progress::SaveProgress::default()));
+        self.saving_progress = Some(progress.clone());
         self.status = "Saving project…".into();
         let repaint = self.repaint.clone();
         std::thread::spawn(move || {
+            let names = project
+                .level_keys()
+                .into_iter()
+                .filter_map(|key| {
+                    project
+                        .level(key)?
+                        .get("identifier")?
+                        .as_str()
+                        .map(str::to_owned)
+                })
+                .collect::<Vec<_>>();
             let result = project
-                .save_with_exports(&path)
-                .map(|report| services::SavedProject { project, report })
-                .map_err(|e| e.to_string());
+                .save_with_labeled_operation_progress(&path, |stage, done, total, label| {
+                    progress
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .record(stage, done, total, label, &names);
+                    if let Some(ctx) = &repaint {
+                        ctx.request_repaint();
+                    }
+                })
+                .map(|report| services::SavedProject { project, report });
             let _ = tx.send(result);
             if let Some(ctx) = repaint {
                 ctx.request_repaint();

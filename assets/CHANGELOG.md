@@ -1,3 +1,29 @@
+# 1.5.4
+
+- Multi-levels selection in world view (thanks to JeremyFa / https://github.com/jeremyfa)
+- Fixed excessive memory use when loading and saving large projects with external level files (#1172, thanks to GameGuyy / https://github.com/GameGuyy)
+- Fixed super slow function used during Saving phase, which made project saving about... 6 times faster.
+- Fixed excessive cache invalidation that caused long saving times for no reason (eg. when a tileset image was reloaded)
+- Fixed the free drag'n'drop of Entities (as in "not snapped to grid") when the grid is disabled (G shortcut)
+- Added a Layer panel setting to enable Entity visual depth sorting based on its Y coordinate. When in Manual mode, press CTRL-UP/CTRL-DOWN to change an entity depth. Use CTRL-SHIFT-UP/DOWN to bring to front/back.
+- Added a tiny progress bar in the window title when the app is minimized or not focused, so you can track the progress of long operations while going on with your life.
+- In Auto-Layers, you can now pick any number of other layers to prevent local rules to apply at particular coordinates.
+- You can now use external images as visuals for Entities (and kind of create "decals" using this): add a FilePath field to an entity and pick "Replace entity tile" in the field Display options. You may also want to change the Entity display options to render its tile outside its bounds.
+- Search results (CTRL-K/CTRL-P shortcuts) now include level field values and IIDs
+- Added a "Show all results" to search results window
+- Added an "Empty array" shortcut for Arrays of instance fields.
+- Added a preview of an Entity Reference in arrays that shows the user-defined display icon of the target entity.
+- Last search is shown when re-opening the search bar
+- Added a new Project setting to customize the JSON indentation (Full, Compact or Minified)
+- The online JSON documentation now shows references between UID fields.
+- Fixed a crash when updating an external CastleDB file
+- Fixed support for Aseprite 1.3.5 files
+- Fixed "Select" UI component that caused heavy lags when it contained lots of values
+- Fixed CPU throttling that caused operations happening in the background to run really slowly
+- Fixed the pasting of a copied rule inside an empty group
+- CastleDB: fixed renaming of an identifier that only exists in Level fields and not in Entity fields
+- CastleDB: fixed support for unique IDs in lists (note: nested lists in lists are not supported yet)
+
 # 1.5.3
 
 - Fixed a crash when trying to add a newly created Entity

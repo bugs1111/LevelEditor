@@ -294,6 +294,13 @@ fn external_save_preflights_all_files_before_replacing_any_document() {
         b"original-level"
     );
     assert!(p.path.is_none());
+    assert!(fs::read_dir(temp.path()).unwrap().all(|entry| {
+        !entry
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .starts_with(".ldtk-")
+    }));
 }
 
 #[test]

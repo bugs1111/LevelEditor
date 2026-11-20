@@ -6,13 +6,17 @@ The bundled `examples/topdown/Typical_TopDown_example.ldtk` and `atlas/TopDown_b
 
 Roboto Condensed fonts originate from LDtk's bundled font assets. Their Apache license is retained in `assets/fonts/LICENSE.txt`.
 
+`assets/fonts/LevelEditorCJK-Regular.otf` is a renamed subset of Noto Sans CJK SC 2.004 by Adobe. It includes GB 2312 and the Simplified Chinese interface glyphs. The SIL Open Font License 1.1 and original copyright are retained in `assets/fonts/NotoSansCJK-OFL.txt`.
+
 Icons under `assets/icons/` originate from LDtk's bundled UI assets; upstream credits Material icons in its README. The Rust port does not claim authorship of those resources.
 
 Rust dependency licenses remain those of their respective crates, recorded by `Cargo.lock` and each dependency's package metadata. No upstream application runtime is shipped.
 
+Winit 0.30.13 is vendored with the [X11 wheel-release fix](https://github.com/rust-windowing/winit/commit/03dad26c43f91cf4c985fb0a7dafa8f3ef48b746) backported to its 0.30 event handler. Winit's Apache 2.0 license is included in `vendor/winit/LICENSE` and in packaged assets as `Winit-LICENSE.txt`.
+
 Original LDtk bitmap font atlases and metrics (Noto Sans Display and Pixel Berry), built-in tile atlas, home illustrations and application icon are retained under `assets/`. They remain attributed to their upstream authors and are used as original port resources. The bundled Noto Sans Display source font identifies copyright 2015 Google Inc. in its font metadata; its SIL Open Font License 1.1 is retained in `assets/bitmap_fonts/NotoSansDisplay-OFL.txt` (license text: https://github.com/google/fonts/blob/main/ofl/notosansdisplay/OFL.txt).
 
-Resource provenance is not a blanket MIT relicensing of independent art. The pinned upstream stores `pixel_berry.png` / `.xml` with the family name "Pixel Berry 08/84 Ltd.Edition", but no separate font license was found there. The embedded `finalbossblues-icons_full_16.png` is explicitly credited by upstream `Lang.getEmbedAtlasInfos` to FinalBossBlues, https://finalbossblues.itch.io/icons . The pinned source contains no separate redistribution grant for that atlas. Keep these original credits and establish any additional permissions required before public redistribution; the port does not claim ownership or a new license for these resources.
+Resource provenance is not a blanket MIT relicensing of independent art. The pinned upstream stores `pixel_berry.png` / `.xml` with the family name "Pixel Berry 08/84 Ltd.Edition", but no separate font license was found there. The embedded `finalbossblues-icons_full_16.png` comes from the LDtk 1.5.4 preview commit `53cfd539` and is credited by upstream `Lang.getEmbedAtlasInfos` to FinalBossBlues, https://finalbossblues.itch.io/icons . The pinned source contains no separate redistribution grant for that atlas. Keep these original credits and establish any additional permissions required before public redistribution; the port does not claim ownership or a new license for these resources.
 
 The original changelog text and release illustrations under `assets/CHANGELOG.md` and `assets/changelogImg/` also originate from the same pinned LDtk source. They are displayed with a Rust Markdown viewer.
 

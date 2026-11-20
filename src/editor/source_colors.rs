@@ -114,6 +114,18 @@ fn used_colors(project: &Project) -> UsedColors {
 impl EditorApp {
     pub(super) fn prepare_color_context(&mut self, ctx: &egui::Context) {
         ui_fields::prepare_dialog_context(self, ctx);
+        if let Some(message) =
+            ctx.data_mut(|d| d.remove_temp::<&'static str>(active_color_id().with("notice")))
+        {
+            if message == "Pasted color" {
+                self.quick_notification =
+                    Some((locale::tr_ctx(ctx, message).into(), None, Instant::now()));
+                ctx.request_repaint();
+            } else {
+                self.status = message.into();
+                self.status_error = false;
+            }
+        }
         let key = egui::Id::new("source-show-project-colors");
         if let Some(value) = ctx.data_mut(|d| d.remove_temp::<bool>(key.with("changed"))) {
             self.settings
@@ -184,7 +196,8 @@ struct ColorDraft {
     hsv: [f64; 3],
     hex: String,
     copied: bool,
-    paste_waiting: bool,
+    paste_color: Option<[u8; 3]>,
+    clipboard_frame: Option<u64>,
     show_all: bool,
     tag: Option<String>,
     nullified: bool,
@@ -196,7 +209,8 @@ impl ColorDraft {
             hsv: rgb_hsv(rgb),
             hex: hex(rgb),
             copied: false,
-            paste_waiting: false,
+            paste_color: None,
+            clipboard_frame: None,
             show_all: false,
             tag: None,
             nullified: false,
@@ -230,35 +244,86 @@ pub(in crate::app) fn request_validate(ctx: &egui::Context) {
         ctx.request_repaint();
     }
 }
-/// Handle a requested clipboard read before definition clipboard shortcuts see its paste event.
-pub(in crate::app) fn handle_color_clipboard(ctx: &egui::Context) -> bool {
-    let Some(id) = ctx.data_mut(|d| d.get_temp::<egui::Id>(active_color_id())) else {
-        return false;
+#[derive(Clone, Copy)]
+struct ClipboardRead {
+    picker: egui::Id,
+    frame: u64,
+    apply: bool,
+}
+
+fn clipboard_reads_id() -> egui::Id {
+    active_color_id().with("clipboard-reads")
+}
+
+fn read_clipboard(ctx: &egui::Context, id: egui::Id, state: &mut ColorDraft, apply: bool) {
+    // As with the rule menu's preview, eframe puts the result in raw input two frames later.
+    let frame = ctx.cumulative_frame_nr() + 2;
+    state.clipboard_frame = Some(frame);
+    let read = ClipboardRead {
+        picker: id,
+        frame,
+        apply,
     };
-    let Some(mut state) = ctx.data_mut(|d| d.get_temp::<ColorDraft>(id)) else {
-        return false;
-    };
-    if !state.paste_waiting {
-        return false;
-    }
-    let raw = ctx.input(|i| {
-        i.events.iter().find_map(|event| {
-            if let egui::Event::Paste(raw) = event {
-                Some(raw.clone())
-            } else {
-                None
-            }
-        })
-    });
-    if let Some(raw) = raw {
-        if let Some(rgb) = source_hex(&raw) {
-            state.assign(rgb);
+    let queued = ctx.data_mut(|d| {
+        let reads = d.get_temp_mut_or_default::<Vec<ClipboardRead>>(clipboard_reads_id());
+        if let Some(existing) = reads.iter_mut().find(|existing| existing.frame == frame) {
+            *existing = read;
+            false
+        } else {
+            reads.push(read);
+            true
         }
-        state.paste_waiting = false;
-        ctx.data_mut(|d| d.insert_temp(id, state));
-        return true;
+    });
+    if queued {
+        ctx.send_viewport_cmd(egui::ViewportCommand::RequestPaste);
     }
-    false
+    ctx.request_repaint();
+}
+
+pub(in crate::app) fn capture_color_clipboard(ctx: &egui::Context, input: &mut egui::RawInput) {
+    let frame = ctx.cumulative_frame_nr();
+    ctx.data_mut(|d| {
+        let Some(mut reads) = d.get_temp::<Vec<ClipboardRead>>(clipboard_reads_id()) else {
+            return;
+        };
+        let read = reads.iter().find(|read| read.frame == frame).copied();
+        reads.retain(|read| read.frame > frame);
+        if reads.is_empty() {
+            d.remove::<Vec<ClipboardRead>>(clipboard_reads_id());
+        } else {
+            d.insert_temp(clipboard_reads_id(), reads);
+        }
+        let Some(read) = read else { return };
+        let color = if let Some(egui::Event::Paste(raw)) = input.events.first() {
+            let color = source_hex(raw);
+            input.events.remove(0);
+            color
+        } else {
+            None
+        };
+        if d.get_temp::<egui::Id>(active_color_id()) != Some(read.picker) {
+            return;
+        }
+        let Some(mut draft) = d.get_temp::<ColorDraft>(read.picker) else {
+            return;
+        };
+        if draft.clipboard_frame != Some(frame) {
+            return;
+        }
+        draft.clipboard_frame = None;
+        if read.apply {
+            if let Some(color) = color {
+                // The source button updates the preview. The HEX field refreshes on blur.
+                let field = std::mem::take(&mut draft.hex);
+                draft.assign(color);
+                draft.hex = field;
+                d.insert_temp(active_color_id().with("notice"), "Pasted color");
+            }
+        } else {
+            draft.paste_color = color;
+        }
+        d.insert_temp(read.picker, draft);
+    });
 }
 fn spectrum(ui: &mut egui::Ui, state: &mut ColorDraft) {
     let (whole, _) = ui.allocate_exact_size(egui::vec2(320., 150.), Sense::hover());
@@ -288,13 +353,15 @@ fn spectrum(ui: &mut egui::Ui, state: &mut ColorDraft) {
         state.copied = false;
     }
     let full = hsv_rgb([state.hsv[0], 1., 1.]);
+    let saturated = Color32::from_rgb(full[0], full[1], full[2]);
     let mut mesh = egui::Mesh::default();
     for (pos, col) in [
         (plane.left_top(), Color32::WHITE),
-        (
-            plane.right_top(),
-            Color32::from_rgb(full[0], full[1], full[2]),
-        ),
+        (plane.right_top(), saturated),
+        (plane.left_bottom(), Color32::WHITE),
+        (plane.right_bottom(), saturated),
+        (plane.left_top(), Color32::TRANSPARENT),
+        (plane.right_top(), Color32::TRANSPARENT),
         (plane.left_bottom(), Color32::BLACK),
         (plane.right_bottom(), Color32::BLACK),
     ] {
@@ -302,6 +369,9 @@ fn spectrum(ui: &mut egui::Ui, state: &mut ColorDraft) {
     }
     mesh.add_triangle(0, 1, 2);
     mesh.add_triangle(1, 2, 3);
+    // Value darkens the entire white-to-hue ramp by the same factor at each height.
+    mesh.add_triangle(4, 5, 6);
+    mesh.add_triangle(5, 6, 7);
     ui.painter().add(mesh);
     let colors = [
         0xff0000, 0xff00ff, 0x0000ff, 0x00ffff, 0x00ff00, 0xffff00, 0xff0000,
@@ -331,9 +401,14 @@ fn spectrum(ui: &mut egui::Ui, state: &mut ColorDraft) {
             state.hsv[1] as f32 * 295.,
             (1. - state.hsv[2]) as f32 * 150.,
         );
-    ui.painter().circle_filled(selected, 6., Color32::WHITE);
+    let [r, g, b] = state.rgb.map(f32::from);
+    let marker = if 0.299 * r + 0.587 * g + 0.114 * b < 128. {
+        Color32::WHITE
+    } else {
+        Color32::BLACK
+    };
     ui.painter()
-        .circle_stroke(selected, 7., Stroke::new(1_f32, Color32::BLACK));
+        .circle_stroke(selected, 6., Stroke::new(2., marker));
     let y = hue.top() + (1. - state.hsv[0]) as f32 * 148.;
     ui.painter().rect_filled(
         Rect::from_min_size(egui::pos2(hue.right() - 7., y), egui::vec2(10., 2.)),
@@ -341,6 +416,171 @@ fn spectrum(ui: &mut egui::Ui, state: &mut ColorDraft) {
         Color32::WHITE,
     );
 }
+
+fn color_palette(ui: &mut egui::Ui, id: egui::Id, draft: &mut ColorDraft) {
+    let blind = ui
+        .data(|d| d.get_temp::<bool>(egui::Id::new("source-colorblind-palette")))
+        .unwrap_or(false);
+    ui.vertical(|ui| {
+        ui.spacing_mut().item_spacing.y = 0.;
+        let mut choices = palette(blind).to_vec();
+        if let Some(tag) = &draft.tag {
+            let key = egui::Id::new("source-show-project-colors");
+            let mut expanded = ui.data(|d| d.get_temp::<bool>(key)).unwrap_or(true);
+            let label = if draft.show_all {
+                "All colors used in this project"
+            } else {
+                "Colors used for this element"
+            };
+            let (rect, response) = ui.allocate_exact_size(egui::vec2(320., 24.), Sense::click());
+            let label = locale::tr(ui, label);
+            ui.painter().rect_filled(
+                rect,
+                0.,
+                if expanded {
+                    theme::LIGHT
+                } else {
+                    theme::MEDIUM
+                },
+            );
+            egui::Image::new(if expanded {
+                egui::include_image!("../../assets/icons/expanded.svg")
+            } else {
+                egui::include_image!("../../assets/icons/collapsed.svg")
+            })
+            .paint_at(
+                ui,
+                Rect::from_center_size(rect.left_center() + egui::vec2(10., 0.), Vec2::splat(18.)),
+            );
+            ui.painter().text(
+                rect.left_center() + egui::vec2(22., 0.),
+                Align2::LEFT_CENTER,
+                label,
+                FontId::proportional(11.733),
+                if response.hovered() {
+                    theme::ACCENT
+                } else if expanded {
+                    Color32::WHITE
+                } else {
+                    theme::TEXT
+                },
+            );
+            response
+                .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label));
+            if response
+                .on_hover_cursor(if expanded {
+                    egui::CursorIcon::PointingHand
+                } else {
+                    egui::CursorIcon::Cell
+                })
+                .clicked()
+            {
+                expanded = !expanded;
+                ui.data_mut(|d| {
+                    d.insert_temp(key, expanded);
+                    d.insert_temp(key.with("changed"), expanded);
+                });
+            }
+            if !expanded {
+                return;
+            }
+            let used = ui
+                .data(|d| d.get_temp::<UsedColors>(key.with("used")))
+                .unwrap_or_default();
+            choices = if draft.show_all {
+                let mut all: Vec<_> = used.0.into_values().flatten().collect();
+                all.sort_by(|a, b| rgb_hsv(rgb(*a))[0].total_cmp(&rgb_hsv(rgb(*b))[0]));
+                all
+            } else {
+                used.0.get(tag).cloned().unwrap_or_default()
+            };
+        }
+
+        let panel = egui::Frame::new()
+            .fill(theme::MEDIUM)
+            .corner_radius(egui::CornerRadius {
+                nw: 0,
+                ne: 0,
+                sw: 4,
+                se: 4,
+            })
+            .inner_margin(egui::Margin {
+                left: 5,
+                right: 4,
+                top: 4,
+                bottom: 4,
+            })
+            .show(ui, |ui| {
+                ui.set_width(311.);
+                if choices.is_empty() {
+                    ui.label(
+                        RichText::new(locale::tr(ui, "Empty"))
+                            .italics()
+                            .color(theme::TEXT),
+                    );
+                    return;
+                }
+                let show_all_link = draft.tag.is_some() && !draft.show_all;
+                let height = 24 * (choices.len().div_ceil(12) + usize::from(show_all_link));
+                let mut render = |ui: &mut egui::Ui| {
+                    let width = ui.available_width() / 12.;
+                    egui::Grid::new(id.with("palette"))
+                        .min_col_width(0.)
+                        .spacing(Vec2::ZERO)
+                        .show(ui, |ui| {
+                            for (index, &choice) in choices.iter().enumerate() {
+                                let [r, g, b] = rgb(choice);
+                                let (rect, response) =
+                                    ui.allocate_exact_size(egui::vec2(width, 24.), Sense::click());
+                                ui.painter().rect(
+                                    rect,
+                                    0.,
+                                    Color32::from_rgb(r, g, b),
+                                    if response.hovered() {
+                                        Stroke::new(2., Color32::WHITE)
+                                    } else {
+                                        Stroke::new(1., Color32::BLACK)
+                                    },
+                                    StrokeKind::Inside,
+                                );
+                                if response.on_hover_text(format!("#{choice:06X}")).clicked() {
+                                    draft.assign([r, g, b]);
+                                }
+                                if index % 12 == 11 {
+                                    ui.end_row();
+                                }
+                            }
+                        });
+                    if show_all_link {
+                        let label = locale::tr(ui, "Show all colors used in this project");
+                        if ui
+                            .add(egui::Link::new(
+                                RichText::new(label).size(11.733).color(theme::ACCENT),
+                            ))
+                            .clicked()
+                        {
+                            draft.show_all = true;
+                        }
+                    }
+                };
+                if height > 180 {
+                    egui::ScrollArea::vertical()
+                        .id_salt(id.with("palette-scroll"))
+                        .max_height(180.)
+                        .show(ui, render);
+                } else {
+                    render(ui);
+                }
+            });
+        let rect = panel.response.rect;
+        ui.painter().vline(
+            rect.left() + 0.5,
+            rect.y_range(),
+            Stroke::new(1., theme::LIGHT),
+        );
+    });
+}
+
 /// Original RGB-only picker: SV plane, reversed hue bar, hexadecimal input, clipboard and palette.
 /// Draft choices validate on Enter, Escape or click outside; they do not create per-drag undo entries.
 pub(in crate::app) fn color_editor(ui: &mut egui::Ui, color: &mut [u8; 3]) -> egui::Response {
@@ -351,14 +591,23 @@ pub(in crate::app) fn color_editor_tag(
     color: &mut [u8; 3],
     tag: Option<&str>,
 ) -> egui::Response {
+    color_editor_sized(ui, color, tag, egui::vec2(38., 24.))
+}
+
+pub(super) fn color_editor_sized(
+    ui: &mut egui::Ui,
+    color: &mut [u8; 3],
+    tag: Option<&str>,
+    size: Vec2,
+) -> egui::Response {
     let response = source_controls::add_sized_button(
         ui,
-        [38., 24.],
+        size,
         egui::Button::new(" ")
             .fill(Color32::from_rgb(color[0], color[1], color[2]))
             .stroke(Stroke::new(1_f32, Color32::GRAY)),
     );
-    color_picker(ui, color, tag, response, false, false).0
+    color_picker(ui, color, tag, response, false, None).0
 }
 fn color_picker(
     ui: &mut egui::Ui,
@@ -366,8 +615,9 @@ fn color_picker(
     tag: Option<&str>,
     mut response: egui::Response,
     force_open: bool,
-    allow_null: bool,
+    initial_null: Option<bool>,
 ) -> (egui::Response, Option<bool>) {
+    let allow_null = initial_null.is_some();
     let mut validated = None;
     let id = response.id.with("source-color-draft");
     let mut state = ui.ctx().data_mut(|d| d.get_temp::<ColorDraft>(id));
@@ -375,7 +625,18 @@ fn color_picker(
     if just_opened {
         let mut draft = ColorDraft::new(*color);
         draft.tag = tag.map(str::to_owned);
+        draft.nullified = initial_null.unwrap_or(false);
+        if force_open && draft.nullified {
+            draft.hex.clear();
+        }
+        read_clipboard(ui.ctx(), id, &mut draft, false);
         state = Some(draft);
+    }
+    if ui.ctx().data(|d| {
+        d.get_temp::<Vec<ClipboardRead>>(clipboard_reads_id())
+            .is_some()
+    }) {
+        ui.ctx().request_repaint();
     }
     if let Some(mut draft) = state {
         ui.ctx().data_mut(|d| d.insert_temp(active_color_id(), id));
@@ -425,16 +686,22 @@ fn color_picker(
                             StrokeKind::Inside,
                         );
                         ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = 2.;
+                            ui.visuals_mut().selection.bg_fill = Color32::from_rgb(0, 102, 204);
+                            ui.visuals_mut().selection.stroke.color = Color32::WHITE;
                             let mut text = draft.hex.clone();
                             let field = ui.add_sized(
-                                [if allow_null { 176. } else { 224. }, 44.],
+                                [if allow_null { 182. } else { 228. }, 44.],
                                 egui::TextEdit::singleline(&mut text)
                                     .hint_text("rrggbb")
+                                    .font(FontId::proportional(13.333))
+                                    .text_color(Color32::WHITE)
+                                    .vertical_align(egui::Align::Center)
                                     .margin(egui::Margin {
                                         left: 17,
                                         right: 4,
-                                        top: 6,
-                                        bottom: 6,
+                                        top: 0,
+                                        bottom: 0,
                                     }),
                             );
                             if just_opened {
@@ -451,6 +718,19 @@ fn color_picker(
                                     state.store(ui.ctx(), field.id);
                                 }
                             }
+                            ui.painter().rect_stroke(
+                                field.rect,
+                                0.,
+                                Stroke::new(
+                                    1.,
+                                    if field.has_focus() {
+                                        theme::ACCENT
+                                    } else {
+                                        theme::LIGHT
+                                    },
+                                ),
+                                StrokeKind::Inside,
+                            );
                             ui.painter().text(
                                 field.rect.left_center() + egui::vec2(7., 0.),
                                 Align2::LEFT_CENTER,
@@ -484,13 +764,26 @@ fn color_picker(
                                         Color32::WHITE
                                     })
                                     .fit_to_exact_size(Vec2::splat(24.)),
-                                ),
+                                )
+                                .fill(if draft.copied {
+                                    theme::DARK
+                                } else {
+                                    theme::LIGHT
+                                }),
                             )
-                            .on_hover_text("Copy color")
+                            .on_hover_text(locale::tr(ui, "Copy color"))
                             .clicked()
                             {
                                 ui.ctx().copy_text(format!("#{}", hex(draft.rgb)));
                                 draft.copied = true;
+                                draft.paste_color = Some(draft.rgb);
+                                draft.clipboard_frame = None;
+                                ui.data_mut(|d| {
+                                    d.insert_temp(
+                                        active_color_id().with("notice"),
+                                        "Copied to clipboard.",
+                                    )
+                                });
                             }
                             if source_controls::add_sized_button(
                                 ui,
@@ -499,15 +792,23 @@ fn color_picker(
                                     egui::Image::new(egui::include_image!(
                                         "../../assets/icons/paste.svg"
                                     ))
+                                    .tint(if draft.paste_color.is_some() {
+                                        Color32::WHITE
+                                    } else {
+                                        Color32::from_white_alpha(38)
+                                    })
                                     .fit_to_exact_size(Vec2::splat(24.)),
+                                )
+                                .fill(
+                                    draft.paste_color.map_or(theme::DARK, |[r, g, b]| {
+                                        Color32::from_rgb(r, g, b)
+                                    }),
                                 ),
                             )
-                            .on_hover_text("Paste color")
+                            .on_hover_text(locale::tr(ui, "Paste color"))
                             .clicked()
                             {
-                                draft.paste_waiting = true;
-                                ui.ctx()
-                                    .send_viewport_cmd(egui::ViewportCommand::RequestPaste);
+                                read_clipboard(ui.ctx(), id, &mut draft, true);
                             }
                             if allow_null
                                 && source_controls::add_sized_button(
@@ -521,7 +822,7 @@ fn color_picker(
                                     )
                                     .fill(Color32::from_rgb(121, 17, 5)),
                                 )
-                                .on_hover_text("Remove color")
+                                .on_hover_text(locale::tr(ui, "Remove color"))
                                 .clicked()
                             {
                                 draft.nullified = true;
@@ -529,101 +830,7 @@ fn color_picker(
                             }
                         });
                         spectrum(ui, &mut draft);
-                        let blind = ui
-                            .ctx()
-                            .data_mut(|d| {
-                                d.get_temp::<bool>(egui::Id::new("source-colorblind-palette"))
-                            })
-                            .unwrap_or(false);
-                        let mut choices = palette(blind).to_vec();
-                        if let Some(tag) = &draft.tag {
-                            let key = egui::Id::new("source-show-project-colors");
-                            let mut expanded = ui
-                                .ctx()
-                                .data_mut(|d| d.get_temp::<bool>(key))
-                                .unwrap_or(true);
-                            let previous = expanded;
-                            if ui
-                                .selectable_label(
-                                    expanded,
-                                    if draft.show_all {
-                                        "All colors used in this project"
-                                    } else {
-                                        "Colors used for this element"
-                                    },
-                                )
-                                .clicked()
-                            {
-                                expanded = !expanded;
-                            }
-                            if expanded != previous {
-                                ui.ctx().data_mut(|d| {
-                                    d.insert_temp(key, expanded);
-                                    d.insert_temp(key.with("changed"), expanded);
-                                });
-                            }
-                            let used = ui
-                                .ctx()
-                                .data_mut(|d| d.get_temp::<UsedColors>(key.with("used")))
-                                .unwrap_or_default();
-                            choices = if !expanded {
-                                vec![]
-                            } else if draft.show_all {
-                                let mut all =
-                                    used.0.values().flatten().copied().collect::<Vec<_>>();
-                                all.sort_by(|a, b| {
-                                    rgb_hsv(rgb(*a))[0].total_cmp(&rgb_hsv(rgb(*b))[0])
-                                });
-                                all
-                            } else {
-                                used.0.get(tag).cloned().unwrap_or_default()
-                            };
-                            if expanded && choices.is_empty() {
-                                ui.weak("Empty");
-                            }
-                            if expanded
-                                && !draft.show_all
-                                && ui.link("Show all colors used in this project").clicked()
-                            {
-                                draft.show_all = true;
-                            }
-                        }
-                        egui::Grid::new(id.with("palette"))
-                            .min_col_width(0.)
-                            .spacing(Vec2::splat(0.))
-                            .show(ui, |ui| {
-                                for (index, choice) in choices.iter().enumerate() {
-                                    let value = rgb(*choice);
-                                    let (rect, r) = ui.allocate_exact_size(
-                                        egui::vec2(320. / 12., 24.),
-                                        Sense::click(),
-                                    );
-                                    ui.painter().rect_filled(
-                                        rect,
-                                        0.,
-                                        Color32::from_rgb(value[0], value[1], value[2]),
-                                    );
-                                    ui.painter().rect_stroke(
-                                        rect,
-                                        0.,
-                                        Stroke::new(
-                                            if r.hovered() { 2_f32 } else { 1_f32 },
-                                            if r.hovered() {
-                                                Color32::WHITE
-                                            } else {
-                                                Color32::BLACK
-                                            },
-                                        ),
-                                        StrokeKind::Inside,
-                                    );
-                                    if r.on_hover_text(format!("#{choice:06X}")).clicked() {
-                                        draft.assign(value);
-                                    }
-                                    if index % 12 == 11 {
-                                        ui.end_row();
-                                    }
-                                }
-                            });
+                        color_palette(ui, id, &mut draft);
                         if ui.input(|i| i.key_pressed(Key::Enter)) {
                             ui.close();
                         }
@@ -658,15 +865,108 @@ pub(in crate::app) fn nullable_color_editor(
     ui: &mut egui::Ui,
     color: &mut Option<[u8; 3]>,
 ) -> egui::Response {
+    nullable_color_editor_sized(ui, color, None, egui::vec2(38., 24.))
+}
+
+/// Form color input with the original swatch and a separate reset control.
+pub(super) fn form_color_editor(ui: &mut egui::Ui, color: &mut Option<[u8; 3]>) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(64., 32.), Sense::click());
     let mut rgb = color.unwrap_or([0, 0, 0]);
+    let mut inner = Color32::from_rgb(rgb[0], rgb[1], rgb[2]);
+    let mut border = Color32::from_gray(119);
+    let painter = ui.painter();
+    if color.is_some() {
+        painter.rect_filled(rect, 2., Color32::from_gray(118));
+        painter.rect_filled(rect.shrink(1.), 1., Color32::from_gray(239));
+    } else {
+        let opacity = if response.hovered() { 255 } else { 77 };
+        painter.rect_filled(
+            rect,
+            0.,
+            if response.hovered() {
+                Color32::GRAY
+            } else {
+                Color32::from_rgb(71, 75, 83)
+            },
+        );
+        egui::Image::new(egui::include_image!("../../assets/img/stripes.png"))
+            .texture_options(egui::TextureOptions::NEAREST_REPEAT)
+            .tint(Color32::from_white_alpha(opacity))
+            .uv(Rect::from_min_size(egui::Pos2::ZERO, rect.size() / 8.))
+            .paint_at(ui, rect);
+        if !response.hovered() {
+            inner = Color32::from_rgb(32, 36, 44);
+            border = Color32::from_rgb(68, 72, 80);
+        }
+    }
+    painter.rect_filled(rect.shrink2(egui::vec2(3., 5.)), 0., border);
+    painter.rect_filled(rect.shrink2(egui::vec2(4., 6.)), 0., inner);
+    if response.hovered() {
+        painter.rect_stroke(
+            rect,
+            0.,
+            Stroke::new(1., theme::ACCENT),
+            StrokeKind::Outside,
+        );
+    }
+    response.widget_info(|| {
+        egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("#{}", hex(rgb)))
+    });
+    let (mut response, validated) = color_picker(
+        ui,
+        &mut rgb,
+        None,
+        response.on_hover_cursor(egui::CursorIcon::PointingHand),
+        false,
+        None,
+    );
+    if validated.is_some() && *color != Some(rgb) {
+        *color = Some(rgb);
+        response.mark_changed();
+    }
+    response
+}
+
+pub(super) fn inherited_color_editor(
+    ui: &mut egui::Ui,
+    color: &mut Option<[u8; 3]>,
+    default: Color32,
+) -> egui::Response {
+    nullable_color_editor_sized(ui, color, Some(default), egui::vec2(62., 32.))
+}
+
+fn nullable_color_editor_sized(
+    ui: &mut egui::Ui,
+    color: &mut Option<[u8; 3]>,
+    default: Option<Color32>,
+    size: Vec2,
+) -> egui::Response {
+    let inherited = default.is_some() && color.is_none();
+    let background = color
+        .map(|[r, g, b]| Color32::from_rgb(r, g, b))
+        .or(default)
+        .unwrap_or(Color32::BLACK);
+    let mut rgb = [background.r(), background.g(), background.b()];
     let response = source_controls::add_sized_button(
         ui,
-        [38., 24.],
+        size,
         egui::Button::new(" ")
-            .fill(Color32::from_rgb(rgb[0], rgb[1], rgb[2]))
+            .fill(background)
             .stroke(Stroke::new(1_f32, Color32::GRAY)),
     );
-    let (mut response, validation) = color_picker(ui, &mut rgb, None, response, false, true);
+    if inherited {
+        source_controls::disabled_hatch(ui, response.rect.shrink(2.));
+    }
+    if default.is_some() {
+        let icon = egui::Image::new(egui::include_image!("../../assets/icons/color.svg"))
+            .tint(Color32::from_white_alpha(180));
+        icon.paint_at(
+            ui,
+            Rect::from_center_size(response.rect.center(), Vec2::splat(19.)),
+        );
+    }
+    let (mut response, validation) =
+        color_picker(ui, &mut rgb, None, response, false, Some(inherited));
     if let Some(null) = validation {
         let next = if null { None } else { Some(rgb) };
         if *color != next {
@@ -676,21 +976,47 @@ pub(in crate::app) fn nullable_color_editor(
     }
     response
 }
-/// Home directory context menus open this same picker immediately, without an extra swatch click.
-pub(in crate::app) fn directory_color_dialog(
+/// Context menus open the picker directly, without a swatch click.
+pub(in crate::app) fn standalone_color_dialog(
     ctx: &egui::Context,
     id: egui::Id,
     color: &mut [u8; 3],
     first_frame: bool,
 ) -> bool {
+    standalone_color_picker(ctx, id, color, first_frame, None);
+    !picker_is_open(ctx)
+}
+
+pub(super) fn standalone_nullable_color_dialog(
+    ctx: &egui::Context,
+    id: egui::Id,
+    color: &mut Option<[u8; 3]>,
+    first_frame: bool,
+) -> bool {
+    let mut rgb = color.unwrap_or([0; 3]);
+    if let Some(null) =
+        standalone_color_picker(ctx, id, &mut rgb, first_frame, Some(color.is_none()))
+    {
+        *color = (!null).then_some(rgb);
+    }
+    !picker_is_open(ctx)
+}
+
+fn standalone_color_picker(
+    ctx: &egui::Context,
+    id: egui::Id,
+    color: &mut [u8; 3],
+    first_frame: bool,
+    initial_null: Option<bool>,
+) -> Option<bool> {
     egui::Area::new(id)
         .order(egui::Order::Foreground)
         .fixed_pos(ctx.content_rect().center() - egui::vec2(160., 160.))
         .show(ctx, |ui| {
             let (_, response) = ui.allocate_exact_size(Vec2::ZERO, Sense::hover());
-            color_picker(ui, color, None, response, first_frame, false);
-        });
-    !picker_is_open(ctx)
+            color_picker(ui, color, None, response, first_frame, initial_null).1
+        })
+        .inner
 }
 #[cfg(test)]
 mod tests {
@@ -729,8 +1055,9 @@ mod tests {
         };
         run(vec![], &mut color);
         let pos = swatch.get().center();
+        let mut clipboard_reads = 0;
         for pressed in [true, false] {
-            run(
+            let output = run(
                 vec![
                     egui::Event::PointerMoved(pos),
                     egui::Event::PointerButton {
@@ -742,11 +1069,21 @@ mod tests {
                 ],
                 &mut color,
             );
+            clipboard_reads += output
+                .viewport_output
+                .values()
+                .flat_map(|viewport| &viewport.commands)
+                .filter(|command| matches!(command, egui::ViewportCommand::RequestPaste))
+                .count();
         }
         for _ in 0..4 {
             run(vec![], &mut color);
         }
         let rect = picker_rect(&ctx).expect("open picker");
+        assert_eq!(
+            clipboard_reads, 1,
+            "opening reads the paste button's color preview"
+        );
         assert!(
             (rect.width() - 330.).abs() <= 2.,
             "source320pt content plus4pt margins/border: {rect:?}"
@@ -762,22 +1099,47 @@ mod tests {
     fn requested_clipboard_paste_uses_source_hex_without_triggering_definition_paste() {
         let ctx = egui::Context::default();
         let id = egui::Id::new("clipboard-color-test");
-        let mut state = ColorDraft::new([0, 0, 0]);
-        state.paste_waiting = true;
         ctx.data_mut(|d| {
             d.insert_temp(active_color_id(), id);
-            d.insert_temp(id, state);
+            d.insert_temp(id, ColorDraft::new([0, 0, 0]));
         });
-        let _ = ctx.run(
-            egui::RawInput {
-                events: vec![egui::Event::Paste("#0af".into())],
+        let fetch = |apply, clipboard: Option<&str>| {
+            let mut state = ctx.data(|d| d.get_temp::<ColorDraft>(id)).unwrap();
+            read_clipboard(&ctx, id, &mut state, apply);
+            ctx.data_mut(|d| d.insert_temp(id, state));
+            for _ in 0..2 {
+                let _ = ctx.run(egui::RawInput::default(), |_| {});
+            }
+            let events = clipboard
+                .into_iter()
+                .map(|raw| egui::Event::Paste(raw.into()))
+                .chain(std::iter::once(egui::Event::Text("ordinary input".into())))
+                .collect();
+            let mut input = egui::RawInput {
+                events,
                 ..Default::default()
-            },
-            |ctx| assert!(handle_color_clipboard(ctx)),
-        );
+            };
+            capture_color_clipboard(&ctx, &mut input);
+            assert_eq!(input.events, [egui::Event::Text("ordinary input".into())]);
+            ctx.data(|d| d.get_temp::<ColorDraft>(id)).unwrap()
+        };
+        let preview = fetch(false, Some("#0af"));
+        assert_eq!(preview.paste_color, Some([0, 170, 255]));
+        assert_eq!(preview.rgb, [0, 0, 0]);
+        let paste = fetch(true, Some("#3377CC"));
+        assert_eq!(paste.rgb, [51, 119, 204]);
+        assert_eq!(paste.hex, "000000");
+        assert_eq!(fetch(true, None).rgb, paste.rgb);
+        assert_eq!(fetch(false, Some("not a color")).paste_color, None);
+
+        let mut ordinary = egui::RawInput {
+            events: vec![egui::Event::Paste("ordinary paste".into())],
+            ..Default::default()
+        };
+        capture_color_clipboard(&ctx, &mut ordinary);
         assert_eq!(
-            ctx.data_mut(|d| d.get_temp::<ColorDraft>(id)).unwrap().rgb,
-            [0, 170, 255]
+            ordinary.events,
+            [egui::Event::Paste("ordinary paste".into())]
         );
     }
     #[test]

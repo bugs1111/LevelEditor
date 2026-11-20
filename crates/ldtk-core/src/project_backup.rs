@@ -144,14 +144,14 @@ fn read_backup_metadata(path: &Path) -> Result<BackupMetadata> {
     })
 }
 
+fn backup_directory(path: &Path, relative: Option<&str>) -> PathBuf {
+    relative
+        .map(|relative| path.with_file_name(relative))
+        .unwrap_or_else(|| path.with_extension("").join("backups"))
+}
+
 fn discover_backups(path: &Path, id: &str, relative: Option<&str>) -> Result<Vec<BackupInfo>> {
-    let base = path.parent().expect("absolute path");
-    let dir = relative
-        .map(|relative| base.join(relative))
-        .unwrap_or_else(|| {
-            base.join(path.file_stem().unwrap_or_default())
-                .join("backups")
-        });
+    let dir = backup_directory(path, relative);
     if !dir.exists() {
         return Ok(Vec::new());
     }
@@ -242,6 +242,15 @@ pub(super) fn local_backup_timestamp(seconds: u64) -> Option<String> {
     ))
 }
 impl Project {
+    pub fn external_files_directory(&self) -> Option<PathBuf> {
+        self.path.as_ref().map(|path| path.with_extension(""))
+    }
+
+    pub fn backup_directory(&self) -> Option<PathBuf> {
+        let path = self.path.as_ref()?;
+        Some(backup_directory(path, self.json["backupRelPath"].as_str()))
+    }
+
     pub fn is_backup(&self) -> bool {
         self.path
             .as_ref()
@@ -310,6 +319,56 @@ impl Project {
         restored.save_document(&original, false)?;
         let report = restored.configured_exports_report();
         Ok((restored, report))
+    }
+    /// Change the extension of the saved file without publishing unsaved edits.
+    pub fn rename_project_extension(
+        &mut self,
+        use_ldtk: bool,
+        snapshot: Option<&mut FilesystemSnapshot>,
+    ) -> Result<bool> {
+        if self.is_backup() {
+            return Err(Error::Unsupported(
+                "restore a backup before renaming the project".into(),
+            ));
+        }
+        let old = self
+            .path
+            .as_ref()
+            .ok_or_else(|| Error::Invalid("save the project before renaming it".into()))?;
+        let target = old.with_extension(if use_ldtk { "ldtk" } else { "json" });
+        if target == *old {
+            return Ok(false);
+        }
+        // Reserve the sibling path before replacing it so an existing file or
+        // symlink cannot be clobbered, including on platforms where rename replaces it.
+        fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&target)
+            .map_err(|source| Error::Io {
+                path: target.clone(),
+                source,
+            })?;
+        if let Err(source) = fs::rename(old, &target) {
+            if let Err(cleanup) = fs::remove_file(&target) {
+                return Err(Error::Invalid(format!(
+                    "could not rename {}: {source}. Could not remove {}: {cleanup}",
+                    old.display(),
+                    target.display()
+                )));
+            }
+            return Err(Error::Io {
+                path: old.clone(),
+                source,
+            });
+        }
+        if let Some(snapshot) = snapshot
+            && let Some(fingerprint) = snapshot.files.remove(old)
+        {
+            snapshot.files.insert(target.clone(), fingerprint);
+        }
+        self.path = Some(target);
+        Ok(true)
     }
     /// Publish the renamed project before deleting any source file.
     pub fn rename_project(&mut self, new_stem: &str) -> Result<SaveReport> {

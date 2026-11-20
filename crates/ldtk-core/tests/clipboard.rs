@@ -126,3 +126,21 @@ fn duplicate_remap_preserves_pattern_sign_and_checks_tile_coordinates() {
     );
     assert_eq!(p.json, before);
 }
+
+#[test]
+fn preview_154_pasting_layer_rejects_missing_blocker_dependencies() {
+    let mut source = Project::new();
+    let layer = source.add_layer("Auto", "IntGrid", 16).unwrap();
+    let blocker = source.add_layer("Blocker", "Tiles", 16).unwrap();
+    source
+        .update_layer_properties(
+            layer,
+            &json!({"layerUidsPreventingAutoTilingHere":[blocker]}),
+        )
+        .unwrap();
+    let clip = source.copy_definition("layers", layer).unwrap();
+    let mut dest = Project::new();
+    let before = dest.json.clone();
+    assert!(dest.paste_definition(&clip, None).is_err());
+    assert_eq!(dest.json, before);
+}

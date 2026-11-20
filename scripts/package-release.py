@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 import re
 import shutil
+import struct
 import tempfile
 import zipfile
 
@@ -15,20 +16,85 @@ TARGETS = {"aarch64-apple-darwin", "x86_64-apple-darwin",
            "x86_64-pc-windows-msvc", "x86_64-unknown-linux-gnu"}
 
 
+def macho_matches(executable, header, cpu):
+    def thin_matches(data):
+        # A 64-bit little-endian Mach-O with the requested CPU and MH_EXECUTE.
+        return (len(data) >= 32 and data[:4] == b"\xcf\xfa\xed\xfe"
+                and struct.unpack_from("<I4xI", data, 4) == (cpu, 2))
+
+    if thin_matches(header):
+        return True
+
+    # Universal binaries have a big-endian table of slices with 32- or 64-bit offsets.
+    if header[:4] == b"\xca\xfe\xba\xbe":
+        entry = struct.Struct(">5I")
+    elif header[:4] == b"\xca\xfe\xba\xbf":
+        entry = struct.Struct(">2I2Q2I")
+    else:
+        return False
+    if len(header) < 8:
+        return False
+
+    count = struct.unpack_from(">I", header, 4)[0]
+    table_size = count * entry.size
+    file_size = executable.seek(0, 2)
+    if 8 + table_size > min(file_size, 4096):
+        return False
+    executable.seek(8)
+    entries = executable.read(table_size)
+    if len(entries) != table_size:
+        return False
+    for architecture, _, offset, size, *_ in entry.iter_unpack(entries):
+        if architecture == cpu and 8 + table_size <= offset and size >= 32 and offset + size <= file_size:
+            executable.seek(offset)
+            if thin_matches(executable.read(32)):
+                return True
+    return False
+
+
+def check_executable_target(path, target):
+    with path.open("rb") as executable:
+        header = executable.read(64)
+        if target.endswith("apple-darwin"):
+            cpu = 0x0100000C if target.startswith("aarch64") else 0x01000007
+            matches = macho_matches(executable, header, cpu)
+        elif target == "x86_64-pc-windows-msvc":
+            matches = False
+            if header[:2] == b"MZ" and len(header) == 64:
+                executable.seek(struct.unpack_from("<I", header, 60)[0])
+                subsystem_offset = 24 + 68
+                pe_header = executable.read(subsystem_offset + 2)
+                # The PE signature, AMD64 machine, executable image (not DLL), and PE32+.
+                if len(pe_header) == subsystem_offset + 2 and pe_header[:6] == b"PE\0\0\x64\x86":
+                    optional_size, flags, magic = struct.unpack_from("<3H", pe_header, 20)
+                    matches = optional_size >= 70 and (flags & 0x2002) == 2 and magic == 0x20B
+                    if matches and struct.unpack_from("<H", pe_header, subsystem_offset)[0] != 2:
+                        raise ValueError(f"{path} must use the Windows GUI subsystem")
+        else:
+            # ELF64 little endian, x86-64, with either the executable or PIE file type.
+            matches = (len(header) == 64 and header[:6] == b"\x7fELF\x02\x01"
+                       and struct.unpack_from("<2H", header, 16) in ((2, 62), (3, 62)))
+    if not matches:
+        raise ValueError(f"{path} does not contain a {target} executable")
+
+
 def package(target, destination):
     if target.endswith("apple-darwin"):
         source = ROOT / "dist/LevelEditor.app"
         if not (source / "Contents/Resources/ldtk-rs-install.json").is_file():
             raise ValueError("Run scripts/package-macos before creating the release archive")
+        check_executable_target(source / "Contents/MacOS/ldtk-rs", target)
         # Installed updaters require this archive root; the app's display name
         # and the local bundle are LevelEditor independently of that format.
         write_zip(source, destination, "LDtk Rust.app")
     else:
+        binary = "ldtk-rs.exe" if "windows" in target else "ldtk-rs"
+        executable = ROOT / "target/release" / binary
+        check_executable_target(executable, target)
         with tempfile.TemporaryDirectory(prefix="ldtk-release-") as staging:
             source = Path(staging) / "ldtk-rs"
             source.mkdir()
-            binary = "ldtk-rs.exe" if "windows" in target else "ldtk-rs"
-            shutil.copy2(ROOT / "target/release" / binary, source / binary)
+            shutil.copy2(executable, source / binary)
             shutil.copytree(ROOT / "assets", source / "resources/assets")
             shutil.copytree(ROOT / "examples/original", source / "resources/examples/original")
             for name in ["LICENSE", "THIRD_PARTY_NOTICES.md"]:

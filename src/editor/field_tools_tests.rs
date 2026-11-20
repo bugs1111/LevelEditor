@@ -119,6 +119,7 @@ fn click(f: &mut Fixture, ctx: &egui::Context, pos: egui::Pos2, controls: bool) 
     );
 }
 fn start(f: &mut Fixture, ctx: &egui::Context) {
+    theme::configure(ctx);
     let (_, labels) = frame(f, ctx, vec![], true);
     let pos = labels.iter().find(|(s, _)| s == "Canvas pick").unwrap().1;
     click(f, ctx, pos, true);
@@ -146,6 +147,8 @@ fn canvas_reference_pick_crosses_levels_returns_to_source_and_follow_button_navi
     click_entity(&mut f, &ctx, [96., 96.]);
     assert_eq!(value(&f)["entityIid"], f.target_iid);
     assert_eq!(f.app.selected, Some(f.source));
+    assert!(f.app.panel.is_none(), "Cross-level return does not re-open the inspector");
+    assert!(f.app.entity_index.is_none());
     assert!(!f.app.picking_entity_ref());
     let (_, labels) = frame(&mut f, &ctx, vec![], true);
     let pos = labels.iter().find(|(s, _)| s == "Actor").unwrap().1;
@@ -153,6 +156,158 @@ fn canvas_reference_pick_crosses_levels_returns_to_source_and_follow_button_navi
     assert_eq!(f.app.selected, Some(f.target));
     assert_eq!(f.app.entity_index, Some(0));
 }
+
+#[test]
+fn world_reference_picker_selects_the_level_before_picking_and_returns_in_world_view() {
+    let mut f = fixture(false);
+    let ctx = egui::Context::default();
+    f.app.project.as_mut().unwrap().level_mut(f.target).unwrap()["worldX"] = json!(640);
+    start(&mut f, &ctx);
+    f.app.show_panel(Some(Panel::World));
+    f.app.camera_motion.cancel();
+    f.app.viewport.center = [448., 128.];
+    f.app.viewport.zoom = 0.35;
+    frame(&mut f, &ctx, vec![], false);
+    assert_eq!(
+        ctx.data(|data| data.get_temp::<usize>(egui::Id::new("target-circles"))),
+        Some(0),
+        "World previews do not show reference targets"
+    );
+    click_entity(&mut f, &ctx, [736., 96.]);
+    assert_eq!(f.app.selected, Some(f.target));
+    assert!(f.app.picking_entity_ref());
+    assert!(value(&f).is_null());
+    let (rect, _) = frame(&mut f, &ctx, vec![], false);
+    let pos = rect.center();
+    for pressed in [true, false] {
+        frame(
+            &mut f,
+            &ctx,
+            vec![
+                egui::Event::PointerMoved(pos),
+                button(pos, pressed, egui::PointerButton::Secondary),
+            ],
+            false,
+        );
+    }
+    assert!(f.app.picking_entity_ref());
+    assert_eq!(f.app.selected, Some(f.target));
+    assert!(value(&f).is_null());
+
+    // A subsequent click can pick an entity in the now-current level.
+    click_entity(&mut f, &ctx, [736., 96.]);
+    assert_eq!(value(&f)["entityIid"], f.target_iid);
+    assert_eq!(f.app.selected, Some(f.source));
+    assert!(f.app.world);
+    assert_eq!(f.app.panel, Some(Panel::World));
+    assert!(f.app.camera_motion.is_active());
+    assert!(!f.app.picking_entity_ref());
+}
+
+#[test]
+fn world_reference_picker_reports_an_empty_destination_after_selecting_it() {
+    let mut f = fixture(false);
+    let ctx = egui::Context::default();
+    let project = f.app.project.as_mut().unwrap();
+    project.level_mut(f.target).unwrap()["worldX"] = json!(640);
+    project.layer_mut(f.target, 0).unwrap()["entityInstances"] = json!([]);
+    start(&mut f, &ctx);
+    f.app.show_panel(Some(Panel::World));
+    f.app.camera_motion.cancel();
+    f.app.viewport.center = [448., 128.];
+    f.app.viewport.zoom = 0.35;
+    frame(&mut f, &ctx, vec![], false);
+    let (_, labels) = frame(&mut f, &ctx, vec![], false);
+    assert!(labels.iter().any(|(text, _)| text == "Pick another Actor in any level"));
+    click_entity(&mut f, &ctx, [736., 96.]);
+    let (_, labels) = frame(&mut f, &ctx, vec![], false);
+    assert!(labels.iter().any(|(text, _)| text == "No valid target in this level."));
+    assert!(value(&f).is_null());
+}
+#[test]
+fn clearing_a_nullable_reference_preserves_the_slot_and_removes_its_reciprocal() {
+    let mut f = fixture(true);
+    let ctx = egui::Context::default();
+    let project = f.app.project.as_mut().unwrap();
+    let actor = project.json["defs"]["entities"][0]["uid"].as_i64().unwrap();
+    project
+        .update_field_definition(
+            f.uid,
+            &json!({"canBeNull":true,"symmetricalRef":true,"arrayMaxLength":2}),
+        )
+        .unwrap();
+    project.add_entity(f.target, 0, actor, 128, 128).unwrap();
+    let last = project.layer(f.target, 0).unwrap()["entityInstances"][1]["iid"].clone();
+    project
+        .set_field_editor_value(f.source, Some(&f.owner), f.uid, json!([f.target_iid, last]))
+        .unwrap();
+    let before = value(&f);
+    let reciprocal = |f: &Fixture| {
+        f.app.project.as_ref().unwrap().layer(f.target, 0).unwrap()["entityInstances"][1]
+            ["fieldInstances"][0]["__value"]
+            .clone()
+    };
+    assert_eq!(reciprocal(&f)[0]["entityIid"], f.owner);
+    let (_, labels) = frame(&mut f, &ctx, vec![], true);
+    let pick = labels.iter().find(|(label, _)| label == "Canvas pick").unwrap().1;
+    click(&mut f, &ctx, pick + egui::vec2(23., 0.), true);
+    assert_eq!(value(&f), json!([before[0], null]));
+    assert_eq!(reciprocal(&f), json!([]));
+
+    f.app.undo_action(false);
+    assert_eq!(value(&f), before);
+    assert_eq!(reciprocal(&f)[0]["entityIid"], f.owner);
+}
+
+#[test]
+fn entity_inspector_link_array_paints_the_target_icon_and_location() {
+    let mut f = fixture(true);
+    let ctx = egui::Context::default();
+    let project = f.app.project.as_mut().unwrap();
+    let actor = project.json["defs"]["entities"][0]["uid"].as_i64().unwrap();
+    let atlas = project.ensure_embedded_icons().unwrap();
+    let tile = |x| json!({"tilesetUid":atlas,"x":x,"y":0,"w":16,"h":16});
+    project
+        .update_entity_definition(actor, &json!({"uiTileRect":tile(16)}))
+        .unwrap();
+    let icon = project
+        .add_field_definition(Some(actor), "Icon", "Tile", false)
+        .unwrap();
+    project
+        .update_field_definition(icon, &json!({"editorDisplayMode":"EntityTile","tilesetUid":atlas}))
+        .unwrap();
+    project
+        .set_field_editor_value(f.source, Some(&f.owner), f.uid, json!([f.target_iid]))
+        .unwrap();
+    let texture = f.app.assets.embedded(&ctx).unwrap();
+    let owner = f.app.project.as_ref().unwrap().layer(f.source, 0).unwrap()
+        ["entityInstances"][0]
+        .clone();
+    for (tile, expected_x) in [(tile(32), 32.), (Value::Null, 16.)] {
+        f.app
+            .project
+            .as_mut()
+            .unwrap()
+            .set_field_editor_value(f.target, Some(&f.target_iid), icon, tile)
+            .unwrap();
+        let output = ctx.run(egui::RawInput::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                ui.set_width(360.);
+                f.app.instance_fields(ui, f.source, Some(&f.owner), &owner);
+            });
+        });
+        assert!(output.shapes.iter().any(|shape| {
+            matches!(&shape.shape, egui::Shape::Text(text) if text.galley.text() == "Other")
+        }), "the row must show the referenced level");
+        assert!(output.shapes.iter().any(|shape| {
+            matches!(&shape.shape, egui::Shape::Mesh(mesh)
+                if mesh.texture_id == texture.id()
+                    && mesh.calc_bounds().width() == 18.
+                    && mesh.vertices.iter().any(|v| v.uv.x == expected_x / texture.size_vec2().x))
+        }), "the reference preview must use the correct 18-point atlas rectangle");
+    }
+}
+
 #[test]
 fn escape_from_another_level_returns_to_source_without_changing_reference() {
     let mut f = fixture(false);
@@ -180,18 +335,20 @@ fn canvas_picker_rejects_self_and_duplicate_array_references() {
     let ctx = egui::Context::default();
     start(&mut f, &ctx);
     click_entity(&mut f, &ctx, [32., 32.]);
-    assert_eq!(value(&f), json!([]), "The source cannot be its own target");
+    assert_eq!(value(&f), json!([null]), "The source cannot be its own target");
     f.app.navigate_level(f.target, false);
     click_entity(&mut f, &ctx, [96., 96.]);
     assert_eq!(value(&f).as_array().unwrap().len(), 1);
     start(&mut f, &ctx);
     f.app.navigate_level(f.target, false);
     click_entity(&mut f, &ctx, [96., 96.]);
-    assert_eq!(
-        value(&f).as_array().unwrap().len(),
-        1,
-        "Already-referenced targets are excluded"
-    );
+    assert_eq!(value(&f)[0]["entityIid"], f.target_iid);
+    assert_eq!(value(&f).as_array().unwrap().len(), 2);
+    assert!(value(&f)[1].is_null(), "Already-referenced targets are excluded");
+    f.app.cancel_field_pick();
+    assert!(f.app.field_pick.is_none());
+    assert_eq!(f.app.selected, Some(f.source));
+    assert_eq!(value(&f).as_array().unwrap().len(), 2, "Cancel retains the new slot");
 }
 #[test]
 fn canvas_picker_skips_invalid_entity_covering_an_allowed_target() {
@@ -211,7 +368,7 @@ fn canvas_picker_skips_invalid_entity_covering_an_allowed_target() {
 }
 
 #[test]
-fn canvas_reference_pick_crosses_worlds_and_right_click_restores_source() {
+fn canvas_reference_pick_crosses_worlds_and_cancel_button_restores_source() {
     let mut f = fixture(false);
     let ctx = egui::Context::default();
     let p = f.app.project.as_mut().unwrap();
@@ -229,6 +386,10 @@ fn canvas_reference_pick_crosses_worlds_and_right_click_restores_source() {
     assert_eq!(value(&f)["entityIid"], f.target_iid);
     assert_eq!(f.app.selected, Some(f.source));
     assert_eq!(f.app.active_world, Some(0));
+    assert!(f.app.world);
+    f.app.show_panel(None);
+    f.app.panel = Some(Panel::Entity);
+    f.app.entity_index = Some(0);
     start(&mut f, &ctx);
     f.app.navigate_world(Some(world));
     f.app.world = false;
@@ -250,7 +411,37 @@ fn canvas_reference_pick_crosses_worlds_and_right_click_restores_source() {
         vec![button(pos, false, egui::PointerButton::Secondary)],
         false,
     );
+    assert_eq!(f.app.selected, Some(f.target));
+    assert!(f.app.picking_entity_ref(), "Right click leaves the picker open");
+    let (_, labels) = frame(&mut f, &ctx, vec![], false);
+    let cancel = labels.iter().find(|(s, _)| s == "CANCEL").unwrap().1;
+    click(&mut f, &ctx, cancel, false);
     assert_eq!(f.app.selected, Some(f.source));
+    assert!(f.app.world);
+    assert!(!f.app.picking_entity_ref());
+}
+
+#[test]
+fn same_level_reference_pick_keeps_the_inspector_and_camera() {
+    let mut f = fixture(false);
+    let ctx = egui::Context::default();
+    let project = f.app.project.as_mut().unwrap();
+    let actor = project.json["defs"]["entities"][0]["uid"].as_i64().unwrap();
+    project.add_entity(f.source, 0, actor, 96, 96).unwrap();
+    let target = project.layer(f.source, 0).unwrap()["entityInstances"][1]["iid"].clone();
+    let center = f.app.viewport.center;
+    start(&mut f, &ctx);
+    assert_eq!(f.app.panel, Some(Panel::Entity));
+    frame(&mut f, &ctx, vec![], false);
+    let (rect, labels) = frame(&mut f, &ctx, vec![], false);
+    assert!(labels.iter().any(|(text, pos)| {
+        text == "Pick another Actor in any level" && pos.y > rect.bottom() * 0.85
+    }), "{labels:?}");
+    click_entity(&mut f, &ctx, [96., 96.]);
+    assert_eq!(value(&f)["entityIid"], target);
+    assert_eq!(f.app.viewport.center, center);
+    assert_eq!(f.app.panel, Some(Panel::Entity));
+    assert_eq!(f.app.entity_index, Some(0));
     assert!(!f.app.picking_entity_ref());
 }
 
@@ -283,6 +474,7 @@ fn reference_target_hints_and_clicks_obey_visibility_tags_specific_type_and_leve
         }
         start(&mut f, &ctx);
         f.app.navigate_level(f.target, false);
+        frame(&mut f, &ctx, vec![], false);
         let (_, labels) = frame(&mut f, &ctx, vec![], false);
         assert!(
             labels
@@ -333,11 +525,531 @@ fn reference_target_hints_and_clicks_obey_visibility_tags_specific_type_and_leve
 }
 
 #[test]
+fn point_path_cursor_draws_the_source_line_from_the_last_accepted_point() {
+    let mut f = fixture(true);
+    let ctx = egui::Context::default();
+    let project = f.app.project.as_mut().unwrap();
+    let actor = project.json["defs"]["entities"][0]["uid"].as_i64().unwrap();
+    project.remove_field_definition(f.uid).unwrap();
+    f.uid = project
+        .add_field_definition(Some(actor), "Path", "Point", true)
+        .unwrap();
+    project
+        .update_field_definition(f.uid, &json!({"editorDisplayMode":"PointPath"}))
+        .unwrap();
+    project
+        .set_field_editor_value(f.source, Some(&f.owner), f.uid, json!([{"cx":4,"cy":4}]))
+        .unwrap();
+    let field = &mut project.layer_mut(f.source, 0).unwrap()
+        ["entityInstances"][0]["fieldInstances"][0];
+    field["realEditorValues"][0]["extension"] = json!({"preserve":true});
+    let first_wrapper = field["realEditorValues"][0].clone();
+    let color = canvas::entity_smart_color(
+        project,
+        &project.layer(f.source, 0).unwrap()["entityInstances"][0],
+        &project.json["defs"]["entities"][0],
+        true,
+    );
+    let (_, labels) = frame(&mut f, &ctx, vec![], true);
+    click(
+        &mut f,
+        &ctx,
+        labels
+            .iter()
+            .find(|(label, _)| label == "Canvas pick")
+            .unwrap()
+            .1,
+        true,
+    );
+    let (rect, _) = frame(&mut f, &ctx, vec![], false);
+    let view = f.app.viewport.clone();
+    let screen = |pos| egui::Pos2::from(view.to_screen(pos, rect.min.into(), rect.size().into()));
+    let draw = |f: &mut Fixture, target| {
+        ctx.run(
+            egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(400., 400.),
+                )),
+                events: vec![egui::Event::PointerMoved(target)],
+                ..Default::default()
+            },
+            |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    let (rect, response) =
+                        ui.allocate_exact_size(ui.available_size(), Sense::click_and_drag());
+                    f.app.canvas_input(ctx, rect, &response);
+                    f.app.draw_field_pick_targets(ui, rect);
+                });
+            },
+        )
+    };
+    let line_at = |out: &egui::FullOutput, start, end| {
+        out.shapes.iter().any(|shape| {
+            matches!(&shape.shape, egui::Shape::LineSegment {points,stroke}
+            if *points == [start,end] && *stroke == Stroke::new(1.,color))
+        })
+    };
+    let first = draw(&mut f, screen([130., 146.]));
+    assert!(line_at(&first, screen([72., 72.]), screen([136., 152.])));
+    assert_eq!(first.platform_output.cursor_icon, egui::CursorIcon::Default);
+    click(&mut f, &ctx, screen([130., 146.]), false);
+    let field = &f.app.project.as_ref().unwrap().layer(f.source, 0).unwrap()
+        ["entityInstances"][0]["fieldInstances"][0];
+    assert_eq!(field["__value"], json!([{"cx":4,"cy":4},{"cx":8,"cy":9}]));
+    assert_eq!(field["realEditorValues"][0], first_wrapper);
+    let next = draw(&mut f, screen([178., 146.]));
+    assert!(line_at(&next, screen([136., 152.]), screen([184., 152.])));
+    assert!(!line_at(
+        &draw(&mut f, screen([32., 32.])),
+        screen([136., 152.]),
+        screen([40., 40.])
+    ));
+}
+
+#[test]
+fn point_picker_stays_armed_while_entity_handles_resize_with_either_button() {
+    for button_kind in [egui::PointerButton::Primary, egui::PointerButton::Secondary] {
+        let mut f = fixture(false);
+        let ctx = egui::Context::default();
+        let project = f.app.project.as_mut().unwrap();
+        let actor = project.json["defs"]["entities"][0]["uid"].as_i64().unwrap();
+        project.remove_field_definition(f.uid).unwrap();
+        f.uid = project
+            .add_field_definition(Some(actor), "Target", "Point", false)
+            .unwrap();
+        project
+            .update_entity_definition(actor, &json!({"resizableX":true,"pivotX":0,"pivotY":0}))
+            .unwrap();
+        f.app.grid = false;
+        f.app.repaint = Some(ctx.clone());
+        let (_, labels) = frame(&mut f, &ctx, vec![], true);
+        click(
+            &mut f,
+            &ctx,
+            labels
+                .iter()
+                .find(|(label, _)| label == "Canvas pick")
+                .unwrap()
+                .1,
+            true,
+        );
+        let (rect, _) = frame(&mut f, &ctx, vec![], false);
+        let view = f.app.viewport.clone();
+        let screen =
+            |pos| egui::Pos2::from(view.to_screen(pos, rect.min.into(), rect.size().into()));
+
+        let handle = screen([52., 40.]);
+        let finish = screen([84., 40.]);
+        frame(
+            &mut f,
+            &ctx,
+            vec![
+                egui::Event::PointerMoved(handle),
+                button(handle, true, button_kind),
+            ],
+            false,
+        );
+        assert!(matches!(
+            f.app.gesture,
+            Some(tools::Gesture::EntityResize { .. })
+        ));
+        assert!(f.app.picking_point());
+        frame(&mut f, &ctx, vec![egui::Event::PointerMoved(finish)], false);
+        assert_eq!(
+            f.app.project.as_ref().unwrap().layer(f.source, 0).unwrap()["entityInstances"][0]["width"],
+            48
+        );
+        frame(
+            &mut f,
+            &ctx,
+            vec![button(finish, false, button_kind)],
+            false,
+        );
+        assert!(f.app.gesture.is_none());
+        assert!(f.app.picking_point());
+        assert!(value(&f).is_null());
+
+        let primary = egui::PointerButton::Primary;
+        let empty = screen([104., 40.]);
+        frame(
+            &mut f,
+            &ctx,
+            vec![
+                egui::Event::PointerMoved(empty),
+                button(empty, true, primary),
+            ],
+            false,
+        );
+        frame(&mut f, &ctx, vec![egui::Event::PointerMoved(finish)], false);
+        assert!(f.app.gesture.is_none());
+        assert!(
+            f.app.async_paint.is_none(),
+            "hovering the resize handle does not renew the Point timer"
+        );
+        frame(&mut f, &ctx, vec![button(finish, false, primary)], false);
+        assert_eq!(value(&f), json!({"cx":5,"cy":2}));
+        assert!(!f.app.picking_point());
+    }
+}
+
+#[test]
+fn point_picker_does_not_consume_a_primary_press_on_the_level_ruler() {
+    let mut f = fixture(false);
+    let ctx = egui::Context::default();
+    let project = f.app.project.as_mut().unwrap();
+    let actor = project.json["defs"]["entities"][0]["uid"].as_i64().unwrap();
+    project.remove_field_definition(f.uid).unwrap();
+    f.uid = project
+        .add_field_definition(Some(actor), "Target", "Point", false)
+        .unwrap();
+    let (_, labels) = frame(&mut f, &ctx, vec![], true);
+    click(
+        &mut f,
+        &ctx,
+        labels
+            .iter()
+            .find(|(label, _)| label == "Canvas pick")
+            .unwrap()
+            .1,
+        true,
+    );
+    let (rect, _) = frame(&mut f, &ctx, vec![], false);
+    let view = f.app.viewport.clone();
+    let screen = |pos| egui::Pos2::from(view.to_screen(pos, rect.min.into(), rect.size().into()));
+    let handle = screen([260., 128.]);
+    let finish = screen([292., 128.]);
+    let primary = egui::PointerButton::Primary;
+    frame(
+        &mut f,
+        &ctx,
+        vec![
+            egui::Event::PointerMoved(handle),
+            button(handle, true, primary),
+            egui::Event::PointerMoved(finish),
+        ],
+        false,
+    );
+    assert!(f.app.level_resize.is_some());
+    assert!(f.app.picking_point());
+    frame(
+        &mut f,
+        &ctx,
+        vec![
+            egui::Event::PointerMoved(finish),
+            button(finish, false, primary),
+        ],
+        false,
+    );
+    assert_eq!(
+        f.app.project.as_ref().unwrap().level(f.source).unwrap()["pxWid"],
+        288
+    );
+    assert!(f.app.picking_point());
+    assert!(value(&f).is_null());
+}
+
+#[test]
+fn point_picker_routes_primary_press_to_selection_only_when_started_over_an_entity() {
+    for starts_on_entity in [true, false] {
+        let mut f = fixture(false);
+        let ctx = egui::Context::default();
+        let project = f.app.project.as_mut().unwrap();
+        let actor = project.json["defs"]["entities"][0]["uid"].as_i64().unwrap();
+        project.remove_field_definition(f.uid).unwrap();
+        f.uid = project
+            .add_field_definition(Some(actor), "Target", "Point", false)
+            .unwrap();
+        project.add_entity(f.source, 0, actor, 96, 96).unwrap();
+        let initial = json!({"cx":4,"cy":4});
+        project
+            .set_field_editor_value(f.source, Some(&f.owner), f.uid, initial.clone())
+            .unwrap();
+        f.app.grid = false;
+        f.app.repaint = Some(ctx.clone());
+        let (_, labels) = frame(&mut f, &ctx, vec![], true);
+        let control = labels
+            .iter()
+            .find(|(label, _)| label == "Canvas pick")
+            .unwrap()
+            .1;
+        click(&mut f, &ctx, control, true);
+        let (rect, _) = frame(&mut f, &ctx, vec![], false);
+        let screen = |local| {
+            egui::Pos2::from(
+                Viewport {
+                    center: [128.; 2],
+                    zoom: 1.,
+                }
+                .to_screen(local, rect.min.into(), rect.size().into()),
+            )
+        };
+        let body = screen([96., 96.]);
+        let empty = screen([128., 96.]);
+        let (start, end) = if starts_on_entity {
+            (body, empty)
+        } else {
+            (empty, body)
+        };
+        let primary = egui::PointerButton::Primary;
+        frame(
+            &mut f,
+            &ctx,
+            vec![
+                egui::Event::PointerMoved(start),
+                button(start, true, primary),
+                egui::Event::PointerMoved(end),
+            ],
+            false,
+        );
+        assert_eq!(f.app.picking_point(), !starts_on_entity);
+        assert_eq!(
+            value(&f),
+            initial,
+            "the Point field stays live but unmodified before release"
+        );
+        if starts_on_entity {
+            assert_eq!(f.app.entity_index, Some(1));
+            assert!(matches!(
+                f.app.gesture,
+                Some(tools::Gesture::SelectionMove { .. })
+            ));
+        } else {
+            assert!(
+                f.app.async_paint.is_none(),
+                "hovering an entity does not renew the Point timer"
+            );
+        }
+        frame(&mut f, &ctx, vec![button(end, false, primary)], false);
+        assert!(!f.app.picking_point());
+        let moved_entity =
+            &f.app.project.as_ref().unwrap().layer(f.source, 0).unwrap()["entityInstances"][1];
+        if starts_on_entity {
+            assert_eq!(moved_entity["px"], json!([128, 96]));
+            assert_eq!(value(&f), initial);
+        } else {
+            assert_eq!(moved_entity["px"], json!([96, 96]));
+            assert_eq!(value(&f), json!({"cx":6,"cy":6}));
+        }
+        f.app.undo_action(false);
+        assert_eq!(value(&f), initial);
+        assert_eq!(
+            f.app.project.as_ref().unwrap().layer(f.source, 0).unwrap()["entityInstances"][1]["px"],
+            json!([96, 96])
+        );
+        assert!(!f.app.history.can_undo());
+    }
+}
+
+#[test]
+fn point_picker_releases_at_final_cell_with_the_last_held_move_deadline() {
+    let mut f = fixture(false);
+    let ctx = egui::Context::default();
+    let project = f.app.project.as_mut().unwrap();
+    let actor = project.json["defs"]["entities"][0]["uid"].as_i64().unwrap();
+    project.remove_field_definition(f.uid).unwrap();
+    f.uid = project
+        .add_field_definition(Some(actor), "Target", "Point", false)
+        .unwrap();
+    project
+        .update_field_definition(f.uid, &json!({"editorDisplayMode":"Points"}))
+        .unwrap();
+    let layer_uid = project.layer(f.source, 0).unwrap()["layerDefUid"]
+        .as_i64()
+        .unwrap();
+    project
+        .update_layer_properties(layer_uid, &json!({"useAsyncRender":true}))
+        .unwrap();
+    let original = json!({"cx":4,"cy":4});
+    project
+        .set_field_editor_value(f.source, Some(&f.owner), f.uid, original.clone())
+        .unwrap();
+    f.app.repaint = Some(ctx.clone());
+    let open_picker = |f: &mut Fixture| {
+        let (_, labels) = frame(f, &ctx, vec![], true);
+        click(
+            f,
+            &ctx,
+            labels.iter().find(|(s, _)| s == "Canvas pick").unwrap().1,
+            true,
+        );
+        assert!(f.app.field_pick.is_some());
+    };
+    open_picker(&mut f);
+    let key = f.source;
+    let draw = |f: &mut Fixture, time, events| {
+        ctx.run(
+            egui::RawInput {
+                time: Some(time),
+                events,
+                screen_rect: Some(Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(400., 400.),
+                )),
+                ..Default::default()
+            },
+            |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    let (rect, response) =
+                        ui.allocate_exact_size(ui.available_size(), Sense::click_and_drag());
+                    f.app.canvas_input(ctx, rect, &response);
+                    f.app.draw_project_canvas(ctx, ui.painter(), rect, key);
+                });
+            },
+        )
+    };
+    let point_at = |output: &egui::FullOutput, center| {
+        output.shapes.iter().any(|s| matches!(&s.shape,egui::Shape::Path(p)
+            if p.points.len()==4 && p.points[0]==center-egui::vec2(0.,4.) && p.points[2]==center+egui::vec2(0.,4.)))
+    };
+    let (rect, _) = frame(&mut f, &ctx, vec![], false);
+    let screen = |local| {
+        egui::Pos2::from(
+            Viewport {
+                center: [128.; 2],
+                zoom: 1.,
+            }
+            .to_screen(local, rect.min.into(), rect.size().into()),
+        )
+    };
+    let old_point = screen([72., 72.]);
+    let mut target = screen([104., 72.]);
+    let primary = egui::PointerButton::Primary;
+    let started = draw(
+        &mut f,
+        1.0,
+        vec![
+            egui::Event::PointerMoved(old_point),
+            button(old_point, true, primary),
+        ],
+    );
+    assert!(point_at(&started, old_point));
+    assert!(
+        f.app.async_paint.is_none(),
+        "motion before a press does not start the timer"
+    );
+    draw(
+        &mut f,
+        1.05,
+        vec![egui::Event::PointerMoved(screen([88., 72.]))],
+    );
+    draw(&mut f, 1.15, vec![egui::Event::PointerMoved(target)]);
+    assert_eq!(value(&f), original);
+    let pending = draw(&mut f, 1.29, vec![button(target, false, primary)]);
+    assert_eq!(value(&f), json!({"cx":6,"cy":4}));
+    assert_eq!(f.app.panel, Some(Panel::Entity));
+    assert!(f.app.field_pick.is_none());
+    assert!(point_at(&pending, old_point));
+    assert!(!point_at(&pending, target));
+    assert!(point_at(&draw(&mut f, 1.399, vec![]), old_point));
+    let settled = draw(&mut f, 1.401, vec![]);
+    assert!(point_at(&settled, target));
+    assert!(!point_at(&settled, old_point));
+
+    open_picker(&mut f);
+    draw(&mut f, 1.99, vec![]);
+    target = screen([120., 72.]);
+    draw(
+        &mut f,
+        2.0,
+        vec![
+            egui::Event::PointerMoved(target),
+            button(target, true, primary),
+        ],
+    );
+    let clicked = draw(&mut f, 2.01, vec![button(target, false, primary)]);
+    assert_eq!(value(&f), json!({"cx":7,"cy":4}));
+    assert!(point_at(&clicked, target));
+    assert!(f.app.async_paint.is_none());
+}
+
+#[test]
+fn single_point_picker_can_be_cancelled_in_the_entity_inspector() {
+    let mut f = fixture(false);
+    let ctx = egui::Context::default();
+    let project = f.app.project.as_mut().unwrap();
+    let actor = project.json["defs"]["entities"][0]["uid"].as_i64().unwrap();
+    project.remove_field_definition(f.uid).unwrap();
+    f.uid = project
+        .add_field_definition(Some(actor), "Target", "Point", false)
+        .unwrap();
+    let original = json!({"cx":10,"cy":8});
+    project
+        .set_field_editor_value(f.source, Some(&f.owner), f.uid, original.clone())
+        .unwrap();
+
+    let (_, labels) = frame(&mut f, &ctx, vec![], true);
+    let pick = labels.iter().find(|(label, _)| label == "Canvas pick").unwrap().1;
+    click(&mut f, &ctx, pick, true);
+    assert!(f.app.picking_point());
+    assert_eq!(f.app.panel, Some(Panel::Entity), "the cancel control must remain accessible");
+
+    let (_, labels) = frame(&mut f, &ctx, vec![], true);
+    let cancel = labels.iter().find(|(label, _)| label == "CANCEL").unwrap().1;
+    click(&mut f, &ctx, cancel, true);
+    assert!(!f.app.picking_point());
+    assert_eq!(value(&f), original);
+    assert!(!f.app.history.can_undo());
+
+    let (_, labels) = frame(&mut f, &ctx, vec![], true);
+    let clear = labels.iter().find(|(label, _)| label == "X").unwrap().1;
+    click(&mut f, &ctx, clear, true);
+    assert_eq!(value(&f), Value::Null);
+    let (_, labels) = frame(&mut f, &ctx, vec![], true);
+    assert!(labels.iter().any(|(label, _)| label == "<NO POINT>"));
+    assert!(!labels.iter().any(|(label, _)| label == "X"));
+}
+
+#[test]
+fn point_array_coordinates_are_read_only_and_required_slots_can_be_filled() {
+    let mut f = fixture(true);
+    let ctx = egui::Context::default();
+    let project = f.app.project.as_mut().unwrap();
+    let actor = project.json["defs"]["entities"][0]["uid"].as_i64().unwrap();
+    project.remove_field_definition(f.uid).unwrap();
+    f.uid = project
+        .add_field_definition(Some(actor), "Waypoints", "Point", true)
+        .unwrap();
+    project
+        .update_field_definition(
+            f.uid,
+            &json!({"canBeNull":false,"arrayMaxLength":2,"editorDisplayMode":"PointPathLoop"}),
+        )
+        .unwrap();
+    project
+        .set_field_editor_value(f.source, Some(&f.owner), f.uid, json!([null,{"cx":8,"cy":8}]))
+        .unwrap();
+
+    let (_, labels) = frame(&mut f, &ctx, vec![], true);
+    let coordinates = labels.iter().find(|(label, _)| label == "8,8").unwrap().1;
+    click(&mut f, &ctx, coordinates, true);
+    assert!(f.app.field_pick.is_none(), "existing coordinates are explanatory text");
+
+    let required = labels.iter().find(|(label, _)| label == "POINT REQUIRED!").unwrap().1;
+    click(&mut f, &ctx, required, true);
+    assert_eq!(f.app.field_pick.as_ref().unwrap().index, Some(0));
+    assert_eq!(f.app.panel, Some(Panel::Entity));
+    let (_, controls) = frame(&mut f, &ctx, vec![], true);
+    let cancel = controls.iter().find(|(label, _)| label == "CANCEL").unwrap().1;
+    click(&mut f, &ctx, cancel, true);
+    assert!(f.app.field_pick.is_none());
+    click(&mut f, &ctx, required, true);
+    let (rect, _) = frame(&mut f, &ctx, vec![], false);
+    let target =
+        f.app.viewport.to_screen([104., 120.], rect.min.into(), rect.size().into());
+    click(&mut f, &ctx, target.into(), false);
+    assert_eq!(value(&f), json!([{"cx":6,"cy":7},{"cx":8,"cy":8}]));
+    assert!(f.app.field_pick.is_none());
+}
+
+#[test]
 fn point_array_canvas_pick_retains_offset_parallax_geometry_and_editor_length_diagnostics() {
     let mut f = fixture(true);
     let ctx = egui::Context::default();
     let p = f.app.project.as_mut().unwrap();
     let actor = p.json["defs"]["entities"][0]["uid"].as_i64().unwrap();
+    p.update_entity_definition(actor, &json!({"pivotX":0.5,"pivotY":1}))
+        .unwrap();
     p.remove_field_definition(f.uid).unwrap();
     f.uid = p
         .add_field_definition(Some(actor), "Path", "Point", true)
@@ -376,7 +1088,7 @@ fn point_array_canvas_pick_retains_offset_parallax_geometry_and_editor_length_di
             .history
             .level_change_bounds(f.app.project.as_ref().unwrap(), f.source, false),
         Some([48., 8., 16., 16.]),
-        "hidden inspector must still mark the Point owner in raw layer coordinates"
+        "point picking marks the owner in raw layer coordinates"
     );
     assert!(
         !f.app
@@ -386,5 +1098,49 @@ fn point_array_canvas_pick_retains_offset_parallax_geometry_and_editor_length_di
             .field_value_errors(f.source, Some(&f.owner), f.uid)
             .unwrap()
             .is_empty()
+    );
+    click(&mut f, &ctx, pointer, false);
+    assert_eq!(
+        value(&f),
+        json!([{"cx":2,"cy":4}]),
+        "duplicate points are rejected"
+    );
+    assert!(f.app.field_pick.is_some());
+
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("PointPath.ldtk");
+    f.app.save_async_at(path.clone());
+    f.app
+        .saving
+        .take()
+        .unwrap()
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .unwrap()
+        .unwrap();
+    let saved = Project::load(path).unwrap();
+    assert_eq!(
+        saved.layer(f.source, 0).unwrap()["entityInstances"][0]["fieldInstances"][0]["__value"],
+        value(&f)
+    );
+    assert!(
+        f.app.field_pick.is_some(),
+        "saving does not close the point picker"
+    );
+
+    frame(
+        &mut f,
+        &ctx,
+        vec![button(pointer, true, egui::PointerButton::Secondary)],
+        false,
+    );
+    assert!(
+        f.app.field_pick.is_none(),
+        "right press cancels before release"
+    );
+    assert!(f.app.panel == Some(Panel::Entity));
+    assert_eq!(
+        value(&f),
+        json!([{"cx":2,"cy":4}]),
+        "cancel keeps points already accepted"
     );
 }

@@ -1,23 +1,23 @@
 //! Source EditProject form.
 use super::*;
 
+#[path = "name_pattern.rs"]
+mod name_pattern;
+
 fn project_row<R>(
     ui: &mut egui::Ui,
     label: &str,
     key: &str,
     body: impl FnOnce(&mut egui::Ui) -> R,
 ) -> R {
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 8.;
-        source_controls::property_label_with_width(ui, label, key, 250.);
-        ui.allocate_ui_with_layout(
-            egui::vec2(ui.available_width(), 30.),
-            egui::Layout::left_to_right(egui::Align::Center),
-            body,
-        )
-        .inner
-    })
-    .inner
+    let response = source_controls::form_row(ui, label, key, 250., body);
+    ui.add_space(10.);
+    response
+}
+
+fn project_heading(ui: &mut egui::Ui, name: &str) {
+    source_controls::form_heading(ui, name);
+    ui.add_space(10.);
 }
 
 fn project_checkbox(ui: &mut egui::Ui, values: &Value, patch: &mut Value, key: &str) {
@@ -25,6 +25,32 @@ fn project_checkbox(ui: &mut egui::Ui, values: &Value, patch: &mut Value, key: &
     if source_checkbox(ui, &mut value, "").changed() {
         patch[key] = json!(value);
     }
+}
+
+fn project_locate_button(ui: &mut egui::Ui, is_file: bool) -> bool {
+    ui.scope(|ui| {
+        ui.spacing_mut().button_padding = Vec2::splat(4.);
+        ui.add_sized(
+            [30., 30.],
+            egui::Button::image(
+                egui::Image::new(egui::include_image!("../../assets/icons/locate.svg"))
+                    .fit_to_exact_size(Vec2::splat(22.)),
+            )
+            .fill(theme::LIGHT)
+            .stroke(Stroke::NONE)
+            .corner_radius(3.),
+        )
+    })
+    .inner
+    .on_hover_text(locale::tr(
+        ui,
+        if is_file {
+            "Locate file"
+        } else {
+            "Locate folder"
+        },
+    ))
+    .clicked()
 }
 
 fn project_number(
@@ -67,17 +93,17 @@ fn project_choice(
         .width(if key == "when" {
             140.
         } else {
-            ui.available_width().min(490.)
+            ui.available_width()
         })
         .selected_text(
             choices
                 .iter()
                 .find(|(key, _)| *key == current)
-                .map_or(current, |(_, label)| *label),
+                .map_or(current, |(_, label)| locale::tr(ui, label)),
         )
         .show_ui(ui, |ui| {
             for (key, label) in choices {
-                ui.selectable_value(&mut value, (*key).to_owned(), *label);
+                ui.selectable_value(&mut value, (*key).to_owned(), locale::tr(ui, label));
             }
         });
     if value != current {
@@ -96,40 +122,48 @@ impl EditorApp {
         }
         let iid = text(&project.json, "iid", "").to_owned();
         let path = project.path.clone();
+        let identifier_confirmation = ui.make_persistent_id(("identifier-style", &iid, &path));
+        ui.add_space(2.);
         ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 2.;
+            let width = ((ui.available_width() - 77.) / 3.).max(30.);
+            let action = |ui: &mut egui::Ui, enabled, image, label: &str| {
+                ui.add_enabled_ui(enabled, |ui| {
+                    source_controls::add_sized_button(
+                        ui,
+                        [width, 42.],
+                        egui::Button::image_and_text(
+                            egui::Image::new(image).fit_to_exact_size(Vec2::splat(16.)),
+                            RichText::new(locale::tr(ui, label)).color(Color32::WHITE),
+                        )
+                        .truncate()
+                        .fill(SOURCE_ORANGE),
+                    )
+                })
+                .inner
+                .on_hover_text(locale::tr(ui, label))
+            };
             for (label, image, save_as) in [
                 (
-                    "Save project",
+                    "SAVE PROJECT",
                     egui::include_image!("../../assets/icons/save.svg"),
                     false,
                 ),
                 (
-                    "Save as...",
+                    "SAVE AS...",
                     egui::include_image!("../../assets/icons/saveAs.svg"),
                     true,
                 ),
             ] {
-                if source_controls::add_enabled_button(
-                    ui,
-                    !self.is_busy(),
-                    egui::Button::image_and_text(
-                        egui::Image::new(image).fit_to_exact_size(Vec2::splat(16.)),
-                        label,
-                    ),
-                )
-                .clicked()
-                {
+                if action(ui, !self.is_busy(), image, label).clicked() {
                     self.save(save_as);
                 }
             }
-            if source_controls::add_enabled_button(
+            if action(
                 ui,
                 path.is_some() && !self.is_busy(),
-                egui::Button::image_and_text(
-                    egui::Image::new(egui::include_image!("../../assets/icons/rename.svg"))
-                        .fit_to_exact_size(Vec2::splat(16.)),
-                    "Rename project",
-                ),
+                egui::include_image!("../../assets/icons/rename.svg"),
+                "RENAME PROJECT",
             )
             .clicked()
                 && let Some(path) = &path
@@ -144,21 +178,23 @@ impl EditorApp {
                     );
                 });
             }
-            if source_controls::add_enabled_button(
-                ui,
-                path.is_some(),
-                egui::Button::image(
-                    egui::Image::new(egui::include_image!("../../assets/icons/locate.svg"))
-                        .fit_to_exact_size(Vec2::splat(16.)),
-                ),
-            )
-            .on_hover_text("Locate project file")
-            .clicked()
+            if ui
+                .add_enabled_ui(path.is_some(), |ui| {
+                    source_controls::add_sized_button(
+                        ui,
+                        [42., 42.],
+                        egui::Button::image(
+                            egui::Image::new(egui::include_image!("../../assets/icons/locate.svg"))
+                                .fit_to_exact_size(Vec2::splat(16.)),
+                        ),
+                    )
+                })
+                .inner
+                .on_hover_text(locale::tr(ui, "Locate project file"))
+                .clicked()
                 && let Some(path) = &path
-                && let Err(error) = home_files::locate(path, true)
             {
-                self.status = error.to_string();
-                self.status_error = true;
+                self.locate_project_path(path.clone(), true);
             }
             source_menu(ui, |ui| {
                 if source_controls::button(ui, "Browse backups…").clicked() {
@@ -190,14 +226,33 @@ impl EditorApp {
                 }
             });
         });
-        ui.add_space(16.);
-        ui.heading("Extra files");
+        ui.add_space(18.);
+        project_heading(ui, "Extra files");
         let mut patch = json!({});
         let project = self.project.as_ref().unwrap();
         let values = &project.json;
+        let output_dir = project.external_files_directory();
+        let mut locate = None;
         project_row(ui, "Super simple export ❤", "simplifiedExport", |ui| {
             project_checkbox(ui, values, &mut patch, "simplifiedExport");
-            ui.hyperlink_to("Learn more about this format", "https://ldtk.io/go/simple");
+            if values["simplifiedExport"] == true
+                && let Some((project_path, dir)) = path.as_ref().zip(output_dir.as_ref())
+            {
+                let reveal_file = !dir.exists();
+                if project_locate_button(ui, reveal_file) {
+                    locate = Some(if reveal_file {
+                        (project_path.clone(), true)
+                    } else {
+                        (dir.join("simplified"), false)
+                    });
+                }
+            }
+            ui.hyperlink_to(
+                RichText::new(locale::tr(ui, "Learn more about this format"))
+                    .color(theme::ACCENT)
+                    .underline(),
+                "https://ldtk.io/go/simple",
+            );
         });
         project_row(
             ui,
@@ -205,10 +260,23 @@ impl EditorApp {
             "externalLevels",
             |ui| {
                 project_checkbox(ui, values, &mut patch, "externalLevels");
+                if values["externalLevels"] == true
+                    && let Some(dir) = &output_dir
+                    && project_locate_button(ui, false)
+                {
+                    locate = Some((dir.clone(), false));
+                }
             },
         );
         if !values["simplifiedExport"].as_bool().unwrap_or(false) {
+            let exports_png = text(values, "imageExportMode", "None") != "None";
             project_row(ui, "Export as PNG", "png", |ui| {
+                if exports_png
+                    && let Some(dir) = &output_dir
+                    && project_locate_button(ui, false)
+                {
+                    locate = Some((dir.join("png"), false));
+                }
                 project_choice(
                     ui,
                     values,
@@ -225,7 +293,10 @@ impl EditorApp {
                     ],
                 );
             });
-            if text(values, "imageExportMode", "None") != "None" {
+            if patch.get("imageExportMode").is_some() {
+                patch["pngFilePattern"] = Value::Null;
+            }
+            if exports_png {
                 project_row(ui, "Also export level backgrounds", "exportLevelBg", |ui| {
                     project_checkbox(ui, values, &mut patch, "exportLevelBg");
                 });
@@ -235,33 +306,52 @@ impl EditorApp {
                     } else {
                         "%level_name__%layer_name"
                     };
-                    if let Some(value) = ui_fields::buffered_text(
+                    if let Some(value) = name_pattern::show(
                         ui,
-                        "pngFilePattern",
+                        (&iid, "pngFilePattern"),
                         values["pngFilePattern"].as_str().unwrap_or(default),
-                    ) {
+                        default,
+                        name_pattern::PNG,
+                    ) && patch.get("imageExportMode").is_none()
+                    {
                         patch["pngFilePattern"] = if value == default {
                             Value::Null
                         } else {
                             json!(value)
                         };
                     }
-                    if source_controls::small_button(ui, "Reset").clicked() {
-                        patch["pngFilePattern"] = Value::Null;
-                    }
                 });
             }
         }
         project_row(ui, "Export Tiled TMX", "tiled", |ui| {
             project_checkbox(ui, values, &mut patch, "exportTiled");
+            if values["exportTiled"] == true
+                && let Some(dir) = &output_dir
+                && project_locate_button(ui, false)
+            {
+                locate = Some((dir.join("tiled"), false));
+            }
             ui.hyperlink_to(
-                "Learn more about Tiled export limitations",
+                RichText::new(locale::tr(ui, "Learn more about Tiled export limitations"))
+                    .color(theme::ACCENT)
+                    .underline(),
                 "https://ldtk.io/go/tiled",
             );
         });
 
-        ui.add_space(16.);
-        ui.heading("Project settings");
+        project_heading(ui, "Project settings");
+        let mut use_ldtk = path.as_ref().is_none_or(|path| {
+            path.extension()
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("ldtk"))
+        });
+        let extension_changed = project_row(ui, "Use .ldtk extension", "useAppExtension", |ui| {
+            let enabled = path.is_some() && !self.is_busy();
+            let response = ui
+                .add_enabled_ui(enabled, |ui| source_checkbox(ui, &mut use_ldtk, ""))
+                .inner;
+            ui.label(locale::tr(ui, "(recommended)"));
+            response.changed()
+        });
         project_row(ui, "Backup on save", "backup", |ui| {
             project_checkbox(ui, values, &mut patch, "backupOnSave");
             if values["backupOnSave"].as_bool().unwrap_or(false) {
@@ -274,33 +364,58 @@ impl EditorApp {
                         "[Default dir]"
                     },
                 )
-                .on_hover_text(custom.unwrap_or("Project backup folder"))
+                .on_hover_text(custom.unwrap_or_else(|| locale::tr(ui, "Project backup folder")))
                 .clicked()
                 {
-                    let mut dialog = rfd::FileDialog::new();
-                    if let Some(dir) = self.settings.ui_dir(
-                        path.as_deref(),
-                        "BackupDir",
-                        path.as_ref().and_then(|p| p.parent()),
-                    ) {
+                    let mut dialog = FileDialog::new();
+                    if let Some(dir) = project
+                        .backup_directory()
+                        .filter(|dir| dir.is_dir())
+                        .or_else(|| {
+                            path.as_ref()
+                                .and_then(|path| path.parent().map(PathBuf::from))
+                        })
+                    {
                         dialog = dialog.set_directory(dir);
                     }
                     if let Some(dir) = dialog.pick_folder() {
-                        self.settings
-                            .store_ui_dir(path.as_deref(), "BackupDir", &dir);
                         patch["backupRelPath"] = json!(dir.to_string_lossy());
                     }
                 }
                 if custom.is_some() && source_controls::small_button(ui, "Reset").clicked() {
                     patch["backupRelPath"] = Value::Null;
                 }
-                ui.label("Max backup files:");
-                project_number(ui, project, &mut patch, "backupLimit", 1, 999);
+                if let Some(dir) = project.backup_directory()
+                    && project_locate_button(ui, false)
+                {
+                    locate = Some((dir, false));
+                }
+                ui.label(locale::tr(ui, "Max backup files:"));
+                project_number(ui, project, &mut patch, "backupLimit", 3, 50);
             }
         });
-        project_row(ui, "Minify JSON", "minify", |ui| {
-            project_checkbox(ui, values, &mut patch, "minifyJson");
-        });
+        if values.get("jsonStyle").is_some() {
+            project_row(ui, "JSON indent style", "jsonStyle", |ui| {
+                project_choice(
+                    ui,
+                    values,
+                    &mut patch,
+                    "jsonStyle",
+                    &[
+                        ("Minified", "MINIFIED (minimal file size, no indentation)"),
+                        (
+                            "Compact",
+                            "COMPACT (mostly indented, but small arrays are inlined)",
+                        ),
+                        ("Full", "FULL (fully indented)"),
+                    ],
+                );
+            });
+        } else {
+            project_row(ui, "Minify JSON", "minify", |ui| {
+                project_checkbox(ui, values, &mut patch, "minifyJson");
+            });
+        }
         project_row(
             ui,
             "Identifers format convention",
@@ -326,16 +441,25 @@ impl EditorApp {
                 );
             },
         );
+        let chosen_style = patch
+            .as_object_mut()
+            .and_then(|patch| patch.remove("identifierStyle"));
+        let opened_confirmation = chosen_style.is_some();
+        if let Some(style) = chosen_style {
+            ui.ctx()
+                .data_mut(|data| data.insert_temp(identifier_confirmation, style));
+        }
         self.apply_source_project_patch(patch);
+        if let Some((path, select)) = locate {
+            self.locate_project_path(path, select);
+        }
 
-        ui.add_space(16.);
-        ui.heading("User custom commands");
+        project_heading(ui, "User custom commands");
         project_row(ui, "Custom commands", "Custom commands", |ui| {
             ui.vertical(|ui| self.source_project_commands(ui));
         });
 
-        ui.add_space(16.);
-        ui.heading("Workspace settings");
+        project_heading(ui, "Workspace settings");
         let project = self.project.as_ref().unwrap();
         let values = &project.json;
         let mut patch = json!({});
@@ -350,7 +474,17 @@ impl EditorApp {
             ui.label("px");
         });
         project_row(ui, "Default level identifiers", "levelName", |ui| {
-            project_text(ui, values, &mut patch, "levelNamePattern");
+            if let Some(pattern) = name_pattern::show(
+                ui,
+                (&iid, "levelNamePattern"),
+                values["levelNamePattern"]
+                    .as_str()
+                    .unwrap_or(name_pattern::LEVEL_DEFAULT),
+                name_pattern::LEVEL_DEFAULT,
+                name_pattern::LEVEL,
+            ) {
+                patch["levelNamePattern"] = json!(pattern);
+            }
         });
         for (key, label, help) in [
             ("bgColor", "Workspace background color", "bgColor"),
@@ -407,6 +541,90 @@ impl EditorApp {
         ui.add_space(16.);
         self.source_project_advanced(ui);
         self.backup_project_dialogs(ui);
+        self.confirm_source_identifier_style(
+            ui.ctx(),
+            identifier_confirmation,
+            opened_confirmation,
+        );
+        if extension_changed {
+            self.change_project_extension(use_ldtk);
+        }
+    }
+
+    fn confirm_source_identifier_style(
+        &mut self,
+        ctx: &egui::Context,
+        id: egui::Id,
+        just_opened: bool,
+    ) {
+        let Some(style) = ctx.data(|data| data.get_temp::<Value>(id)) else {
+            return;
+        };
+        let modal = project_dialogs::form_warning_dialog(id)
+            .show(ctx, |ui| {
+                let width = (ctx.content_rect().width() - 42.).clamp(0., 358.);
+                ui.set_width(width);
+                ui.spacing_mut().item_spacing = egui::vec2(2., 14.667);
+                ui.style_mut()
+                    .text_styles
+                    .insert(egui::TextStyle::Body, FontId::proportional(14.667));
+                ui.style_mut()
+                    .text_styles
+                    .insert(egui::TextStyle::Button, FontId::proportional(13.333));
+                ui.visuals_mut().override_text_color = Some(Color32::WHITE);
+                ui.label(locale::tr(ui, "WARNING!"));
+                ui.label(locale::tr(ui, "Please make sure the game engine or importer you're using supports this kind of LDtk identifier!"));
+                if style != "Free" {
+                    ui.label(locale::tr(ui, "If you proceed, all identifiers in this project will be converted to the new format!"));
+                }
+                ui.label(locale::tr(ui, "Are you sure?"));
+                ui.horizontal(|ui| {
+                    let size = [(ui.available_width() - 2.) * 0.5, 35.];
+                    let confirm = source_controls::add_sized_button(
+                        ui, size, egui::Button::new(locale::tr(ui, "CONFIRM")).fill(SOURCE_ORANGE),
+                    ).clicked();
+                    let cancel = source_controls::add_sized_button(
+                        ui, size, egui::Button::new(locale::tr(ui, "CANCEL")).fill(theme::LIGHT),
+                    ).clicked();
+                    (confirm, cancel)
+                }).inner
+            });
+        let (confirm, cancel) = modal.inner;
+        let cancel = cancel || modal.should_close();
+        let confirm = confirm
+            || (!just_opened
+                && modal.is_top_modal
+                && ctx
+                    .input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Enter)));
+        if confirm || cancel {
+            ctx.data_mut(|data| data.remove::<Value>(id));
+        }
+        if confirm && !cancel {
+            self.apply_source_project_patch(json!({"identifierStyle": style}));
+        }
+    }
+
+    pub(super) fn locate_project_path(&mut self, path: PathBuf, select: bool) {
+        let (target, select) = if select && !path.exists() {
+            (path.parent().unwrap_or(&path), false)
+        } else {
+            (path.as_path(), select)
+        };
+        if !target.exists() {
+            self.status = format!("Could not locate {}.", target.display());
+            self.status_error = true;
+            return;
+        }
+        match home_files::locate(target, select) {
+            Ok(()) => {
+                self.status = "Locating file...".into();
+                self.status_error = false;
+            }
+            Err(error) => {
+                self.status = error.to_string();
+                self.status_error = true;
+            }
+        }
     }
 
     fn apply_source_project_patch(&mut self, patch: Value) {
@@ -436,34 +654,43 @@ impl EditorApp {
     fn source_project_commands(&mut self, ui: &mut egui::Ui) {
         let project = self.project.as_ref().unwrap();
         let iid = text(&project.json, "iid", "").to_owned();
-        let trusted = self.settings.trusted(&iid);
-        egui::Frame::new()
-            .stroke(Stroke::new(
-                1_f32,
-                if trusted {
-                    Color32::from_rgb(82, 162, 84)
-                } else {
-                    Color32::from_rgb(177, 67, 67)
-                },
-            ))
-            .inner_margin(8)
-            .show(ui, |ui| {
-                ui.label(if trusted {
-                    "This project is allowed to run user commands on your computer."
-                } else {
-                    "This project is NOT allowed to run user commands on your computer."
-                });
-                if ui
-                    .link(if trusted {
-                        "Remove authorization"
+        let mut trust = self.settings.trust_state(&iid);
+        if let Some(trusted) = trust {
+            let clear = egui::Frame::new()
+                .stroke(Stroke::new(
+                    1_f32,
+                    if trusted {
+                        Color32::from_rgb(82, 162, 84)
                     } else {
-                        "Unblock it"
-                    })
+                        Color32::from_rgb(177, 67, 67)
+                    },
+                ))
+                .inner_margin(8)
+                .show(ui, |ui| {
+                    ui.label(locale::tr(
+                        ui,
+                        if trusted {
+                            "This project is allowed to run user commands on your computer."
+                        } else {
+                            "This project is NOT allowed to run user commands on your computer."
+                        },
+                    ));
+                    ui.link(locale::tr(
+                        ui,
+                        if trusted {
+                            "Remove authorization"
+                        } else {
+                            "Unblock it"
+                        },
+                    ))
                     .clicked()
-                {
-                    self.settings.set_trusted(&iid, !trusted);
-                }
-            });
+                })
+                .inner;
+            if clear {
+                self.settings.clear_trust(&iid);
+                trust = None;
+            }
+        }
         let mut commands = self.project.as_ref().unwrap().json["customCommands"]
             .as_array()
             .cloned()
@@ -491,9 +718,13 @@ impl EditorApp {
                         apply_patch(command, &patch);
                         modified = true;
                     }
-                    if source_controls::add_enabled_button(ui, trusted, egui::Button::new("Run"))
-                        .on_hover_text("Run command")
-                        .clicked()
+                    if source_controls::add_enabled_button(
+                        ui,
+                        trust != Some(false),
+                        egui::Button::new(locale::tr(ui, "Run")),
+                    )
+                    .on_hover_text(locale::tr(ui, "Run command"))
+                    .clicked()
                     {
                         let cwd = self
                             .project
@@ -506,7 +737,7 @@ impl EditorApp {
                         self.run_command(text(command, "command", "").to_owned(), cwd);
                     }
                     if source_controls::small_button(ui, "×")
-                        .on_hover_text("Delete command")
+                        .on_hover_text(locale::tr(ui, "Delete command"))
                         .clicked()
                     {
                         delete = Some(index);
@@ -518,9 +749,13 @@ impl EditorApp {
             commands.remove(index);
             modified = true;
         }
-        if source_controls::button(ui, "+")
-            .on_hover_text("Add command")
-            .clicked()
+        if source_controls::add_sized_button(
+            ui,
+            [ui.available_width(), 30.],
+            egui::Button::new(RichText::new("+").color(Color32::WHITE)).fill(SOURCE_ORANGE),
+        )
+        .on_hover_text(locale::tr(ui, "Add command"))
+        .clicked()
         {
             commands.push(json!({"when":"Manual","command":""}));
             modified = true;
@@ -539,37 +774,67 @@ impl EditorApp {
     }
 
     fn source_project_advanced(&mut self, ui: &mut egui::Ui) {
-        let flags = self.project.as_ref().unwrap().json["flags"]
+        let options = [
+            (
+                "MultiWorlds",
+                "Multi-worlds support",
+                "Stores levels in a 'worlds' array at the root of the project JSON. Experimental support for embedded levels.",
+            ),
+            (
+                "PrependIndexToLevelFileNames",
+                "Prefix level file names with their index in array",
+                "Prefixes external level file names with their position in the array. Inserting a level then renames every subsequent file. This was the default before LDtk 1.0.0.",
+            ),
+            (
+                "ExportPreCsvIntGridFormat",
+                "Export legacy pre-CSV IntGrid layers data",
+                "Includes the deprecated \"intGrid\" array in exported JSON. Use this if your game API requires LDtk 0.8.x or earlier.",
+            ),
+            (
+                "UseMultilinesType",
+                "Use \"Multilines\" instead of \"String\" for fields in JSON",
+                "Uses \"Multilines\" as the \"__type\" of multiline field definitions and instances.",
+            ),
+            (
+                "ExportOldTableOfContentData",
+                "Export old entity table-of-content data",
+                "Fills the legacy 'instances' array in each 'toc' entry alongside 'instancesData'.",
+            ),
+        ];
+        let project = &self.project.as_ref().unwrap().json;
+        let flags = project["flags"].as_array().cloned().unwrap_or_default();
+        let has_extra_worlds = project["worlds"]
             .as_array()
-            .cloned()
-            .unwrap_or_default();
-        egui::CollapsingHeader::new("Advanced project settings")
-            .default_open(!flags.is_empty())
+            .is_some_and(|worlds| worlds.len() > 1);
+        egui::CollapsingHeader::new(locale::tr(ui, "Advanced project settings"))
+            .id_salt("Advanced project settings")
+            .default_open(options.iter().any(|(flag, _, _)| flags.iter().any(|value| value == *flag)))
             .show(ui, |ui| {
-                ui.label("Advanced options are not recommended for most users as they might break compatibility with older game APIs. Please make sure you know what you're doing before using any of them!");
-                for (flag, label) in [
-                    ("MultiWorlds", "Multi-worlds support"),
-                    ("PrependIndexToLevelFileNames", "Prefix level file names with their index in array"),
-                    ("ExportPreCsvIntGridFormat", "Export legacy pre-CSV IntGrid layers data"),
-                    ("UseMultilinesType", "Use \"Multilines\" instead of \"String\" for fields in JSON"),
-                    ("ExportOldTableOfContentData", "Export old entity table-of-content data"),
-                    ("DiscardPreCsvIntGrid", "DiscardPreCsvIntGrid"),
-                    ("ExportTileIds", "ExportTileIds"),
-                    ("IgnoreBackupSuggest", "IgnoreBackupSuggest"),
-                ] {
+                ui.label(locale::tr(ui, "Advanced options are not recommended for most users as they might break compatibility with older game APIs. Please make sure you know what you're doing before using any of them!"));
+                for (flag, label, description) in options {
+                    ui.add_space(6.);
                     let mut enabled = flags.contains(&json!(flag));
-                    if source_checkbox(ui, &mut enabled, label).changed() {
+                    let response = ui
+                        .add_enabled_ui(flag != "MultiWorlds" || !has_extra_worlds, |ui| {
+                            source_checkbox(ui, &mut enabled, label)
+                        })
+                        .inner;
+                    ui.horizontal(|ui| {
+                        ui.add_space(32.);
+                        ui.add(egui::Label::new(RichText::new(locale::tr(ui, description)).size(12.)).wrap());
+                    });
+                    if response.changed() {
                         if flag == "MultiWorlds" {
-                            if enabled && self.edit("Multiple worlds enabled", |p| p.enable_multiworlds()).is_some() {
-                                if let Some(mut key) = self.selected {
-                                    key.world = Some(0);
-                                    self.navigate_level(key, true);
-                                } else {
-                                    self.navigate_world(Some(0));
+                            let updated = if enabled {
+                                self.edit("Multiple worlds enabled", Project::enable_multiworlds)
+                            } else {
+                                self.edit("Multiple worlds disabled", Project::disable_multiworlds)
+                            };
+                            if updated == Some(true) {
+                                self.active_world = enabled.then_some(0);
+                                if let Some(key) = &mut self.selected {
+                                    key.world = self.active_world;
                                 }
-                            } else if !enabled {
-                                self.status = "Move or remove extra worlds before converting back to a single world.".into();
-                                self.status_error = true;
                             }
                             continue;
                         }
@@ -625,6 +890,7 @@ mod tests {
             |ctx| {
                 egui::CentralPanel::default().show(ctx, |ui| {
                     ui.set_max_width(800.);
+                    ui.spacing_mut().item_spacing = Vec2::ZERO;
                     app.source_project_form(ui);
                 });
             },
@@ -648,16 +914,16 @@ mod tests {
     fn source_project_actions_share_the_first_row_and_sections_follow_the_template() {
         let (mut app, ctx) = editor();
         let output = frame(&mut app, &ctx, vec![]);
-        let save = label(&output, "Save project").unwrap();
-        for action in ["Save as...", "Rename project"] {
+        let save = label(&output, "SAVE PROJECT").unwrap();
+        for action in ["SAVE AS...", "RENAME PROJECT"] {
             let other = label(&output, action).unwrap_or_else(|| panic!("missing {action}"));
             assert!((other.center().y - save.center().y).abs() < 1.);
         }
         let headings = [
-            "Extra files",
-            "Project settings",
-            "User custom commands",
-            "Workspace settings",
+            "EXTRA FILES",
+            "PROJECT SETTINGS",
+            "USER CUSTOM COMMANDS",
+            "WORKSPACE SETTINGS",
             "Advanced project settings",
         ];
         let mut previous = save.bottom();
@@ -667,6 +933,39 @@ mod tests {
             previous = rect.bottom();
         }
         label(&output, "Default entity size").expect("source paired entity dimensions");
+        let separate_files = label(&output, "Save levels to separate files").unwrap();
+        let simple_export = label(&output, "Super simple export ❤").unwrap();
+        let checkbox_step = separate_files.center().y - simple_export.center().y;
+        assert_eq!(
+            checkbox_step, 40.,
+            "the source form uses a 30px row and a 10px gap"
+        );
+        let png = label(&output, "Export as PNG").unwrap();
+        let row_step = png.center().y - separate_files.center().y;
+        assert!((37. ..=42.).contains(&row_step), "row step is {row_step}px");
+        let add_command = label(&output, "+").expect("Add command").center();
+        fn action_rect(shape: &egui::Shape, center: egui::Pos2) -> Option<Rect> {
+            match shape {
+                egui::Shape::Rect(rect)
+                    if rect.fill == SOURCE_ORANGE && rect.rect.contains(center) =>
+                {
+                    Some(rect.rect)
+                }
+                egui::Shape::Vec(shapes) => {
+                    shapes.iter().find_map(|shape| action_rect(shape, center))
+                }
+                _ => None,
+            }
+        }
+        let add_rect = output
+            .shapes
+            .iter()
+            .find_map(|shape| action_rect(&shape.shape, add_command))
+            .expect("orange add command button");
+        assert!(
+            add_rect.width() > 500. && (add_rect.center().x - add_command.x).abs() < 1.,
+            "add command fills the value column and centers its label"
+        );
     }
 
     #[test]
@@ -683,7 +982,8 @@ mod tests {
         json["backupOnSave"] = json!(true);
         let output = frame(&mut app, &ctx, vec![]);
         label(&output, "PNG file names").expect("PNG pattern when export is enabled");
-        label(&output, "%level_name__%layer_name").expect("effective default PNG naming pattern");
+        label(&output, "LevelName").expect("effective default PNG naming pattern");
+        label(&output, "LayerName").expect("effective default PNG naming pattern");
         label(&output, "Also export level backgrounds").expect("PNG backgrounds");
         label(&output, "Max backup files:").expect("backup limit when backups are enabled");
 
@@ -691,6 +991,30 @@ mod tests {
         let output = frame(&mut app, &ctx, vec![]);
         assert!(label(&output, "Export as PNG").is_none());
         assert!(label(&output, "PNG file names").is_none());
+    }
+
+    #[test]
+    fn source_project_locate_separate_levels_reports_the_missing_output_folder() {
+        let (mut app, ctx) = editor();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("Map.v1.ldtk");
+        app.project.as_mut().unwrap().save(&path).unwrap();
+        let out = frame(&mut app, &ctx, vec![]);
+        let row = label(&out, "Save levels to separate files").unwrap();
+        let locate = egui::pos2(310., row.center().y);
+        click(&mut app, &ctx, locate);
+        assert!(!app.status_error);
+
+        app.project.as_mut().unwrap().json["externalLevels"] = json!(true);
+        frame(&mut app, &ctx, vec![]);
+        click(&mut app, &ctx, locate);
+        assert!(app.status_error);
+        assert!(
+            app.status
+                .contains(&*dir.path().join("Map.v1").to_string_lossy())
+        );
+        assert_eq!(app.project.as_ref().unwrap().json["externalLevels"], true);
+        assert!(!dir.path().join("Map.v1").exists());
     }
 
     fn click(app: &mut EditorApp, ctx: &egui::Context, pos: egui::Pos2) {
@@ -712,8 +1036,263 @@ mod tests {
     }
 
     #[test]
+    fn source_project_extension_switch_renames_the_file_without_saving_edits() {
+        let (mut app, ctx) = editor();
+        let dir = tempfile::tempdir().unwrap();
+        let old = dir.path().join("World.ldtk");
+        let new = dir.path().join("World.json");
+        let mut project = Project::new();
+        let key = project.add_level(None, "Room", 64, 64).unwrap();
+        project.save(&old).unwrap();
+        let disk_before = std::fs::read(&old).unwrap();
+        app.set_project(project);
+        app.navigate_level(key, false);
+        app.edit("Change description", |p| {
+            p.json["tutorialDesc"] = json!("Unsaved");
+            Ok(())
+        });
+        let out = frame(&mut app, &ctx, vec![]);
+        let row = label(&out, "Use .ldtk extension").unwrap();
+        let pos = egui::pos2(278., row.center().y);
+        click(&mut app, &ctx, pos);
+
+        assert!(!app.status_error, "{}", app.status);
+        assert!(!old.exists());
+        assert_eq!(std::fs::read(&new).unwrap(), disk_before);
+        let project = app.project.as_ref().unwrap();
+        assert_eq!(project.path.as_deref(), Some(new.as_path()));
+        assert_eq!(project.json["tutorialDesc"], "Unsaved");
+        assert!(app.dirty);
+        assert_eq!(app.selected, Some(key));
+        assert_eq!(app.settings.value["recentProjects"], json!([new]));
+        assert!(
+            app.file_snapshot
+                .as_ref()
+                .unwrap()
+                .changed_files()
+                .unwrap()
+                .is_empty()
+        );
+        assert!(app.history.undo(app.project.as_mut().unwrap()));
+        assert!(app.project.as_ref().unwrap().json["tutorialDesc"].is_null());
+    }
+
+    #[test]
+    fn source_project_can_disable_multiworlds_and_keep_the_selected_level() {
+        let (mut app, ctx) = editor();
+        let mut project = Project::new();
+        project.enable_multiworlds().unwrap();
+        project.add_layer("First", "IntGrid", 16).unwrap();
+        project.add_layer("Second", "IntGrid", 16).unwrap();
+        let selected = project.add_level(Some(0), "Room", 64, 64).unwrap();
+        let iid = project.level(selected).unwrap()["iid"].clone();
+        app.set_project(project);
+        app.navigate_level(selected, false);
+        app.layer = 1;
+        assert_eq!(
+            app.edit_level("Paint cell", selected, |p| {
+                p.paint_int_grid(selected, 1, 0, 0, 1)
+            }),
+            Some(true)
+        );
+        let out = frame(&mut app, &ctx, vec![]);
+        click(
+            &mut app,
+            &ctx,
+            label(&out, "Multi-worlds support").unwrap().center(),
+        );
+
+        let key = LevelKey {
+            world: None,
+            level: selected.level,
+        };
+        assert_eq!(app.selected, Some(key));
+        assert_eq!(app.active_world, None);
+        assert_eq!(app.layer, 1);
+        let project = app.project.as_ref().unwrap();
+        assert_eq!(project.level(key).unwrap()["iid"], iid);
+        assert_eq!(project.json["worlds"], json!([]));
+        assert_eq!(project.json["flags"], json!([]));
+        app.undo_action(false);
+        assert_eq!(
+            app.project.as_ref().unwrap().layer(key, 1).unwrap()["intGridCsv"][0],
+            0
+        );
+        assert_eq!(
+            app.edit_level("Paint cell", key, |p| p.paint_int_grid(key, 1, 1, 0, 1)),
+            Some(true)
+        );
+        let out = frame(&mut app, &ctx, vec![]);
+        click(
+            &mut app,
+            &ctx,
+            label(&out, "Multi-worlds support").unwrap().center(),
+        );
+        assert_eq!(app.selected, Some(selected));
+        assert_eq!(app.active_world, Some(0));
+        assert_eq!(app.layer, 1);
+        app.undo_action(false);
+        assert_eq!(
+            app.project.as_ref().unwrap().layer(selected, 1).unwrap()["intGridCsv"][1],
+            0
+        );
+    }
+
+    #[test]
+    fn source_project_disables_the_multiworlds_checkbox_for_multiple_worlds() {
+        let (mut app, ctx) = editor();
+        let mut project = Project::new();
+        project.add_world("ExtraWorld").unwrap();
+        let before = project.json.clone();
+        app.set_project(project);
+        let out = frame(&mut app, &ctx, vec![]);
+        click(
+            &mut app,
+            &ctx,
+            label(&out, "Multi-worlds support").unwrap().center(),
+        );
+        assert_eq!(app.project.as_ref().unwrap().json, before);
+        assert!(!app.status_error);
+    }
+
+    #[test]
+    fn source_project_advanced_shows_user_options_and_keeps_internal_flags() {
+        let (mut app, ctx) = editor();
+        let internal = json!([
+            "IgnoreBackupSuggest",
+            "ExportTileIds",
+            "DiscardPreCsvIntGrid"
+        ]);
+        app.project.as_mut().unwrap().json["flags"] = internal.clone();
+
+        let out = frame(&mut app, &ctx, vec![]);
+        assert!(label(&out, "Multi-worlds support").is_none());
+        click(
+            &mut app,
+            &ctx,
+            label(&out, "Advanced project settings").unwrap().center(),
+        );
+        let out = frame(&mut app, &ctx, vec![]);
+        for name in internal.as_array().unwrap() {
+            assert!(label(&out, name.as_str().unwrap()).is_none());
+        }
+        click(
+            &mut app,
+            &ctx,
+            label(&out, "Export old entity table-of-content data")
+                .unwrap()
+                .center(),
+        );
+        assert_eq!(
+            app.project.as_ref().unwrap().json["flags"],
+            json!([
+                "IgnoreBackupSuggest",
+                "ExportTileIds",
+                "DiscardPreCsvIntGrid",
+                "ExportOldTableOfContentData"
+            ])
+        );
+        assert!(app.history.undo(app.project.as_mut().unwrap()));
+        assert_eq!(app.project.as_ref().unwrap().json["flags"], internal);
+    }
+
+    #[test]
+    fn preview_154_json_style_picker_is_undoable() {
+        let (mut app, ctx) = editor();
+        app.project.as_mut().unwrap().json["jsonStyle"] = json!("Full");
+        frame(&mut app, &ctx, vec![]);
+        let out = frame(&mut app, &ctx, vec![]);
+        click(
+            &mut app,
+            &ctx,
+            label(&out, "FULL (fully indented)").unwrap().center(),
+        );
+        let out = frame(&mut app, &ctx, vec![]);
+        click(
+            &mut app,
+            &ctx,
+            label(
+                &out,
+                "COMPACT (mostly indented, but small arrays are inlined)",
+            )
+            .unwrap()
+            .center(),
+        );
+        assert_eq!(app.project.as_ref().unwrap().json["jsonStyle"], "Compact");
+        assert!(app.history.undo(app.project.as_mut().unwrap()));
+        assert_eq!(app.project.as_ref().unwrap().json["jsonStyle"], "Full");
+    }
+
+    #[test]
+    fn source_project_identifier_style_confirms_before_renaming() {
+        let (mut app, ctx) = editor();
+        app.project
+            .as_mut()
+            .unwrap()
+            .add_entity_def("My_entity", 16, 16)
+            .unwrap();
+        let before = app.project.as_ref().unwrap().json.clone();
+        let choose_lowercase = |app: &mut EditorApp| {
+            let out = frame(app, &ctx, vec![]);
+            click(
+                app,
+                &ctx,
+                label(&out, "\"My_identifier_1\" -- First letter is always uppercase, the rest is up to you")
+                    .unwrap()
+                    .center(),
+            );
+            let out = frame(app, &ctx, vec![]);
+            click(
+                app,
+                &ctx,
+                label(&out, "\"my_identifier_1\" -- Full lowercase")
+                    .unwrap()
+                    .center(),
+            );
+        };
+
+        frame(&mut app, &ctx, vec![]);
+        choose_lowercase(&mut app);
+        assert_eq!(app.project.as_ref().unwrap().json, before);
+        let out = frame(&mut app, &ctx, vec![]);
+        click(&mut app, &ctx, label(&out, "CANCEL").unwrap().center());
+        assert_eq!(app.project.as_ref().unwrap().json, before);
+        assert!(app.last_chance.is_none());
+
+        choose_lowercase(&mut app);
+        assert_eq!(app.project.as_ref().unwrap().json, before);
+        frame(
+            &mut app,
+            &ctx,
+            vec![egui::Event::Key {
+                key: egui::Key::Enter,
+                physical_key: Some(egui::Key::Enter),
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
+        );
+        let project = app.project.as_ref().unwrap();
+        assert_eq!(project.json["identifierStyle"], "Lowercase");
+        assert_eq!(
+            project.json["defs"]["entities"][0]["identifier"],
+            "my_entity"
+        );
+        assert!(app.last_chance.is_some());
+        assert!(app.history.undo(app.project.as_mut().unwrap()));
+        assert_eq!(app.project.as_ref().unwrap().json, before);
+    }
+
+    #[test]
     fn source_project_checkbox_edits_are_undoable() {
         let (mut app, ctx) = editor();
+        app.project
+            .as_mut()
+            .unwrap()
+            .json
+            .as_object_mut()
+            .unwrap()
+            .remove("jsonStyle");
         let before = app.project.as_ref().unwrap().json.clone();
         let output = frame(&mut app, &ctx, vec![]);
         let label = label(&output, "Minify JSON").unwrap();
@@ -743,7 +1322,7 @@ mod tests {
     }
 
     #[test]
-    fn source_project_command_add_and_trust_use_existing_services() {
+    fn source_project_command_add_is_undoable() {
         let (mut app, ctx) = editor();
         let before = app.project.as_ref().unwrap().json.clone();
         let output = frame(&mut app, &ctx, vec![]);
@@ -764,11 +1343,55 @@ mod tests {
             label(&output, "×").unwrap().right() < 808.,
             "command removal stays inside the property column"
         );
-        let pos = label(&output, "Unblock it").unwrap().center();
-        click(&mut app, &ctx, pos);
-        let iid = text(&app.project.as_ref().unwrap().json, "iid", "");
-        assert!(app.settings.trusted(iid));
         assert!(app.history.undo(app.project.as_mut().unwrap()));
+        assert_eq!(app.project.as_ref().unwrap().json, before);
+    }
+
+    #[test]
+    fn source_project_command_trust_controls_clear_the_decision_and_keep_the_prompt() {
+        let (mut app, ctx) = editor();
+        let allowed = "This project is allowed to run user commands on your computer.";
+        let blocked = "This project is NOT allowed to run user commands on your computer.";
+        let project = app.project.as_mut().unwrap();
+        let iid = text(&project.json, "iid", "").to_owned();
+        project.json["customCommands"] = json!([{"when":"Manual","command":"echo sample"}]);
+        let before = project.json.clone();
+        let output = frame(&mut app, &ctx, vec![]);
+        for text in [allowed, blocked, "Remove authorization", "Unblock it"] {
+            assert!(label(&output, text).is_none(), "unknown trust: {text}");
+        }
+
+        for (trusted, message, action) in [
+            (false, blocked, "Unblock it"),
+            (true, allowed, "Remove authorization"),
+        ] {
+            app.settings.set_trusted(&iid, trusted);
+            let output = frame(&mut app, &ctx, vec![]);
+            assert!(label(&output, message).is_some());
+            assert!(label(&output, if trusted { blocked } else { allowed }).is_none());
+            if !trusted {
+                click(&mut app, &ctx, label(&output, "Run").unwrap().center());
+                assert!(app.hook_flow.is_none());
+            }
+            click(&mut app, &ctx, label(&output, action).unwrap().center());
+            assert_eq!(app.settings.trust_state(&iid), None);
+            let output = frame(&mut app, &ctx, vec![]);
+            assert!(label(&output, message).is_none());
+            assert!(label(&output, action).is_none());
+        }
+
+        let output = frame(&mut app, &ctx, vec![]);
+        click(&mut app, &ctx, label(&output, "Run").unwrap().center());
+        assert!(app.hook_flow.is_some());
+        let draw_prompt =
+            |app: &mut EditorApp| ctx.run(egui::RawInput::default(), |ctx| app.trust_dialog(ctx));
+        draw_prompt(&mut app);
+        let prompt = draw_prompt(&mut app);
+        assert!(label(&prompt, "Allow project commands").is_some());
+        assert!(label(&prompt, "Block project commands").is_some());
+        assert_eq!(app.settings.trust_state(&iid), None);
+        assert!(app.command_result.is_none());
+        assert!(!app.command_open);
         assert_eq!(app.project.as_ref().unwrap().json, before);
     }
 
@@ -777,10 +1400,11 @@ mod tests {
         let (mut app, ctx) = editor();
         let before = app.project.as_ref().unwrap().json.clone();
         let output = frame(&mut app, &ctx, vec![]);
-        let pos = label(&output, "Level_%idx")
-            .expect("level naming pattern editor")
+        let pos = label(&output, "Level_")
+            .expect("literal block in the level naming pattern")
             .center();
         click(&mut app, &ctx, pos);
+        frame(&mut app, &ctx, vec![]);
         let command = egui::Modifiers {
             command: true,
             mac_cmd: true,
@@ -797,7 +1421,7 @@ mod tests {
                     repeat: false,
                     modifiers: command,
                 },
-                egui::Event::Text("Room_%idx".into()),
+                egui::Event::Text("Room_".into()),
             ],
         );
         assert_eq!(
@@ -820,8 +1444,73 @@ mod tests {
             app.project.as_ref().unwrap().json["levelNamePattern"],
             "Room_%idx"
         );
+        assert_eq!(
+            app.project.as_ref().unwrap().json["levels"][0]["identifier"],
+            "Room_0"
+        );
         assert!(app.history.undo(app.project.as_mut().unwrap()));
         assert_eq!(app.project.as_ref().unwrap().json, before);
+    }
+
+    #[test]
+    fn source_project_level_name_blocks_can_be_added_reordered_and_reset() {
+        let (mut app, ctx) = editor();
+        let output = frame(&mut app, &ctx, vec![]);
+        let reset = label(&output, "[reset]").unwrap();
+        let plus = egui::pos2(reset.left() - 18., reset.center().y);
+        click(&mut app, &ctx, plus);
+        let output = frame(&mut app, &ctx, vec![]);
+        assert!(label(&output, "LevelIndex(1)").is_some());
+        let world = label(&output, "WorldId").expect("unused variable").center();
+        click(&mut app, &ctx, world);
+        assert_eq!(
+            app.project.as_ref().unwrap().json["levelNamePattern"],
+            "Level_%idx%world"
+        );
+        let output = frame(&mut app, &ctx, vec![]);
+        let from = label(&output, "WorldId").unwrap().center();
+        let to = label(&output, "Level_").unwrap().center();
+        let pointer = |pos, pressed| egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Default::default(),
+        };
+        frame(
+            &mut app,
+            &ctx,
+            vec![egui::Event::PointerMoved(from), pointer(from, true)],
+        );
+        frame(&mut app, &ctx, vec![egui::Event::PointerMoved(to)]);
+        frame(&mut app, &ctx, vec![pointer(to, false)]);
+        assert_eq!(
+            app.project.as_ref().unwrap().json["levelNamePattern"],
+            "%worldLevel_%idx"
+        );
+        let output = frame(&mut app, &ctx, vec![]);
+        let world = label(&output, "WorldId").unwrap().center();
+        click(&mut app, &ctx, world);
+        click(&mut app, &ctx, world);
+        let output = frame(&mut app, &ctx, vec![]);
+        let coordinate = label(&output, "LevelX")
+            .expect("variable replacement menu")
+            .center();
+        click(&mut app, &ctx, coordinate);
+        assert_eq!(
+            app.project.as_ref().unwrap().json["levelNamePattern"],
+            "%xLevel_%idx"
+        );
+        let output = frame(&mut app, &ctx, vec![]);
+        click(&mut app, &ctx, label(&output, "[reset]").unwrap().center());
+        assert_eq!(
+            app.project.as_ref().unwrap().json["levelNamePattern"],
+            "Level_%idx"
+        );
+        assert!(app.history.undo(app.project.as_mut().unwrap()));
+        assert_eq!(
+            app.project.as_ref().unwrap().json["levelNamePattern"],
+            "%xLevel_%idx"
+        );
     }
 
     #[test]

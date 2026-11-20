@@ -1,10 +1,11 @@
 //! Filesystem exporters ported from the pinned LDtk exporters and ProjectSaver.
 use crate::project::{atomic_save, relative_to};
+use crate::workflow::effective_position;
 use crate::{Error, LevelKey, Project, Result};
 use image::{Rgba, RgbaImage};
 use serde_json::{Value, json};
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, HashMap, HashSet},
     fs,
     io::Cursor,
     path::{Path, PathBuf},
@@ -35,6 +36,25 @@ pub struct ExportReport {
     pub outputs: Vec<PathBuf>,
     pub warnings: Vec<String>,
 }
+
+/// Scale and cropped size in source pixels for one level background tile.
+pub fn background_image_layout(
+    level: [f64; 2],
+    image: [f64; 2],
+    mode: &str,
+) -> ([f64; 2], [f64; 2]) {
+    let x = level[0] / image[0];
+    let y = level[1] / image[1];
+    let scale = match mode {
+        "Contain" => [x.min(y); 2],
+        "Cover" => [x.max(y); 2],
+        "CoverDirty" => [x, y],
+        _ => [1.; 2],
+    };
+    let crop = std::array::from_fn(|axis| image[axis].min(level[axis] / scale[axis]));
+    (scale, crop)
+}
+
 fn n(v: &Value, k: &str) -> i64 {
     v[k].as_i64().unwrap_or(0)
 }
@@ -115,15 +135,126 @@ fn blend_pixel(target: &mut RgbaImage, x: i64, y: i64, c: Rgba<u8>, alpha: f64) 
     }
     d[3] = (out * 255.).round() as u8;
 }
-fn composite(target: &mut RgbaImage, source: &RgbaImage, alpha: f64) {
-    for (x, y, p) in source.enumerate_pixels() {
-        blend_pixel(target, x as i64, y as i64, *p, alpha);
+fn premultiply(image: &mut RgbaImage) {
+    for pixel in image.pixels_mut() {
+        let alpha = f64::from(pixel[3]) / 255.;
+        for channel in &mut pixel.0[..3] {
+            *channel = (f64::from(*channel) * alpha) as u8;
+        }
     }
 }
+
+fn composite(target: &mut RgbaImage, source: &RgbaImage, alpha: f64, premultiplied: bool) {
+    if premultiplied {
+        for (dst, src) in target.pixels_mut().zip(source.pixels()) {
+            // The preview quantizes opacity before blending the 8-bit color channels.
+            let source_alpha = (f64::from(src[3]) * alpha) as u16;
+            let dest_weight = 255 - source_alpha;
+            for channel in 0..3 {
+                let color =
+                    u16::from(src[channel]) * source_alpha + u16::from(dst[channel]) * dest_weight;
+                dst[channel] = ((color + 127) / 255) as u8;
+            }
+            dst[3] = (source_alpha + u16::from(dst[3]) * dest_weight / 255) as u8;
+        }
+    } else {
+        for (x, y, p) in source.enumerate_pixels() {
+            blend_pixel(target, x as i64, y as i64, *p, alpha);
+        }
+    }
+}
+
+/// Find the occupied cell in a classic Tiles layer with a positive column count and grid size.
+pub fn classic_tile_cell(tile: &Value, columns: i64, grid: i64) -> [i64; 2] {
+    if let Some(coord) = tile["d"][0].as_i64() {
+        [coord % columns, coord / columns]
+    } else {
+        [0, 1].map(|axis| tile["px"][axis].as_i64().unwrap_or(-1).div_euclid(grid))
+    }
+}
+
+/// Red channel of the source editor's opaque missing-atlas marker.
+pub fn unavailable_classic_tile_red(grid: i64, x: i64, y: i64) -> u8 {
+    let size = grid as f64;
+    let x = x as f64 + 0.5;
+    let y = y as f64 + 0.5;
+    let on_stroke = |y: f64| {
+        (x - y).abs() < std::f64::consts::SQRT_2 && (0.4 * size..=1.6 * size).contains(&(x + y))
+    };
+    if on_stroke(y) || on_stroke(size - y) {
+        255
+    } else {
+        136
+    }
+}
+
+fn draw_unavailable_classic_atlas(
+    image: &mut RgbaImage,
+    layer: &Value,
+    def: &Value,
+    opacity: f64,
+) -> bool {
+    let grid = def["gridSize"]
+        .as_i64()
+        .unwrap_or_else(|| n(layer, "__gridSize"))
+        .max(1);
+    let width = i64::from(image.width()).saturating_sub(n(layer, "pxOffsetX"));
+    let height = i64::from(image.height()).saturating_sub(n(layer, "pxOffsetY"));
+    if width <= 0 || height <= 0 || opacity == 0. {
+        return false;
+    }
+    let columns = 1 + (width - 1) / grid;
+    let rows = 1 + (height - 1) / grid;
+    let clip_x = width.min(i64::from(image.width()));
+    let clip_y = height.min(i64::from(image.height()));
+    // The original uses the X pivot on both axes and draws inside the layer mask.
+    let shift = (num(def, "tilePivotX", 0.) * grid as f64 - 0.5).ceil() as i64;
+    let alpha = (255. * opacity) as u8;
+    let mut visited = HashSet::new();
+    let mut painted = false;
+    for tile in arr(&layer["gridTiles"]) {
+        let [cx, cy] = classic_tile_cell(tile, columns, grid);
+        if cx < 0 || cx >= columns || cy < 0 || cy >= rows || !visited.insert((cx, cy)) {
+            continue;
+        }
+        let left = (cx * grid).saturating_add(shift);
+        let top = (cy * grid).saturating_add(shift);
+        let x_range = left.max(0)..left.saturating_add(grid).min(clip_x);
+        let y_range = top.max(0)..top.saturating_add(grid).min(clip_y);
+        if x_range.is_empty() || y_range.is_empty() {
+            continue;
+        }
+        painted = true;
+        for y in y_range {
+            for x in x_range.clone() {
+                let red = unavailable_classic_tile_red(grid, x - left, y - top);
+                image.put_pixel(
+                    x as u32,
+                    y as u32,
+                    Rgba([(f64::from(red) * opacity) as u8, 0, 0, alpha]),
+                );
+            }
+        }
+    }
+    painted
+}
+
 impl Project {
     pub fn export_csv(&self, dir: impl AsRef<Path>) -> Result<Vec<PathBuf>> {
+        self.export_csv_with_progress(dir, |_, _| {})
+    }
+    pub fn export_csv_with_progress(
+        &self,
+        dir: impl AsRef<Path>,
+        mut progress: impl FnMut(usize, usize),
+    ) -> Result<Vec<PathBuf>> {
         let mut out = Vec::new();
-        for key in self.level_keys() {
+        let keys = self.level_keys();
+        let total = keys.len();
+        if total > 0 {
+            progress(0, total);
+        }
+        for (index, key) in keys.into_iter().enumerate() {
             let l = self
                 .level(key)
                 .ok_or_else(|| Error::Invalid("missing external level".into()))?;
@@ -157,13 +288,38 @@ impl Project {
                     text.into_bytes(),
                 ));
             }
+            progress(index + 1, total);
+        }
+        if total > 0 {
+            progress(0, 0);
         }
         publish(out)
     }
     pub fn export_simplified(&self, dir: impl AsRef<Path>) -> Result<Vec<PathBuf>> {
+        self.export_simplified_with_progress(dir, |_, _| {})
+    }
+    pub fn export_simplified_with_progress(
+        &self,
+        dir: impl AsRef<Path>,
+        progress: impl FnMut(usize, usize),
+    ) -> Result<Vec<PathBuf>> {
+        self.export_simplified_with_diagnostics(dir, progress, &mut Vec::new())
+    }
+    pub(crate) fn export_simplified_with_diagnostics(
+        &self,
+        dir: impl AsRef<Path>,
+        mut progress: impl FnMut(usize, usize),
+        diagnostics: &mut Vec<String>,
+    ) -> Result<Vec<PathBuf>> {
         let dir = dir.as_ref();
         let mut out = Vec::new();
-        for key in self.level_keys() {
+        let keys = self.level_keys();
+        let count = keys.len();
+        let total = count * 3;
+        if total > 0 {
+            progress(0, total);
+        }
+        for (index, key) in keys.iter().copied().enumerate() {
             let l = self
                 .level(key)
                 .ok_or_else(|| Error::Invalid("missing external level".into()))?;
@@ -191,10 +347,15 @@ impl Project {
                 dir.join(safe_name(s(l, "identifier"))?).join("data.json"),
                 bytes(&simple)?,
             ));
+            progress(index + 1, total);
         }
         let mut paths = publish(out)?;
-        paths.extend(self.export_csv(dir)?);
-        for key in self.level_keys() {
+        paths.extend(self.export_csv_with_progress(dir, |done, phase_total| {
+            if phase_total > 0 && done > 0 {
+                progress(count + done, total);
+            }
+        })?);
+        for (index, key) in keys.into_iter().enumerate() {
             let l = self.level(key).unwrap();
             let options = PngExportOptions {
                 mode: PngExportMode::LayersAndLevels,
@@ -206,23 +367,46 @@ impl Project {
                 &dir.join(safe_name(s(l, "identifier"))?),
                 &options,
                 true,
+                diagnostics,
             )?);
+            progress(count * 2 + index + 1, total);
+        }
+        if total > 0 {
+            progress(0, 0);
         }
         Ok(paths)
     }
     pub fn export_png(&self, dir: impl AsRef<Path>) -> Result<Vec<PathBuf>> {
+        self.export_png_with_progress(dir, |_, _| {})
+    }
+    /// Reports completed level renders and sends (0, 0) when the stage ends.
+    pub fn export_png_with_progress(
+        &self,
+        dir: impl AsRef<Path>,
+        progress: impl FnMut(usize, usize),
+    ) -> Result<Vec<PathBuf>> {
+        self.export_png_with_diagnostics(dir, progress, &mut Vec::new())
+    }
+    pub(crate) fn export_png_with_diagnostics(
+        &self,
+        dir: impl AsRef<Path>,
+        mut progress: impl FnMut(usize, usize),
+        diagnostics: &mut Vec<String>,
+    ) -> Result<Vec<PathBuf>> {
         let mode = match s(&self.json, "imageExportMode") {
             "OneImagePerLevel" => PngExportMode::OneImagePerLevel,
             "LayersAndLevels" => PngExportMode::LayersAndLevels,
             _ => PngExportMode::OneImagePerLayer,
         };
-        self.export_png_with_options(
+        self.export_png_options_with_progress(
             dir,
             &PngExportOptions {
                 mode,
                 include_background: self.json["exportLevelBg"].as_bool().unwrap_or(true),
                 file_pattern: self.json["pngFilePattern"].as_str().map(str::to_owned),
             },
+            &mut progress,
+            diagnostics,
         )
     }
     pub fn export_png_with_options(
@@ -230,9 +414,27 @@ impl Project {
         dir: impl AsRef<Path>,
         options: &PngExportOptions,
     ) -> Result<Vec<PathBuf>> {
+        self.export_png_options_with_progress(dir, options, &mut |_, _| {}, &mut Vec::new())
+    }
+    fn export_png_options_with_progress(
+        &self,
+        dir: impl AsRef<Path>,
+        options: &PngExportOptions,
+        progress: &mut impl FnMut(usize, usize),
+        diagnostics: &mut Vec<String>,
+    ) -> Result<Vec<PathBuf>> {
         let mut paths = Vec::new();
-        for key in self.level_keys() {
-            paths.extend(self.export_level_png(key, dir.as_ref(), options, false)?);
+        let keys = self.level_keys();
+        let total = keys.len();
+        if total > 0 {
+            progress(0, total);
+        }
+        for (index, key) in keys.into_iter().enumerate() {
+            paths.extend(self.export_level_png(key, dir.as_ref(), options, false, diagnostics)?);
+            progress(index + 1, total);
+        }
+        if total > 0 {
+            progress(0, 0);
         }
         Ok(paths)
     }
@@ -242,6 +444,7 @@ impl Project {
         dir: &Path,
         options: &PngExportOptions,
         simple: bool,
+        diagnostics: &mut Vec<String>,
     ) -> Result<Vec<PathBuf>> {
         let l = self
             .level(key)
@@ -250,7 +453,7 @@ impl Project {
         let mut out = Vec::new();
         let name = safe_name(s(l, "identifier"))?;
         let background = if options.include_background {
-            self.render_background(l)?
+            self.render_background(l, diagnostics)?
         } else {
             RgbaImage::new(w, h)
         };
@@ -260,6 +463,7 @@ impl Project {
             } else {
                 background.clone()
             };
+        let mut premultiplied = false;
         if options.include_background && options.mode != PngExportMode::OneImagePerLevel {
             out.push((
                 dir.join(if simple {
@@ -285,17 +489,23 @@ impl Project {
             );
             let file = self.png_name(key, li, pattern)?;
             if tiles {
-                let image = self.render_tile_layer(l, li)?;
-                composite(
-                    &mut combined,
-                    &image,
-                    if options.mode == PngExportMode::LayersAndLevels {
-                        num(def, "displayOpacity", 1.)
+                let opacity = num(def, "displayOpacity", 1.).clamp(0., 1.);
+                let layer_file = options.mode != PngExportMode::OneImagePerLevel;
+                let (image, placeholder) =
+                    self.render_tile_layer(l, li, if layer_file { opacity } else { 1. })?;
+                if options.mode != PngExportMode::OneImagePerLayer {
+                    if placeholder && opacity > 0. && !premultiplied {
+                        premultiply(&mut combined);
+                        premultiplied = true;
+                    }
+                    let alpha = if options.mode == PngExportMode::LayersAndLevels || placeholder {
+                        opacity
                     } else {
                         1.
-                    },
-                );
-                if options.mode != PngExportMode::OneImagePerLevel {
+                    };
+                    composite(&mut combined, &image, alpha, premultiplied);
+                }
+                if layer_file {
                     out.push((dir.join(format!("{file}.png")), png(&image)?));
                 }
             }
@@ -377,28 +587,28 @@ impl Project {
                 .unwrap_or("#000000"),
         )
     }
-    fn render_background(&self, l: &Value) -> Result<RgbaImage> {
+    fn render_background(&self, l: &Value, diagnostics: &mut Vec<String>) -> Result<RgbaImage> {
         let (w, h) = dimensions(l)?;
         let mut image = RgbaImage::from_pixel(w, h, self.level_background_color(l));
         if let Some(rel) = l["bgRelPath"].as_str() {
-            let bg = self.resource_image(rel)?;
+            let bg = match self.resource_image(rel) {
+                Ok(bg) => bg,
+                Err(error) => {
+                    diagnostics.push(format!(
+                        "Failed to load background {rel} for level {}: {error}",
+                        s(l, "identifier")
+                    ));
+                    return Ok(image);
+                }
+            };
             let bw = bg.width() as f64;
             let bh = bg.height() as f64;
             let mode = s(l, "bgPos");
-            let (sx, sy) = match mode {
-                "Contain" => {
-                    let scale = (w as f64 / bw).min(h as f64 / bh);
-                    (scale, scale)
-                }
-                "Cover" => {
-                    let scale = (w as f64 / bw).max(h as f64 / bh);
-                    (scale, scale)
-                }
-                "CoverDirty" => (w as f64 / bw, h as f64 / bh),
-                _ => (1., 1.),
-            };
-            let cw = bw.min(w as f64 / sx);
-            let ch = bh.min(h as f64 / sy);
+            let ([sx, sy], [cw, ch]) = background_image_layout(
+                [f64::from(w), f64::from(h)],
+                [bw, bh],
+                mode,
+            );
             let pivot_x = num(l, "bgPivotX", 0.5);
             let pivot_y = num(l, "bgPivotY", 0.5);
             let cx = pivot_x * (bw - cw);
@@ -439,25 +649,40 @@ impl Project {
         }
         Ok(image)
     }
-    fn render_tile_layer(&self, l: &Value, li: &Value) -> Result<RgbaImage> {
+    fn render_tile_layer(
+        &self,
+        l: &Value,
+        li: &Value,
+        placeholder_opacity: f64,
+    ) -> Result<(RgbaImage, bool)> {
         let (w, h) = dimensions(l)?;
         let mut img = RgbaImage::new(w, h);
-        let uid = li["__tilesetDefUid"].as_i64().or_else(|| {
-            self.layer_def(n(li, "layerDefUid"))
-                .and_then(|d| d["tilesetDefUid"].as_i64())
+        let def = self.layer_def(n(li, "layerDefUid")).unwrap_or(li);
+        let classic = s(li, "__type") == "Tiles";
+        let uid = li["__tilesetDefUid"]
+            .as_i64()
+            .or_else(|| def["tilesetDefUid"].as_i64());
+        let atlas = uid.and_then(|uid| self.tileset(uid)).map(|td| {
+            let result = if let Some(rel) = td["relPath"].as_str() {
+                self.resource_image(rel)
+            } else if !td["embedAtlas"].is_null() {
+                embedded_atlas()
+            } else {
+                Err(Error::Invalid("missing atlas path".into()))
+            };
+            (td, result)
         });
-        let Some(td) = uid.and_then(|u| self.tileset(u)) else {
-            return Ok(img);
-        };
-        let atlas = if let Some(rel) = td["relPath"].as_str() {
-            self.resource_image(rel)?
-        } else if !td["embedAtlas"].is_null() {
-            embedded_atlas()?
-        } else {
-            return Err(Error::Invalid("missing atlas path".into()));
+        let (td, atlas) = match atlas {
+            Some((td, Ok(atlas))) => (td, atlas),
+            _ if classic => {
+                let painted =
+                    draw_unavailable_classic_atlas(&mut img, li, def, placeholder_opacity);
+                return Ok((img, painted));
+            }
+            None => return Ok((img, false)),
+            Some((_, Err(error))) => return Err(error),
         };
         let size = n(td, "tileGridSize").max(1);
-        let def = self.layer_def(n(li, "layerDefUid")).unwrap_or(li);
         let alpha = num(def, "displayOpacity", 1.);
         let ox = n(li, "__pxTotalOffsetX");
         let oy = n(li, "__pxTotalOffsetY");
@@ -526,7 +751,7 @@ impl Project {
                 }
             }
         }
-        Ok(img)
+        Ok((img, false))
     }
 }
 fn dimensions(l: &Value) -> Result<(u32, u32)> {
@@ -556,7 +781,23 @@ fn property(name: &str, typ: Option<&str>, value: &Value) -> String {
     )
 }
 impl Project {
+    fn tiled_world_index(&self) -> Option<usize> {
+        let multiworld = arr(&self.json["flags"])
+            .iter()
+            .any(|flag| flag == "MultiWorlds");
+        let has_nested_worlds =
+            arr(&self.json["levels"]).is_empty() && !arr(&self.json["worlds"]).is_empty();
+        (multiworld || has_nested_worlds).then_some(0)
+    }
+
     pub fn export_tiled_with_report(&self, dir: impl AsRef<Path>) -> Result<ExportReport> {
+        self.export_tiled_with_report_progress(dir, |_, _| {})
+    }
+    pub fn export_tiled_with_report_progress(
+        &self,
+        dir: impl AsRef<Path>,
+        mut progress: impl FnMut(usize, usize),
+    ) -> Result<ExportReport> {
         let mut warnings = Vec::new();
         let defs = arr(&self.json["defs"]["layers"]);
         let grids: std::collections::BTreeSet<_> = defs.iter().map(|d| n(d, "gridSize")).collect();
@@ -587,7 +828,7 @@ impl Project {
                 warnings.push(format!("Aseprite atlas {} is not supported by Tiled; convert the referenced atlas to PNG",s(td,"identifier")));
             }
         }
-        let first = self.level_keys().first().and_then(|k| k.world);
+        let first = self.tiled_world_index();
         if self.level_keys().iter().any(|k| k.world != first) {
             warnings.push(
                 "Tiled export includes the first world only, matching the original exporter".into(),
@@ -607,32 +848,51 @@ impl Project {
             }
         }
         Ok(ExportReport {
-            outputs: self.export_tiled(dir)?,
+            outputs: self.export_tiled_with_progress(dir, &mut progress)?,
             warnings,
         })
     }
     /// TMX deliberately exports the first world only, matching upstream's limitation.
     pub fn export_tiled(&self, dir: impl AsRef<Path>) -> Result<Vec<PathBuf>> {
+        self.export_tiled_with_progress(dir, &mut |_, _| {})
+    }
+    fn export_tiled_with_progress(
+        &self,
+        dir: impl AsRef<Path>,
+        progress: &mut impl FnMut(usize, usize),
+    ) -> Result<Vec<PathBuf>> {
         let dir = dir.as_ref();
         let mut out = Vec::new();
         let defs = arr(&self.json["defs"]["layers"]);
-        let mut counts = BTreeMap::new();
-        for d in defs {
-            *counts.entry(n(d, "gridSize")).or_insert(0) += 1;
+        let mut sizes = defs.iter().map(|def| n(def, "gridSize"));
+        let mut counts = HashMap::new();
+        for size in sizes.clone() {
+            *counts.entry(size).or_insert(0) += 1;
         }
-        let grid = counts
-            .iter()
-            .max_by_key(|(_, v)| **v)
-            .map(|(g, _)| *g)
-            .unwrap_or_else(|| n(&self.json, "defaultGridSize"))
-            .max(1);
-        let first_world = self.level_keys().first().and_then(|k| k.world);
+        let mut grid = sizes
+            .next()
+            .unwrap_or_else(|| self.json["defaultGridSize"].as_i64().unwrap_or(16));
+        // LDtk compares other sizes in definition order, starting with a count of one.
+        let mut best_count = 1;
+        for size in sizes {
+            let count = counts[&size];
+            if size != grid && count > best_count {
+                grid = size;
+                best_count = count;
+            }
+        }
+        let grid = grid.max(1);
+        let first_world = self.tiled_world_index();
         let keys: Vec<_> = self
             .level_keys()
             .into_iter()
             .filter(|k| k.world == first_world)
             .collect();
         let mut maps = Vec::new();
+        let total = keys.len();
+        if total > 0 {
+            progress(0, total);
+        }
         for (index, key) in keys.iter().enumerate() {
             let l = self
                 .level(*key)
@@ -876,7 +1136,12 @@ impl Project {
                 format!("{}.tmx", safe_name(s(l, "identifier"))?)
             };
             out.push((dir.join(&filename), xml.into_bytes()));
-            maps.push(json!({"fileName":filename,"x":l["worldX"],"y":l["worldY"]}));
+            let (x, y) = effective_position(self, *key)?;
+            maps.push(json!({"fileName":filename,"x":x,"y":y}));
+            progress(index + 1, total);
+        }
+        if total > 0 {
+            progress(0, 0);
         }
         let stem = self
             .path
@@ -892,12 +1157,24 @@ impl Project {
     }
     /// This preserves upstream's experimental/incomplete GMS2 schema, including empty entity layers.
     pub fn export_gamemaker(&self, dir: impl AsRef<Path>) -> Result<Vec<PathBuf>> {
+        self.export_gamemaker_with_progress(dir, |_, _| {})
+    }
+    pub fn export_gamemaker_with_progress(
+        &self,
+        dir: impl AsRef<Path>,
+        mut progress: impl FnMut(usize, usize),
+    ) -> Result<Vec<PathBuf>> {
         let dir = dir.as_ref();
         let mut out = Vec::new();
         for td in arr(&self.json["defs"]["tilesets"]) {
             out.push((dir.join(format!("{}.yy",safe_name(s(td,"identifier"))?)),bytes(&json!({"name":td["identifier"],"tags":[],"resourceType":"GMRTileset","resourceVersion":"1.0"}))?));
         }
-        for key in self.level_keys() {
+        let keys = self.level_keys();
+        let total = keys.len();
+        if total > 0 {
+            progress(0, total);
+        }
+        for (index, key) in keys.into_iter().enumerate() {
             let l = self
                 .level(key)
                 .ok_or_else(|| Error::Invalid("missing external level".into()))?;
@@ -941,6 +1218,10 @@ impl Project {
                 dir.join(format!("{}.yy", safe_name(s(l, "identifier"))?)),
                 bytes(&room)?,
             ));
+            progress(index + 1, total);
+        }
+        if total > 0 {
+            progress(0, 0);
         }
         publish(out)
     }

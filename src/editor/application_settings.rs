@@ -1,5 +1,6 @@
 //! Application settings, following the upstream EditAppSettings dialog.
 use super::*;
+use source_controls::{form_heading as heading, form_row as row};
 
 const SCALES: [f64; 18] = [
     0.5, 0.6, 0.7, 0.8, 0.9, 1., 1.1, 1.2, 1.3, 1.4, 1.5, 2., 2.5, 3., 3.5, 4., 4.5, 5.,
@@ -9,6 +10,7 @@ const WORLD_SWITCH: [(&str, &str); 3] = [
     ("ZoomOutOnly", "Switch when zooming out"),
     ("ZoomInAndOut", "Switch when zooming in or out (default)"),
 ];
+const LANGUAGES: [(&str, &str); 2] = [("en", "English"), ("zh-CN", "简体中文")];
 
 #[derive(Clone, Default)]
 struct Session {
@@ -20,17 +22,6 @@ fn session_id() -> egui::Id {
     egui::Id::new("app-settings-session")
 }
 
-fn row(ui: &mut egui::Ui, label: &str, help: &str, width: f32, body: impl FnOnce(&mut egui::Ui)) {
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 8.;
-        source_controls::property_label_nowrap(ui, label, help, width);
-        ui.allocate_ui_with_layout(
-            egui::vec2(ui.available_width(), 30.),
-            egui::Layout::left_to_right(egui::Align::Center),
-            body,
-        );
-    });
-}
 fn checkbox(ui: &mut egui::Ui, values: &Value, patch: &mut Value, key: &str) {
     let mut value = values[key].as_bool().unwrap_or(false);
     if source_controls::checkbox(ui, &mut value, "").changed() {
@@ -53,11 +44,11 @@ fn choice(
             options
                 .iter()
                 .find(|(value, _)| *value == current)
-                .map_or(current, |(_, label)| *label),
+                .map_or_else(|| locale::tr(ui, options[0].1), |(_, label)| locale::tr(ui, label)),
         )
         .show_ui(ui, |ui| {
             for (value, label) in options {
-                ui.selectable_value(&mut selected, (*value).into(), *label);
+                ui.selectable_value(&mut selected, (*value).into(), locale::tr(ui, label));
             }
         });
     if selected != current {
@@ -87,31 +78,13 @@ fn number_choice(
         patch[key] = json!(selected);
     }
 }
-fn scale_label(value: f64) -> String {
+fn scale_label(ctx: &egui::Context, value: f64) -> String {
     format!(
         "{}%{}",
         (value * 100.).round() as i32,
-        if value == 1. { " (default)" } else { "" }
+        if value == 1. { locale::tr_ctx(ctx, " (default)") } else { "" }
     )
 }
-fn heading(ui: &mut egui::Ui, name: &str) {
-    ui.add_space(16.);
-    let response = ui.label(
-        RichText::new(name.to_uppercase())
-            .color(theme::ACCENT)
-            .font(FontId::new(
-                17.333,
-                egui::FontFamily::Name("panel-title".into()),
-            )),
-    );
-    ui.painter().hline(
-        ui.max_rect().x_range(),
-        response.rect.bottom() + 2.,
-        Stroke::new(1_f32, theme::ACCENT),
-    );
-    ui.add_space(8.);
-}
-
 impl EditorApp {
     pub(in crate::app) fn show_settings_dialog(&mut self, ctx: &egui::Context) {
         let width = 980_f32.min((ctx.content_rect().width() - 42.).max(260.));
@@ -146,7 +119,7 @@ impl EditorApp {
                 ui.painter().text(
                     header.min + egui::vec2(72., 26.5),
                     Align2::LEFT_CENTER,
-                    "APPLICATION SETTINGS",
+                    locale::tr(ui, "APPLICATION SETTINGS"),
                     FontId::new(20., egui::FontFamily::Name("panel-title".into())),
                     Color32::WHITE,
                 );
@@ -171,7 +144,7 @@ impl EditorApp {
                         close = source_controls::add_sized_button(
                             ui,
                             [width - 40., 42.],
-                            egui::Button::new(RichText::new("CLOSE").color(Color32::WHITE))
+                            egui::Button::new(RichText::new(locale::tr(ui, "CLOSE")).color(Color32::WHITE))
                                 .fill(Color32::from_rgb(235, 78, 0)),
                         )
                         .clicked();
@@ -184,11 +157,12 @@ impl EditorApp {
 
     pub(super) fn settings_properties(&mut self, ui: &mut egui::Ui) {
         let values = self.settings.value.clone();
+        let ctx = ui.ctx().clone();
         let mut patch = json!({});
         // Source dl.form columns size to the longest non-wrapping label plus its help badge.
         let label_width = |label: &str| {
             ui.painter()
-                .layout_no_wrap(label.into(), FontId::proportional(12.667), theme::TEXT)
+                .layout_no_wrap(locale::tr(ui, label).into(), FontId::proportional(12.667), theme::TEXT)
                 .size()
                 .x
                 + 32.
@@ -203,7 +177,7 @@ impl EditorApp {
                 egui::Button::image_and_text(
                     egui::Image::new(egui::include_image!("../../assets/icons/appUpdate.svg"))
                         .fit_to_exact_size(Vec2::splat(32.)),
-                    RichText::new(format!("A new update is available!\nInstall {version}"))
+                    RichText::new(locale::format(ui, "A new update is available!\nInstall {version}", &[("version", &version)]))
                         .color(Color32::WHITE),
                 )
                 .fill(Color32::from_rgb(44, 128, 179)),
@@ -220,13 +194,14 @@ impl EditorApp {
             ui.allocate_ui_with_layout(egui::vec2(380.,0.), egui::Layout::top_down(egui::Align::Min), |ui| {
                 ui.set_width(380.);
                 heading(ui,"General");
+                row(ui,"Language","language",left_width, |ui| choice(ui,&values,&mut patch,"language",&LANGUAGES));
                 row(ui,"Re-open last project","openLastProject",left_width, |ui| checkbox(ui,&values,&mut patch,"openLastProject"));
                 heading(ui,"Visuals");
                 for (key,label,help) in [("appUiScale","General UI scale","appScale"),("editorUiScale","Level UI scale","fontScale")] {
-                    row(ui,label,help,left_width, |ui| number_choice(ui,&values,&mut patch,key,&SCALES,scale_label));
+                    row(ui,label,help,left_width, |ui| number_choice(ui,&values,&mut patch,key,&SCALES,|value| scale_label(&ctx, value)));
                 }
                 row(ui,"Entity fields aspect","fieldsRender",left_width, |ui| choice(ui,&values,&mut patch,"fieldsRender",&[("FR_Outline","Outlined texts (default)"),("FR_Table","Opaque tables")]));
-                row(ui,"\"Nearby levels\" tiles rendering distance","nearbyTilesRenderingDist",left_width, |ui| number_choice(ui,&values,&mut patch,"nearbyTilesRenderingDist",&[0.,1.,1.5,2.], |value| if value==0. {"Disabled".into()} else {format!("{} pixels",(value*64.).ceil() as i32)}));
+                row(ui,"\"Nearby levels\" tiles rendering distance","nearbyTilesRenderingDist",left_width, |ui| number_choice(ui,&values,&mut patch,"nearbyTilesRenderingDist",&[0.,1.,1.5,2.], |value| if value==0. {locale::tr_ctx(&ctx, "Disabled").into()} else {locale::format_ctx(&ctx, "{value} pixels", &[("value", &((value*64.).ceil() as i32).to_string())])}));
                 row(ui,"Single-layer mode intensity","singleLayerModeIntensity",left_width, |ui| number_choice(ui,&values,&mut patch,"singleLayerModeIntensity",&[0.,0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9,1.], |value| format!("{}%",(value*100.).round() as i32)));
                 for (key,label) in [("startFullScreen","Start in fullscreen mode"),("colorBlind","Prefer color-blind colors"),("blurMask","Fade LDtk window when not focused")] {
                     row(ui,label,key,left_width, |ui| checkbox(ui,&values,&mut patch,key));
@@ -246,12 +221,12 @@ impl EditorApp {
                 row(ui,"World view with mouse wheel","autoSwitchOnZoom",right_width, |ui| choice(ui,&values,&mut patch,"autoWorldModeSwitch",&WORLD_SWITCH));
                 row(ui,"Navigation keys layout","navKeys",right_width, |ui| choice(ui,&values,&mut patch,"navigationKeys",&[("Wasd","WASD"),("Zqsd","ZQSD"),("Arrows","ARROWS")]));
                 heading(ui,"Advanced options");
-                row(ui,"Try to use best GPU","Try to use best GPU",right_width, |ui| { checkbox(ui,&values,&mut patch,"useBestGPU"); ui.label("(Recommended)"); });
+                row(ui,"Try to use best GPU","Try to use best GPU",right_width, |ui| { checkbox(ui,&values,&mut patch,"useBestGPU"); ui.label(locale::tr(ui, "(Recommended)")); });
                 row(ui,"Auto update","nativeAutoDownloadUpdates",right_width, |ui| {
                     let response = ui.scope(|ui| checkbox(ui,&values,&mut patch,"autoInstallUpdates")).response;
-                    response.on_hover_text("Automatically download updates on supported native platforms. Installation still requires confirmation.");
-                    ui.label("(Recommended)");
-                    if ui.small_button("Check for updates").clicked() { self.open_updater(ui.ctx()); }
+                    response.on_hover_text(locale::tr(ui, "Automatically download updates on supported native platforms. Installation still requires confirmation."));
+                    ui.label(locale::tr(ui, "(Recommended)"));
+                    if ui.small_button(locale::tr(ui, "Check for updates")).clicked() { self.open_updater(ui.ctx()); }
                 });
                 row(ui,"Log file","Log file",right_width, |ui| {
                     if let Some(path) = app_log::path(self.settings.path.as_deref()) {
@@ -263,15 +238,36 @@ impl EditorApp {
                             ui.spacing_mut().button_padding = egui::vec2(4.,2.);
                             if source_controls::add_sized_button(ui,[30.,30.],egui::Button::image(
                                 egui::Image::new(egui::include_image!("../../assets/icons/locate.svg")).fit_to_exact_size(Vec2::splat(16.))))
-                                .on_hover_text("Locate log file").clicked()
+                                .on_hover_text(locale::tr(ui, "Locate log file")).clicked()
                                 && let Err(error)=home_files::locate(&path,true) { self.status=error.to_string(); self.status_error=true; }
                         });
-                    } else { ui.label("No log file in this session"); }
+                    } else { ui.label(locale::tr(ui, "No log file in this session")); }
+                });
+                row(ui,"AI assistant (MCP)","mcp",right_width, |ui| {
+                    let project = self.project.as_ref().and_then(|p| p.path.as_deref()).and_then(Path::to_str);
+                    let executable = std::env::current_exe().ok();
+                    let command = executable.as_deref().and_then(Path::to_str);
+                    let response = ui.add_enabled(
+                        project.is_some() && command.is_some(),
+                        egui::Button::new(locale::tr(ui, "Copy MCP configuration")),
+                    );
+                    if response.on_disabled_hover_text(locale::tr(ui, "Open a saved project to copy its MCP configuration.")).clicked()
+                        && let (Some(project), Some(command)) = (project, command)
+                    {
+                        let config = json!({"mcpServers":{"leveleditor":{"command":command,"args":["--mcp",project]}}});
+                        ui.ctx().copy_text(serde_json::to_string_pretty(&config).expect("MCP configuration is JSON"));
+                        self.status = "MCP configuration copied.".into();
+                        self.status_error = false;
+                    }
                 });
             });
         });
         if changed(&patch) {
             apply_patch(&mut self.settings.value, &patch);
+            if patch.get("language").is_some() {
+                locale::set(ui.ctx(), self.settings.language());
+                ui.ctx().request_repaint();
+            }
             if patch["openLastProject"] == false {
                 self.settings.value["lastProject"] = Value::Null;
             } else if patch["openLastProject"] == true {
@@ -418,6 +414,51 @@ mod tests {
             frame(&mut app, &ctx, vec![]);
         }
         (app, ctx)
+    }
+
+    #[test]
+    fn language_selection_updates_ui_and_persists_without_changing_the_project() {
+        let (mut app, ctx) = setup();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        app.settings.path = Some(path.clone());
+        let project = app.project.as_ref().unwrap().json.clone();
+        let output = frame(&mut app, &ctx, vec![]);
+        click(&mut app, &ctx, label(&output, "English"));
+        let output = frame(&mut app, &ctx, vec![]);
+        click(&mut app, &ctx, label(&output, "简体中文"));
+        let output = frame(&mut app, &ctx, vec![]);
+        label(&output, "应用设置");
+        label(&output, "界面语言");
+        let saved: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(saved["language"], "zh-CN");
+        app.settings = settings::Settings::load_at(Some(path.clone()));
+        let output = frame(&mut app, &ctx, vec![]);
+        label(&output, "应用设置");
+
+        click(&mut app, &ctx, label(&output, "简体中文"));
+        let output = frame(&mut app, &ctx, vec![]);
+        click(&mut app, &ctx, label(&output, "English"));
+        let output = frame(&mut app, &ctx, vec![]);
+        label(&output, "APPLICATION SETTINGS");
+        let saved: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(saved["language"], "en");
+        assert_eq!(app.project.as_ref().unwrap().json, project);
+        assert!(!app.dirty);
+    }
+
+    #[test]
+    fn chinese_ui_translates_the_external_project_change_dialog() {
+        let (mut app, ctx) = setup();
+        app.show_panel(None);
+        app.settings.value["language"] = json!("zh-CN");
+        app.external_changes = Some(vec![PathBuf::from("地图工程.ldtk")]);
+        frame(&mut app, &ctx, vec![]);
+        let output = frame(&mut app, &ctx, vec![]);
+        label(&output, "工程文件已被外部程序修改");
+        label(&output, "地图工程.ldtk");
+        label(&output, "从磁盘重新加载");
+        label(&output, "保留当前版本");
     }
 
     #[test]

@@ -108,6 +108,44 @@ impl Default for Assets {
     }
 }
 impl Assets {
+    pub(crate) fn loaded_image_paths(&self) -> impl Iterator<Item = &Path> {
+        self.textures
+            .keys()
+            .map(PathBuf::as_path)
+            .filter(|p| p.is_absolute())
+    }
+
+    pub(crate) fn discard_unused_file_images(&mut self, is_referenced: impl Fn(&Path) -> bool) {
+        let unused = self
+            .textures
+            .keys()
+            .chain(self.pending.keys())
+            .filter(|path| path.is_absolute() && !is_referenced(path))
+            .cloned()
+            .collect::<Vec<_>>();
+        for path in unused {
+            self.invalidate(&path);
+        }
+    }
+
+    pub(crate) fn store_file_image(
+        &mut self,
+        ctx: &Context,
+        path: &Path,
+        rgba: image::RgbaImage,
+    ) -> ldtk_core::Result<()> {
+        let size = [rgba.width() as usize, rgba.height() as usize];
+        if size[0] as u64 * size[1] as u64 > MAX_CACHE_BYTES as u64 * 8 / 65 {
+            return Err(ldtk_core::Error::Invalid(
+                "Image exceeds the 128 MiB atlas cache budget".into(),
+            ));
+        }
+        let image = ColorImage::from_rgba_unmultiplied(size, rgba.as_raw());
+        self.invalidate(path);
+        let _ = self.install_pixels(ctx, path.to_owned(), image, rgba.into_raw());
+        Ok(())
+    }
+
     pub fn poll(&mut self, ctx: &Context) {
         while let Ok(result) = self.results.try_recv() {
             self.install_decoded(ctx, result);
@@ -233,6 +271,27 @@ impl Assets {
             rgba.as_raw(),
         );
         Some(self.install_pixels(ctx, path.into(), image, rgba.into_raw()))
+    }
+    pub fn unavailable_classic_atlas(&mut self, ctx: &Context, grid: i64) -> Option<TextureHandle> {
+        let size = u32::try_from(grid).ok()?;
+        let side = size as usize;
+        if side == 0
+            || side > ctx.input(|input| input.max_texture_side)
+            || side.saturating_mul(side).saturating_mul(9) > MAX_CACHE_BYTES
+        {
+            return None;
+        }
+        let path = PathBuf::from(format!("@ldtk/unavailable-classic-atlas-{grid}"));
+        if let Some(texture) = self.cached(&path) {
+            return Some(texture);
+        }
+        let rgba = image::RgbaImage::from_fn(size, size, |x, y| {
+            let red =
+                ldtk_core::exports::unavailable_classic_tile_red(grid, i64::from(x), i64::from(y));
+            image::Rgba([red, 0, 0, 255])
+        });
+        let pixels = ColorImage::from_rgba_unmultiplied([side, side], rgba.as_raw());
+        Some(self.install_pixels(ctx, path, pixels, rgba.into_raw()))
     }
     pub fn builtin(&mut self, ctx: &Context, name: &str, bytes: &[u8]) -> Option<TextureHandle> {
         let path = PathBuf::from(format!("@ldtk/{name}"));
@@ -458,6 +517,21 @@ mod tests {
         assets.clear();
         assert_eq!(assets.stats().bytes, 0);
         assert_eq!(assets.stats().pending, 0);
+    }
+    #[test]
+    fn preview_154_embedded_atlas_supplies_the_collision_fill() {
+        let ctx = Context::default();
+        let mut assets = Assets::default();
+        let _texture = assets.embedded(&ctx).unwrap();
+        // The preview fills the nine color swatches in atlas row 18.
+        for column in 16..=24 {
+            assert_eq!(
+                assets.embedded_tile_is_opaque([column * 16, 288], [16; 2]),
+                Some(true),
+                "tile {}",
+                18 * 32 + column,
+            );
+        }
     }
     #[test]
     fn stale_decoder_results_do_not_restore_invalidated_assets() {

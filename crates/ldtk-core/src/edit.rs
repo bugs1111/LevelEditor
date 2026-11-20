@@ -1,4 +1,4 @@
-use crate::{Error, LevelKey, Project, Result};
+use crate::{DeferredAutoLayers, Error, LevelKey, Project, Result};
 use serde_json::{Value, json};
 
 fn invalid(message: &str) -> Error {
@@ -61,6 +61,16 @@ impl Project {
         key: LevelKey,
         layer_index: usize,
         cells: &[([i32; 2], i32)],
+    ) -> Result<usize> {
+        self.paint_int_grid_cells_with_deferred(key, layer_index, cells, None)
+    }
+
+    pub fn paint_int_grid_cells_with_deferred(
+        &mut self,
+        key: LevelKey,
+        layer_index: usize,
+        cells: &[([i32; 2], i32)],
+        deferred: Option<&mut DeferredAutoLayers>,
     ) -> Result<usize> {
         let layer = self
             .layer(key, layer_index)
@@ -125,16 +135,19 @@ impl Project {
         }
         let has_auto = self.json["defs"]["layers"].as_array().is_some_and(|defs| {
             defs.iter().any(|d| {
-                (d["uid"].as_i64() == uid || d["autoSourceLayerDefUid"].as_i64() == uid)
+                (d["uid"].as_i64() == uid
+                    || d["autoSourceLayerDefUid"].as_i64() == uid
+                    || uid.is_some_and(|u| crate::autotile::blocks_auto_layer(d, u)))
                     && active_auto_rules(d)
             })
         });
         if has_auto
             && let Some(uid) = uid
-            && let Err(error) = self.rebuild_auto_layers_area(
+            && let Err(error) = self.update_auto_layers_after_paint(
                 key,
                 uid,
                 [min_x, min_y, max_x - min_x + 1, max_y - min_y + 1],
+                deferred,
             )
         {
             for (&index, &(old, _)) in &touched {
@@ -142,6 +155,25 @@ impl Project {
                     json!(old);
             }
             return Err(error);
+        }
+        let mut erased = touched
+            .iter()
+            .filter_map(|(&index, &(_, value))| (value == 0).then_some(index))
+            .peekable();
+        if erased.peek().is_some() {
+            let iid = self
+                .layer(key, layer_index)
+                .and_then(|layer| layer["iid"].as_str())
+                .map(str::to_owned);
+            crate::grid_presence::update_presence(
+                &mut self.grid_presence,
+                iid.as_deref(),
+                |presence| {
+                    for index in erased {
+                        presence.set(index, false);
+                    }
+                },
+            );
         }
         Ok(touched.len())
     }
@@ -173,6 +205,34 @@ impl Project {
         erase: bool,
         stack: bool,
     ) -> Result<bool> {
+        self.paint_tile_stacked_with_deferred(
+            key,
+            layer_index,
+            x,
+            y,
+            tile_id,
+            src,
+            flips,
+            erase,
+            stack,
+            None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn paint_tile_stacked_with_deferred(
+        &mut self,
+        key: LevelKey,
+        layer_index: usize,
+        x: i32,
+        y: i32,
+        tile_id: i32,
+        src: [i32; 2],
+        flips: i32,
+        erase: bool,
+        stack: bool,
+        deferred: Option<&mut DeferredAutoLayers>,
+    ) -> Result<bool> {
         let layer = self
             .layer(key, layer_index)
             .ok_or_else(|| invalid("layer not found"))?;
@@ -180,7 +240,7 @@ impl Project {
         let killer = uid.is_some()
             && self.json["defs"]["layers"].as_array().is_some_and(|ds| {
                 ds.iter()
-                    .any(|d| d["autoTilesKilledByOtherLayerUid"].as_i64() == uid)
+                    .any(|d| uid.is_some_and(|u| crate::autotile::blocks_auto_layer(d, u)))
             });
         let old = killer.then(|| layer["gridTiles"].clone());
         let changed =
@@ -188,7 +248,8 @@ impl Project {
         if changed
             && killer
             && let Some(uid) = uid
-            && let Err(error) = self.rebuild_auto_layers_area(key, uid, [x, y, 1, 1])
+            && let Err(error) =
+                self.update_auto_layers_after_paint(key, uid, [x, y, 1, 1], deferred)
         {
             self.layer_mut(key, layer_index).expect("validated layer")["gridTiles"] =
                 old.expect("saved killer tiles");

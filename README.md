@@ -4,7 +4,7 @@
 
 核心编辑、数据和导出链路已实现，原版 icons、字体、图集、发布说明图片及完整 examples 已复用。功能实现、原生 UI 与实际验证分开记录在[功能对照表](docs/status/parity.md)和[验收报告](docs/status/acceptance-report.md)中；测试通过或局部像素一致不代表全部界面状态和平台已完成保真验收。
 
-上游基准：[deepnight/ldtk](https://github.com/deepnight/ldtk/tree/2b7b5512f2f88fa281cb6492debbb26ead7838d4)，提交 `2b7b5512f2f88fa281cb6492debbb26ead7838d4`。本机对照安装为 LDtk 1.5.3。
+当前移植对照为 LDtk 1.5.4 预览版，使用 [deepnight/ldtk 的固定提交](https://github.com/deepnight/ldtk/tree/53cfd5392e7cbbf83730cba6ff0330884a6d48d8)。已有的数据语料检查仍使用 [1.5.3 的固定提交](https://github.com/deepnight/ldtk/tree/2b7b5512f2f88fa281cb6492debbb26ead7838d4)。
 
 ## 运行
 
@@ -26,7 +26,7 @@ scripts/run
 scripts/run examples/original/Typical_TopDown_example.ldtk
 ```
 
-脚本优先使用项目内 `.tools/` 工具链，也支持系统已安装的 Cargo。首次安装 Rust 可运行 `scripts/bootstrap-rust`，该脚本不修改全局 shell 配置。
+脚本使用 `PATH` 上的 Cargo。首次安装 Rust 可运行 `scripts/bootstrap-rust`，rustup 默认使用当前用户的 `~/.cargo` 和 `~/.rustup`。安装后打开新终端即可在各项目中使用。
 
 Linux 的 X11 运行环境还需要 Vulkan 驱动与 `libxkbcommon-x11`；Ubuntu/Debian 对应运行库为 `libvulkan1`、`libxkbcommon-x11-0`。GUI CI 使用独立 Xvfb 显示和 Mesa lavapipe，实际适配器及硬件验收范围见[GUI/GPU 记录](docs/status/gui-platform-acceptance.md)。
 
@@ -46,7 +46,7 @@ just build -t linux -m release
 | `win` | `x86_64-pc-windows-gnu` | `dist/win/<模式>/ldtk-rs.exe` |
 | `linux` | `x86_64-unknown-linux-gnu`，glibc ≥ 2.28 | `dist/linux/<模式>/ldtk-rs` |
 
-首次构建会按需安装缺少的 Rust target。Windows 使用 [Homebrew MinGW](https://formulae.brew.sh/formula/mingw-w64)，缺少编译器时执行 `brew install mingw-w64`，因此需先安装 Homebrew；编译器运行库静态链接。Linux 使用 [cargo-zigbuild](https://github.com/rust-cross/cargo-zigbuild) 0.21.8 和 Zig 0.15.2，自动安装到 `.tools/cross` 的 Python 虚拟环境，并缓存后续构建。首次安装需要网络，已有工具链及 Cargo 依赖可复用。
+首次构建会按需安装缺少的 Rust target。Windows 使用 [Homebrew MinGW](https://formulae.brew.sh/formula/mingw-w64)，缺少编译器时执行 `brew install mingw-w64`。编译器运行库静态链接。Linux 构建所需的 [cargo-zigbuild](https://github.com/rust-cross/cargo-zigbuild) 0.21.8 和 Zig 0.15.2 会自动安装到 `~/.cargo/cross`，已设置 `CARGO_HOME` 时使用其 `cross` 子目录。其他项目可以通过 Cargo 的 `bin` 目录调用这两个命令。首次安装需要网络，后续构建复用已安装的工具和缓存。
 
 这些命令使用 `Cargo.lock` 构建当前源码并打印最终路径。Linux 运行时仍需 Vulkan 驱动及 X11/Wayland 运行库。Windows/Linux 的交叉编译与目标系统的 GUI 运行分别验收；本地构建记录见 [构建命令验收](docs/status/build-command.md)。
 
@@ -64,6 +64,42 @@ scripts/package-macos
 
 新建先选择位置，保存成功后进入编辑器；Home 可导入 Ogmo、打开全部官方示例和最近工程、浏览备份。支持 IntGrid/Tiles/AutoLayer/Entities、自动规则与向导、混合选择/剪贴板、Point/EntityRef/数组默认、多世界、定义和枚举编辑、所有原版导出、自定义命令/钩子、资源重载、备份/崩溃恢复及多语言文本编辑器。重复导入遇到已有同名工程会使用新文件名，保留原文件。
 
+## 界面语言
+
+按 F12 打开应用设置。在「常规 → 界面语言」切换 English 或简体中文，设置会立即生效并在下次启动时保留。
+
+## 让 AI 助手编辑关卡（MCP）
+
+打开已保存的工程后，按 F12，在「高级选项 → AI 助手（MCP）」复制客户端配置。
+
+用同一个 LevelEditor 可执行文件启动 MCP。每个会话绑定一个本地 `.ldtk` 项目，通过标准输入输出通信，无需启动桌面窗口。
+
+在 Codex 中注册，替换为可执行文件和项目的实际绝对路径。
+
+```sh
+codex mcp add leveleditor -- "/path/to/ldtk-rs" --mcp "/path/to/My Game/world.ldtk"
+```
+
+macOS 应用包中的可执行文件是 `/Applications/LevelEditor.app/Contents/MacOS/ldtk-rs`，Windows 使用发布包里的 `ldtk-rs.exe`。其他 MCP 客户端可使用以下 stdio 配置。
+
+```json
+{
+  "mcpServers": {
+    "leveleditor": {
+      "command": "/path/to/ldtk-rs",
+      "args": ["--mcp", "/path/to/My Game/world.ldtk"]
+    }
+  }
+}
+```
+
+1. 用 `project_info`、`get_definitions`、`list_worlds`、`list_levels` 了解项目，再用 `get_level` 和 `get_layer` 确认关卡、图层和实体的 IID。
+2. `paint_int_grid` 用图层网格坐标写入一个格子，值为 `0` 时清空。`paint_tile`、`erase_tile` 使用同样的网格坐标。`add_entity`、`move_entity` 使用相对于关卡原点的像素坐标，`remove_entity` 按实体 IID 删除。
+3. 修改先保存在 MCP 进程内存中，调用 `save_project` 才会写入工程和外部关卡文件。保存前如果发现磁盘文件已更改，会保留会话中的修改并返回冲突。用 `reload_project` 读取磁盘版本，有未保存修改时必须显式传入 `discard_changes: true` 才会丢弃。退出会话会丢弃未保存修改。
+4. 如果桌面编辑器同时打开了该工程，MCP 保存后可在外部修改提示中选择「从磁盘重新加载」查看结果。有未保存的桌面编辑时，编辑器会先询问是否保存。
+
+MCP 保存使用工程的备份设置，范围为 LDtk 项目文档及其外部关卡。工具列表和参数以客户端查询到的 MCP schema 为准。
+
 ## 检查
 
 ```sh
@@ -73,7 +109,7 @@ scripts/cargo fmt --all -- --check
 scripts/cargo build --release --locked
 ```
 
-原版数据语料检查需要 `.reference/ldtk` 是上述固定提交的源码检出：
+原版数据语料检查需要 `.reference/ldtk` 是上述 1.5.3 固定提交的源码检出：
 
 ```sh
 scripts/cargo test -p ldtk-core --test upstream_corpus -- --ignored --nocapture

@@ -38,6 +38,8 @@ fn button(
     label: &str,
     color: Color32,
 ) -> egui::Response {
+    let show_chevron = label == "Examples";
+    let label = locale::tr(ui, label);
     let font = FontId::new(
         if ui.ctx().content_rect().width() <= 1000. {
             12.
@@ -63,7 +65,7 @@ fn button(
     } else {
         6. + galley.size().x
     };
-    let group_width = 25. + label_width + if label == "Examples" { 22. } else { 0. };
+    let group_width = 25. + label_width + if show_chevron { 22. } else { 0. };
     let left = response.rect.center().x - group_width * 0.5;
     egui::Image::new(image).paint_at(
         ui,
@@ -79,7 +81,7 @@ fn button(
             Color32::WHITE,
         );
     }
-    if label == "Examples" {
+    if show_chevron {
         egui::Image::new(egui::include_image!("../../assets/icons/expanded.svg")).paint_at(
             ui,
             Rect::from_center_size(
@@ -99,6 +101,7 @@ fn left_button(
     label: &str,
     color: Color32,
 ) -> egui::Response {
+    let label = locale::tr(ui, label);
     let (rect, response) = ui.allocate_exact_size(egui::vec2(width, height), Sense::click());
     let fill = if response.hovered() {
         if color == theme::MEDIUM {
@@ -338,18 +341,19 @@ impl EditorApp {
             ui.spacing_mut().button_padding=egui::vec2(8.,0.);
             let fullscreen=ctx.input(|input| input.viewport().fullscreen.unwrap_or(false));
             let import_font = FontId::proportional(if ctx.content_rect().width() <= 1000. {12.} else {14.667});
-            let import_width = 47. + ui.fonts_mut(|fonts| fonts.layout_no_wrap("Import".into(), import_font, Color32::WHITE).size().x);
+            let import_label = locale::tr(ui, "Import");
+            let import_width = 47. + ui.fonts_mut(|fonts| fonts.layout_no_wrap(import_label.into(), import_font, Color32::WHITE).size().x);
             let flexible=(ui.available_width()-import_width-41.-if fullscreen {41.+2.} else {0.}-8.)/3.;
-            if button(ui,flexible,egui::include_image!("../../assets/icons/tutorial.svg"),"Examples",Color32::from_rgb(73,141,85)).on_hover_text("These examples showcase various functionalities from LDtk editor, including auto-layer rules and entities.").clicked() { hide = !hide; }
+            if button(ui,flexible,egui::include_image!("../../assets/icons/tutorial.svg"),"Examples",Color32::from_rgb(73,141,85)).on_hover_text(locale::tr(ui, "These examples showcase various functionalities from LDtk editor, including auto-layer rules and entities.")).clicked() { hide = !hide; }
             if button(ui,flexible,egui::include_image!("../../assets/icons/new.svg"),"New",Color32::from_rgb(227,77,0)).clicked() { action=Some(Action::New); }
             if button(ui,flexible,egui::include_image!("../../assets/icons/open.svg"),"Load",Color32::from_rgb(227,77,0)).clicked() { action=Some(Action::Browse); }
             let import=button(ui,import_width,egui::include_image!("../../assets/icons/open.svg"),"Import",theme::LIGHT);
             egui::Popup::menu(&import).show(|ui| {
-                ui.weak("Import a project from another app");
-                if ui.button("Ogmo 3 project").clicked() { action=Some(Action::BrowseOgmo);ui.close(); }
+                ui.weak(locale::tr(ui, "Import a project from another app"));
+                if ui.button(locale::tr(ui, "Ogmo 3 project")).clicked() { action=Some(Action::BrowseOgmo);ui.close(); }
             });
-            if button(ui,41.,egui::include_image!("../../assets/icons/settings.svg"),"",theme::LIGHT).on_hover_text("Application settings").clicked() { self.show_panel(Some(Panel::Settings)); }
-            if fullscreen && button(ui,41.,egui::include_image!("../../assets/icons/exit.svg"),"",theme::DARK).on_hover_text("Close app").clicked() { action=Some(Action::Quit); }
+            if button(ui,41.,egui::include_image!("../../assets/icons/settings.svg"),"",theme::LIGHT).on_hover_text(locale::tr(ui, "Application settings")).clicked() { self.show_panel(Some(Panel::Settings)); }
+            if fullscreen && button(ui,41.,egui::include_image!("../../assets/icons/exit.svg"),"",theme::DARK).on_hover_text(locale::tr(ui, "Close app")).clicked() { action=Some(Action::Quit); }
         });
         if !hide {
             self.home_samples(ctx, &mut ui, &mut hide, &mut action);
@@ -372,7 +376,10 @@ impl EditorApp {
                 .id(search_id.with("input"))
                 .font(FontId::proportional(14.667))
                 .text_color(Color32::WHITE)
-                .hint_text(RichText::new("Search...").color(Color32::from_rgb(117, 117, 117)))
+                .hint_text(
+                    RichText::new(locale::tr(&ui, "Search..."))
+                        .color(Color32::from_rgb(117, 117, 117)),
+                )
                 .frame(false)
                 .margin(egui::Margin {
                     left: 29,
@@ -464,7 +471,10 @@ impl EditorApp {
         parent.painter().text(
             egui::pos2(footer.right(), footer.center().y + 9.),
             egui::Align2::RIGHT_CENTER,
-            "If you read this, you're awesome! Have a nice day <3",
+            locale::tr(
+                parent,
+                "If you read this, you're awesome! Have a nice day <3",
+            ),
             FontId::proportional(12.),
             theme::LIGHT,
         );
@@ -497,7 +507,7 @@ impl EditorApp {
                     ui.painter().text(
                         title.left_center() + egui::vec2(4., 0.),
                         egui::Align2::LEFT_CENTER,
-                        "Example projects to discover LDtk",
+                        locale::tr(ui, "Example projects to discover LDtk"),
                         FontId::proportional(13.333),
                         HELP,
                     );
@@ -709,9 +719,9 @@ impl EditorApp {
                 egui::pos2(rect.center().x, rect.top() + 49.),
                 egui::Align2::CENTER_CENTER,
                 if files {
-                    "No recent project file"
+                    locale::tr(ui, "No recent project file")
                 } else {
-                    "No recent folder"
+                    locale::tr(ui, "No recent folder")
                 },
                 FontId::new(20.8, egui::FontFamily::Name("panel-title".into())),
                 Color32::from_rgb(115, 127, 157),
@@ -729,9 +739,9 @@ impl EditorApp {
                 ui.add_space(3.);
                 ui.label(
                     RichText::new(if files {
-                        "Recent projects"
+                        locale::tr(ui, "Recent projects")
                     } else {
-                        "Recent folders"
+                        locale::tr(ui, "Recent folders")
                     })
                     .font(FontId::new(
                         11.733,
@@ -963,7 +973,7 @@ impl EditorApp {
         ui.painter().text(
             rect.min + egui::vec2(8., 17.),
             egui::Align2::LEFT_TOP,
-            "Update 1.5.3",
+            locale::format(ui, "Update {version}", &[("version", "1.5.3")]),
             FontId::proportional(14.667),
             theme::TEXT,
         );
@@ -976,7 +986,7 @@ impl EditorApp {
         ui.painter().text(
             rect.min + egui::vec2(48., 48.),
             egui::Align2::LEFT_TOP,
-            "Release notes",
+            locale::tr(ui, "Release notes"),
             FontId::proportional(18.667),
             theme::ACCENT,
         );
@@ -1059,16 +1069,16 @@ impl EditorApp {
                     ui.add_space(32.);
                     for title in ["LDtk is \"pay-what-you-want, including free\",","even for commercial projects :)"] {
                         let (rect,_)=ui.allocate_exact_size(egui::vec2(700.,31.),Sense::hover());
-                        ui.painter().text(rect.center(),egui::Align2::CENTER_CENTER,title,FontId::new(25.6,egui::FontFamily::Name("heading".into())),theme::ACCENT);
+                        ui.painter().text(rect.center(),egui::Align2::CENTER_CENTER,locale::tr(ui, title),FontId::new(25.6,egui::FontFamily::Name("heading".into())),theme::ACCENT);
                     }
                     ui.add_space(32.);
-                    ui.label(RichText::new("Everything you will create with it will be fully yours: you are free to use these creations as you wish. If you want to financially support my work, you have various ways to do so:").size(16.));
+                    ui.label(RichText::new(locale::tr(ui, "Everything you will create with it will be fully yours: you are free to use these creations as you wish. If you want to financially support my work, you have various ways to do so:")).size(16.));
                     ui.add_space(32.);
                     ui.horizontal(|ui|{
                         ui.spacing_mut().item_spacing.x=2.;
                         for (index,(label,url)) in [("Buy once on Itch.io","https://deepnight.itch.io/ldtk/purchase"),("Become a GitHub sponsor","https://github.com/sponsors/deepnight"),("Check my Steam games","https://ldtk.io/go/steam")].into_iter().enumerate() {
                             let fill=if index==0{Color32::from_rgb(227,77,0)}else{Color32::from_rgb(42,115,171)};
-                            if panels::source_controls::add_sized_button(ui,[232.,56.],egui::Button::new(RichText::new(label).font(FontId::new(14.667,egui::FontFamily::Name("panel-title".into())))).fill(fill).corner_radius(0).stroke(Stroke::NONE)).clicked(){ctx.open_url(egui::OpenUrl::new_tab(url));}
+                            if panels::source_controls::add_sized_button(ui,[232.,56.],egui::Button::new(RichText::new(locale::tr(ui, label)).font(FontId::new(14.667,egui::FontFamily::Name("panel-title".into())))).fill(fill).corner_radius(0).stroke(Stroke::NONE)).clicked(){ctx.open_url(egui::OpenUrl::new_tab(url));}
                         }
                     });
                 });

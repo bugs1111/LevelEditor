@@ -3,6 +3,110 @@ use serde_json::json;
 use std::path::Path;
 
 #[test]
+fn removing_tileset_image_keeps_tile_ids_and_allows_reattachment() {
+    let mut p = Project::new();
+    let layer = p.add_layer("Ground", "Tiles", 16).unwrap();
+    let atlas = p.add_tileset(Path::new("atlas.png"), 16, 32, 32).unwrap();
+    p.assign_tileset(layer, atlas).unwrap();
+    let key = p.level_keys()[0];
+    p.paint_tile(key, 0, 0, 0, 3, [16, 16], 0, false).unwrap();
+    p.update_tileset_definition(
+        atlas,
+        &json!({"savedSelections":[{"ids":[3],"mode":"Stamp"}]}),
+    )
+    .unwrap();
+    p.remove_tileset_image(atlas).unwrap();
+    let def = p.tileset(atlas).unwrap();
+    assert_eq!(def["relPath"], serde_json::Value::Null);
+    assert_eq!(def["pxWid"], 0);
+    assert_eq!(def["__cWid"], 0);
+    assert_eq!(def["savedSelections"], json!([]));
+    assert_eq!(p.layer(key, 0).unwrap()["gridTiles"][0]["t"], 3);
+    p.update_tileset_definition(atlas, &json!({"relPath":"new.png","pxWid":32,"pxHei":32}))
+        .unwrap();
+    let tile = &p.layer(key, 0).unwrap()["gridTiles"][0];
+    assert_eq!(tile["t"], 3);
+    assert_eq!(tile["src"], json!([16, 16]));
+}
+
+#[test]
+fn rename_entity_tags_can_update_related_filters_atomically() {
+    let mut p = Project::new();
+    let layer = p.add_layer("Actors", "Entities", 16).unwrap();
+    let first = p.add_entity_def("First", 16, 16).unwrap();
+    let second = p.add_entity_def("Second", 16, 16).unwrap();
+    let field = p
+        .add_field_definition(Some(first), "Target", "EntityRef", false)
+        .unwrap();
+    p.update_entity_definition(first, &json!({"tags":["enemy", "boss"]}))
+        .unwrap();
+    p.update_entity_definition(second, &json!({"tags":["enemy"]}))
+        .unwrap();
+    p.update_layer_properties(
+        layer,
+        &json!({"requiredTags":["enemy"],"excludedTags":["other"]}),
+    )
+    .unwrap();
+    p.update_field_definition(field, &json!({"allowedRefTags":["enemy"]}))
+        .unwrap();
+    p.json["defs"]["entities"][1]
+        .as_object_mut()
+        .unwrap()
+        .remove("fieldDefs");
+    p.json["defs"]["layers"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("excludedTags");
+    let before = p.json.clone();
+    p.rename_definition_tag("entities", first, "enemy", "red foe", false)
+        .unwrap();
+    assert_eq!(
+        p.json["defs"]["entities"][0]["tags"],
+        json!(["boss", "red_foe"])
+    );
+    assert_eq!(p.json["defs"]["entities"][1]["tags"], json!(["enemy"]));
+    assert_eq!(
+        p.layer_def(layer).unwrap()["requiredTags"],
+        json!(["enemy"])
+    );
+    p.json = before;
+    p.rename_definition_tag("entities", first, "enemy", "red foe", true)
+        .unwrap();
+    assert_eq!(p.json["defs"]["entities"][1]["tags"], json!(["red_foe"]));
+    assert_eq!(
+        p.layer_def(layer).unwrap()["requiredTags"],
+        json!(["red_foe"])
+    );
+    assert_eq!(
+        p.json["defs"]["entities"][0]["fieldDefs"][0]["allowedRefTags"],
+        json!(["red_foe"])
+    );
+    assert!(p.json["defs"]["entities"][1].get("fieldDefs").is_none());
+    assert!(p.json["defs"]["layers"][0].get("excludedTags").is_none());
+    let before = p.json.clone();
+    assert!(
+        p.rename_definition_tag("entities", first, "red_foe", "***", true)
+            .is_err()
+    );
+    assert_eq!(p.json, before);
+}
+
+#[test]
+fn rename_tileset_tags_only_affects_tilesets_and_deduplicates() {
+    let mut p = Project::new();
+    let first = p.add_tileset(Path::new("first.png"), 16, 32, 32).unwrap();
+    let second = p.add_tileset(Path::new("second.png"), 16, 32, 32).unwrap();
+    p.update_tileset_definition(first, &json!({"tags":["outdoor","nature"]}))
+        .unwrap();
+    p.update_tileset_definition(second, &json!({"tags":["outdoor"]}))
+        .unwrap();
+    p.rename_definition_tag("tilesets", first, "outdoor", "nature", true)
+        .unwrap();
+    assert_eq!(p.tileset(first).unwrap()["tags"], json!(["nature"]));
+    assert_eq!(p.tileset(second).unwrap()["tags"], json!(["nature"]));
+}
+
+#[test]
 fn creating_layers_instantiates_every_level_with_schema_defaults_and_unique_ids() {
     let mut p = Project::new();
     p.json["levels"][0]["pxWid"] = json!(33);
@@ -84,6 +188,8 @@ fn tileset_assignment_adopts_source_atlas_grid_size_and_preserves_cells() {
 #[test]
 fn newly_created_entity_definition_can_be_placed_and_round_trips() {
     let mut p = Project::new();
+    p.json["defaultPivotX"] = json!(0.25);
+    p.json["defaultPivotY"] = json!(0.75);
     p.add_layer("Actors", "Entities", 16).unwrap();
     let uid = p.add_entity_def("Hero", 16, 24).unwrap();
     let key = LevelKey {
@@ -92,8 +198,14 @@ fn newly_created_entity_definition_can_be_placed_and_round_trips() {
     };
     assert!(p.add_entity(key, 0, uid, 32, 32).unwrap());
     let entity = &p.layer(key, 0).unwrap()["entityInstances"][0];
-    assert_eq!(entity["__pivot"], json!([0.5, 1]));
+    assert_eq!(entity["__pivot"], json!([0.25, 0.75]));
     assert_eq!(entity["height"], 24);
+    p.update_entity_definition(uid, &json!({"pivotX":0.5,"pivotY":0.5}))
+        .unwrap();
+    assert_eq!(
+        p.layer(key, 0).unwrap()["entityInstances"][0]["__pivot"],
+        json!([0.5, 0.5])
+    );
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("new.ldtk");
     p.save(&path).unwrap();
@@ -103,6 +215,18 @@ fn newly_created_entity_definition_can_be_placed_and_round_trips() {
     assert!(p.add_entity_def("Other", 0, 16).is_err());
     assert_eq!(p.json, before);
 }
+
+#[test]
+fn newly_created_entities_use_zero_pivot_when_legacy_defaults_are_absent() {
+    let mut p = Project::new();
+    let defaults = p.json.as_object_mut().unwrap();
+    defaults.remove("defaultPivotX");
+    defaults.remove("defaultPivotY");
+    p.add_entity_def("Hero", 16, 16).unwrap();
+    assert_eq!(p.json["defs"]["entities"][0]["pivotX"], 0);
+    assert_eq!(p.json["defs"]["entities"][0]["pivotY"], 0);
+}
+
 #[test]
 fn auto_layers_can_be_created_and_assigned_an_atlas() {
     let mut p = Project::new();

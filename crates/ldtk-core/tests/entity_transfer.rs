@@ -7,8 +7,11 @@ fn sample() -> (Project, i64, i64, i64, i64) {
     p.reorder_layer(from, 0).unwrap();
     let a = p.add_entity_def("Actor", 16, 16).unwrap();
     let b = p.add_entity_def("Item", 16, 16).unwrap();
-    p.update_entity_definition(a, &json!({"tags":["actor"],"exportToToc":true}))
-        .unwrap();
+    p.update_entity_definition(
+        a,
+        &json!({"tags":["actor"],"exportToToc":true,"pivotX":0.5,"pivotY":1}),
+    )
+    .unwrap();
     p.update_entity_definition(b, &json!({"tags":["item"]}))
         .unwrap();
     for key in [

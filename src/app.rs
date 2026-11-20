@@ -1,5 +1,7 @@
 #[path = "editor/app_log.rs"]
 mod app_log;
+#[path = "editor/bake_dialog.rs"]
+mod bake_dialog;
 #[path = "editor/bleep.rs"]
 pub(crate) mod bleep;
 #[path = "editor/brush.rs"]
@@ -22,6 +24,8 @@ mod entity_inspector;
 mod entity_tools;
 #[path = "editor/field_tools.rs"]
 mod field_tools;
+#[path = "editor/file_dialog.rs"]
+mod file_dialog;
 #[path = "editor/focus.rs"]
 mod focus;
 #[cfg(test)]
@@ -33,12 +37,16 @@ mod help;
 mod home_files;
 #[path = "editor/hooks.rs"]
 mod hooks;
+#[path = "editor/save_progress.rs"]
+mod save_progress;
 #[path = "editor/level_navigation.rs"]
 mod level_navigation;
 #[path = "editor/level_resize.rs"]
 mod level_resize;
 #[path = "editor/library.rs"]
 mod library;
+#[path = "editor/locale.rs"]
+mod locale;
 #[cfg(test)]
 #[path = "editor/modal_workflow_tests.rs"]
 mod modal_workflow_tests;
@@ -97,19 +105,56 @@ use crate::{
     assets::Assets,
     canvas::{self, RenderOptions, number, text},
     theme,
-    viewport::{Viewport, stroke_cells},
+    viewport::{CameraMotion, Viewport, stroke_cells},
 };
 use eframe::egui::{
     self, Align2, Color32, FontId, Key, Rect, RichText, Sense, Stroke, StrokeKind, Vec2,
 };
+use file_dialog::FileDialog;
 use ldtk_core::{History, LevelKey, Project};
 use serde_json::Value;
 use std::{
     collections::HashSet,
     path::{Path, PathBuf},
-    sync::mpsc::{self, Receiver},
+    sync::{
+        Arc, Mutex,
+        mpsc::{self, Receiver},
+    },
     time::Instant,
 };
+
+fn window_title(
+    project: Option<(&Path, Option<&str>)>,
+    dirty: bool,
+    progress: Option<(usize, usize)>,
+) -> String {
+    let mut title = String::new();
+    if let Some((done, total)) = progress {
+        let filled = if total == 0 {
+            5
+        } else {
+            done.min(total).saturating_mul(5) / total
+        };
+        title.push_str(&"▰".repeat(filled));
+        title.push_str(&"▱".repeat(5 - filled));
+        title.push_str("  ");
+    }
+    if let Some((path, level)) = project
+        && let Some(name) = path.file_stem()
+    {
+        title.push_str(&name.to_string_lossy());
+        if dirty {
+            title.push_str(" [UNSAVED]");
+        }
+        if let Some(level) = level {
+            title.push_str("  @ ");
+            title.push_str(level);
+        }
+        title.push_str("    --    ");
+    }
+    title.push_str("LevelEditor");
+    title
+}
 
 fn resource_path(relative: &str) -> PathBuf {
     resource_path_in(relative, std::env::current_exe().ok().as_deref())
@@ -185,13 +230,22 @@ enum Action {
     Close,
 }
 
+struct DeferredAutoPaint {
+    level: LevelKey,
+    deadline: f64,
+    rules: ldtk_core::DeferredAutoLayers,
+    prior_selection: Option<Value>,
+}
+
 pub struct EditorApp {
     project: Option<Project>,
     history: History,
     selected: Option<LevelKey>,
+    world_selection: Vec<String>,
     active_world: Option<usize>,
     layer: usize,
     viewport: Viewport,
+    camera_motion: CameraMotion,
     assets: Assets,
     hidden: HashSet<i64>,
     world: bool,
@@ -209,12 +263,22 @@ pub struct EditorApp {
     stroke: bool,
     stroke_erase: bool,
     last_cell: Option<[i32; 2]>,
+    brush_preview_waits_for_pointer: bool,
+    async_paint: Option<canvas::AsyncPaintPreview>,
+    deferred_auto_paint: Option<DeferredAutoPaint>,
+    stroke_was_dirty: bool,
     panel: Option<Panel>,
     pending: Option<Action>,
     suggest_backups: bool,
-    layer_notification: Option<(String, String, Instant)>,
+    quick_notification: Option<(String, Option<egui::ImageSource<'static>>, Instant)>,
     loading: Option<Receiver<Result<services::LoadedProject, String>>>,
-    saving: Option<Receiver<Result<services::SavedProject, String>>>,
+    loading_progress: Option<Arc<Mutex<Option<(usize, usize)>>>>,
+    saving_progress: Option<Arc<Mutex<save_progress::SaveProgress>>>,
+    exporting_progress: Option<Arc<Mutex<Option<(usize, usize)>>>>,
+    saving: Option<Receiver<ldtk_core::Result<services::SavedProject>>>,
+    save_attempt: Option<PathBuf>,
+    save_failure: Option<services::SaveFailure>,
+    application_write: Option<project_dialogs::ApplicationWrite>,
     exporting: Option<Receiver<Result<ldtk_core::exports::ExportReport, String>>>,
     external_changes: Option<Vec<PathBuf>>,
     status: String,
@@ -240,10 +304,20 @@ pub struct EditorApp {
     field_uid: Option<i64>,
     rule_group_uid: Option<i64>,
     rule_uid: Option<i64>,
+    rule_draft: Option<panels::RuleDraft>,
+    rule_hover: Option<(i64, i64, Option<i64>)>,
     command_palette: bool,
     search: String,
     status_error: bool,
     file_snapshot: Option<ldtk_core::FilesystemSnapshot>,
+    external_enum_reloads: std::collections::VecDeque<PathBuf>,
+    pending_enum_sync: Option<panels::PendingSync>,
+    pending_enum_removal: Option<String>,
+    layer_bake: Option<bake_dialog::LayerBake>,
+    int_grid_removal: Option<(i64, panels::IntGridRemoval)>,
+    pending_auto_layer_rebuild: bool,
+    rebuilding_auto_layers: Option<Receiver<ldtk_core::Result<Project>>>,
+    auto_layer_rebuild_progress: Option<Arc<Mutex<Option<(usize, usize)>>>>,
     last_file_check: Instant,
     command_result: Option<Receiver<command_tools::CommandEvent>>,
     command_cancel: Option<mpsc::Sender<()>>,
@@ -256,8 +330,12 @@ pub struct EditorApp {
     repaint: Option<egui::Context>,
     search_index: usize,
     search_focus: bool,
+    search_show_all: bool,
+    search_entries: Option<Vec<search::Entry>>,
     space_pressed: Option<Instant>,
     space_dragged: bool,
+    space_fit_pending: bool,
+    camera_drag: Option<tools::CameraDrag>,
     painted_cells: HashSet<[i32; 2]>,
     random_state: u64,
     world_depth: i64,
@@ -285,6 +363,7 @@ impl EditorApp {
         self.viewport.zoom = zoom;
         self.world = world;
         self.fit = false;
+        self.camera_motion.cancel();
     }
     #[allow(
         dead_code,
@@ -298,6 +377,8 @@ impl EditorApp {
         let mut digest = std::collections::hash_map::DefaultHasher::new();
         layer.map(|l| l["intGridCsv"].to_string()).hash(&mut digest);
         let gesture = self.gesture.as_ref().map(|gesture| match gesture {
+            tools::Gesture::WorldRectangle { .. } => "WorldRectangle",
+            tools::Gesture::WorldGroupMove { .. } => "WorldGroupMove",
             tools::Gesture::Rectangle { .. } => "Rectangle",
             tools::Gesture::SelectionMove { .. } => "SelectionMove",
             tools::Gesture::EntityMove { .. } => "EntityMove",
@@ -322,14 +403,7 @@ impl EditorApp {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_nanos() as u64)
             .unwrap_or(1);
-        app.grid = app.settings.bool("grid");
-        app.details = app.settings.bool("showDetails");
-        app.zen = app.settings.bool("zenMode");
-        app.single_layer = app.settings.bool("singleLayerMode");
-        app.tile_stacking = app.settings.bool("tileStacking");
-        app.tile_tags = app.settings.bool("tileEnumOverlays");
-        cc.egui_ctx
-            .set_zoom_factor(app.settings.float("appUiScale", 1.0));
+        app.apply_initial_preferences(&cc.egui_ctx);
         if app.settings.bool("startFullScreen") {
             cc.egui_ctx
                 .send_viewport_cmd(egui::ViewportCommand::Fullscreen(true));
@@ -358,14 +432,31 @@ impl EditorApp {
         app
     }
 
+    fn apply_initial_preferences(&mut self, ctx: &egui::Context) {
+        self.grid = self.settings.bool("grid");
+        self.details = self.settings.bool("showDetails");
+        self.zen = self.settings.bool("zenMode");
+        self.single_layer = self.settings.bool("singleLayerMode");
+        self.tile_stacking = self.settings.bool("tileStacking");
+        self.tile_tags = self.settings.bool("tileEnumOverlays");
+        // Before the first pass, set the scale so eframe measures the first
+        // frame at that scale. A deferred zoom would reuse the default rect.
+        ctx.options_mut(|options| {
+            options.zoom_factor = self.settings.float("appUiScale", 1.0);
+            options.zoom_with_keyboard = false;
+        });
+    }
+
     fn empty() -> Self {
         Self {
             project: None,
             history: History::default(),
             selected: None,
+            world_selection: Vec::new(),
             active_world: None,
             layer: 0,
             viewport: Viewport::default(),
+            camera_motion: CameraMotion::default(),
             assets: Assets::default(),
             hidden: HashSet::new(),
             world: false,
@@ -383,12 +474,22 @@ impl EditorApp {
             stroke: false,
             stroke_erase: false,
             last_cell: None,
+            brush_preview_waits_for_pointer: false,
+            async_paint: None,
+            deferred_auto_paint: None,
+            stroke_was_dirty: false,
             panel: None,
             pending: None,
             suggest_backups: false,
-            layer_notification: None,
+            quick_notification: None,
             loading: None,
+            loading_progress: None,
+            saving_progress: None,
+            exporting_progress: None,
             saving: None,
+            save_attempt: None,
+            save_failure: None,
+            application_write: None,
             exporting: None,
             external_changes: None,
             status: "Open a project or create a new one.".into(),
@@ -414,10 +515,20 @@ impl EditorApp {
             field_uid: None,
             rule_group_uid: None,
             rule_uid: None,
+            rule_draft: None,
+            rule_hover: None,
             command_palette: false,
             search: String::new(),
             status_error: false,
             file_snapshot: None,
+            external_enum_reloads: Default::default(),
+            pending_enum_sync: None,
+            pending_enum_removal: None,
+            layer_bake: None,
+            int_grid_removal: None,
+            pending_auto_layer_rebuild: false,
+            rebuilding_auto_layers: None,
+            auto_layer_rebuild_progress: None,
             last_file_check: Instant::now(),
             command_result: None,
             command_cancel: None,
@@ -430,8 +541,12 @@ impl EditorApp {
             repaint: None,
             search_index: 0,
             search_focus: false,
+            search_show_all: false,
+            search_entries: None,
             space_pressed: None,
             space_dragged: false,
+            space_fit_pending: false,
+            camera_drag: None,
             painted_cells: HashSet::new(),
             random_state: 0x6a09e667f3bcc909,
             world_depth: 0,
@@ -453,12 +568,21 @@ impl EditorApp {
     fn open_async(&mut self, ctx: &egui::Context, path: PathBuf) {
         let (tx, rx) = mpsc::channel();
         self.loading = Some(rx);
+        let progress = Arc::new(Mutex::new(Some((0, 1))));
+        self.loading_progress = Some(progress.clone());
         self.status = format!("Opening {}…", path.display());
         let ctx = ctx.clone();
         std::thread::spawn(move || {
             let result = (|| {
-                let project = Project::load(&path).map_err(|e| e.to_string())?;
+                let project = Project::load_with_progress(&path, |done, total| {
+                    *progress.lock().unwrap_or_else(|e| e.into_inner()) = Some((done, total));
+                    ctx.request_repaint();
+                })
+                .map_err(|e| e.to_string())?;
                 let loaded = services::prepare_project(project, Vec::new())?;
+                let mut progress = progress.lock().unwrap_or_else(|e| e.into_inner());
+                let total = progress.map_or(1, |(_, total)| total);
+                *progress = Some((total, total));
                 Ok(loaded)
             })();
             let _ = tx.send(result);
@@ -467,9 +591,13 @@ impl EditorApp {
     }
 
     fn set_project(&mut self, project: Project) {
+        self.command_palette = false;
+        self.search_focus = false;
+        self.search_entries = None;
+        self.world_selection.clear();
         let closing_settings = self.panel == Some(Panel::Settings);
         self.suggest_backups = project_dialogs::suggest_backups(&project);
-        self.layer_notification = None;
+        self.quick_notification = None;
         self.selected = project.level_keys().first().copied();
         if self.settings.bool("openLastProject")
             && project.path.as_ref().is_some_and(|p| {
@@ -500,17 +628,32 @@ impl EditorApp {
             .and_then(|key| project.level(key))
             .and_then(|l| l["worldDepth"].as_i64())
             .unwrap_or(0);
+        self.camera_drag = None;
+        self.space_fit_pending = false;
         self.project = Some(project);
         self.layer = 0;
         self.history = History::default();
         self.assets.clear();
         self.resource_checks.clear();
+        self.external_enum_reloads.clear();
+        self.pending_enum_sync = None;
+        self.pending_enum_removal = None;
+        self.layer_bake = None;
+        self.int_grid_removal = None;
+        self.pending_auto_layer_rebuild = false;
+        self.rebuilding_auto_layers = None;
+        self.auto_layer_rebuild_progress = None;
         self.resource_missing.clear();
         self.hidden.clear();
         self.dirty = false;
         self.stroke = false;
         self.last_cell = None;
+        self.brush_preview_waits_for_pointer = false;
+        self.async_paint = None;
+        self.deferred_auto_paint = None;
+        self.stroke_was_dirty = false;
         self.fit = true;
+        self.camera_motion.cancel();
         self.panel = None;
         self.entity_index = None;
         self.selection = None;
@@ -519,6 +662,8 @@ impl EditorApp {
         self.world_context = world_context::WorldContext::default();
         self.level_resize = None;
         self.definition_uid = None;
+        self.rule_draft = None;
+        self.rule_hover = None;
         self.field_uid = None;
         self.field_pick = None;
         self.chain_entity = None;
@@ -547,15 +692,58 @@ impl EditorApp {
         }
     }
 
-    fn finish_stroke(&mut self) {
-        if self.stroke {
-            if let Some(project) = &self.project {
-                self.dirty |= self.history.commit(project);
+    fn settle_deferred_auto_paint(&mut self) -> bool {
+        let Some(mut pending) = self.deferred_auto_paint.take() else {
+            return true;
+        };
+        let Some(project) = &mut self.project else {
+            return true;
+        };
+        match project.settle_auto_layers(pending.level, &mut pending.rules) {
+            Ok(()) => {
+                if !self.stroke {
+                    self.dirty |= self.history.commit(project);
+                }
+                true
             }
-            self.stroke = false;
-            self.last_cell = None;
+            Err(error) => {
+                self.history.cancel(project);
+                self.dirty = self.stroke_was_dirty;
+                self.async_paint = None;
+                self.clear_stroke_controls();
+                if let Some(group) = pending.prior_selection {
+                    self.set_selection_group(group);
+                }
+                self.status = error.to_string();
+                self.status_error = true;
+                false
+            }
         }
+    }
+
+    fn clear_stroke_controls(&mut self) {
+        self.stroke = false;
+        self.last_cell = None;
         self.painted_cells.clear();
+    }
+
+    fn release_stroke(&mut self) {
+        if self.deferred_auto_paint.is_some() {
+            // Keep the snapshot open until the last generated output is available.
+            self.clear_stroke_controls();
+        } else {
+            self.finish_stroke();
+        }
+    }
+
+    fn finish_stroke(&mut self) {
+        if self.settle_deferred_auto_paint()
+            && self.stroke
+            && let Some(project) = &self.project
+        {
+            self.dirty |= self.history.commit(project);
+        }
+        self.clear_stroke_controls();
     }
 
     fn request(&mut self, ctx: &egui::Context, action: Action) {
@@ -606,7 +794,7 @@ impl EditorApp {
                 }
                 self.project = None;
                 self.suggest_backups = false;
-                self.layer_notification = None;
+                self.quick_notification = None;
                 self.selected = None;
                 self.active_world = None;
                 self.dirty = false;
@@ -619,10 +807,23 @@ impl EditorApp {
     }
 
     fn new_project_dialog(&mut self, ctx: &egui::Context, dir: Option<PathBuf>) {
-        let mut dialog = rfd::FileDialog::new()
-            .add_filter("LDtk project", &["ldtk"])
-            .set_file_name("World.ldtk");
-        if let Some(dir) = dir.or_else(|| self.settings.ui_dir(None, "NewProject", None)) {
+        let mut dialog = FileDialog::new().add_filter("Supported file types", &["ldtk"]);
+        let browse_from = dir
+            .or_else(|| self.settings.ui_dir(None, "NewProject", None))
+            .or_else(|| {
+                self.settings.value["recentProjects"]
+                    .get(0)
+                    .and_then(Value::as_str)
+                    .and_then(|recent| Path::new(recent).parent())
+                    .map(Path::to_path_buf)
+            })
+            .or_else(|| {
+                std::env::current_exe()
+                    .ok()?
+                    .parent()
+                    .map(Path::to_path_buf)
+            });
+        if let Some(dir) = &browse_from {
             dialog = dialog.set_directory(dir);
         }
         if let Some(mut path) = dialog.save_file() {
@@ -630,12 +831,15 @@ impl EditorApp {
             if let Some(dir) = path.parent() {
                 self.settings.store_ui_dir(None, "NewProject", dir);
             }
-            self.create_project_async(ctx, path);
+            self.check_application_write(
+                ctx,
+                project_dialogs::ApplicationWrite::Create { path, browse_from },
+            );
         }
     }
 
     fn browse_project_dialog(&mut self, ctx: &egui::Context, dir: Option<PathBuf>) {
-        let mut dialog = rfd::FileDialog::new().add_filter("LDtk project", &["ldtk", "json"]);
+        let mut dialog = FileDialog::new().add_filter("LDtk project", &["ldtk", "json"]);
         if let Some(dir) = dir {
             dialog = dialog.set_directory(dir);
         }
@@ -649,7 +853,7 @@ impl EditorApp {
         if self.defer_ui_action(&ctx, ui_commit::DeferredUiAction::Save(save_as)) {
             return false;
         }
-        if self.is_busy() {
+        if self.is_busy() || !self.settle_deferred_auto_paint() {
             return false;
         }
         self.finish_gesture();
@@ -657,39 +861,144 @@ impl EditorApp {
         let Some(project) = &self.project else {
             return false;
         };
-        let path = if !save_as && project.path.is_some() {
-            project.path.clone()
-        } else {
-            let mut dialog = rfd::FileDialog::new().add_filter("LDtk project", &["ldtk"]);
-            if let Some(path) = &project.path {
-                if let Some(parent) = path.parent() {
-                    dialog = dialog.set_directory(parent);
-                }
-                if let Some(name) = path.file_name() {
-                    dialog = dialog.set_file_name(name.to_string_lossy());
-                }
-            } else {
-                dialog = dialog.set_file_name("World.ldtk");
-            }
-            dialog.save_file()
-        };
-        let Some(path) = path else {
-            return false;
-        };
-        let conflicts = self.changed_document_files();
-        if !conflicts.is_empty() {
-            self.external_changes = Some(conflicts);
-            return false;
+        if let Some(path) = project.path.clone().filter(|_| !save_as) {
+            self.check_application_write(&ctx, project_dialogs::ApplicationWrite::Save(path));
+        } else if let Some(path) = Self::pick_save_path(project.path.as_deref()) {
+            self.save_to(&ctx, path);
         }
-        let ctx = self.repaint.clone().unwrap_or_default();
-        self.queue_project_hooks(&ctx, "BeforeSave", hooks::Continuation::Save(path));
         false
     }
 
-    fn canvas_input(&mut self, ctx: &egui::Context, rect: Rect, response: &egui::Response) {
-        if !self.world_context_menu(ctx, rect, response) {
-            self.canvas_controls(ctx, rect, response);
+    fn pick_save_path(project_path: Option<&Path>) -> Option<PathBuf> {
+        let mut dialog = FileDialog::new().add_filter("Supported file types", &["ldtk", "json"]);
+        if let Some(path) = project_path {
+            if let Some(parent) = path.parent() {
+                dialog = dialog.set_directory(parent);
+            }
+        } else {
+            dialog = dialog.set_file_name("World.ldtk");
         }
+        dialog.save_file()
+    }
+
+    fn save_to(&mut self, ctx: &egui::Context, path: PathBuf) {
+        self.check_application_write(ctx, project_dialogs::ApplicationWrite::SaveAs(path));
+    }
+
+    fn save_document(&mut self, ctx: &egui::Context, path: PathBuf) {
+        let conflicts = self.changed_document_files();
+        if !conflicts.is_empty() {
+            self.external_changes = Some(conflicts);
+            return;
+        }
+        self.queue_project_hooks(ctx, "BeforeSave", hooks::Continuation::Save(path));
+    }
+
+    fn canvas_input(&mut self, ctx: &egui::Context, rect: Rect, response: &egui::Response) {
+        self.update_point_picker_context(ctx);
+        let now = ctx.input(|i| i.time);
+        if self.deferred_auto_paint.as_ref().is_some_and(|pending| {
+            self.world || self.selected != Some(pending.level) || now >= pending.deadline
+        }) {
+            self.settle_deferred_auto_paint();
+        }
+        if self.async_paint.as_ref().is_some_and(|preview| {
+            self.world || self.selected != Some(preview.level) || now >= preview.deadline
+        }) {
+            self.async_paint = None;
+        }
+        if !self.world_context_menu(ctx, rect, response) {
+            if self.stroke
+                && ctx.input(|i| {
+                    i.events
+                        .iter()
+                        .any(|e| matches!(e, egui::Event::PointerMoved(_)))
+                })
+            {
+                let deadline = now + brush::ASYNC_RENDER_DELAY;
+                if let Some(preview) = &mut self.async_paint {
+                    preview.deadline = deadline;
+                }
+                if let Some(pending) = &mut self.deferred_auto_paint {
+                    pending.deadline = deadline;
+                }
+            }
+            self.canvas_controls(ctx, rect, response);
+        } else {
+            self.camera_drag = None;
+        }
+        if std::mem::take(&mut self.space_fit_pending)
+            && !self.space_dragged
+            && self.camera_drag.is_none()
+        {
+            self.animate_camera_fit();
+        }
+        self.keyboard_zoom(ctx, rect);
+        if self.camera_motion.tick(
+            &mut self.viewport,
+            rect.size().into(),
+            ctx.pixels_per_point(),
+            ctx.cumulative_frame_nr(),
+            ctx.input(|i| i.unstable_dt),
+        ) {
+            ctx.request_repaint();
+        }
+    }
+
+    fn draw_project_canvas(
+        &mut self,
+        ctx: &egui::Context,
+        painter: &egui::Painter,
+        rect: Rect,
+        key: LevelKey,
+    ) {
+        let Some(project) = &self.project else {
+            return;
+        };
+        let deadline = self
+            .async_paint
+            .iter()
+            .map(|preview| preview.deadline)
+            .chain(
+                self.deferred_auto_paint
+                    .iter()
+                    .map(|pending| pending.deadline),
+            )
+            .min_by(f64::total_cmp);
+        if let Some(deadline) = deadline {
+            let now = ctx.input(|i| i.time);
+            ctx.request_repaint_after(std::time::Duration::from_secs_f64((deadline - now).max(0.)));
+        }
+        self.visible_tiles = canvas::draw(
+            ctx,
+            painter,
+            rect,
+            project,
+            &self.viewport,
+            &RenderOptions {
+                selected: key,
+                active_layer: self.layer,
+                world: self.world,
+                world_multi_selection: !self.world_selection.is_empty(),
+                grid: self.grid,
+                details: self.details,
+                single_layer: self.single_layer,
+                hidden: &self.hidden,
+                render_auto: self.render_auto,
+                tile_tags: self.tile_tags,
+                ui_scale: self.settings.float("editorUiScale", 1.0),
+                single_layer_intensity: self.settings.float("singleLayerModeIntensity", 0.75),
+                fields_table: self.settings.value["fieldsRender"] == "FR_Table",
+                world_depth: Some(self.world_depth),
+                nearby_dist: (64.0 * self.settings.float("nearbyTilesRenderingDist", 1.0)).ceil(),
+                parallax: true,
+                rulers: true,
+                guides: self.grid,
+                async_paint: self.async_paint.as_ref(),
+            },
+            self.linear_drag_preview(),
+            &mut self.assets,
+        );
     }
 
     fn edit_entity(&mut self, local: [f32; 2], erase: bool) {
@@ -699,7 +1008,7 @@ impl EditorApp {
         let Some(key) = self.selected else {
             return;
         };
-        let Some(project) = &mut self.project else {
+        let Some(project) = &self.project else {
             return;
         };
         if erase {
@@ -711,12 +1020,15 @@ impl EditorApp {
             if let Some(index) = index {
                 let entity =
                     project.layer(key, self.layer).unwrap()["entityInstances"][index].clone();
+                let snapshot = self.capture_entity_render(key, self.layer);
                 self.history
                     .mark_entity_change(project, key, self.layer, &entity);
+                let project = self.project.as_mut().unwrap();
                 match project.remove_entity(key, self.layer, index) {
                     Ok(changed) => {
                         self.dirty |= changed;
                         if changed {
+                            self.defer_entity_render(snapshot);
                             self.bleep_entity(key, self.layer, &entity);
                             self.entity_index = None;
                             if self.panel == Some(Panel::Entity) {
@@ -744,6 +1056,8 @@ impl EditorApp {
                 number(def, "maxCount", 0.) as i32,
                 text(def, "identifier", "entities")
             );
+            let snapshot = self.capture_entity_render(key, self.layer);
+            let project = self.project.as_mut().unwrap();
             match project.add_entity(key, self.layer, uid, pos[0], pos[1]) {
                 Ok(changed) => {
                     self.dirty |= changed;
@@ -763,6 +1077,7 @@ impl EditorApp {
                             self.layer,
                             &project.layer(key, self.layer).unwrap()["entityInstances"][index],
                         );
+                        self.defer_entity_render(snapshot);
                         self.entity_index = Some(index);
                         self.try_chain_to(key, self.layer, index, true, self.entity_uid);
                     }
@@ -772,7 +1087,7 @@ impl EditorApp {
         }
     }
 
-    fn dialogs(&mut self, ctx: &egui::Context) {
+    fn dialogs(&mut self, ctx: &egui::Context, level_point_picker_was_open: bool) {
         if self.is_busy() {
             return;
         }
@@ -795,7 +1110,7 @@ impl EditorApp {
             self.show_settings_dialog(ctx);
             return;
         }
-        if self.source_panel(ctx, panel) {
+        if self.source_panel_with_canvas_input(ctx, panel, level_point_picker_was_open) {
             return;
         }
         let title = match panel {
@@ -900,7 +1215,17 @@ impl EditorApp {
             .unwrap_or_else(std::env::temp_dir)
             .join("crash-recovery")
     }
+    fn uncovered_canvas_rect(&self, mut rect: Rect) -> Rect {
+        if let Some(panel @ (Panel::World | Panel::Rules)) = self.panel {
+            rect.min.x = rect
+                .left()
+                .max(panels::source_panel_width(panel).min(rect.right()));
+        }
+        rect
+    }
+
     fn update_frame(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+        locale::set(ctx, self.settings.language());
         if self.update_installing(ctx) {
             self.update_dialog(ctx);
             return;
@@ -947,68 +1272,52 @@ impl EditorApp {
                 },
             );
         }
+        if self.brush_preview_waits_for_pointer
+            && ctx.input(|i| i.pointer.delta() != Vec2::ZERO || i.pointer.hover_pos().is_none())
+        {
+            self.brush_preview_waits_for_pointer = false;
+        }
         self.shortcuts(ctx);
         self.sidebar(ctx);
+        self.world_switcher(ctx);
         self.normalize_palette();
+        // A canvas click can finish picking before the level panel handles that click.
+        let level_point_picker_was_open = self.picking_point_in_level_panel();
         egui::CentralPanel::default()
             .frame(egui::Frame::new().fill(theme::DARK))
             .show(ctx, |ui| {
-                let (rect, response) =
-                    ui.allocate_exact_size(ui.available_size(), Sense::click_and_drag());
-                let rect = if self.panel == Some(Panel::World) {
-                    Rect::from_min_max(
-                        egui::pos2(
-                            rect.left()
-                                .max(panels::source_panel_width(Panel::World).min(rect.right())),
-                            rect.top(),
-                        ),
-                        rect.max,
-                    )
-                } else {
-                    rect
-                };
+                let rect = ui.available_rect_before_wrap();
+                let canvas_id = ui.advance_cursor_after_rect(rect);
+                // The world panel overlays the canvas. Only the hit region and
+                // floating controls move around it; the camera uses the full rect.
+                let response = ui.interact(
+                    self.uncovered_canvas_rect(rect),
+                    canvas_id,
+                    Sense::click_and_drag(),
+                );
                 entity_inspector::remember_canvas(ctx, rect);
                 if self.project.is_some() {
                     self.canvas_input(ctx, rect, &response);
-                    if let (Some(project), Some(key)) = (&self.project, self.selected) {
-                        self.visible_tiles = canvas::draw(
-                            ctx,
-                            ui.painter(),
-                            rect,
-                            project,
-                            &self.viewport,
-                            &RenderOptions {
-                                selected: key,
-                                active_layer: self.layer,
-                                world: self.world,
-                                grid: self.grid,
-                                details: self.details,
-                                single_layer: self.single_layer,
-                                hidden: &self.hidden,
-                                render_auto: self.render_auto,
-                                tile_tags: self.tile_tags,
-                                ui_scale: self.settings.float("editorUiScale", 1.0),
-                                single_layer_intensity: self
-                                    .settings
-                                    .float("singleLayerModeIntensity", 0.75),
-                                fields_table: self.settings.value["fieldsRender"] == "FR_Table",
-                                world_depth: Some(self.world_depth),
-                                nearby_dist: (64.0
-                                    * self.settings.float("nearbyTilesRenderingDist", 1.0))
-                                .ceil(),
-                                parallax: true,
-                                rulers: true,
-                                guides: self.grid,
-                            },
-                            &mut self.assets,
-                        );
+                }
+                let picker = canvas::begin_picker_filter(
+                    ui.painter(),
+                    self.selected.is_some() && self.picking_entity_ref(),
+                );
+                if self.project.is_some() {
+                    if let Some(key) = self.selected {
+                        self.draw_project_canvas(ctx, ui.painter(), rect, key);
+                        self.draw_rule_hover(ctx, ui.painter(), rect, key);
+                        self.draw_world_selection(ui, rect, response.hovered());
                         self.draw_brush_preview(ui, rect, response.hovered());
                         self.draw_tool_overlay(ui, rect);
                         self.draw_field_pick_targets(ui, rect);
                         self.draw_level_resize_preview(ui, rect);
                         self.draw_resize_handles(ui, rect);
                         self.draw_bleeps(ui, rect);
-                        self.canvas_toolbar(ctx, rect);
+                        canvas::finish_picker_filter(ui.painter(), picker, rect);
+                        if self.panel != Some(Panel::Rules) {
+                            self.canvas_toolbar(ctx, self.uncovered_canvas_rect(rect));
+                        }
                         if response.hovered()
                             && !self.world
                             && let Some(pointer) = response.hover_pos()
@@ -1036,14 +1345,15 @@ impl EditorApp {
         if self.panel == Some(Panel::World) && !self.world {
             self.show_panel(None);
         }
-        self.dialogs(ctx);
+        self.dialogs(ctx, level_point_picker_was_open);
         self.world_form_dialog(ctx);
+        self.resource_dialog(ctx);
         self.service_dialogs(ctx);
         self.palette_dialog(ctx);
         self.command_dialog(ctx);
         self.trust_dialog(ctx);
         self.enum_sync_dialog(ctx);
-        self.resource_dialog(ctx);
+        self.layer_bake_dialog(ctx);
         self.changelog_dialog(ctx);
         self.update_dialog(ctx);
         self.remember_selected_level();
@@ -1055,7 +1365,40 @@ impl EditorApp {
             &self.status,
             self.status_error,
         );
-        let title = format!("{}LevelEditor", if self.dirty { "● " } else { "" });
+        let saving = self
+            .saving_progress
+            .as_ref()
+            .map(|progress| progress.lock().unwrap_or_else(|e| e.into_inner()).clone());
+        let now = Instant::now();
+        if let (Some(progress), Some(path)) = (&saving, &self.save_attempt) {
+            progress.show(ctx, path, now);
+        }
+        let progress = saving
+            .as_ref()
+            .and_then(|progress| progress.title_progress(now))
+            .or_else(|| {
+                self.loading_progress
+                    .as_ref()
+                    .and_then(|progress| *progress.lock().unwrap_or_else(|e| e.into_inner()))
+            })
+            .or_else(|| {
+                self.exporting_progress
+                    .as_ref()
+                    .and_then(|progress| *progress.lock().unwrap_or_else(|e| e.into_inner()))
+            })
+            .or_else(|| {
+                self.auto_layer_rebuild_progress.as_ref()
+                    .and_then(|progress| *progress.lock().unwrap_or_else(|e| e.into_inner()))
+            });
+        let project = self.project.as_ref().and_then(|project| {
+            let path = project.path.as_deref()?;
+            let level = self
+                .selected
+                .and_then(|key| project.level(key))
+                .and_then(|level| level["identifier"].as_str());
+            Some((path, level))
+        });
+        let title = window_title(project, self.dirty, progress);
         ctx.send_viewport_cmd(egui::ViewportCommand::Title(title));
         self.frame_time = frame
             .info()
@@ -1084,6 +1427,8 @@ impl Drop for EditorApp {
 
 impl eframe::App for EditorApp {
     fn raw_input_hook(&mut self, ctx: &egui::Context, input: &mut egui::RawInput) {
+        panels::source_colors::capture_color_clipboard(ctx, input);
+        self.capture_rule_clipboard_preview(ctx, input);
         self.ui_commit_raw_input(ctx, input);
     }
     fn on_exit(&mut self) {
@@ -1129,31 +1474,47 @@ fn hit_entity<'a>(
     layer: &'a Value,
     pos: [f32; 2],
 ) -> Option<(usize, &'a Value)> {
-    layer["entityInstances"]
-        .as_array()?
-        .iter()
-        .enumerate()
+    let entities = layer["entityInstances"].as_array()?;
+    let def = layer["layerDefUid"]
+        .as_i64()
+        .and_then(|uid| project.layer_def(uid))
+        .unwrap_or(&Value::Null);
+    canvas::entity_display_order(layer, def)
+        .into_iter()
         .rev()
+        .map(|index| (index, &entities[index]))
         .find(|(_, entity)| selection_click::entity_is_over(project, entity, pos))
-}
-
-fn color_field(ui: &mut egui::Ui, label: &str, value: &mut Value, key: &str) -> bool {
-    let c = theme::color(value[key].as_str().unwrap_or("#40465B"));
-    let mut rgb = [c.r(), c.g(), c.b()];
-    let mut changed = false;
-    ui.horizontal(|ui| {
-        ui.label(label);
-        changed = ui.color_edit_button_srgb(&mut rgb).changed();
-    });
-    if changed {
-        value[key] = format!("#{:02X}{:02X}{:02X}", rgb[0], rgb[1], rgb[2]).into();
-    }
-    changed
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn preview_154_title_minibar_precedes_the_project_title() {
+        assert_eq!(
+            window_title(None, false, Some((1, 4))),
+            "▰▱▱▱▱  LevelEditor"
+        );
+        assert_eq!(window_title(None, false, None), "LevelEditor");
+        assert_eq!(
+            window_title(None, false, Some((9, 4))),
+            "▰▰▰▰▰  LevelEditor"
+        );
+        assert_eq!(
+            window_title(None, false, Some((0, 0))),
+            "▰▰▰▰▰  LevelEditor"
+        );
+        let project = Some((Path::new("maps/冒险.ldtk"), Some("Town")));
+        assert_eq!(
+            window_title(project, true, Some((2, 5))),
+            "▰▰▱▱▱  冒险 [UNSAVED]  @ Town    --    LevelEditor"
+        );
+        assert_eq!(
+            window_title(project, false, None),
+            "冒险  @ Town    --    LevelEditor"
+        );
+    }
 
     #[test]
     fn bundled_resources_resolve_from_executable_without_the_source_working_directory() {
@@ -1255,6 +1616,213 @@ mod tests {
             });
         });
         app.finish_stroke();
+    }
+
+    #[test]
+    fn world_panel_blocks_input_but_does_not_shift_the_canvas_transform() {
+        let mut app = editor();
+        app.world = true;
+        app.panel = Some(Panel::World);
+        app.settings.value["autoWorldModeSwitch"] = serde_json::json!("Never");
+        let ctx = egui::Context::default();
+        theme::configure(&ctx);
+        let screen = Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1440., 900.));
+        let canvas = Rect::from_min_max(egui::pos2(300., 0.), screen.max);
+        let pointer = egui::pos2(680., 380.);
+        let world_point =
+            app.viewport
+                .to_world(pointer.into(), canvas.min.into(), canvas.size().into());
+        let mut frame = eframe::Frame::_new_kittest();
+        let mut update = |app: &mut EditorApp, events| {
+            let _ = ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(screen),
+                    events,
+                    ..Default::default()
+                },
+                |ctx| app.update_frame(ctx, &mut frame),
+            );
+        };
+        let wheel = |position| {
+            vec![
+                egui::Event::PointerMoved(position),
+                egui::Event::MouseWheel {
+                    unit: egui::MouseWheelUnit::Point,
+                    delta: egui::vec2(0., 100.),
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ]
+        };
+        update(&mut app, Vec::new());
+        update(&mut app, wheel(egui::pos2(350., 300.)));
+        assert_eq!(app.viewport.zoom, 1., "panel must block covered input");
+        update(&mut app, wheel(pointer));
+        assert!((app.viewport.zoom - 1.15).abs() < 0.001);
+        let after = app
+            .viewport
+            .to_world(pointer.into(), canvas.min.into(), canvas.size().into());
+        assert!(
+            (after[0] - world_point[0]).abs() < 0.001 && (after[1] - world_point[1]).abs() < 0.001,
+            "world mouse anchor shifted from {world_point:?} to {after:?}"
+        );
+    }
+
+    #[test]
+    fn space_secondary_zoom_keeps_its_press_anchor_and_uses_the_release_position() {
+        for (density, batched, world) in [
+            (1., false, false),
+            (2., false, false),
+            (1., true, false),
+            (1., true, true),
+        ] {
+            let mut app = editor();
+            app.world = world;
+            app.panel = world.then_some(Panel::World);
+            app.viewport.zoom = 2.;
+            app.settings.value["autoWorldModeSwitch"] = serde_json::json!("Never");
+            let ctx = egui::Context::default();
+            theme::configure(&ctx);
+            let screen = Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1440., 900.));
+            let canvas = Rect::from_min_max(egui::pos2(300., 0.), screen.max);
+            let start = egui::pos2(680., 500.);
+            let end = egui::pos2(if world { 350. } else { 735. }, 460.);
+            let before =
+                app.viewport
+                    .to_world(start.into(), canvas.min.into(), canvas.size().into());
+            let mut frame = eframe::Frame::_new_kittest();
+            let mut update = |app: &mut EditorApp, events| {
+                let mut input = egui::RawInput {
+                    screen_rect: Some(screen),
+                    events,
+                    ..Default::default()
+                };
+                input
+                    .viewports
+                    .get_mut(&egui::ViewportId::ROOT)
+                    .unwrap()
+                    .native_pixels_per_point = Some(density);
+                let _ = ctx.run(input, |ctx| app.update_frame(ctx, &mut frame));
+            };
+            let space = |pressed| egui::Event::Key {
+                key: Key::Space,
+                physical_key: Some(Key::Space),
+                pressed,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            };
+            let right = |pos, pressed| egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Secondary,
+                pressed,
+                modifiers: egui::Modifiers::NONE,
+            };
+            update(&mut app, vec![egui::Event::PointerMoved(start)]);
+            if batched {
+                update(
+                    &mut app,
+                    vec![
+                        space(true),
+                        right(start, true),
+                        right(end, false),
+                        space(false),
+                    ],
+                );
+            } else {
+                update(&mut app, vec![space(true), right(start, true)]);
+                update(&mut app, vec![egui::Event::PointerMoved(end)]);
+                update(&mut app, vec![right(end, false), space(false)]);
+            }
+            let expected = 2. + 0.48 * density;
+            assert!(
+                (app.viewport.zoom - expected).abs() < 0.001,
+                "DPR {density}, batched {batched}: {} != {expected}",
+                app.viewport.zoom
+            );
+            let after =
+                app.viewport
+                    .to_world(start.into(), canvas.min.into(), canvas.size().into());
+            assert!(
+                (after[0] - before[0]).abs() < 0.001 && (after[1] - before[1]).abs() < 0.001,
+                "drag anchor shifted from {before:?} to {after:?}"
+            );
+            assert!(!app.camera_motion.is_active());
+            assert!(app.camera_drag.is_none());
+        }
+    }
+
+    #[test]
+    fn accepted_camera_pan_continues_over_a_panel_until_mouse_release() {
+        for (button, world, density, expected) in [
+            (egui::PointerButton::Middle, true, 1., [428., 198.]),
+            (egui::PointerButton::Primary, true, 1., [428., 198.]),
+            (egui::PointerButton::Middle, false, 2., [481., 456.]),
+        ] {
+            let mut app = editor();
+            app.world = world;
+            app.panel = world.then_some(Panel::World);
+            if !world {
+                app.viewport.center = [460., 440.];
+            }
+            let before = app.project.as_ref().unwrap().json.clone();
+            let ctx = egui::Context::default();
+            theme::configure(&ctx);
+            let mut frame = eframe::Frame::_new_kittest();
+            let mut update = |app: &mut EditorApp, events| {
+                let mut input = egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1440., 900.),
+                    )),
+                    events,
+                    ..Default::default()
+                };
+                input
+                    .viewports
+                    .get_mut(&egui::ViewportId::ROOT)
+                    .unwrap()
+                    .native_pixels_per_point = Some(density);
+                let _ = ctx.run(input, |ctx| app.update_frame(ctx, &mut frame));
+            };
+            let start = egui::pos2(650., 300.);
+            let inside = egui::pos2(520., 260.);
+            let over_panel = egui::pos2(350., 230.);
+            let space = |pressed| egui::Event::Key {
+                key: Key::Space,
+                physical_key: Some(Key::Space),
+                pressed,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            };
+            let pointer = |pos, pressed| egui::Event::PointerButton {
+                pos,
+                button,
+                pressed,
+                modifiers: egui::Modifiers::NONE,
+            };
+            update(&mut app, vec![egui::Event::PointerMoved(start)]);
+            if button == egui::PointerButton::Middle {
+                update(&mut app, vec![pointer(start, true)]);
+                update(&mut app, vec![egui::Event::PointerMoved(inside)]);
+                update(&mut app, vec![pointer(over_panel, false)]);
+            } else {
+                update(
+                    &mut app,
+                    vec![
+                        space(true),
+                        pointer(start, true),
+                        egui::Event::PointerMoved(inside),
+                        space(false),
+                        pointer(over_panel, false),
+                    ],
+                );
+            }
+
+            assert_eq!(app.viewport.center, expected, "{button:?}, DPR {density}");
+            assert_eq!(app.viewport.zoom, 1., "{button:?}");
+            assert_eq!(app.world, world);
+            assert!(app.camera_drag.is_none());
+            assert_eq!(app.project.as_ref().unwrap().json, before);
+        }
     }
 
     #[test]
@@ -1535,16 +2103,50 @@ mod tests {
     #[test]
     fn entity_drag_preserves_pivot_and_pointer_cell_phase() {
         assert_eq!(
-            entity_tools::drag_position([8, 16], [7.0, 8.0], [17.0, 8.0], 16.0, 1.0),
+            entity_tools::drag_position([8, 16], [7.0, 8.0], [17.0, 8.0], 16.0, 1.0, true),
             [24, 16]
         );
         assert_eq!(
-            entity_tools::drag_position([8, 16], [1.0, 1.0], [15.0, 1.0], 16.0, 1.0),
+            entity_tools::drag_position([8, 16], [1.0, 1.0], [15.0, 1.0], 16.0, 1.0, true),
             [8, 16]
         );
         assert_eq!(
-            entity_tools::drag_position([8, 16], [7.0, 8.0], [17.0, 8.0], 16.0, 0.5),
+            entity_tools::drag_position([8, 16], [7.0, 8.0], [17.0, 8.0], 16.0, 0.5, true),
             [16, 16]
+        );
+    }
+
+    #[test]
+    fn preview_154_entity_drag_without_grid_preserves_pixel_delta() {
+        let mut app = EditorApp::empty();
+        let mut p = Project::new();
+        p.add_layer("Entities", "Entities", 16).unwrap();
+        let def = p.add_entity_def("Actor", 16, 16).unwrap();
+        let key = p.level_keys()[0];
+        p.add_entity(key, 0, def, 64, 80).unwrap();
+        app.set_project(p);
+        app.grid = false;
+        app.history
+            .begin_layer(app.project.as_ref().unwrap(), key, 0);
+        app.stroke = true;
+        app.gesture = Some(tools::Gesture::EntityMove {
+            key,
+            layer: 0,
+            index: 0,
+            start: [64., 80.],
+            end: [83., 83.],
+            origin: [64, 80],
+            moved: true,
+        });
+        app.finish_gesture();
+        assert_eq!(
+            app.project.as_ref().unwrap().layer(key, 0).unwrap()["entityInstances"][0]["px"],
+            serde_json::json!([83, 83])
+        );
+        app.undo_action(false);
+        assert_eq!(
+            app.project.as_ref().unwrap().layer(key, 0).unwrap()["entityInstances"][0]["px"],
+            serde_json::json!([64, 80])
         );
     }
 
@@ -1573,6 +2175,640 @@ mod tests {
                 app.focus_overlay(ctx);
             },
         );
+    }
+
+    #[test]
+    fn async_intgrid_renders_hints_until_idle_and_undo_clears_them() {
+        let mut app = editor();
+        let ctx = egui::Context::default();
+        app.repaint = Some(ctx.clone());
+        app.grid = false;
+        let key = app.selected.unwrap();
+        let project = app.project.as_mut().unwrap();
+        let uid = project.layer(key, 0).unwrap()["layerDefUid"]
+            .as_i64()
+            .unwrap();
+        project.update_layer_properties(uid, &serde_json::json!({
+            "useAsyncRender": true,
+            "intGridValues": [{"value":1,"identifier":null,"color":"#32A064","tile":null,"groupUid":0}],
+        })).unwrap();
+        let pointer = egui::pos2(40., 40.);
+        let draw = |app: &mut EditorApp, time, events| {
+            ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(256., 256.),
+                    )),
+                    time: Some(time),
+                    events,
+                    ..Default::default()
+                },
+                |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        let (rect, response) =
+                            ui.allocate_exact_size(ui.available_size(), Sense::click_and_drag());
+                        app.canvas_input(ctx, rect, &response);
+                        app.draw_project_canvas(ctx, ui.painter(), rect, key);
+                    });
+                },
+            )
+        };
+        let button = |button, pressed| egui::Event::PointerButton {
+            pos: pointer,
+            button,
+            pressed,
+            modifiers: Default::default(),
+        };
+        let fill_at_pointer = |out: &egui::FullOutput, fill| {
+            out.shapes.iter().any(|shape| {
+                matches!(&shape.shape, egui::Shape::Rect(r) if r.rect.contains(pointer) && r.fill == fill)
+            })
+        };
+        let cell = |app: &EditorApp| {
+            let layer = app.project.as_ref().unwrap().layer(key, 0).unwrap();
+            let width = layer["__cWid"].as_u64().unwrap() as usize;
+            layer["intGridCsv"][2 * width + 2].as_i64().unwrap()
+        };
+        let paint = Color32::from_rgb(50, 160, 100);
+        let paint_hint = Color32::from_rgb_additive(35, 112, 70);
+        let erase_hint = Color32::from_rgb_additive(179, 0, 0);
+
+        draw(&mut app, 1., vec![egui::Event::PointerMoved(pointer)]);
+        let output = draw(
+            &mut app,
+            2.,
+            vec![button(egui::PointerButton::Primary, true)],
+        );
+        assert_eq!(cell(&app), 1, "paint edits the document immediately");
+        assert!(fill_at_pointer(&output, paint_hint));
+        assert!(!fill_at_pointer(&output, paint));
+        let output = draw(
+            &mut app,
+            2.2,
+            vec![egui::Event::PointerMoved(pointer + egui::vec2(1., 0.))],
+        );
+        assert!(fill_at_pointer(&output, paint_hint));
+        let output = draw(&mut app, 2.449, vec![]);
+        assert!(
+            fill_at_pointer(&output, paint_hint),
+            "same-cell motion renews the delay"
+        );
+        let output = draw(&mut app, 2.451, vec![]);
+        assert!(app.stroke, "the pointer is still held");
+        assert!(!fill_at_pointer(&output, paint_hint));
+        assert!(fill_at_pointer(&output, paint));
+        draw(
+            &mut app,
+            2.5,
+            vec![button(egui::PointerButton::Primary, false)],
+        );
+
+        let output = draw(
+            &mut app,
+            3.,
+            vec![button(egui::PointerButton::Secondary, true)],
+        );
+        assert_eq!(cell(&app), 0, "erase edits the document immediately");
+        assert!(
+            fill_at_pointer(&output, paint),
+            "erase retains the previous render during the delay"
+        );
+        assert!(fill_at_pointer(&output, erase_hint));
+        let output = draw(
+            &mut app,
+            3.05,
+            vec![button(egui::PointerButton::Secondary, false)],
+        );
+        assert!(
+            fill_at_pointer(&output, erase_hint),
+            "release keeps the pending render"
+        );
+        app.undo_action(false);
+        let output = draw(&mut app, 3.06, vec![]);
+        assert_eq!(cell(&app), 1);
+        assert!(fill_at_pointer(&output, paint));
+        assert!(!fill_at_pointer(&output, erase_hint));
+        app.undo_action(true);
+        let output = draw(&mut app, 3.07, vec![]);
+        assert_eq!(cell(&app), 0);
+        assert!(!fill_at_pointer(&output, paint));
+        assert!(!fill_at_pointer(&output, erase_hint));
+    }
+
+    #[test]
+    fn async_generated_rules_partition_targets_and_keep_history_and_saves_current() {
+        use serde_json::json;
+        let temp = tempfile::tempdir().unwrap();
+        let mut app = editor();
+        let key = app.selected.unwrap();
+        let project = app.project.as_mut().unwrap();
+        let source = project.layer(key, 0).unwrap()["layerDefUid"]
+            .as_i64()
+            .unwrap();
+        let atlas = project
+            .add_tileset(Path::new("Atlas.png"), 16, 16, 16)
+            .unwrap();
+        let mut targets = Vec::new();
+        for (name, delay, rule) in [("Immediate", false, 80), ("Deferred", true, 100)] {
+            let uid = project.add_layer(name, "AutoLayer", 16).unwrap();
+            project.assign_tileset(uid, atlas).unwrap();
+            project.update_layer_properties(uid, &json!({
+                "autoSourceLayerDefUid":source,
+                "useAsyncRender":delay,
+                "autoRuleGroups":[{"uid":rule-1,"active":true,"rules":[
+                    {"uid":rule,"active":true,"size":1,"pattern":[1],"tileRectsIds":[[0]],"chance":1,"breakOnMatch":true}
+                ]}]
+            })).unwrap();
+            targets.push(uid);
+        }
+        app.layer = 2;
+        let source_cell = |app: &EditorApp| {
+            app.project.as_ref().unwrap().layer(key, 2).unwrap()["intGridCsv"][34].clone()
+        };
+        let counts = |p: &Project| {
+            targets
+                .iter()
+                .map(|uid| {
+                    p.level(key).unwrap()["layerInstances"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .find(|layer| layer["layerDefUid"] == *uid)
+                        .unwrap()["autoLayerTiles"]
+                        .as_array()
+                        .unwrap()
+                        .len()
+                })
+                .collect::<Vec<_>>()
+        };
+        let ctx = egui::Context::default();
+        app.repaint = Some(ctx.clone());
+        let pointer = egui::pos2(40., 40.);
+        let frame = |app: &mut EditorApp, time, events| {
+            let _ = ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(256., 256.),
+                    )),
+                    time: Some(time),
+                    events,
+                    ..Default::default()
+                },
+                |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        let (rect, response) =
+                            ui.allocate_exact_size(ui.available_size(), Sense::click_and_drag());
+                        app.canvas_input(ctx, rect, &response);
+                        app.draw_project_canvas(ctx, ui.painter(), rect, key);
+                    });
+                },
+            );
+        };
+        let button = |button, pressed| egui::Event::PointerButton {
+            pos: pointer,
+            button,
+            pressed,
+            modifiers: Default::default(),
+        };
+        use egui::PointerButton::{Primary, Secondary};
+        frame(&mut app, 1., vec![egui::Event::PointerMoved(pointer)]);
+        frame(&mut app, 2., vec![button(Primary, true)]);
+        assert_eq!(source_cell(&app), 1);
+        assert_eq!(counts(app.project.as_ref().unwrap()), [1, 0]);
+        frame(
+            &mut app,
+            2.2,
+            vec![egui::Event::PointerMoved(pointer + egui::vec2(1., 0.))],
+        );
+        frame(&mut app, 2.21, vec![button(Primary, false)]);
+        frame(&mut app, 2.449, vec![]);
+        assert_eq!(
+            counts(app.project.as_ref().unwrap()),
+            [1, 0],
+            "release leaves the scheduled target pending"
+        );
+        frame(&mut app, 2.451, vec![]);
+        assert_eq!(counts(app.project.as_ref().unwrap()), [1, 1]);
+        app.undo_action(false);
+        assert_eq!(counts(app.project.as_ref().unwrap()), [0, 0]);
+        app.undo_action(true);
+        assert_eq!(counts(app.project.as_ref().unwrap()), [1, 1]);
+
+        app.project
+            .as_mut()
+            .unwrap()
+            .update_layer_properties(source, &json!({"useAsyncRender":true}))
+            .unwrap();
+        frame(&mut app, 3., vec![button(Secondary, true)]);
+        frame(&mut app, 3.05, vec![button(Secondary, false)]);
+        assert_eq!(source_cell(&app), 0);
+        assert_eq!(
+            counts(app.project.as_ref().unwrap()),
+            [1, 1],
+            "source flag delays both targets"
+        );
+        let path = temp.path().join("Deferred.ldtk");
+        app.save_async_at(path.clone());
+        app.saving
+            .as_ref()
+            .unwrap()
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            counts(&Project::load(path).unwrap()),
+            [0, 0],
+            "early save serializes settled caches"
+        );
+
+        app.saving = None;
+        let project = app.project.as_mut().unwrap();
+        let def = project.json["defs"]["layers"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|def| def["uid"] == targets[1])
+            .unwrap();
+        def["autoRuleGroups"][0]["rules"][0]["pattern"] = json!([]);
+        let before = project.json.clone();
+        frame(&mut app, 4., vec![button(Primary, true)]);
+        assert_eq!(source_cell(&app), 1);
+        app.undo_action(false);
+        assert_eq!(app.project.as_ref().unwrap().json, before);
+        assert!(app.status.contains("invalid auto-layer rule pattern"));
+        assert!(
+            app.history.can_undo(),
+            "the previous valid stroke remains in history"
+        );
+    }
+
+    #[test]
+    fn async_group_drag_partitions_rules_and_keeps_flagged_layers_before_settle() {
+        use serde_json::json;
+        for copy in [false, true] {
+            let temp = tempfile::tempdir().unwrap();
+            let atlas_path = temp.path().join("atlas.png");
+            let atlas_pixels =
+                image::RgbaImage::from_pixel(16, 16, image::Rgba([190, 10, 20, 255]));
+            atlas_pixels.save(&atlas_path).unwrap();
+            let mut app = editor();
+            let key = app.selected.unwrap();
+            let project = app.project.as_mut().unwrap();
+            let source = project.layer(key, 0).unwrap()["layerDefUid"]
+                .as_i64()
+                .unwrap();
+            project.update_layer_properties(source, &json!({
+                "useAsyncRender":copy,
+                "intGridValues":[{"value":1,"identifier":null,"color":"#32A064","tile":null,"groupUid":0}],
+            })).unwrap();
+            let tiles = project.add_layer("Manual", "Tiles", 16).unwrap();
+            let atlas = project.add_tileset(&atlas_path, 16, 16, 16).unwrap();
+            project.assign_tileset(tiles, atlas).unwrap();
+            project
+                .update_layer_properties(tiles, &json!({"useAsyncRender":true}))
+                .unwrap();
+            let targets = ["Immediate", "Deferred"].map(|name| {
+                let delayed = name == "Deferred";
+                let uid = project.add_layer(name, "AutoLayer", 16).unwrap();
+                project.assign_tileset(uid, atlas).unwrap();
+                let rule = if delayed {100} else {80};
+                project.update_layer_properties(uid, &json!({
+                    "autoSourceLayerDefUid":source, "useAsyncRender":delayed,
+                    "autoRuleGroups":[{"uid":rule-1,"active":true,"rules":[
+                        {"uid":rule,"active":true,"size":1,"pattern":[1],"tileRectsIds":[[0]],"chance":1,"breakOnMatch":true}
+                    ]}]
+                })).unwrap();
+                uid
+            });
+            let layer_index = |p: &Project, uid| {
+                canvas::values(&p.level(key).unwrap()["layerInstances"])
+                    .iter()
+                    .position(|layer| layer["layerDefUid"] == uid)
+                    .unwrap()
+            };
+            let source_index = layer_index(project, source);
+            let tiles_index = layer_index(project, tiles);
+            project.paint_int_grid(key, source_index, 2, 2, 1).unwrap();
+            project
+                .paint_tile_stacked(key, tiles_index, 3, 3, 0, [0, 0], 0, false, true)
+                .unwrap();
+            let project_before = project.json.clone();
+            let generated = |p: &Project, uid| {
+                canvas::values(&p.layer(key, layer_index(p, uid)).unwrap()["autoLayerTiles"])
+                    .iter()
+                    .map(|tile| tile["px"][0].as_i64().unwrap())
+                    .collect::<Vec<_>>()
+            };
+            app.layer = source_index;
+            app.fit = false;
+            app.grid = false;
+            app.viewport = Viewport {
+                center: [128.; 2],
+                zoom: 1.,
+            };
+            let ctx = egui::Context::default();
+            app.repaint = Some(ctx.clone());
+            app.assets
+                .store_file_image(&ctx, &atlas_path, atlas_pixels)
+                .unwrap();
+            let texture = app.assets.texture(&ctx, &atlas_path).unwrap().id();
+            let grid_at = |output: &egui::FullOutput, point| {
+                output.shapes.iter().any(|s| {
+                matches!(&s.shape,egui::Shape::Rect(r) if r.fill == Color32::from_rgb(50,160,100) && r.rect.contains(point))
+            })
+            };
+            let tile_at = |output: &egui::FullOutput, point| {
+                output
+                    .shapes
+                    .iter()
+                    .filter_map(|s| match &s.shape {
+                        egui::Shape::Mesh(mesh) if mesh.texture_id == texture => Some(mesh),
+                        _ => None,
+                    })
+                    .flat_map(|mesh| mesh.vertices.chunks_exact(4))
+                    .any(|quad| Rect::from_two_pos(quad[0].pos, quad[3].pos).contains(point))
+            };
+            app.capture_selection([2, 2, 2, 2]);
+            assert_eq!(app.selection_group.as_ref().unwrap()["elementCount"], 2);
+            let modifiers = egui::Modifiers {
+                command: copy,
+                alt: copy,
+                ..Default::default()
+            };
+            let frame = |app: &mut EditorApp, time, events| {
+                ctx.run(
+                    egui::RawInput {
+                        time: Some(time),
+                        events,
+                        modifiers,
+                        screen_rect: Some(Rect::from_min_size(
+                            egui::Pos2::ZERO,
+                            egui::vec2(256., 256.),
+                        )),
+                        ..Default::default()
+                    },
+                    |ctx| {
+                        egui::CentralPanel::default().show(ctx, |ui| {
+                            let (rect, response) = ui
+                                .allocate_exact_size(ui.available_size(), Sense::click_and_drag());
+                            app.canvas_input(ctx, rect, &response);
+                            app.draw_project_canvas(ctx, ui.painter(), rect, key);
+                        });
+                    },
+                )
+            };
+            let button = |pos, pressed| egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers,
+            };
+            let start = egui::pos2(40., 40.);
+            let end = egui::pos2(72., 40.);
+            let old_tile = egui::pos2(56., 56.);
+            let new_tile = egui::pos2(88., 56.);
+            frame(&mut app, 1., vec![egui::Event::PointerMoved(start)]);
+            frame(&mut app, 1.01, vec![button(start, true)]);
+            frame(&mut app, 1.02, vec![egui::Event::PointerMoved(end)]);
+            let rendered = frame(&mut app, 1.08, vec![button(end, false)]);
+            let project = app.project.as_ref().unwrap();
+            assert_eq!(
+                project.layer(key, source_index).unwrap()["intGridCsv"][36],
+                1
+            );
+            assert_eq!(
+                generated(project, targets[0]),
+                if copy { vec![32] } else { vec![64] }
+            );
+            assert_eq!(generated(project, targets[1]), [32]);
+            assert_eq!(grid_at(&rendered, start), copy);
+            assert_eq!(grid_at(&rendered, end), !copy);
+            assert!(tile_at(&rendered, old_tile));
+            assert!(!tile_at(&rendered, new_tile));
+            assert!(app.async_paint.as_ref().unwrap().hints.is_empty());
+            assert!(
+                !app.history.can_undo(),
+                "generated work is part of the single pending edit"
+            );
+
+            let expected = if copy { vec![32, 64] } else { vec![64] };
+            if copy {
+                let path = temp.path().join("copy.ldtk");
+                app.save_async_at(path.clone());
+                app.saving
+                    .take()
+                    .unwrap()
+                    .recv_timeout(std::time::Duration::from_secs(5))
+                    .unwrap()
+                    .unwrap();
+                let saved = Project::load(path).unwrap();
+                assert_eq!(generated(&saved, targets[0]), expected);
+                assert_eq!(generated(&saved, targets[1]), expected);
+            } else {
+                assert!(tile_at(&frame(&mut app, 1.329, vec![]), old_tile));
+                assert_eq!(generated(app.project.as_ref().unwrap(), targets[1]), [32]);
+            }
+            let output = frame(&mut app, 1.331, vec![]);
+            assert!(tile_at(&output, new_tile));
+            assert_eq!(tile_at(&output, old_tile), copy);
+            assert!(grid_at(&output, end));
+            assert_eq!(
+                generated(app.project.as_ref().unwrap(), targets[1]),
+                expected
+            );
+            if !copy {
+                let selection_before_failure = app.selection_group.clone();
+                let project = app.project.as_mut().unwrap();
+                let target = project.json["defs"]["layers"]
+                    .as_array_mut()
+                    .unwrap()
+                    .iter_mut()
+                    .find(|def| def["uid"] == targets[1])
+                    .unwrap();
+                target["autoRuleGroups"][0]["rules"][0]["pattern"] = json!([]);
+                let before_failure = project.json.clone();
+                frame(&mut app, 2.0, vec![button(end, true)]);
+                frame(&mut app, 2.01, vec![egui::Event::PointerMoved(start)]);
+                frame(&mut app, 2.05, vec![button(start, false)]);
+                assert!(app.deferred_auto_paint.is_some());
+                assert_ne!(app.selection_group, selection_before_failure);
+                frame(&mut app, 2.301, vec![]);
+                assert_eq!(app.project.as_ref().unwrap().json, before_failure);
+                assert_eq!(app.selection_group, selection_before_failure);
+                assert!(app.status.contains("invalid auto-layer rule pattern"));
+            }
+            app.undo_action(false);
+            let project = app.project.as_ref().unwrap();
+            assert_eq!(project.json["levels"], project_before["levels"]);
+            assert!(!app.history.can_undo());
+        }
+    }
+
+    #[test]
+    fn async_tiles_delay_the_ordered_render_but_save_and_undo_current_tiles() {
+        let temp = tempfile::tempdir().unwrap();
+        let atlas_path = temp.path().join("atlas.png");
+        let ctx = egui::Context::default();
+        let mut project = Project::new();
+        let key = project.level_keys()[0];
+        let layer = project.add_layer("Tiles", "Tiles", 16).unwrap();
+        let atlas = project.add_tileset(&atlas_path, 16, 48, 16).unwrap();
+        project.assign_tileset(layer, atlas).unwrap();
+        project
+            .update_layer_properties(layer, &serde_json::json!({"useAsyncRender":true}))
+            .unwrap();
+        // Tile 1's cached average is green, distinct from the decoded texture's blue.
+        project.json["defs"]["tilesets"][0]["cachedPixelData"] =
+            serde_json::json!({"opaqueTiles":"110","averageColors":"ff00f0f0880f"});
+        project
+            .paint_tile_stacked(key, 0, 3, 2, 0, [0, 0], 0, false, true)
+            .unwrap();
+        project
+            .paint_tile_stacked(key, 0, 3, 2, 2, [32, 0], 0, false, true)
+            .unwrap();
+
+        let mut app = EditorApp::empty();
+        app.set_project(project);
+        app.fit = false;
+        app.grid = false;
+        app.viewport = Viewport {
+            center: [128., 128.],
+            zoom: 1.,
+        };
+        app.repaint = Some(ctx.clone());
+        app.tile_rect = [0, 0, 1, 1];
+        app.tile_stacking = false;
+        let pixels = image::RgbaImage::from_fn(48, 16, |x, _| match x / 16 {
+            0 => image::Rgba([255, 0, 0, 255]),
+            1 => image::Rgba([0, 0, 255, 255]),
+            _ => image::Rgba([128, 0, 255, 128]),
+        });
+        pixels.save(&atlas_path).unwrap();
+        app.assets
+            .store_file_image(&ctx, &atlas_path, pixels)
+            .unwrap();
+        let texture = app.assets.texture(&ctx, &atlas_path).unwrap().id();
+
+        let paint_cell = egui::pos2(40., 40.);
+        let stack_cell = egui::pos2(56., 40.);
+        let draw = |app: &mut EditorApp, time, events| {
+            ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(256., 256.),
+                    )),
+                    time: Some(time),
+                    events,
+                    ..Default::default()
+                },
+                |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        let (rect, response) =
+                            ui.allocate_exact_size(ui.available_size(), Sense::click_and_drag());
+                        app.canvas_input(ctx, rect, &response);
+                        app.draw_project_canvas(ctx, ui.painter(), rect, key);
+                    });
+                },
+            )
+        };
+        let button = |pos, button, pressed| egui::Event::PointerButton {
+            pos,
+            button,
+            pressed,
+            modifiers: Default::default(),
+        };
+        let painted = |out: &egui::FullOutput, point| {
+            out.shapes
+                .iter()
+                .filter_map(|shape| match &shape.shape {
+                    egui::Shape::Mesh(mesh) if mesh.texture_id == texture => Some(mesh),
+                    _ => None,
+                })
+                .flat_map(|mesh| mesh.vertices.chunks_exact(4))
+                .filter(|quad| Rect::from_two_pos(quad[0].pos, quad[3].pos).contains(point))
+                .map(|quad| (quad[0].uv.x * 3.).round() as i64)
+                .collect::<Vec<_>>()
+        };
+        let hint = |out: &egui::FullOutput, point, color| {
+            out.shapes.iter().any(|shape| {
+                matches!(&shape.shape, egui::Shape::Rect(r) if r.rect.contains(point) && r.fill == color)
+            })
+        };
+        let saved_tiles = |project: &Project, x| {
+            project.layer(key, 0).unwrap()["gridTiles"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|tile| tile["px"][0] == x)
+                .map(|tile| tile["t"].as_i64().unwrap())
+                .collect::<Vec<_>>()
+        };
+
+        use egui::PointerButton::{Primary, Secondary};
+        draw(&mut app, 1., vec![egui::Event::PointerMoved(paint_cell)]);
+        let output = draw(&mut app, 2., vec![button(paint_cell, Primary, true)]);
+        assert_eq!(saved_tiles(app.project.as_ref().unwrap(), 32), [0]);
+        assert!(
+            painted(&output, paint_cell).is_empty(),
+            "old empty cell still renders"
+        );
+        assert!(hint(
+            &output,
+            paint_cell,
+            Color32::from_rgb_additive(179, 0, 0)
+        ));
+        draw(&mut app, 2.04, vec![button(paint_cell, Primary, false)]);
+        let output = draw(&mut app, 2.251, vec![]);
+        assert_eq!(painted(&output, paint_cell), [0]);
+
+        app.tile_rect = [1, 0, 1, 1];
+        let output = draw(&mut app, 3., vec![button(paint_cell, Primary, true)]);
+        assert_eq!(saved_tiles(app.project.as_ref().unwrap(), 32), [1]);
+        assert_eq!(painted(&output, paint_cell), [0]);
+        assert!(hint(
+            &output,
+            paint_cell,
+            Color32::from_rgb_additive(0, 179, 0)
+        ));
+        draw(&mut app, 3.04, vec![button(paint_cell, Primary, false)]);
+        let output = draw(&mut app, 3.251, vec![]);
+        assert_eq!(painted(&output, paint_cell), [1]);
+
+        app.tile_stacking = true;
+        draw(&mut app, 3.9, vec![egui::Event::PointerMoved(stack_cell)]);
+        let output = draw(&mut app, 4., vec![button(stack_cell, Secondary, true)]);
+        assert_eq!(saved_tiles(app.project.as_ref().unwrap(), 48), [0]);
+        assert_eq!(
+            painted(&output, stack_cell),
+            [0, 2],
+            "old stack stays ordered"
+        );
+        let erase_hint = Color32::from_rgb_additive(179, 0, 0);
+        assert!(hint(&output, stack_cell, erase_hint));
+        let output = draw(&mut app, 4.04, vec![button(stack_cell, Secondary, false)]);
+        assert_eq!(painted(&output, stack_cell), [0, 2]);
+        assert!(hint(&output, stack_cell, erase_hint));
+
+        let save_path = temp.path().join("project.ldtk");
+        app.project
+            .as_ref()
+            .unwrap()
+            .clone()
+            .save(&save_path)
+            .unwrap();
+        let saved = Project::load(save_path).unwrap();
+        assert_eq!(saved_tiles(&saved, 48), [0]);
+        app.undo_action(false);
+        let output = draw(&mut app, 4.05, vec![]);
+        assert_eq!(painted(&output, stack_cell), [0, 2]);
+        assert!(!hint(&output, stack_cell, erase_hint));
+        app.undo_action(true);
+        let output = draw(&mut app, 4.06, vec![]);
+        assert_eq!(painted(&output, stack_cell), [0]);
+        assert!(!hint(&output, stack_cell, erase_hint));
     }
 
     #[test]
@@ -1931,6 +3167,263 @@ mod tests {
     }
 
     #[test]
+    fn async_entities_keep_the_old_render_during_placement_removal_and_transforms() {
+        for resizable in [false, true] {
+            let mut project = Project::new();
+            let layer_uid = project.add_layer("Entities", "Entities", 16).unwrap();
+            project
+                .update_layer_properties(layer_uid, &serde_json::json!({"useAsyncRender":true}))
+                .unwrap();
+            let uid = project.add_entity_def("Actor", 16, 16).unwrap();
+            project
+                .update_entity_definition(
+                    uid,
+                    &serde_json::json!({
+                        "color":"#22AA77", "fillOpacity":1, "lineOpacity":0, "pivotX":0, "pivotY":0,
+                        "resizableX":resizable, "resizableY":resizable,
+                    }),
+                )
+                .unwrap();
+            let mut app = EditorApp::empty();
+            app.set_project(project);
+            app.entity_uid = Some(uid);
+            app.fit = false;
+            app.grid = false;
+            app.viewport = Viewport {
+                center: [128.; 2],
+                zoom: 1.,
+            };
+            let key = app.selected.unwrap();
+            let ctx = egui::Context::default();
+            app.repaint = Some(ctx.clone());
+            let draw = |app: &mut EditorApp, time, events| {
+                ctx.run(
+                    egui::RawInput {
+                        screen_rect: Some(Rect::from_min_size(
+                            egui::Pos2::ZERO,
+                            egui::vec2(256., 256.),
+                        )),
+                        time: Some(time),
+                        events,
+                        ..Default::default()
+                    },
+                    |ctx| {
+                        egui::CentralPanel::default().show(ctx, |ui| {
+                            let (rect, response) = ui
+                                .allocate_exact_size(ui.available_size(), Sense::click_and_drag());
+                            app.canvas_input(ctx, rect, &response);
+                            app.draw_project_canvas(ctx, ui.painter(), rect, key);
+                            app.draw_resize_handles(ui, rect);
+                            app.draw_tool_overlay(ui, rect);
+                        });
+                    },
+                )
+            };
+            let entities = |app: &EditorApp| {
+                app.project.as_ref().unwrap().layer(key, 0).unwrap()["entityInstances"].clone()
+            };
+            let visible_entity = |output: &egui::FullOutput| {
+                output.shapes.iter().find_map(|shape| match &shape.shape {
+                    egui::Shape::Rect(rect) if rect.fill == Color32::from_rgb(34, 170, 119) => {
+                        Some(rect.rect)
+                    }
+                    _ => None,
+                })
+            };
+            let button = |pos, button, pressed| egui::Event::PointerButton {
+                pos,
+                button,
+                pressed,
+                modifiers: egui::Modifiers::NONE,
+            };
+            let primary = egui::PointerButton::Primary;
+            let secondary = egui::PointerButton::Secondary;
+            let placement = egui::pos2(40., 40.);
+            draw(&mut app, 1.0, vec![egui::Event::PointerMoved(placement)]);
+            let out = draw(&mut app, 1.01, vec![button(placement, primary, true)]);
+            assert_eq!(entities(&app).as_array().unwrap().len(), 1);
+            assert_eq!(app.entity_index, Some(0));
+            assert!(
+                visible_entity(&out).is_none(),
+                "placement painted before the timer"
+            );
+            assert!(app.async_paint.as_ref().unwrap().hints.is_empty());
+            draw(&mut app, 1.02, vec![button(placement, primary, false)]);
+            assert!(visible_entity(&draw(&mut app, 1.259, vec![])).is_none());
+            let old = visible_entity(&draw(&mut app, 1.261, vec![])).unwrap();
+
+            let handle_offset = egui::vec2(4., 5.);
+            let start = if resizable {
+                old.right_bottom() + handle_offset
+            } else {
+                old.center()
+            };
+            let end = start + egui::vec2(64., 32.);
+            draw(&mut app, 2.0, vec![egui::Event::PointerMoved(start)]);
+            draw(&mut app, 2.01, vec![button(start, primary, true)]);
+            let initial_position = entities(&app)[0]["px"].clone();
+            if resizable {
+                let out = draw(
+                    &mut app,
+                    2.015,
+                    vec![egui::Event::PointerMoved(end - egui::vec2(8., 4.))],
+                );
+                assert_eq!(visible_entity(&out), Some(old));
+                assert_eq!(entities(&app)[0]["width"], 72);
+            }
+            let out = draw(&mut app, 2.02, vec![egui::Event::PointerMoved(end)]);
+            assert_eq!(visible_entity(&out), Some(old));
+            if resizable {
+                assert_eq!(entities(&app)[0]["width"], 80);
+                assert!(out.shapes.iter().any(|shape| matches!(&shape.shape, egui::Shape::Circle(circle)
+                    if circle.fill == Color32::from_rgba_unmultiplied(255, 204, 0, 191) && circle.center == end)));
+            } else {
+                let ghost_fill = Color32::from_rgb(34, 170, 119).gamma_multiply(0.5);
+                assert!(
+                    out.shapes
+                        .iter()
+                        .any(|shape| matches!(&shape.shape, egui::Shape::Rect(rect)
+                    if rect.fill == ghost_fill && rect.rect.center() == end))
+                );
+                assert_eq!(entities(&app)[0]["px"], initial_position);
+            }
+            let out = draw(&mut app, 2.10, vec![button(end, primary, false)]);
+            assert_eq!(visible_entity(&out), Some(old));
+            assert_eq!(app.entity_index, Some(0));
+            if !resizable {
+                assert_ne!(entities(&app)[0]["px"], initial_position);
+            }
+            assert!(app.async_paint.as_ref().unwrap().hints.is_empty());
+            let deadline = if resizable { 2.27 } else { 2.35 };
+            assert_eq!(
+                visible_entity(&draw(&mut app, deadline - 0.001, vec![])),
+                Some(old)
+            );
+            let next = visible_entity(&draw(&mut app, deadline + 0.001, vec![])).unwrap();
+            if resizable {
+                assert_eq!(next.right_bottom() + handle_offset, end);
+            } else {
+                assert_eq!(next.center(), end);
+            }
+
+            let hit = next.center();
+            draw(&mut app, 3.0, vec![egui::Event::PointerMoved(hit)]);
+            let out = draw(&mut app, 3.01, vec![button(hit, secondary, true)]);
+            assert!(entities(&app).as_array().unwrap().is_empty());
+            assert!(app.entity_index.is_none());
+            assert_eq!(visible_entity(&out), Some(next));
+            assert!(app.async_paint.as_ref().unwrap().hints.is_empty());
+            draw(&mut app, 3.02, vec![button(hit, secondary, false)]);
+            assert_eq!(visible_entity(&draw(&mut app, 3.259, vec![])), Some(next));
+            assert!(visible_entity(&draw(&mut app, 3.261, vec![])).is_none());
+            app.undo_action(false);
+            assert_eq!(visible_entity(&draw(&mut app, 3.3, vec![])), Some(next));
+        }
+    }
+
+    #[test]
+    fn async_point_move_and_eraser_retain_the_pre_edit_marker() {
+        let mut project = Project::new();
+        let layer = project.add_layer("Actors", "Entities", 16).unwrap();
+        project
+            .update_layer_properties(layer, &serde_json::json!({"useAsyncRender":true}))
+            .unwrap();
+        let actor = project.add_entity_def("Actor", 16, 16).unwrap();
+        let field = project
+            .add_field_definition(Some(actor), "Target", "Point", false)
+            .unwrap();
+        project
+            .update_field_definition(field, &serde_json::json!({"editorDisplayMode":"Points"}))
+            .unwrap();
+        let key = project.level_keys()[0];
+        project.add_entity(key, 0, actor, 16, 16).unwrap();
+        let iid = project.layer(key, 0).unwrap()["entityInstances"][0]["iid"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let initial = serde_json::json!({"cx":4,"cy":4});
+        let moved = serde_json::json!({"cx":6,"cy":4});
+        project
+            .set_field_value(key, Some(&iid), field, initial.clone())
+            .unwrap();
+        let mut app = EditorApp::empty();
+        app.set_project(project);
+        app.entity_uid = Some(actor);
+        app.fit = false;
+        app.viewport = Viewport {
+            center: [128.; 2],
+            zoom: 1.,
+        };
+        let ctx = egui::Context::default();
+        app.repaint = Some(ctx.clone());
+        let start = egui::pos2(72., 72.);
+        let end = egui::pos2(104., 72.);
+        let frame = |app: &mut EditorApp, time, events| {
+            ctx.run(
+                egui::RawInput {
+                    time: Some(time),
+                    events,
+                    screen_rect: Some(Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(256., 256.),
+                    )),
+                    ..Default::default()
+                },
+                |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        let (rect, response) =
+                            ui.allocate_exact_size(ui.available_size(), Sense::click_and_drag());
+                        app.canvas_input(ctx, rect, &response);
+                        app.draw_project_canvas(ctx, ui.painter(), rect, key);
+                    });
+                },
+            )
+        };
+        let point_at = |out: &egui::FullOutput, center| {
+            out.shapes.iter().any(|s| matches!(&s.shape, egui::Shape::Path(p)
+                if p.points.len()==4 && p.points[0]==center-egui::vec2(0.,4.) && p.points[2]==center+egui::vec2(0.,4.)))
+        };
+        let button = |pos, button, pressed| egui::Event::PointerButton {
+            pos,
+            button,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        let primary = egui::PointerButton::Primary;
+        let secondary = egui::PointerButton::Secondary;
+        let document = |app: &EditorApp| {
+            app.project.as_ref().unwrap().layer(key,0).unwrap()["entityInstances"][0]["fieldInstances"][0]["__value"].clone()
+        };
+
+        assert!(point_at(
+            &frame(&mut app, 1.0, vec![egui::Event::PointerMoved(start)]),
+            start
+        ));
+        frame(&mut app, 1.01, vec![button(start, primary, true)]);
+        frame(&mut app, 1.02, vec![egui::Event::PointerMoved(end)]);
+        let pending = frame(&mut app, 1.08, vec![button(end, primary, false)]);
+        assert_eq!(document(&app), moved);
+        assert!(point_at(&pending, start));
+        assert!(!point_at(&pending, end));
+        assert!(point_at(&frame(&mut app, 1.329, vec![]), start));
+        let settled = frame(&mut app, 1.331, vec![]);
+        assert!(point_at(&settled, end));
+        assert!(!point_at(&settled, start));
+
+        let pending = frame(&mut app, 2.0, vec![button(end, secondary, true)]);
+        assert!(document(&app).is_null());
+        assert_eq!(app.entity_index, Some(0));
+        assert!(point_at(&pending, end));
+        frame(&mut app, 2.01, vec![button(end, secondary, false)]);
+        assert!(point_at(&frame(&mut app, 2.249, vec![]), end));
+        assert!(!point_at(&frame(&mut app, 2.251, vec![]), end));
+        app.undo_action(false);
+        assert_eq!(document(&app), moved);
+        app.undo_action(false);
+        assert_eq!(document(&app), initial);
+    }
+
+    #[test]
     fn creating_an_entity_immediately_drags_or_resizes_with_one_undo() {
         for resizable in [false, true] {
             let mut p = Project::new();
@@ -1938,7 +3431,7 @@ mod tests {
             let uid = p.add_entity_def("Actor", 16, 16).unwrap();
             p.update_entity_definition(
                 uid,
-                &serde_json::json!({"resizableX":resizable,"resizableY":resizable}),
+                &serde_json::json!({"resizableX":resizable,"resizableY":resizable,"pivotX":0.5,"pivotY":1}),
             )
             .unwrap();
             let mut app = EditorApp::empty();

@@ -1,5 +1,14 @@
 //! Source WorldPanel and LevelInstancePanel forms.
+use super::source_controls::edit_text;
 use super::*;
+
+const WORLD_LABEL_WIDTH: f32 = 110.;
+const LEVEL_LABEL_WIDTH: f32 = 102.;
+const FORM_ROW_GAP: f32 = 10.;
+const SMALL_INPUT_WIDTH: f32 = 60.;
+const LEVEL_ACTION_SIZE: f32 = 128. / 3.;
+const LEVEL_ACTION_ORANGE: Color32 = Color32::from_rgb(227, 77, 0);
+const LEVEL_ACTION_RED: Color32 = Color32::from_rgb(121, 17, 5);
 
 const WORLD_LAYOUTS: [(&str, &str); 4] = [
     ("Free", "2D free map - Freely positioned in space"),
@@ -20,49 +29,244 @@ const BACKGROUND_POSITIONS: [(&str, &str); 5] = [
 
 fn icon_button(
     ui: &mut egui::Ui,
-    image: egui::ImageSource<'static>,
+    image: impl Into<egui::Image<'static>>,
     help: &str,
     fill: Color32,
     size: Vec2,
 ) -> egui::Response {
     let button =
-        egui::Button::image(egui::Image::new(image).fit_to_exact_size(egui::vec2(16., 16.)))
-            .fill(fill);
+        egui::Button::image(image.into().fit_to_exact_size(egui::vec2(16., 16.))).fill(fill);
     ui.scope(|ui| {
         ui.spacing_mut().button_padding = egui::vec2(4., 2.);
-        source_controls::add_sized_button(ui, size, button).on_hover_text(help)
+        source_controls::add_sized_button(ui, size, button).on_hover_text(locale::tr(ui, help))
     })
     .inner
 }
 
-pub(super) fn text_input(
+fn depth_arrow(
     ui: &mut egui::Ui,
-    key: impl std::hash::Hash,
+    icon: egui::ImageSource<'static>,
+    help: &str,
+    enabled: bool,
+) -> egui::Response {
+    let (fill, tint) = if enabled {
+        (LEVEL_ACTION_ORANGE, Color32::WHITE)
+    } else {
+        (theme::DARK, Color32::from_white_alpha(77))
+    };
+    ui.add_enabled_ui(enabled, |ui| {
+        icon_button(
+            ui,
+            egui::Image::new(icon).tint(tint),
+            help,
+            fill,
+            egui::vec2(45., 20.),
+        )
+    })
+    .inner
+}
+
+fn background_position_controls(
+    ui: &mut egui::Ui,
+    level: &Value,
+    image_size: Option<[f64; 2]>,
+    patch: &mut Value,
+) {
+    let current = text(level, "bgPos", "Cover");
+    let mut mode = current.to_owned();
+    let pivot = [
+        level["bgPivotX"].as_f64().unwrap_or(0.5),
+        level["bgPivotY"].as_f64().unwrap_or(0.5),
+    ];
+    let standard = |pivot: [f64; 2]| pivot.iter().all(|v| [0., 0.5, 1.].contains(v));
+    let id = ui.make_persistent_id(("background-pivot", text(level, "iid", "")));
+    let mut show_advanced = ui.data(|data| data.get_temp::<bool>(id)).unwrap_or(false);
+    let mut choice = None;
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 4.;
+        ui.spacing_mut().interact_size.y = 42.;
+        let width = (ui.available_width() - 154.).clamp(80., 160.);
+        let label = BACKGROUND_POSITIONS
+            .iter()
+            .find(|(value, _)| *value == current)
+            .map_or(current, |(_, label)| locale::tr(ui, label));
+        ui.allocate_ui_with_layout(
+            egui::vec2(width, 42.),
+            egui::Layout::left_to_right(egui::Align::Center),
+            |ui| {
+                egui::ComboBox::from_id_salt("bgPos")
+                    .width(width)
+                    .truncate()
+                    .selected_text(RichText::new(label).size(12.))
+                    .show_ui(ui, |ui| {
+                        for (value, label) in BACKGROUND_POSITIONS {
+                            ui.selectable_value(&mut mode, value.into(), locale::tr(ui, label));
+                        }
+                    });
+            },
+        );
+        if image_size.is_some() {
+            choice = source_controls::pivot_grid_sized(ui, pivot, 14.)
+                .filter(|selection| *selection != pivot);
+            if !show_advanced && standard(pivot) {
+                ui.add_space(4.);
+                let help = locale::tr(ui, "Show advanced options");
+                let label = RichText::new(help)
+                    .size(12.)
+                    .color(theme::ACCENT)
+                    .underline();
+                show_advanced = ui
+                    .add(egui::Label::new(label).truncate().sense(Sense::click()))
+                    .on_hover_text(help)
+                    .on_hover_cursor(egui::CursorIcon::PointingHand)
+                    .clicked();
+            }
+        }
+    });
+
+    if choice.is_none()
+        && (show_advanced || !standard(pivot))
+        && let Some(image_size) = image_size
+    {
+        let level_size = [
+            level["pxWid"].as_f64().unwrap_or(256.),
+            level["pxHei"].as_f64().unwrap_or(256.),
+        ];
+        let (_, crop) = ldtk_core::exports::background_image_layout(level_size, image_size, &mode);
+        choice = background_pivot_inputs(ui, id, pivot, crop.map(f64::trunc));
+    }
+    if let Some([x, y]) = choice {
+        patch["bgPivotX"] = json!(x);
+        patch["bgPivotY"] = json!(y);
+    }
+    if mode != current {
+        patch["bgPos"] = json!(mode);
+    }
+    // The source rebuilds the controls after applying a preset or changing modes.
+    ui.data_mut(|data| {
+        data.insert_temp(id, show_advanced && choice.is_none() && mode == current);
+    });
+}
+
+fn background_pivot_inputs(
+    ui: &mut egui::Ui,
+    id: egui::Id,
+    pivot: [f64; 2],
+    tile_size: [f64; 2],
+) -> Option<[f64; 2]> {
+    let mut next = pivot;
+    egui::Frame::new()
+        .stroke(Stroke::new(1., theme::DARK))
+        .inner_margin(4)
+        .show(ui, |ui| {
+            let layout = if ui.available_width() >= 280. {
+                egui::Layout::left_to_right(egui::Align::Min)
+            } else {
+                egui::Layout::top_down(egui::Align::Min)
+            };
+            ui.with_layout(layout, |ui| {
+                for (pixels, caption) in [(false, "Float:"), (true, "Pixels:")] {
+                    if pixels {
+                        ui.separator();
+                    }
+                    ui.horizontal(|ui| {
+                        ui.set_height(32.);
+                        ui.spacing_mut().item_spacing.x = 4.;
+                        ui.label(RichText::new(locale::tr(ui, caption)).size(12.).color(theme::TEXT));
+                        for axis in 0..2 {
+                            if axis == 1 {
+                                ui.label(",");
+                            }
+                            let extent = tile_size[axis];
+                            let current = if pixels {
+                                (pivot[axis] * extent).floor()
+                            } else {
+                                pivot[axis]
+                            };
+                            let draft = ui
+                                .add_enabled_ui(!pixels || extent > 0., |ui| {
+                                    edit_text(
+                                        ui,
+                                        id.with((pixels, axis)),
+                                        &current.to_string(),
+                                        |ui, text, id| {
+                                            ui.add_sized(
+                                                [40., 32.],
+                                                form_text_box(text).font(FontId::proportional(12.)).id(id),
+                                            )
+                                        },
+                                    )
+                                })
+                                .inner;
+                            if let Some(draft) = draft {
+                                let value = if pixels {
+                                    draft.trim().parse::<i64>().ok()
+                                        .map(|v| v.clamp(-2048, 2048) as f64 / extent)
+                                } else {
+                                    draft.trim().parse::<f64>().ok().filter(|v| v.is_finite())
+                                        .map(|v| v.clamp(-50., 50.))
+                                };
+                                if let Some(value) = value {
+                                    next[axis] = value;
+                                }
+                            }
+                        }
+                    });
+                }
+            });
+        });
+    (next != pivot).then_some(next)
+}
+
+fn level_action_button(
+    ui: &mut egui::Ui,
+    width: f32,
+    image: egui::ImageSource<'static>,
+    label: Option<&str>,
+    fill: Color32,
+) -> egui::Response {
+    let image = egui::Image::new(image).fit_to_exact_size(Vec2::splat(22.667));
+    let button = match label {
+        Some(label) => egui::Button::image_and_text(
+            image,
+            RichText::new(locale::tr(ui, label)).color(Color32::WHITE),
+        ),
+        None => egui::Button::image(image),
+    };
+    source_controls::add_sized_button(
+        ui,
+        [width, LEVEL_ACTION_SIZE],
+        button.fill(fill).stroke(Stroke::NONE),
+    )
+}
+
+fn form_text_box(value: &mut String) -> egui::TextEdit<'_> {
+    egui::TextEdit::singleline(value)
+        .font(FontId::proportional(13.333))
+        .margin(egui::Margin::symmetric(9, 0))
+        .vertical_align(egui::Align::Center)
+}
+
+pub(super) fn form_text_input(
+    ui: &mut egui::Ui,
+    key: &'static str,
     current: &str,
     width: f32,
 ) -> Option<String> {
-    let id = ui.make_persistent_id(key);
-    let (original, mut draft) = ui
-        .data_mut(|d| d.get_temp::<(String, String)>(id))
-        .filter(|(original, _)| original == current)
-        .unwrap_or_else(|| (current.into(), current.into()));
-    ui_commit::prepare_editor(ui.ctx(), id);
-    let response = ui.add_sized(
-        [width.max(20.), 33.],
-        egui::TextEdit::singleline(&mut draft).id(id),
-    );
-    ui_commit::track_editor(ui.ctx(), &response);
-    let commit = (response.lost_focus()
-        || response.has_focus() && ui.input(|i| i.key_pressed(Key::Enter)))
-        && draft != current;
-    ui.data_mut(|d| {
-        if commit {
-            d.remove::<(String, String)>(id);
-        } else {
-            d.insert_temp(id, (original, draft.clone()));
-        }
-    });
-    commit.then_some(draft)
+    let (height, align) = if key == "worldDepth" {
+        (40., egui::Align::Center)
+    } else {
+        (33., egui::Align::Min)
+    };
+    edit_text(ui, key, current, |ui, draft, id| {
+        ui.add_sized(
+            [width.max(20.), height],
+            form_text_box(draft)
+                .horizontal_align(align)
+                .text_color(Color32::WHITE)
+                .id(id),
+        )
+    })
 }
 
 fn int_input(
@@ -73,28 +277,56 @@ fn int_input(
     maximum: i64,
     patch: &mut Value,
 ) {
-    if let Some(draft) = text_input(ui, key, &current.as_i64().unwrap_or(0).to_string(), 56.)
-        && let Ok(number) = draft.trim().parse::<i64>()
+    if let Some(draft) = form_text_input(
+        ui,
+        key,
+        &current.as_i64().unwrap_or(0).to_string(),
+        SMALL_INPUT_WIDTH,
+    ) && let Ok(number) = draft.trim().parse::<i64>()
     {
         patch[key] = json!(number.clamp(minimum, maximum));
     }
 }
 
+fn property_row(
+    ui: &mut egui::Ui,
+    label: &str,
+    label_width: f32,
+    body: impl FnOnce(&mut egui::Ui),
+) {
+    source_controls::form_row_wrapped(ui, label, label, label_width, |ui| {
+        ui.spacing_mut().item_spacing.x = 3.;
+        body(ui);
+    });
+}
+
+fn dimension_separator(ui: &mut egui::Ui, label: &str) {
+    ui.add_sized(
+        [8., 16.],
+        egui::Label::new(label).halign(egui::Align::Center),
+    );
+}
+
 fn iid_row(ui: &mut egui::Ui, iid: &str, width: f32, help: &str) {
-    row_width(ui, "IID", width, |ui| {
+    property_row(ui, "IID", width, |ui| {
+        ui.spacing_mut().item_spacing.x = 1.;
         let mut value = iid.to_owned();
         ui.add_sized(
-            [(ui.available_width() - 36.).max(20.), 33.],
-            egui::TextEdit::singleline(&mut value)
+            [
+                (ui.available_width() - SMALL_INPUT_WIDTH - 2.).max(20.),
+                33.,
+            ],
+            form_text_box(&mut value)
                 .interactive(false)
-                .font(egui::TextStyle::Small),
+                .background_color(Color32::TRANSPARENT)
+                .text_color(GROUP_BAR),
         );
         if icon_button(
             ui,
             egui::include_image!("../../assets/icons/copy.svg"),
             help,
             theme::LIGHT,
-            egui::vec2(30., 33.),
+            egui::vec2(SMALL_INPUT_WIDTH, 32.),
         )
         .clicked()
         {
@@ -103,21 +335,118 @@ fn iid_row(ui: &mut egui::Ui, iid: &str, width: f32, help: &str) {
     });
 }
 
-fn group(ui: &mut egui::Ui, key: &'static str, title: &str, body: impl FnOnce(&mut egui::Ui)) {
+fn lock_level_inputs(ui: &mut egui::Ui) {
+    ui.visuals_mut().disabled_alpha = 0.3;
+    ui.disable();
+}
+
+fn group(
+    ui: &mut egui::Ui,
+    key: &'static str,
+    title: impl Into<egui::WidgetText>,
+    body: impl FnOnce(&mut egui::Ui),
+) {
     let id = ui.make_persistent_id(key);
     let open = ui.data_mut(|d| d.get_temp::<bool>(id)).unwrap_or(true);
     let open = section(ui, title, open, |ui| {
         egui::Frame::new()
             .inner_margin(egui::Margin::symmetric(8, 4))
             .show(ui, |ui| {
-                ui.spacing_mut().item_spacing.y = 10.;
+                ui.spacing_mut().item_spacing.y = FORM_ROW_GAP;
                 body(ui);
             });
     });
     ui.data_mut(|d| d.insert_temp(id, open));
 }
 
+fn properties_title(ui: &egui::Ui, template: &str, name: &str) -> egui::text::LayoutJob {
+    let title = locale::tr(ui, template);
+    let (before, after) = title.split_once("{name}").unwrap_or((title, ""));
+    let normal = egui::TextFormat::simple(
+        FontId::new(17.333, egui::FontFamily::Name("panel-title".into())),
+        Color32::PLACEHOLDER,
+    );
+    let highlight = egui::TextFormat::simple(
+        FontId::new(17.333, egui::FontFamily::Name("heading".into())),
+        Color32::WHITE,
+    );
+    let mut job = egui::text::LayoutJob::default();
+    job.append(before, 0., normal.clone());
+    job.append(name, 0., highlight);
+    job.append(after, 0., normal);
+    job
+}
+
+fn depth_moves(depth: i64, other_depths: impl Iterator<Item = i64>) -> (bool, bool) {
+    // The original depth bounds always include zero, even without a level on it.
+    let mut further = depth < 0;
+    let mut closer = depth > 0;
+    for other in other_depths {
+        further |= other >= depth;
+        closer |= other <= depth;
+    }
+    (further, closer)
+}
+
 impl EditorApp {
+    pub(in crate::app) fn move_selected_level_world_depth(&mut self, delta: i64) {
+        let (Some(project), Some(key)) = (&self.project, self.selected) else {
+            return;
+        };
+        let mut depths = project
+            .level_keys()
+            .into_iter()
+            .filter(|other| other.world == key.world)
+            .filter_map(|other| {
+                Some((
+                    other,
+                    project.level(other)?["worldDepth"].as_i64().unwrap_or(0),
+                ))
+            })
+            .collect::<Vec<_>>();
+        let Some(selected) = depths.iter().position(|(other, _)| *other == key) else {
+            return;
+        };
+        let current = depths[selected].1;
+        self.world_depth = current;
+        let (further, closer) = depth_moves(
+            current,
+            depths
+                .iter()
+                .filter_map(|&(other, depth)| (other != key).then_some(depth)),
+        );
+        if (delta > 0 && !further) || (delta < 0 && !closer) {
+            return;
+        }
+        let target = current + delta;
+        depths[selected].1 = target;
+        // Moving further keeps depth zero occupied by shifting every depth
+        // down until the nearest positive one reaches zero.
+        let shift = if delta > 0 && depths.iter().all(|&(_, depth)| depth != 0) {
+            depths
+                .iter()
+                .map(|&(_, depth)| depth)
+                .filter(|&depth| depth > 0)
+                .min()
+                .unwrap_or(0)
+        } else {
+            0
+        };
+        if self
+            .edit("Level depth changed", |project| {
+                for (other, depth) in depths {
+                    if other == key || shift != 0 {
+                        project.level_mut(other).unwrap()["worldDepth"] = json!(depth - shift);
+                    }
+                }
+                project.refresh_derived_data()
+            })
+            .is_some()
+        {
+            self.world_depth = target - shift;
+        }
+    }
+
     pub(super) fn source_world_form(&mut self, ui: &mut egui::Ui) {
         let Some(project) = &self.project else { return };
         let multi = project.json["flags"]
@@ -144,38 +473,72 @@ impl EditorApp {
                 .enumerate()
                 .map(|(i, w)| (i, text(w, "identifier", "World").to_owned()))
                 .collect::<Vec<_>>();
+            ui.add_space(2.);
             ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 1.;
                 let mut selected = current_world;
-                egui::ComboBox::from_id_salt("world-properties")
-                    .width((ui.available_width() - 72.).max(40.))
-                    .truncate()
-                    .selected_text(&name)
-                    .show_ui(ui, |ui| {
-                        for (index, name) in &worlds {
-                            ui.selectable_value(&mut selected, Some(*index), name);
+                let height = LEVEL_ACTION_SIZE + 2.;
+                let width = (ui.available_width() - 2. * LEVEL_ACTION_SIZE - 3.).max(40.);
+                ui.allocate_ui_with_layout(
+                    egui::vec2(width, height),
+                    egui::Layout::left_to_right(egui::Align::Center),
+                    |ui| {
+                        ui.set_max_width(width);
+                        let font = FontId::proportional(13.333);
+                        let text_height = ui.fonts_mut(|fonts| fonts.row_height(&font));
+                        let popup_spacing = ui.spacing().clone();
+                        let spacing = ui.spacing_mut();
+                        spacing.interact_size.y = height;
+                        spacing.button_padding =
+                            egui::vec2(9., (height - text_height.max(spacing.icon_width)) * 0.5);
+                        let widgets = &mut ui.visuals_mut().widgets;
+                        for (style, border) in [
+                            (&mut widgets.inactive, Color32::from_rgb(115, 127, 157)),
+                            (&mut widgets.hovered, Color32::WHITE),
+                            (&mut widgets.active, Color32::WHITE),
+                            (&mut widgets.open, Color32::WHITE),
+                        ] {
+                            style.weak_bg_fill = theme::LIGHT;
+                            style.bg_stroke = Stroke::new(1., border);
+                            style.fg_stroke.color = Color32::WHITE;
+                            style.expansion = 0.;
+                            style.corner_radius = 3.into();
                         }
-                    });
+                        egui::ComboBox::from_id_salt("world-properties")
+                            .width(width)
+                            .truncate()
+                            .selected_text(RichText::new(&name).font(font))
+                            .show_ui(ui, |ui| {
+                                *ui.spacing_mut() = popup_spacing;
+                                for (index, name) in &worlds {
+                                    ui.selectable_value(&mut selected, Some(*index), name);
+                                }
+                            });
+                    },
+                );
                 if selected != current_world {
                     self.navigate_world(selected);
                 }
-                if icon_button(
+                if level_action_button(
                     ui,
+                    LEVEL_ACTION_SIZE,
                     egui::include_image!("../../assets/icons/add.svg"),
-                    "Create a new world",
-                    SOURCE_ORANGE,
-                    egui::vec2(30., 30.),
+                    None,
+                    LEVEL_ACTION_ORANGE,
                 )
+                .on_hover_text(locale::tr(ui, "Create a new world"))
                 .clicked()
                 {
                     self.create_form_world();
                 }
-                if icon_button(
+                if level_action_button(
                     ui,
+                    LEVEL_ACTION_SIZE,
                     egui::include_image!("../../assets/icons/delete.svg"),
-                    "Delete current world",
-                    Color32::from_rgb(137, 37, 43),
-                    egui::vec2(30., 30.),
+                    None,
+                    LEVEL_ACTION_RED,
                 )
+                .on_hover_text(locale::tr(ui, "Delete current world"))
                 .clicked()
                     && let Some(world) = current_world
                 {
@@ -187,92 +550,98 @@ impl EditorApp {
             });
             ui.add_space(8.);
         }
-        ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 6.;
-            let create_width = (ui.available_width() - 72.).max(40.);
-            let enabled = !multi || current_world.is_some();
-            ui.add_enabled_ui(enabled, |ui| {
-                let button = egui::Button::image_and_text(
-                    egui::Image::new(egui::include_image!("../../assets/icons/add.svg"))
-                        .fit_to_exact_size(egui::vec2(16., 16.)),
-                    RichText::new("CREATE A NEW LEVEL").color(Color32::WHITE),
-                )
-                .fill(SOURCE_ORANGE);
-                if source_controls::add_sized_button(ui, [create_width, 42.], button).clicked() {
-                    self.start_level_spot_picker();
-                }
+        // The source button margins add one point on each edge and two between buttons.
+        ui.add_space(if multi { 1. } else { 3. });
+        egui::Frame::new()
+            .inner_margin(egui::Margin::symmetric(1, 0))
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 2.;
+                    let create_width =
+                        (ui.available_width() - 2. * (LEVEL_ACTION_SIZE + 2.)).max(40.);
+                    let enabled = !multi || current_world.is_some();
+                    ui.add_enabled_ui(enabled, |ui| {
+                        if level_action_button(
+                            ui,
+                            create_width,
+                            egui::include_image!("../../assets/icons/add.svg"),
+                            Some("CREATE A NEW LEVEL"),
+                            LEVEL_ACTION_ORANGE,
+                        )
+                        .clicked()
+                        {
+                            self.start_level_spot_picker();
+                        }
+                    });
+                    ui.add_enabled_ui(self.selected.is_some(), |ui| {
+                        if level_action_button(
+                            ui,
+                            LEVEL_ACTION_SIZE,
+                            egui::include_image!("../../assets/icons/copy.svg"),
+                            None,
+                            LEVEL_ACTION_ORANGE,
+                        )
+                        .on_hover_text(locale::tr(ui, "Duplicate current level"))
+                        .clicked()
+                            && let Some(key) = self.selected
+                        {
+                            self.queue_world_form_action(
+                                ui.ctx(),
+                                world_form_dialog::WorldFormAction::DuplicateLevel(key),
+                            );
+                        }
+                        if level_action_button(
+                            ui,
+                            LEVEL_ACTION_SIZE,
+                            egui::include_image!("../../assets/icons/delete.svg"),
+                            None,
+                            LEVEL_ACTION_RED,
+                        )
+                        .on_hover_text(locale::tr(ui, "Delete current level"))
+                        .clicked()
+                            && let Some(key) = self.selected
+                        {
+                            self.queue_world_form_action(
+                                ui.ctx(),
+                                world_form_dialog::WorldFormAction::DeleteLevel(key),
+                            );
+                        }
+                    });
+                });
             });
-            ui.add_enabled_ui(self.selected.is_some(), |ui| {
-                if icon_button(
-                    ui,
-                    egui::include_image!("../../assets/icons/copy.svg"),
-                    "Duplicate current level",
-                    SOURCE_ORANGE,
-                    egui::vec2(30., 42.),
-                )
-                .clicked()
-                    && let Some(key) = self.selected
-                {
-                    self.queue_world_form_action(
-                        ui.ctx(),
-                        world_form_dialog::WorldFormAction::DuplicateLevel(key),
-                    );
-                }
-                if icon_button(
-                    ui,
-                    egui::include_image!("../../assets/icons/delete.svg"),
-                    "Delete current level",
-                    Color32::from_rgb(137, 37, 43),
-                    egui::vec2(30., 42.),
-                )
-                .clicked()
-                    && let Some(key) = self.selected
-                {
-                    self.queue_world_form_action(
-                        ui.ctx(),
-                        world_form_dialog::WorldFormAction::DeleteLevel(key),
-                    );
-                }
-            });
-        });
         ui.add_space(16.);
         let mut patch = json!({});
         group(
             ui,
             "worldPanel_world",
-            &format!("WORLD SETTINGS: \"{name}\""),
+            properties_title(ui, "WORLD SETTINGS: \"{name}\"", &name),
             |ui| {
-                iid_row(ui, &iid, 106., "Copy world IID");
-                row_width(ui, "World identifier", 106., |ui| {
+                iid_row(ui, &iid, WORLD_LABEL_WIDTH, "Copy world IID");
+                property_row(ui, "World identifier", WORLD_LABEL_WIDTH, |ui| {
                     ui.add_enabled_ui(multi, |ui| {
-                        if let Some(next) = text_input(ui, "worldId", &name, ui.available_width()) {
+                        if let Some(next) =
+                            form_text_input(ui, "worldId", &name, ui.available_width())
+                        {
                             patch["identifier"] = json!(next);
                         }
                     });
                 });
-                row_width(ui, "World layout", 106., |ui| {
-                    let current = text(&world, "worldLayout", "Free");
-                    let mut layout = current.to_owned();
-                    egui::ComboBox::from_id_salt("worldLayout")
-                        .width(ui.available_width())
-                        .truncate()
-                        .selected_text(
-                            WORLD_LAYOUTS
-                                .iter()
-                                .find(|(v, _)| *v == current)
-                                .map_or(current, |(_, label)| *label),
-                        )
-                        .show_ui(ui, |ui| {
-                            for (value, label) in WORLD_LAYOUTS {
-                                ui.selectable_value(&mut layout, value.into(), label);
-                            }
-                        });
-                    if layout != current {
-                        patch["worldLayout"] = json!(layout);
-                    }
-                });
+                source_controls::form_row_wrapped_sized(
+                    ui,
+                    "World layout",
+                    "World layout",
+                    egui::vec2(WORLD_LABEL_WIDTH, 36.),
+                    |ui| {
+                        let current = text(&world, "worldLayout", "Free");
+                        if let Some(layout) =
+                            ui_fields::enum_picker::show_text(ui, &WORLD_LAYOUTS, current)
+                        {
+                            patch["worldLayout"] = json!(layout);
+                        }
+                    },
+                );
                 if world["worldLayout"] == "GridVania" {
-                    row_width(ui, "Gridvania grid size", 106., |ui| {
+                    property_row(ui, "Gridvania grid size", WORLD_LABEL_WIDTH, |ui| {
                         int_input(
                             ui,
                             "worldGridWidth",
@@ -281,7 +650,7 @@ impl EditorApp {
                             65536,
                             &mut patch,
                         );
-                        ui.label("x");
+                        dimension_separator(ui, "x");
                         int_input(
                             ui,
                             "worldGridHeight",
@@ -293,7 +662,7 @@ impl EditorApp {
                         ui.label("px");
                     });
                 }
-                row_width(ui, "Default \"new level\" size", 106., |ui| {
+                property_row(ui, "Default \"new level\" size", WORLD_LABEL_WIDTH, |ui| {
                     int_input(
                         ui,
                         "defaultLevelWidth",
@@ -302,7 +671,7 @@ impl EditorApp {
                         9999,
                         &mut patch,
                     );
-                    ui.label("x");
+                    dimension_separator(ui, "x");
                     int_input(
                         ui,
                         "defaultLevelHeight",
@@ -329,20 +698,48 @@ impl EditorApp {
     }
 
     pub(super) fn source_level_form(&mut self, ui: &mut egui::Ui) {
+        let Some(level) = self
+            .selected
+            .and_then(|key| self.project.as_ref()?.level(key))
+        else {
+            return;
+        };
+        let enabled = level["worldDepth"].as_i64().unwrap_or(0) == self.world_depth;
+        let backdrop = (!enabled).then(|| ui.painter().add(egui::Shape::Noop));
+        let form = ui.scope(|ui| self.source_level_form_contents(ui, enabled));
+        if let Some(backdrop) = backdrop
+            && let Ok(egui::load::TexturePoll::Ready { texture }) =
+                egui::Image::new(egui::include_image!("../../assets/img/stripesLight.png"))
+                    .texture_options(egui::TextureOptions::NEAREST_REPEAT)
+                    .load_for_size(ui.ctx(), Vec2::splat(8.))
+        {
+            let rect = form.response.rect;
+            let mut mesh = egui::Mesh::with_texture(texture.id);
+            mesh.add_rect_with_uv(
+                rect,
+                Rect::from_min_size(egui::Pos2::ZERO, rect.size() / 8.),
+                Color32::WHITE,
+            );
+            ui.painter().set(backdrop, mesh);
+        }
+    }
+
+    fn source_level_form_contents(&mut self, ui: &mut egui::Ui, enabled: bool) {
         let Some(key) = self.selected else { return };
         let Some(mut level) = self.project.as_ref().and_then(|p| p.level(key)).cloned() else {
             return;
         };
-        let saved_position = [
-            number(&level, "worldX", 0.) as i32,
-            number(&level, "worldY", 0.) as i32,
-        ];
         let project = self.project.as_ref().unwrap();
         let world = key
             .world
             .and_then(|index| project.json["worlds"].get(index))
             .unwrap_or(&project.json);
-        if text(world, "worldLayout", "Free").starts_with("Linear")
+        if let Some((dragged, [x, y])) = self.linear_drag_preview()
+            && dragged == key
+        {
+            level["worldX"] = json!(x);
+            level["worldY"] = json!(y);
+        } else if text(world, "worldLayout", "Free").starts_with("Linear")
             && let Some((_, bounds)) = canvas::placements(project, key)
                 .into_iter()
                 .find(|(candidate, _)| *candidate == key)
@@ -364,14 +761,24 @@ impl EditorApp {
         group(
             ui,
             "levelPanel_level",
-            &format!("LEVEL PROPERTIES: \"{name}\""),
+            properties_title(ui, "LEVEL PROPERTIES: \"{name}\"", name),
             |ui| {
-                iid_row(ui, text(&level, "iid", ""), 98., "Copy level IID");
-                row_width(ui, "Level identifier", 98., |ui| {
+                if !enabled {
+                    lock_level_inputs(ui);
+                }
+                iid_row(
+                    ui,
+                    text(&level, "iid", ""),
+                    LEVEL_LABEL_WIDTH,
+                    "Copy level IID",
+                );
+                property_row(ui, "Level identifier", LEVEL_LABEL_WIDTH, |ui| {
+                    ui.set_min_height(34.);
                     let mut auto = level["useAutoIdentifier"].as_bool().unwrap_or(false);
-                    let width = (ui.available_width() - 66.).max(20.);
+                    ui.spacing_mut().item_spacing.x = 16.;
+                    let width = (ui.available_width() - 99.).max(20.);
                     ui.add_enabled_ui(!auto, |ui| {
-                        if let Some(value) = text_input(ui, "identifier", name, width) {
+                        if let Some(value) = form_text_input(ui, "identifier", name, width) {
                             patch["identifier"] = json!(value);
                         }
                     });
@@ -379,7 +786,8 @@ impl EditorApp {
                         patch["useAutoIdentifier"] = json!(auto);
                     }
                 });
-                row_width(ui, "World depth", 98., |ui| {
+                property_row(ui, "World depth", LEVEL_LABEL_WIDTH, |ui| {
+                    ui.spacing_mut().item_spacing.x = 1.;
                     int_input(
                         ui,
                         "worldDepth",
@@ -388,49 +796,44 @@ impl EditorApp {
                         i32::MAX.into(),
                         &mut patch,
                     );
-                    let depths = self
-                        .project
-                        .as_ref()
-                        .unwrap()
+                    let project = self.project.as_ref().unwrap();
+                    let depths = project
                         .level_keys()
                         .into_iter()
                         .filter(|other| other.world == key.world && *other != key)
                         .filter_map(|other| {
-                            self.project.as_ref().unwrap().level(other)?["worldDepth"].as_i64()
-                        })
-                        .collect::<Vec<_>>();
+                            Some(project.level(other)?["worldDepth"].as_i64().unwrap_or(0))
+                        });
                     let depth = level["worldDepth"].as_i64().unwrap_or(0);
+                    let (further, closer) = depth_moves(depth, depths);
                     ui.vertical(|ui| {
                         ui.spacing_mut().item_spacing.y = 0.;
-                        ui.add_enabled_ui(depths.iter().any(|d| *d >= depth), |ui| {
-                            if icon_button(
-                                ui,
-                                egui::include_image!("../../assets/icons/up.svg"),
-                                "Move level further",
-                                theme::LIGHT,
-                                egui::vec2(30., 20.),
-                            )
-                            .clicked()
-                            {
-                                depth_move = 1;
-                            }
-                        });
-                        ui.add_enabled_ui(depths.iter().any(|d| *d <= depth), |ui| {
-                            if icon_button(
-                                ui,
-                                egui::include_image!("../../assets/icons/down.svg"),
-                                "Move level closer",
-                                theme::LIGHT,
-                                egui::vec2(30., 20.),
-                            )
-                            .clicked()
-                            {
-                                depth_move = -1;
-                            }
-                        });
+                        // Keep the disabled fill and hatch opaque. Only the arrow icon fades.
+                        ui.visuals_mut().disabled_alpha = 1.;
+                        if depth_arrow(
+                            ui,
+                            egui::include_image!("../../assets/icons/up.svg"),
+                            "Move level further",
+                            further,
+                        )
+                        .clicked()
+                        {
+                            depth_move = 1;
+                        }
+                        if depth_arrow(
+                            ui,
+                            egui::include_image!("../../assets/icons/down.svg"),
+                            "Move level closer",
+                            closer,
+                        )
+                        .clicked()
+                        {
+                            depth_move = -1;
+                        }
                     });
                 });
-                row_width(ui, "World coords", 98., |ui| {
+                property_row(ui, "World coords", LEVEL_LABEL_WIDTH, |ui| {
+                    ui.set_min_height(34.);
                     int_input(
                         ui,
                         "worldX",
@@ -439,7 +842,7 @@ impl EditorApp {
                         i32::MAX.into(),
                         &mut patch,
                     );
-                    ui.label(",");
+                    dimension_separator(ui, ",");
                     int_input(
                         ui,
                         "worldY",
@@ -450,16 +853,25 @@ impl EditorApp {
                     );
                     ui.label("px");
                 });
-                row_width(ui, "Size", 98., |ui| {
+                property_row(ui, "Size", LEVEL_LABEL_WIDTH, |ui| {
                     int_input(ui, "pxWid", &level["pxWid"], default_grid, 4096, &mut patch);
-                    ui.label("x");
+                    dimension_separator(ui, "x");
                     int_input(ui, "pxHei", &level["pxHei"], default_grid, 4096, &mut patch);
                     ui.label("px");
                 });
-                row_width(ui, "Bg color", 98., |ui| {
+                property_row(ui, "Bg color", LEVEL_LABEL_WIDTH, |ui| {
                     let col = theme::color(text(&level, "bgColor", &default_background));
                     let mut rgb = [col.r(), col.g(), col.b()];
-                    if source_colors::color_editor_tag(ui, &mut rgb, Some("bg")).changed() {
+                    let is_default = level["bgColor"].is_null();
+                    ui.spacing_mut().item_spacing.x = if is_default { 4. } else { 8. };
+                    if source_colors::color_editor_sized(
+                        ui,
+                        &mut rgb,
+                        Some("bg"),
+                        egui::vec2(64., 32.),
+                    )
+                    .changed()
+                    {
                         let color = format!("#{:02X}{:02X}{:02X}", rgb[0], rgb[1], rgb[2]);
                         patch["bgColor"] = if color.eq_ignore_ascii_case(&default_background) {
                             Value::Null
@@ -467,88 +879,58 @@ impl EditorApp {
                             json!(color)
                         };
                     }
-                    if level["bgColor"].is_null() {
-                        ui.label("(default)");
-                    } else if ui.link("Use default").clicked() {
-                        patch["bgColor"] = Value::Null;
+                    if is_default {
+                        ui.label(
+                            RichText::new(locale::tr(ui, "(default)")).color(Color32::from_gray(153)),
+                        );
+                    } else {
+                        let reset = ui
+                            .scope(|ui| {
+                                ui.visuals_mut().hyperlink_color = theme::ACCENT;
+                                ui.link(
+                                    RichText::new(locale::tr(ui, "Use default"))
+                                        .size(13.333)
+                                        .color(theme::ACCENT)
+                                        .underline(),
+                                )
+                            })
+                            .inner;
+                        if reset.clicked() {
+                            patch["bgColor"] = Value::Null;
+                        }
                     }
                 });
-                row_width(ui, "Bg image", 98., |ui| {
-                    ui.vertical(|ui| {
-                        ui.horizontal(|ui| {
-                            let path = level["bgRelPath"].as_str();
-                            let label = path
-                                .and_then(|p| std::path::Path::new(p).file_name())
-                                .and_then(|p| p.to_str())
-                                .unwrap_or("[ No image ]");
-                            if source_controls::add_sized_button(
+                source_controls::form_row_wrapped_sized(
+                    ui,
+                    "Bg image",
+                    "Bg image",
+                    egui::vec2(LEVEL_LABEL_WIDTH, 24.),
+                    |ui| {
+                        ui.vertical(|ui| {
+                            ui.spacing_mut().item_spacing.y = 0.;
+                            if let Some(path) = self.source_image_picker(
                                 ui,
-                                [
-                                    (ui.available_width() - if path.is_some() { 36. } else { 0. })
-                                        .max(20.),
-                                    30.,
-                                ],
-                                egui::Button::new(label),
-                            )
-                            .on_hover_text(path.unwrap_or("Pick a background image"))
-                            .clicked()
-                                && let Some(path) = ui_fields::pick_file(
-                                    ui,
-                                    "PickImage",
-                                    &["png", "gif", "jpg", "jpeg", "aseprite", "ase"],
-                                )
-                            {
-                                patch["bgRelPath"] = json!(path.to_string_lossy());
+                                ("level-background", text(&level, "iid", "")),
+                                level["bgRelPath"].as_str(),
+                            ) {
+                                patch["bgRelPath"] = json!(path);
                             }
-                            if path.is_some()
-                                && source_controls::small_button(ui, "×")
-                                    .on_hover_text("Stop using this image")
-                                    .clicked()
-                            {
-                                patch["bgRelPath"] = Value::Null;
+                            if let Some(path) = level["bgRelPath"].as_str() {
+                                let path = canvas::asset_path(self.project.as_ref().unwrap(), path);
+                                let size = self
+                                    .assets
+                                    .texture(ui.ctx(), &path)
+                                    .map(|texture| texture.size().map(|n| n as f64));
+                                background_position_controls(ui, &level, size, &mut patch);
                             }
                         });
-                        if let Some(path) = level["bgRelPath"].as_str() {
-                            let current = text(&level, "bgPos", "Cover");
-                            let mut position = current.to_owned();
-                            egui::ComboBox::from_id_salt("bgPos")
-                                .width(ui.available_width())
-                                .truncate()
-                                .selected_text(
-                                    BACKGROUND_POSITIONS
-                                        .iter()
-                                        .find(|(v, _)| *v == current)
-                                        .map_or(current, |(_, label)| *label),
-                                )
-                                .show_ui(ui, |ui| {
-                                    for (value, label) in BACKGROUND_POSITIONS {
-                                        ui.selectable_value(&mut position, value.into(), label);
-                                    }
-                                });
-                            if position != current {
-                                patch["bgPos"] = json!(position);
-                            }
-                            let path = canvas::asset_path(self.project.as_ref().unwrap(), path);
-                            if let Some(texture) = self.assets.texture(ui.ctx(), &path)
-                                && let Some(pivot) = ui_fields::pivot_editor(
-                                    ui,
-                                    "background-pivot",
-                                    [
-                                        number(&level, "bgPivotX", 0.5),
-                                        number(&level, "bgPivotY", 0.5),
-                                    ],
-                                    texture.size_vec2().into(),
-                                )
-                            {
-                                patch["bgPivotX"] = json!(pivot[0]);
-                                patch["bgPivotY"] = json!(pivot[1]);
-                            }
-                        }
-                    });
-                });
+                    },
+                );
+                // Include the final row's margin without an extra spacer beneath it.
+                ui.add_space(0.);
             },
         );
-        if changed(&patch) {
+        if enabled && changed(&patch) {
             let resizing = patch.get("pxWid").is_some() || patch.get("pxHei").is_some();
             let operation = |p: &mut Project| {
                 let mut patch = patch.clone();
@@ -600,43 +982,12 @@ impl EditorApp {
             }
         }
         if depth_move != 0 {
-            self.edit("Level depth changed", |p| {
-                let depth = level["worldDepth"].as_i64().unwrap_or(0) as i32 + depth_move;
-                p.move_level(key, saved_position[0], saved_position[1], depth)?;
-                if depth_move > 0 {
-                    let keys = p
-                        .level_keys()
-                        .into_iter()
-                        .filter(|other| other.world == key.world)
-                        .collect::<Vec<_>>();
-                    let lowest = keys
-                        .iter()
-                        .filter_map(|other| p.level(*other)?["worldDepth"].as_i64())
-                        .min()
-                        .unwrap_or(0);
-                    if lowest > 0 {
-                        for other in keys {
-                            let l = p.level(other).unwrap().clone();
-                            p.move_level(
-                                other,
-                                number(&l, "worldX", 0.) as i32,
-                                number(&l, "worldY", 0.) as i32,
-                                number(&l, "worldDepth", 0.) as i32 - lowest as i32,
-                            )?;
-                        }
-                    }
-                }
-                Ok(())
-            });
-            self.world_depth = self
-                .project
-                .as_ref()
-                .and_then(|p| p.level(key))
-                .and_then(|l| l["worldDepth"].as_i64())
-                .unwrap_or(0);
+            self.move_selected_level_world_depth(depth_move);
+            self.world_selection.clear();
         }
-        ui.add_space(16.);
+        ui.add_space(8.);
         group(ui, "levelPanel_fields", "CUSTOM FIELDS", |ui| {
+            ui.spacing_mut().item_spacing.y = 0.;
             if level["fieldInstances"].as_array().is_none_or(Vec::is_empty) {
                 let (rect, _) =
                     ui.allocate_exact_size(egui::vec2(ui.available_width(), 80.), Sense::hover());
@@ -647,18 +998,26 @@ impl EditorApp {
                 ui.painter().text(
                     rect.center(),
                     Align2::CENTER_CENTER,
-                    "No custom field.",
+                    locale::tr(ui, "No custom field."),
                     FontId::proportional(12.667),
-                    theme::LIGHT,
+                    Color32::from_rgb(115, 127, 157),
                 );
             } else {
-                self.instance_fields(ui, key, None, &level);
+                ui.scope(|ui| {
+                    ui.spacing_mut().item_spacing.y = FORM_ROW_GAP;
+                    if !enabled {
+                        lock_level_inputs(ui);
+                    }
+                    self.instance_fields(ui, key, None, &level);
+                });
             }
             if source_controls::add_sized_button(
                 ui,
                 [ui.available_width(), 36.],
-                egui::Button::new(RichText::new("EDIT CUSTOM FIELDS").color(Color32::WHITE))
-                    .fill(SOURCE_ORANGE),
+                egui::Button::new(
+                    RichText::new(locale::tr(ui, "EDIT CUSTOM FIELDS")).color(Color32::WHITE),
+                )
+                .fill(SOURCE_ORANGE),
             )
             .clicked()
             {
@@ -717,7 +1076,7 @@ mod tests {
             },
         )
     }
-    fn label(output: &egui::FullOutput, expected: &str) -> egui::Pos2 {
+    fn find_label(output: &egui::FullOutput, expected: &str) -> Option<egui::Pos2> {
         fn find(shape: &egui::Shape, expected: &str) -> Option<egui::Pos2> {
             match shape {
                 egui::Shape::Text(t) if t.galley.job.text.replace('\n', " ") == expected => {
@@ -731,6 +1090,9 @@ mod tests {
             .shapes
             .iter()
             .find_map(|s| find(&s.shape, expected))
+    }
+    fn label(output: &egui::FullOutput, expected: &str) -> egui::Pos2 {
+        find_label(output, expected)
             .unwrap_or_else(|| panic!("missing source form label {expected}"))
     }
     fn click_at(
@@ -797,6 +1159,69 @@ mod tests {
         );
     }
     #[test]
+    fn source_world_and_level_inputs_center_text_with_source_padding() {
+        let (mut app, ctx) = editor();
+        let key = app.selected.unwrap();
+        let project = app.project.as_mut().unwrap();
+        project.json["defaultLevelWidth"] = json!(337);
+        let level = project.level_mut(key).unwrap();
+        level["worldX"] = json!(752);
+        level["worldDepth"] = json!(7);
+        let level_iid = level["iid"].as_str().unwrap().to_owned();
+        app.world_depth = 7;
+
+        for (panel, values) in [
+            (Panel::World, &["337", "752", &level_iid, "7"][..]),
+            (Panel::Level, &["752", &level_iid, "7"][..]),
+        ] {
+            let output = frame(&mut app, &ctx, panel, vec![]);
+            for value in values {
+                let text = output
+                    .shapes
+                    .iter()
+                    .find_map(|shape| match &shape.shape {
+                        egui::Shape::Text(text) if text.galley.text() == *value => Some(text),
+                        _ => None,
+                    })
+                    .unwrap_or_else(|| panic!("missing input text {value}"));
+                let depth = *value == "7";
+                let field = output
+                    .shapes
+                    .iter()
+                    .filter_map(|shape| match &shape.shape {
+                        egui::Shape::Rect(shape)
+                            if (33.0..=40.0).contains(&shape.rect.height())
+                                && shape.rect.contains(text.pos) =>
+                        {
+                            Some(shape.rect)
+                        }
+                        _ => None,
+                    })
+                    .min_by(|a, b| a.width().total_cmp(&b.width()))
+                    .unwrap_or_else(|| panic!("missing frame for input {value}"));
+                let center = text.pos + text.galley.rect.center().to_vec2();
+                assert!(
+                    (center.y - field.center().y).abs() <= 1.,
+                    "{panel:?} {value} vertical alignment"
+                );
+                if depth {
+                    assert_eq!(field.size(), egui::vec2(60., 40.));
+                    assert!(
+                        (center.x - field.center().x).abs() <= 1.,
+                        "center depth value"
+                    );
+                } else {
+                    assert_eq!(
+                        text.pos.x - field.left(),
+                        9.,
+                        "{panel:?} {value} text inset"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
     fn source_world_embeds_world_level_and_custom_field_groups() {
         let (mut app, ctx) = editor();
         let output = frame(&mut app, &ctx, Panel::World, vec![]);
@@ -806,6 +1231,30 @@ mod tests {
         label(&output, "CUSTOM FIELDS");
         label(&output, "Default \"new level\" size");
         label(&output, "World coords");
+    }
+    #[test]
+    fn source_world_language_switch_preserves_project_identifiers() {
+        let (mut app, ctx) = editor();
+        let key = app.selected.unwrap();
+        let project = app.project.as_mut().unwrap();
+        project.json["identifier"] = json!("World");
+        project.level_mut(key).unwrap()["identifier"] = json!("Layer");
+        let before = project.json.clone();
+
+        let english = frame(&mut app, &ctx, Panel::World, vec![]);
+        label(&english, "WORLD SETTINGS: \"World\"");
+        label(&english, "LEVEL PROPERTIES: \"Layer\"");
+
+        locale::set(&ctx, locale::Language::SimplifiedChinese);
+        let chinese = frame(&mut app, &ctx, Panel::World, vec![]);
+        label(&chinese, "世界设置：「World」");
+        label(&chinese, "关卡属性：「Layer」");
+        label(&chinese, "创建新关卡");
+
+        locale::set(&ctx, locale::Language::English);
+        let english = frame(&mut app, &ctx, Panel::World, vec![]);
+        label(&english, "CREATE A NEW LEVEL");
+        assert_eq!(app.project.as_ref().unwrap().json, before);
     }
     #[test]
     fn source_level_uses_paired_coords_size_and_default_background() {
@@ -821,6 +1270,191 @@ mod tests {
         ] {
             label(&output, expected);
         }
+    }
+    #[test]
+    fn level_background_controls_share_a_compact_picker_and_source_reset_link() {
+        for panel in [Panel::World, Panel::Level] {
+            let (mut app, ctx) = editor();
+            let key = app.selected.unwrap();
+            let swatch = Color32::from_rgb(194, 74, 88);
+            app.project.as_mut().unwrap().level_mut(key).unwrap()["bgColor"] = json!("#C24A58");
+            let output = frame(&mut app, &ctx, panel, vec![]);
+            let picker = label(&output, "[ No image ]");
+            assert!(
+                output.shapes.iter().any(|shape| {
+                    matches!(&shape.shape, egui::Shape::Rect(shape)
+                    if shape.rect.contains(picker) && shape.rect.height() == 24.
+                        && shape.fill == theme::LIGHT.gamma_multiply(0.6))
+                }),
+                "{panel:?} empty picker is a compact grey action"
+            );
+            let swatch = output
+                .shapes
+                .iter()
+                .find_map(|shape| match &shape.shape {
+                    egui::Shape::Rect(rect)
+                        if rect.fill == swatch && rect.rect.size() == egui::vec2(64., 32.) =>
+                    {
+                        Some(rect.rect)
+                    }
+                    _ => None,
+                })
+                .expect("source level color swatch");
+            let link = output
+                .shapes
+                .iter()
+                .find_map(|shape| match &shape.shape {
+                    egui::Shape::Text(text) if text.galley.text() == "Use default" => Some(text),
+                    _ => None,
+                })
+                .expect("source reset link");
+            assert_eq!(link.pos.x, swatch.right() + 8.);
+            assert_eq!(link.fallback_color, theme::ACCENT);
+            assert!(
+                link.galley
+                    .job
+                    .sections
+                    .iter()
+                    .any(|part| part.format.color == theme::ACCENT
+                        && part.format.underline.width > 0.)
+            );
+            let output = click(&mut app, &ctx, panel, "Use default");
+            assert!(app.project.as_ref().unwrap().level(key).unwrap()["bgColor"].is_null());
+            label(&output, "(default)");
+        }
+    }
+
+    #[test]
+    fn level_custom_fields_follow_the_background_row_height() {
+        let (mut app, ctx) = editor();
+        let group_offsets = |app: &mut EditorApp, time| {
+            ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1440., 900.),
+                    )),
+                    time: Some(time),
+                    ..Default::default()
+                },
+                |ctx| {
+                    app.source_panel(ctx, Panel::Level);
+                },
+            )
+            .shapes
+            .iter()
+            .filter_map(|shape| match &shape.shape {
+                egui::Shape::Rect(rect) if rect.fill == GROUP_BAR && rect.rect.height() == 28. => {
+                    Some(rect.rect.top())
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+        };
+        group_offsets(&mut app, 0.);
+        group_offsets(&mut app, 1.);
+        let empty = group_offsets(&mut app, 2.);
+        assert_eq!(empty.as_slice(), &[112., 466.]);
+
+        let dir = tempfile::tempdir().unwrap();
+        let image = dir.path().join("Wide.png");
+        image::RgbaImage::from_pixel(512, 128, image::Rgba([30, 34, 41, 255]))
+            .save(&image)
+            .unwrap();
+        let key = app.selected.unwrap();
+        let project = app.project.as_mut().unwrap();
+        project.path = Some(dir.path().join("Wide.ldtk"));
+        project.level_mut(key).unwrap()["bgRelPath"] = json!("Wide.png");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while app.assets.texture(&ctx, &image).is_none() {
+            assert!(std::time::Instant::now() < deadline, "background must load");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+            app.assets.poll(&ctx);
+        }
+        assert_eq!(group_offsets(&mut app, 3.).as_slice(), &[112., 516.]);
+    }
+
+    #[test]
+    fn background_pivot_pixels_use_the_cropped_tile_size() {
+        let (mut app, ctx) = editor();
+        let dir = tempfile::tempdir().unwrap();
+        let image = dir.path().join("Wide.png");
+        image::RgbaImage::from_pixel(512, 128, image::Rgba([30, 34, 41, 255]))
+            .save(&image)
+            .unwrap();
+        let key = app.selected.unwrap();
+        let project = app.project.as_mut().unwrap();
+        project.path = Some(dir.path().join("Wide.ldtk"));
+        apply_patch(
+            project.level_mut(key).unwrap(),
+            &json!({"bgRelPath":"Wide.png","bgPos":"Cover","bgPivotX":0.5,"bgPivotY":0.0}),
+        );
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while app.assets.texture(&ctx, &image).is_none() {
+            assert!(std::time::Instant::now() < deadline, "background must load");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+            app.assets.poll(&ctx);
+        }
+        let output = click(&mut app, &ctx, Panel::Level, "Show advanced options");
+        let x_pixels = label(&output, "64");
+        click_at(&mut app, &ctx, Panel::Level, x_pixels);
+        replace_text(&mut app, &ctx, Panel::Level, "32");
+
+        let level = app.project.as_ref().unwrap().level(key).unwrap();
+        assert_eq!(level["bgPivotX"], 0.25);
+        assert_eq!(level["bgPivotY"], 0.0);
+    }
+
+    #[test]
+    fn off_depth_level_form_locks_values_and_keeps_group_actions() {
+        let (mut app, ctx) = editor();
+        app.panel = Some(Panel::Level);
+        app.world_depth = 1;
+        let original = app.project.as_ref().unwrap().json.clone();
+        frame(&mut app, &ctx, Panel::Level, vec![]);
+        let output = frame(&mut app, &ctx, Panel::Level, vec![]);
+        assert_eq!(
+            output
+                .shapes
+                .iter()
+                .filter(|shape| {
+                    matches!(&shape.shape, egui::Shape::Rect(shape)
+                    if shape.fill == GROUP_BAR && shape.rect.height() == 28.)
+                })
+                .count(),
+            2,
+            "inactive depth retains both full-color section headers"
+        );
+        let egui::load::TexturePoll::Ready { texture } =
+            egui::Image::new(egui::include_image!("../../assets/img/stripesLight.png"))
+                .texture_options(egui::TextureOptions::NEAREST_REPEAT)
+                .load_for_size(&ctx, Vec2::splat(8.))
+                .unwrap()
+        else {
+            panic!("source stripe texture should be ready");
+        };
+        assert!(
+            output.shapes.iter().any(|shape| {
+                matches!(&shape.shape, egui::Shape::Mesh(mesh)
+                if mesh.texture_id == texture.id && mesh.calc_bounds().height() > 300.)
+            }),
+            "source hatch spans the full inactive form"
+        );
+        click(&mut app, &ctx, Panel::Level, "auto");
+        assert_eq!(app.project.as_ref().unwrap().json, original);
+
+        let output = click(
+            &mut app,
+            &ctx,
+            Panel::Level,
+            "LEVEL PROPERTIES: \"Level_0\"",
+        );
+        assert!(!output.shapes.iter().any(|shape| {
+            matches!(&shape.shape, egui::Shape::Text(text) if text.galley.text().replace('\n', " ") == "World coords")
+        }), "inactive properties may still collapse");
+        click(&mut app, &ctx, Panel::Level, "EDIT CUSTOM FIELDS");
+        assert_eq!(app.panel, Some(Panel::Fields));
+        assert_eq!(app.project.as_ref().unwrap().json, original);
     }
     #[test]
     fn source_linear_level_coords_show_runtime_positions_without_editing_saved_sentinels() {
@@ -858,6 +1492,37 @@ mod tests {
             (json!(-1), json!(-1))
         );
     }
+
+    #[test]
+    fn lone_level_depth_arrows_can_move_toward_zero() {
+        for initial in [-1, 1] {
+            let (mut app, ctx) = editor();
+            let key = app.selected.unwrap();
+            let level = app.project.as_mut().unwrap().level_mut(key).unwrap();
+            level["worldDepth"] = json!(initial);
+            app.world_depth = initial;
+
+            let output = frame(&mut app, &ctx, Panel::Level, vec![]);
+            let y = label(&output, "World depth").y;
+            let further = egui::pos2(222., y - 8.);
+            let closer = egui::pos2(222., y + 12.);
+            let (away, toward) = if initial < 0 {
+                (closer, further)
+            } else {
+                (further, closer)
+            };
+            click_at(&mut app, &ctx, Panel::Level, away);
+            assert_eq!(app.world_depth, initial);
+            assert!(!app.dirty);
+
+            click_at(&mut app, &ctx, Panel::Level, toward);
+            assert_eq!(app.world_depth, 0, "starting at depth {initial}");
+            let level = app.project.as_ref().unwrap().level(key).unwrap();
+            assert_eq!(level["worldDepth"], 0);
+            assert!(app.dirty);
+        }
+    }
+
     #[test]
     fn source_world_duplicate_cancel_and_confirm_use_existing_transaction() {
         let (mut app, ctx) = editor();
@@ -921,6 +1586,45 @@ mod tests {
         assert_eq!(app.project.as_ref().unwrap().json, before);
     }
     #[test]
+    fn source_world_layout_picker_filters_and_commits_from_keyboard() {
+        let (mut app, ctx) = editor();
+        let output = click(&mut app, &ctx, Panel::World, WORLD_LAYOUTS[0].1);
+        label(&output, "Search");
+        for (_, label_text) in WORLD_LAYOUTS {
+            label(&output, label_text);
+        }
+        let output = frame(
+            &mut app,
+            &ctx,
+            Panel::World,
+            vec![egui::Event::Text("grdvna".into())],
+        );
+        label(&output, WORLD_LAYOUTS[1].1);
+        assert!(find_label(&output, WORLD_LAYOUTS[2].1).is_none());
+        frame(
+            &mut app,
+            &ctx,
+            Panel::World,
+            vec![key(Key::Escape, egui::Modifiers::NONE)],
+        );
+        assert_eq!(app.project.as_ref().unwrap().json["worldLayout"], "Free");
+
+        click(&mut app, &ctx, Panel::World, WORLD_LAYOUTS[0].1);
+        frame(
+            &mut app,
+            &ctx,
+            Panel::World,
+            vec![key(Key::ArrowDown, egui::Modifiers::NONE)],
+        );
+        frame(
+            &mut app,
+            &ctx,
+            Panel::World,
+            vec![key(Key::Enter, egui::Modifiers::NONE)],
+        );
+        assert_eq!(app.project.as_ref().unwrap().json["worldLayout"], "GridVania");
+    }
+    #[test]
     fn source_world_layout_confirmation_uses_friendly_labels_and_conditional_grid() {
         let (mut app, ctx) = editor();
         let project = app.project.as_mut().unwrap();
@@ -928,12 +1632,32 @@ mod tests {
         project.add_level(None, "Third", 256, 256).unwrap();
         click(&mut app, &ctx, Panel::World, WORLD_LAYOUTS[0].1);
         click(&mut app, &ctx, Panel::World, WORLD_LAYOUTS[1].1);
+        for _ in 0..12 {
+            frame(&mut app, &ctx, Panel::World, vec![]);
+        }
+        let warning = frame(&mut app, &ctx, Panel::World, vec![]);
         assert!(world_form_dialog::is_open(&ctx));
+        fn red_frame(shape: &egui::Shape) -> Option<Rect> {
+            match shape {
+                egui::Shape::Rect(rect) if rect.fill == LEVEL_ACTION_RED && rect.rect.width() > 300. => {
+                    Some(rect.rect)
+                }
+                egui::Shape::Vec(children) => children.iter().find_map(red_frame),
+                _ => None,
+            }
+        }
+        let warning_rect = warning
+            .shapes
+            .iter()
+            .find_map(|shape| red_frame(&shape.shape))
+            .expect("red layout warning backdrop");
+        assert!((warning_rect.min - egui::pos2(0., 16.)).abs().max_elem() <= 1., "{warning_rect:?}");
+        assert!((warning_rect.width() - 400.).abs() <= 1., "{warning_rect:?}");
         assert_eq!(app.project.as_ref().unwrap().json["worldLayout"], "Free");
-        click(&mut app, &ctx, Panel::World, "Cancel");
+        click(&mut app, &ctx, Panel::World, "CANCEL");
         click(&mut app, &ctx, Panel::World, WORLD_LAYOUTS[0].1);
         click(&mut app, &ctx, Panel::World, WORLD_LAYOUTS[1].1);
-        click(&mut app, &ctx, Panel::World, "Confirm");
+        click(&mut app, &ctx, Panel::World, "CONFIRM");
         assert_eq!(
             app.project.as_ref().unwrap().json["worldLayout"],
             "GridVania"

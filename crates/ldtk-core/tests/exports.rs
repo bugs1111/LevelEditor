@@ -44,6 +44,190 @@ fn tmx_exports_colored_intgrid_and_world_position() {
         serde_json::from_slice(&fs::read(t.path().join("Untitled.world")).unwrap()).unwrap();
     assert_eq!(w["maps"][0]["fileName"], "Level_0.tmx");
 }
+
+#[test]
+fn configured_tiled_grid_follows_source_definition_order() {
+    let directory = tempfile::tempdir().unwrap();
+    for (index, (sizes, grid)) in [
+        (&[16, 32][..], 16),
+        (&[32, 16][..], 32),
+        (&[8, 8, 8, 16, 16][..], 16),
+        (&[8, 16, 16, 8, 8][..], 8),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let mut project = Project::new();
+        let level = project.level_keys()[0];
+        project.resize_level(level, 32, 32, 0, 0).unwrap();
+        for (layer, &size) in sizes.iter().enumerate().rev() {
+            project
+                .add_layer(&format!("Grid{layer}"), "IntGrid", size)
+                .unwrap();
+        }
+        for layer in 0..sizes.len() {
+            assert!(project.paint_int_grid(level, layer, 0, 0, 1).unwrap());
+        }
+        project.json["exportTiled"] = json!(true);
+        let stem = format!("GridOrder{index}");
+        let path = directory.path().join(format!("{stem}.ldtk"));
+        let report = project.save_with_exports(&path).unwrap();
+        assert_eq!(
+            report.export_errors,
+            [
+                "Tiled supports one grid size per map; layers with incompatible grid size are discarded"
+            ]
+        );
+
+        let xml =
+            fs::read_to_string(directory.path().join(stem).join("tiled/Level_0.tmx")).unwrap();
+        let cells = 32 / grid;
+        assert!(
+            xml.contains(&format!(
+                "width=\"{cells}\" height=\"{cells}\" tilewidth=\"{grid}\" tileheight=\"{grid}\""
+            )),
+            "definition sizes {sizes:?} should export a {grid}px map: {xml}"
+        );
+        for (layer, &size) in sizes.iter().enumerate() {
+            assert_eq!(
+                xml.contains(&format!("name=\"Grid{layer}\" width=")),
+                size == grid
+            );
+        }
+    }
+}
+
+#[test]
+fn configured_tiled_grid_without_layers_uses_the_project_default() {
+    let directory = tempfile::tempdir().unwrap();
+    for (stem, default, grid) in [("Configured", Some(24), 24), ("Legacy", None, 16)] {
+        let mut project = Project::new();
+        let level = project.level_keys()[0];
+        project.resize_level(level, 48, 48, 0, 0).unwrap();
+        if let Some(default) = default {
+            project.json["defaultGridSize"] = json!(default);
+        } else {
+            project.json["jsonVersion"] = json!("1.5.3");
+            project
+                .json
+                .as_object_mut()
+                .unwrap()
+                .remove("defaultGridSize");
+        }
+        project.json["exportTiled"] = json!(true);
+        let path = directory.path().join(format!("{stem}.ldtk"));
+        let report = project.save_with_exports(&path).unwrap();
+        assert!(
+            report.export_errors.is_empty(),
+            "{:?}",
+            report.export_errors
+        );
+
+        let xml =
+            fs::read_to_string(directory.path().join(stem).join("tiled/Level_0.tmx")).unwrap();
+        let cells = 48 / grid;
+        assert!(
+            xml.contains(&format!(
+                "width=\"{cells}\" height=\"{cells}\" tilewidth=\"{grid}\" tileheight=\"{grid}\""
+            )),
+            "{stem} should export a {grid}px map: {xml}"
+        );
+        assert!(!xml.contains("<layer "));
+    }
+}
+
+#[test]
+fn configured_tiled_export_uses_live_linear_world_positions() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut fixture = Project::new();
+    let first = fixture.level_keys()[0];
+    fixture.resize_level(first, 32, 48, 0, 0).unwrap();
+    fixture.add_level(None, "Second", 64, 96).unwrap();
+    fixture.add_level(None, "Third", 80, 80).unwrap();
+    fixture.json["exportTiled"] = json!(true);
+
+    for (layout, expected) in [
+        ("LinearHorizontal", [[0, 0], [80, 0], [192, 0]]),
+        ("LinearVertical", [[0, 0], [0, 96], [0, 240]]),
+    ] {
+        let mut project = fixture.clone();
+        project.set_world_layout(None, layout, 256, 256).unwrap();
+        project
+            .set_external_levels(layout == "LinearVertical")
+            .unwrap();
+        let project_path = directory.path().join(format!("{layout}.ldtk"));
+        let report = project.save_with_exports(&project_path).unwrap();
+        assert!(
+            report.export_errors.is_empty(),
+            "{:?}",
+            report.export_errors
+        );
+
+        let tiled = directory.path().join(layout).join("tiled");
+        let world: Value =
+            serde_json::from_slice(&fs::read(tiled.join(format!("{layout}.world"))).unwrap())
+                .unwrap();
+        let files = ["0001_Level_0.tmx", "0002_Second.tmx", "0003_Third.tmx"];
+        let reopened = Project::load(&project_path).unwrap();
+        for (index, key) in reopened.level_keys().into_iter().enumerate() {
+            let level = reopened.level(key).unwrap();
+            assert_eq!(
+                [&level["worldX"], &level["worldY"]],
+                [&json!(-1), &json!(-1)]
+            );
+            assert!(tiled.join(files[index]).is_file());
+            assert_eq!(
+                world["maps"][index],
+                json!({
+                    "fileName": files[index], "x": expected[index][0], "y": expected[index][1]
+                })
+            );
+        }
+    }
+}
+
+#[test]
+fn configured_tiled_export_keeps_the_first_world_when_it_becomes_empty() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("game.ldtk");
+    let tiled = directory.path().join("game/tiled");
+    let mut project = Project::new();
+    let later_world = project.add_world("LaterWorld").unwrap();
+    let later_level = project
+        .add_level(Some(later_world), "LaterLevel", 32, 32)
+        .unwrap();
+    project.json["exportTiled"] = json!(true);
+    project.save_with_exports(&path).unwrap();
+    assert!(tiled.join("Level_0.tmx").is_file());
+    assert!(!tiled.join("LaterLevel.tmx").exists());
+
+    project
+        .remove_level(LevelKey {
+            world: Some(0),
+            level: 0,
+        })
+        .unwrap();
+    project.save_with_exports(&path).unwrap();
+    let world_path = tiled.join("game.world");
+    let world: Value = serde_json::from_slice(&fs::read(&world_path).unwrap()).unwrap();
+    assert_eq!(world["maps"], json!([]));
+    assert!(!tiled.join("Level_0.tmx").exists());
+    assert!(!tiled.join("LaterLevel.tmx").exists());
+    assert_eq!(
+        Project::load(&path).unwrap().level(later_level).unwrap()["identifier"],
+        "LaterLevel"
+    );
+
+    let report = project.export_tiled_with_report(&tiled).unwrap();
+    assert_eq!(report.outputs, vec![world_path]);
+    assert!(
+        report
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("first world only"))
+    );
+}
+
 #[test]
 fn png_renders_intgrid_pixels() {
     let p = project();
@@ -122,6 +306,160 @@ fn png_uses_source_tileset_pivot_when_atlas_grid_differs_from_layer_grid() {
     assert_eq!(image.get_pixel(23, 23)[3], 255);
     assert_eq!(image.get_pixel(24, 24)[3], 0);
 }
+
+fn tiles_png_project() -> Project {
+    let mut project = Project::new();
+    let level = project.level_keys()[0];
+    project.resize_level(level, 64, 48, 0, 0).unwrap();
+    project.level_mut(level).unwrap()["identifier"] = json!("Tiles");
+    project.add_layer("Ground", "Tiles", 16).unwrap();
+    project.layer_mut(level, 0).unwrap()["gridTiles"] = json!([
+        {"px":[0,0], "src":[0,0], "t":0, "f":0, "a":1, "d":[0]},
+        {"px":[0,0], "src":[16,0], "t":1, "f":1, "a":1, "d":[0]},
+        {"px":[32,16], "src":[48,0], "t":3, "f":3, "a":1, "d":[6]},
+    ]);
+    project.json["imageExportMode"] = json!("OneImagePerLayer");
+    project.json["exportLevelBg"] = json!(false);
+    project
+}
+
+#[test]
+fn configured_classic_tiles_png_matches_source_for_unavailable_atlases() {
+    // RGBA pixels measured from the pinned preview's Ctrl+S PNG for these cells.
+    let marker = [
+        "................",
+        "................",
+        "................",
+        "...XX......XX...",
+        "...XXX....XXX...",
+        "....XXX..XXX....",
+        ".....XXXXXX.....",
+        "......XXXX......",
+        "......XXXX......",
+        ".....XXXXXX.....",
+        "....XXX..XXX....",
+        "...XXX....XXX...",
+        "...XX......XX...",
+        "................",
+        "................",
+        "................",
+    ];
+    let directory = tempfile::tempdir().unwrap();
+    fs::write(directory.path().join("corrupt.png"), b"invalid PNG").unwrap();
+    for (name, uid, atlas) in [
+        ("Unassigned", None, None),
+        ("Undefined", Some(17), None),
+        ("Unattached", Some(17), Some(Value::Null)),
+        ("Missing", Some(17), Some(json!("missing.png"))),
+        ("Corrupt", Some(17), Some(json!("corrupt.png"))),
+        ("Offset", Some(17), Some(Value::Null)),
+    ] {
+        let mut project = tiles_png_project();
+        project.json["defs"]["layers"][0]["tilesetDefUid"] = json!(uid);
+        if let Some(atlas) = atlas {
+            project.json["defs"]["tilesets"] = json!([{
+                "uid":17, "identifier":"Unusable", "relPath":atlas, "embedAtlas":null,
+                "tileGridSize":16, "pxWid":0, "pxHei":0
+            }]);
+        }
+        let (shift, dark, bright) = if name == "Offset" {
+            let def = &mut project.json["defs"]["layers"][0];
+            def["tilePivotX"] = json!(0.5);
+            def["tilePivotY"] = json!(0.25);
+            def["displayOpacity"] = json!(0.5);
+            def["pxOffsetX"] = json!(3);
+            def["pxOffsetY"] = json!(5);
+            let level = project.level_keys()[0];
+            let layer = project.layer_mut(level, 0).unwrap();
+            layer["pxOffsetX"] = json!(4);
+            layer["pxOffsetY"] = json!(6);
+            layer["__pxTotalOffsetX"] = json!(7);
+            layer["__pxTotalOffsetY"] = json!(11);
+            (8, [68, 0, 0, 127], [127, 0, 0, 127])
+        } else {
+            (0, [136, 0, 0, 255], [255, 0, 0, 255])
+        };
+        let report = project
+            .save_with_exports(directory.path().join(format!("{name}.ldtk")))
+            .unwrap();
+        assert!(
+            report.export_errors.is_empty(),
+            "{name}: {:?}",
+            report.export_errors
+        );
+        let image = image::open(directory.path().join(name).join("png/Tiles__Ground.png"))
+            .unwrap()
+            .to_rgba8();
+        assert_eq!(image.dimensions(), (64, 48));
+        for (x, y, pixel) in image.enumerate_pixels() {
+            let (x, y) = (i64::from(x) - shift, i64::from(y) - shift);
+            let expected = match (x, y) {
+                (0..=15, 0..=15) => marker[y as usize].as_bytes()[x as usize],
+                (32..=47, 16..=31) => marker[y as usize - 16].as_bytes()[x as usize - 32],
+                _ => b' ',
+            };
+            let expected = match expected {
+                b'X' => bright,
+                b'.' => dark,
+                _ => [0, 0, 0, 0],
+            };
+            assert_eq!(pixel.0, expected, "{name}, {x},{y}");
+        }
+    }
+}
+
+#[test]
+fn configured_classic_tiles_png_applies_source_opacity_to_level_render() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut fixture = tiles_png_project();
+    fixture.json["defs"]["layers"][0]["displayOpacity"] = json!(0.5);
+    fixture.json["defaultLevelBgColor"] = json!("#696A79");
+    for (name, mode, background, dark, bright, outside) in [
+        (
+            "Level",
+            "OneImagePerLevel",
+            false,
+            [68, 0, 0, 127],
+            [127, 0, 0, 127],
+            [0, 0, 0, 0],
+        ),
+        (
+            "Opaque",
+            "OneImagePerLevel",
+            true,
+            [120, 53, 61, 255],
+            [180, 53, 61, 255],
+            [105, 106, 121, 255],
+        ),
+        (
+            "Composite",
+            "LayersAndLevels",
+            false,
+            [17, 0, 0, 63],
+            [31, 0, 0, 63],
+            [0, 0, 0, 0],
+        ),
+    ] {
+        let mut project = fixture.clone();
+        project.json["imageExportMode"] = json!(mode);
+        project.json["exportLevelBg"] = json!(background);
+        let report = project
+            .save_with_exports(directory.path().join(format!("{name}.ldtk")))
+            .unwrap();
+        assert!(
+            report.export_errors.is_empty(),
+            "{name}: {:?}",
+            report.export_errors
+        );
+        let image = image::open(directory.path().join(name).join("png/Tiles.png"))
+            .unwrap()
+            .to_rgba8();
+        assert_eq!(image.get_pixel(0, 0).0, dark, "{name}");
+        assert_eq!(image.get_pixel(3, 3).0, bright, "{name}");
+        assert_eq!(image.get_pixel(16, 0).0, outside, "{name}");
+    }
+}
+
 #[test]
 fn all_original_sample_exports_use_real_atlases_and_complete_files() {
     let base = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/original");
@@ -206,6 +544,70 @@ fn png_recomputes_background_scale_and_source_composite_background_quirk() {
         .to_rgba8();
     assert_eq!(composite.get_pixel(0, 0).0, [105, 106, 121, 255]);
 }
+
+#[test]
+fn configured_png_export_uses_level_color_for_unavailable_backgrounds() {
+    let directory = tempfile::tempdir().unwrap();
+    fs::write(directory.path().join("broken.png"), b"invalid PNG").unwrap();
+    image::RgbaImage::from_pixel(1, 1, image::Rgba([255, 0, 0, 255]))
+        .save(directory.path().join("valid.png"))
+        .unwrap();
+    let mut project = Project::new();
+    let first = project.level_keys()[0];
+    project.resize_level(first, 32, 32, 0, 0).unwrap();
+    let broken = project.add_level(None, "Broken", 32, 32).unwrap();
+    let valid = project.add_level(None, "Valid", 32, 32).unwrap();
+    project.add_layer("Solid", "IntGrid", 16).unwrap();
+    project.json["defaultLevelBgColor"] = json!("#102030");
+    project.json["imageExportMode"] = json!("OneImagePerLevel");
+    for (key, resource, background) in [
+        (first, "missing.png", json!("#445566")),
+        (broken, "broken.png", Value::Null),
+        (valid, "valid.png", Value::Null),
+    ] {
+        let level = project.level_mut(key).unwrap();
+        level["bgRelPath"] = json!(resource);
+        level["bgColor"] = background;
+        level["bgPos"] = json!("CoverDirty");
+    }
+    let path = directory.path().join("game.ldtk");
+    let report = project.save_with_exports(&path).unwrap();
+    assert!(
+        report.export_errors.is_empty(),
+        "{:?}",
+        report.export_errors
+    );
+    let diagnostics = report.export_diagnostics;
+    assert_eq!(diagnostics.len(), 2, "{diagnostics:?}");
+    assert!(diagnostics[0].contains("missing.png for level Level_0"));
+    assert!(diagnostics[1].contains("broken.png for level Broken"));
+    let out = directory.path().join("game/png");
+    for (name, expected) in [
+        ("Level_0", [0x44, 0x55, 0x66, 255]),
+        ("Broken", [0x10, 0x20, 0x30, 255]),
+        ("Valid", [255, 0, 0, 255]),
+    ] {
+        let image = image::open(out.join(format!("{name}.png")))
+            .unwrap()
+            .to_rgba8();
+        assert_eq!(image.dimensions(), (32, 32));
+        assert!(image.pixels().all(|pixel| pixel.0 == expected), "{name}");
+    }
+    let reopened = Project::load(&path).unwrap();
+    assert_eq!(reopened.level(first).unwrap()["bgRelPath"], "missing.png");
+    assert_eq!(reopened.level(broken).unwrap()["bgRelPath"], "broken.png");
+
+    project.json["simplifiedExport"] = json!(true);
+    let simplified = project.save_with_exports(&path).unwrap();
+    assert!(simplified.export_errors.is_empty());
+    assert_eq!(simplified.export_diagnostics, diagnostics);
+
+    project.json["exportLevelBg"] = json!(false);
+    let disabled = project.save_with_exports(&path).unwrap();
+    assert!(disabled.export_errors.is_empty());
+    assert!(disabled.export_diagnostics.is_empty());
+}
+
 #[test]
 fn tiled_reports_source_format_limitations() {
     let mut p = project();
@@ -270,5 +672,74 @@ fn configured_exports_retire_stale_generated_files_and_preserve_unrelated_files(
     assert_eq!(
         fs::read_to_string(dir.join("keep.txt")).unwrap(),
         "unrelated"
+    );
+}
+
+#[test]
+#[ignore = "requires locally generated Aseprite indexed-color fixture"]
+fn preview_154_aseprite_indexed_image_matches_aseprite_png_export() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.tools/ldtk-154");
+    for (source, expected) in [
+        ("indexed-1.3.18.aseprite", "indexed-1.3.18.png"),
+        ("opaque.aseprite", "opaque-export.png"),
+    ] {
+        let actual = ldtk_core::exports::load_image_rgba(&root.join(source)).unwrap();
+        let expected = image::open(root.join(expected)).unwrap().to_rgba8();
+        assert_eq!(actual.dimensions(), expected.dimensions());
+        assert_eq!(actual.as_raw(), expected.as_raw(), "{source}");
+    }
+}
+
+#[test]
+fn preview_154_png_export_progress_counts_completed_levels() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut project = Project::new();
+    project.add_level(None, "Second", 16, 16).unwrap();
+    project.json["imageExportMode"] = json!("OneImagePerLevel");
+    let mut updates = Vec::new();
+    let files = project
+        .export_png_with_progress(dir.path(), |done, total| updates.push((done, total)))
+        .unwrap();
+    assert_eq!(updates, [(0, 2), (1, 2), (2, 2), (0, 0)]);
+    assert_eq!(files.len(), 2);
+    assert!(files.iter().all(|path| path.is_file()));
+}
+
+#[test]
+fn preview_154_other_export_progress_tracks_real_tasks() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut project = Project::new();
+    project.add_level(None, "Second", 16, 16).unwrap();
+    let mut updates = Vec::new();
+    project
+        .export_csv_with_progress(dir.path().join("csv"), |a, b| updates.push((a, b)))
+        .unwrap();
+    assert_eq!(updates, [(0, 2), (1, 2), (2, 2), (0, 0)]);
+    updates.clear();
+    project
+        .export_gamemaker_with_progress(dir.path().join("gms"), |a, b| updates.push((a, b)))
+        .unwrap();
+    assert_eq!(updates, [(0, 2), (1, 2), (2, 2), (0, 0)]);
+    updates.clear();
+    project
+        .export_tiled_with_report_progress(dir.path().join("tiled"), |a, b| updates.push((a, b)))
+        .unwrap();
+    assert_eq!(updates, [(0, 2), (1, 2), (2, 2), (0, 0)]);
+    updates.clear();
+    project
+        .export_simplified_with_progress(dir.path().join("simple"), |a, b| updates.push((a, b)))
+        .unwrap();
+    assert_eq!(
+        updates,
+        [
+            (0, 6),
+            (1, 6),
+            (2, 6),
+            (3, 6),
+            (4, 6),
+            (5, 6),
+            (6, 6),
+            (0, 0)
+        ]
     );
 }

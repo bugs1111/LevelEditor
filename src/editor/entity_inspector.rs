@@ -273,13 +273,15 @@ impl EditorApp {
         ];
         let readonly = project.is_backup();
         let project_iid = text(&project.json, "iid", "").to_owned();
+        ui.spacing_mut().item_spacing.y = 2.;
         let edit = ui
             .horizontal(|ui| {
+                ui.spacing_mut().interact_size.y = 17.;
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     let edit = ui
                         .add(
                             egui::Button::new(
-                                RichText::new("Edit")
+                                RichText::new(locale::tr(ui, "Edit"))
                                     .strong()
                                     .size(10.667)
                                     .color(Color32::BLACK),
@@ -292,13 +294,14 @@ impl EditorApp {
                         .clicked();
                     let width = ui.available_width().max(1.);
                     ui.allocate_ui_with_layout(
-                        egui::vec2(width, 20.),
+                        egui::vec2(width, 17.),
                         egui::Layout::left_to_right(egui::Align::Center),
                         |ui| {
                             ui.set_min_width(width);
                             ui.add(
                                 egui::Label::new(
                                     RichText::new(text(&def, "identifier", "Entity"))
+                                        .size(14.667)
                                         .strong()
                                         .color(theme::ACCENT),
                                 )
@@ -315,7 +318,16 @@ impl EditorApp {
             self.definition_uid = def["uid"].as_i64();
             self.show_panel(Some(Panel::Entities));
         }
-        ui.separator();
+        // The native title widget includes an extra point of vertical text padding.
+        ui.add_space(1.);
+        let (separator, _) =
+            ui.allocate_exact_size(egui::vec2(ui.available_width(), 1.), Sense::hover());
+        ui.painter().hline(
+            separator.x_range(),
+            separator.center().y,
+            Stroke::new(1., theme::LIGHT),
+        );
+        ui.add_space(2.);
         let mut extra_open = self
             .settings
             .ui_state_int("extraEntityInfos", Some(&project_iid), 0)
@@ -337,7 +349,7 @@ impl EditorApp {
         ui.painter().text(
             rect.left_center() + egui::vec2(24., 0.),
             egui::Align2::LEFT_CENTER,
-            "EXTRA ENTITY INFOS",
+            locale::tr(ui, "EXTRA ENTITY INFOS"),
             FontId::new(17.333, egui::FontFamily::Name("panel-title".into())),
             if hover || extra_open {
                 Color32::BLACK
@@ -370,11 +382,11 @@ impl EditorApp {
                                 .desired_width((ui.available_width() - 75.).max(30.))
                                 .interactive(false),
                         );
-                        if ui.small_button("Copy IID").clicked() {
+                        if ui.small_button(locale::tr(ui, "Copy IID")).clicked() {
                             ui.ctx().copy_text(iid.to_owned());
                         }
                     });
-                    ui.label("Coords");
+                    ui.label(locale::tr(ui, "Coords"));
                     let unit_id = state_id().with("grid-units");
                     let mut cells = ui
                         .ctx()
@@ -433,7 +445,7 @@ impl EditorApp {
                             }
                         }
                         if ui
-                            .small_button(if cells { "cells" } else { "px" })
+                            .small_button(locale::tr(ui, if cells { "cells" } else { "px" }))
                             .clicked()
                         {
                             cells = !cells;
@@ -453,7 +465,7 @@ impl EditorApp {
                     }
                     let refs = incoming_references(self.project.as_ref().unwrap(), iid);
                     if !refs.is_empty() {
-                        ui.label("References to this entity");
+                        ui.label(locale::tr(ui, "References to this entity"));
                         for (iid, label) in &refs {
                             if ui.small_button(label).clicked() {
                                 self.follow_entity(iid);
@@ -542,7 +554,7 @@ mod tests {
                 egui::CentralPanel::default().show(ctx, |ui| {
                     remember_canvas(ctx, ui.max_rect());
                 });
-                self.app.dialogs(ctx);
+                self.app.dialogs(ctx, false);
                 self.app.flush_ui_action(ctx);
             })
         }
@@ -574,6 +586,45 @@ mod tests {
             pressed,
             modifiers: egui::Modifiers::NONE,
         }
+    }
+
+    #[test]
+    fn collapsed_inspector_matches_the_source_header_and_field_spacing() {
+        let mut f = Fixture::new();
+        let project = f.app.project.as_mut().unwrap();
+        let uid = project.json["defs"]["entities"][0]["uid"].as_i64().unwrap();
+        project.update_entity_definition(uid, &json!({"doc":null})).unwrap();
+        let output = f.warm();
+        fn find_rect(shape: &egui::Shape, color: Color32, width: f32, height: Option<f32>) -> Option<Rect> {
+            match shape {
+                egui::Shape::Rect(shape)
+                    if shape.fill == color && shape.rect.width() == width
+                        && height.is_none_or(|height| shape.rect.height() == height) =>
+                {
+                    Some(shape.rect)
+                }
+                egui::Shape::Vec(shapes) => shapes
+                    .iter()
+                    .find_map(|shape| find_rect(shape, color, width, height)),
+                _ => None,
+            }
+        }
+        let rect = |color, width, height| {
+            output.shapes.iter().find_map(|shape| {
+                find_rect(&shape.shape, color, width, height)
+            }).unwrap()
+        };
+        let strip = rect(theme::LIGHT, 330., Some(30.));
+        let left = rect(Color32::from_rgb(115, 127, 157), 120., None);
+        let panel = f.state().rect;
+        assert_eq!(
+            [
+                strip.top() - panel.top(),
+                left.top() - strip.bottom(),
+                panel.bottom() - left.bottom(),
+            ],
+            [36., 2., 20.],
+        );
     }
     fn label(output: &egui::FullOutput, label: &str) -> egui::Pos2 {
         fn find(shape: &egui::Shape, label: &str) -> Option<egui::Pos2> {
@@ -721,6 +772,18 @@ mod tests {
                 .iter()
                 .any(|c| matches!(c,egui::OutputCommand::CopyText(text) if text==iid))
         );
+    }
+    #[test]
+    fn chinese_entity_inspector_translates_edit_and_extra_info_controls() {
+        let mut f = Fixture::new();
+        locale::set(&f.ctx, locale::Language::SimplifiedChinese);
+        let output = f.warm();
+        label(&output, "Actor");
+        label(&output, "编辑");
+        f.click("更多实体信息");
+        let output = f.warm();
+        label(&output, "复制 IID");
+        label(&output, "坐标");
     }
     #[test]
     fn actual_resize_bar_changes_width_clamps_to_source_bounds_and_remains_centered() {
@@ -896,7 +959,7 @@ mod tests {
                             remember_canvas(ctx, canvas);
                             f.app.canvas_controls(ctx, canvas, &response);
                         });
-                    f.app.dialogs(ctx);
+                    f.app.dialogs(ctx, false);
                 },
             );
         };

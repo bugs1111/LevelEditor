@@ -1,5 +1,6 @@
 use crate::{Error, Project, Result};
 use serde_json::{Value, json};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 
 fn invalid(message: &str) -> Error {
@@ -66,7 +67,192 @@ fn new_uuid() -> String {
     uuid::Uuid::new_v4().to_string()
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BakeMode {
+    Keep,
+    Delete,
+    Empty,
+}
+
 impl Project {
+    pub fn validate_auto_layer_bake(&self, uid: i64) -> Result<()> {
+        let defs = list(self, "layers")?;
+        let def = defs
+            .iter()
+            .find(|d| d["uid"] == uid)
+            .ok_or_else(|| invalid("Layer definition not found."))?;
+        let auto = def["type"] == "AutoLayer";
+        let has_tileset = list(self, "tilesets")?
+            .iter()
+            .any(|ts| ts["uid"].is_i64() && ts["uid"] == def["tilesetDefUid"]);
+        if !has_tileset
+            || !(auto || def["type"] == "IntGrid")
+            || (auto && def["autoSourceLayerDefUid"].is_null())
+        {
+            return Err(invalid(
+                "Errors in current layer settings prevent rules to be applied. It can't be baked now.",
+            ));
+        }
+        if defs.iter().any(|d| d["autoSourceLayerDefUid"] == uid) {
+            return Err(invalid(
+                "This layer cannot be baked, as at least one other auto-layer rely on it as 'source' for its data.",
+            ));
+        }
+        Ok(())
+    }
+
+    pub fn bake_auto_layer(
+        &mut self,
+        uid: i64,
+        mode: BakeMode,
+        mut progress: impl FnMut(usize, usize),
+    ) -> Result<i64> {
+        self.validate_auto_layer_bake(uid)?;
+        self.edit_document(|p| {
+            let defs = list(p, "layers")?;
+            let index = defs.iter().position(|d| d["uid"] == uid).unwrap();
+            let original = defs[index].clone();
+            if mode == BakeMode::Empty && original["type"] != "IntGrid" {
+                return Err(invalid(
+                    "Only an IntGrid layer can be emptied after baking.",
+                ));
+            }
+            let identifier = crate::naming::unique_name(
+                &format!(
+                    "{}_baked",
+                    original["identifier"].as_str().unwrap_or("Layer")
+                ),
+                p.json["identifierStyle"].as_str().unwrap_or("Capitalize"),
+                &defs
+                    .iter()
+                    .filter_map(|d| d["identifier"].as_str().map(str::to_owned))
+                    .collect(),
+            );
+            let grid = original["gridSize"]
+                .as_i64()
+                .and_then(|grid| i32::try_from(grid).ok())
+                .filter(|&grid| grid > 0)
+                .ok_or_else(|| invalid("Invalid layer grid size."))?;
+            let atlas = list(p, "tilesets")?
+                .iter()
+                .find(|ts| ts["uid"] == original["tilesetDefUid"])
+                .unwrap()
+                .clone();
+            let layout = geometry(&atlas)?;
+            let cached = atlas["cachedPixelData"]["opaqueTiles"].as_str();
+            let image = if cached.is_some() {
+                None
+            } else if atlas["embedAtlas"] == "LdtkIcons" {
+                crate::exports::embedded_atlas().ok()
+            } else {
+                atlas["relPath"]
+                    .as_str()
+                    .and_then(|path| p.make_absolute_file_path(path).ok())
+                    .and_then(|path| crate::exports::load_image_rgba(&path).ok())
+            };
+            let mut opacity = HashMap::new();
+
+            let uid_baked = p.add_layer(&identifier, "Tiles", grid)?;
+            let groups = original["autoRuleGroups"].as_array().into_iter().flatten();
+            // LDtk duplicates the definition and allocates new rule UIDs before discarding the rules.
+            let cloned_uids: usize = groups
+                .clone()
+                .map(|group| 1 + group["rules"].as_array().map_or(0, Vec::len))
+                .sum();
+            let next = uid_baked + 1 + cloned_uids as i64;
+            if next > i64::from(i32::MAX) {
+                return Err(invalid("UID exceeds LDtk integer range"));
+            }
+            p.json["nextUid"] = json!(next);
+            let mut new_def = original.clone();
+            new_def["uid"] = json!(uid_baked);
+            new_def["identifier"] = json!(identifier);
+            new_def["type"] = json!("Tiles");
+            new_def["__type"] = json!("Tiles");
+            new_def["autoRuleGroups"] = json!([]);
+            new_def["autoSourceLayerDefUid"] = Value::Null;
+            let defs = p.json["defs"]["layers"].as_array_mut().unwrap();
+            defs.remove(0);
+            defs.insert(index + 1, new_def);
+
+            let keys = p.level_keys();
+            progress(0, keys.len());
+            for (done, &key) in keys.iter().enumerate() {
+                let level = p.level_mut(key).unwrap();
+                let mut baked = level["layerInstances"].as_array_mut().unwrap().remove(0);
+                baked["seed"] = json!((uuid::Uuid::new_v4().as_u128() % 9_999_999) as u32);
+                let rules: BTreeSet<_> = groups
+                    .clone()
+                    .filter(|g| crate::autotile::group_applied(g, level, &baked, &original))
+                    .flat_map(|g| g["rules"].as_array().into_iter().flatten())
+                    .filter(|r| r["active"] != false)
+                    .filter_map(|r| r["uid"].as_i64())
+                    .collect();
+                let layers = level["layerInstances"].as_array_mut().unwrap();
+                let index = layers
+                    .iter()
+                    .position(|li| li["layerDefUid"] == uid)
+                    .ok_or_else(|| invalid("Original layer instance not found."))?;
+                let source = &mut layers[index];
+                if let Some(layout) = layout {
+                    baked["gridTiles"] =
+                        flatten_auto_tiles(source, &baked, &rules, layout, |id, x, y| {
+                            *opacity.entry(id).or_insert_with(|| {
+                                if let Some(cached) = cached {
+                                    cached.as_bytes().get(id as usize) == Some(&b'1')
+                                } else {
+                                    image.as_ref().is_some_and(|img| {
+                                        let size = layout.grid;
+                                        x + size > i64::from(img.width())
+                                            || y + size > i64::from(img.height())
+                                            || (y..y + size).all(|py| {
+                                                (x..x + size).all(|px| {
+                                                    img.get_pixel(px as u32, py as u32)[3] == 255
+                                                })
+                                            })
+                                    })
+                                }
+                            })
+                        });
+                }
+                let source_iid = source["iid"].as_str().map(str::to_owned);
+                if mode == BakeMode::Empty {
+                    if let Some(csv) = source["intGridCsv"].as_array_mut() {
+                        csv.fill(json!(0));
+                    }
+                    if let Some(legacy) = source.get_mut("intGrid") {
+                        *legacy = json!([]);
+                    }
+                    source["autoLayerTiles"] = json!([]);
+                }
+                if mode == BakeMode::Delete {
+                    layers[index] = baked;
+                    if let Some(iid) = source_iid {
+                        p.grid_presence.remove(&iid);
+                    }
+                } else {
+                    layers.insert(index + 1, baked);
+                    if mode == BakeMode::Empty
+                        && let Some(iid) = source_iid
+                    {
+                        p.grid_presence
+                            .insert(iid, crate::grid_presence::GridPresence::empty());
+                    }
+                }
+                progress(done + 1, keys.len());
+            }
+            if mode == BakeMode::Delete {
+                // A bake removes the original layer without re-evaluating other layers.
+                p.json["defs"]["layers"]
+                    .as_array_mut()
+                    .unwrap()
+                    .remove(index);
+            }
+            p.refresh_derived_data()?;
+            Ok(uid_baked)
+        })
+    }
+
     pub fn add_layer(&mut self, identifier: &str, kind: &str, grid: i32) -> Result<i64> {
         check_identifier(self, "layers", identifier)?;
         if !["IntGrid", "Tiles", "Entities", "AutoLayer"].contains(&kind) {
@@ -123,14 +309,19 @@ impl Project {
         }
         let definition = json!({
             "__type":kind,"identifier":identifier,"type":kind,"uid":uid,"doc":null,"uiColor":null,"gridSize":grid,
-            "guideGridWid":0,"guideGridHei":0,"displayOpacity":1,"inactiveOpacity":1,"hideInList":false,
+            "guideGridWid":0,"guideGridHei":0,"guideColor":null,"guideOpacity":0.33,"entityDepthSorting":"Manual","displayOpacity":1,"inactiveOpacity":1,"hideInList":false,
             "hideFieldsWhenInactive":false,"canSelectWhenInactive":true,"renderInWorldView":true,"pxOffsetX":0,"pxOffsetY":0,
             "parallaxFactorX":0,"parallaxFactorY":0,"parallaxScaling":true,"requiredTags":[],"excludedTags":[],
-            "autoTilesKilledByOtherLayerUid":null,"uiFilterTags":[],"useAsyncRender":false,
+            "layerUidsPreventingAutoTilingHere":[],"uiFilterTags":[],"useAsyncRender":false,
             "intGridValues":if kind=="IntGrid" {json!([{"value":1,"identifier":null,"color":"#000000","tile":null,"groupUid":0}])}else{json!([])},
             "intGridValuesGroups":[],"autoRuleGroups":[],"autoSourceLayerDefUid":null,"tilesetDefUid":null,"tilePivotX":0,"tilePivotY":0,"biomeFieldUid":null
         });
         for (key, instance) in instances {
+            if kind == "IntGrid" {
+                let iid = instance["iid"].as_str().expect("new layer IID");
+                self.grid_presence
+                    .insert(iid.into(), crate::grid_presence::GridPresence::empty());
+            }
             self.level_mut(key).expect("validated level")["layerInstances"]
                 .as_array_mut()
                 .expect("validated layer array")
@@ -204,17 +395,60 @@ impl Project {
         Ok(uid)
     }
 
+    pub fn ensure_embedded_icons(&mut self) -> Result<i64> {
+        let tilesets = list(self, "tilesets")?;
+        if let Some(uid) = tilesets
+            .iter()
+            .find(|d| d["embedAtlas"] == "LdtkIcons")
+            .and_then(|d| d["uid"].as_i64())
+        {
+            return Ok(uid);
+        }
+        let identifier = crate::naming::unique_name(
+            "Internal_Icons",
+            self.json["identifierStyle"]
+                .as_str()
+                .unwrap_or("Capitalize"),
+            &tilesets
+                .iter()
+                .filter_map(|d| d["identifier"].as_str().map(str::to_owned))
+                .collect(),
+        );
+        let atlas = crate::exports::embedded_atlas()?;
+        let uid = self.add_tileset(
+            Path::new(&identifier),
+            16,
+            atlas.width() as i32,
+            atlas.height() as i32,
+        )?;
+        let definition = self.json["defs"]["tilesets"]
+            .as_array_mut()
+            .unwrap()
+            .last_mut()
+            .unwrap();
+        definition["relPath"] = Value::Null;
+        definition["embedAtlas"] = json!("LdtkIcons");
+        Ok(uid)
+    }
+
     pub fn add_entity_def(&mut self, identifier: &str, width: i32, height: i32) -> Result<i64> {
         check_identifier(self, "entities", identifier)?;
         if width <= 0 || height <= 0 {
             return Err(invalid("entity dimensions must be positive"));
         }
         let uid = next_uid(self)?;
+        let [pivot_x, pivot_y] = ["defaultPivotX", "defaultPivotY"].map(|key| {
+            self.json
+                .get(key)
+                .filter(|value| value.is_number())
+                .cloned()
+                .unwrap_or(json!(0))
+        });
         let definition = json!({"identifier":identifier,"uid":uid,"tags":[],"exportToToc":false,"allowOutOfBounds":false,"doc":null,
             "width":width,"height":height,"resizableX":false,"resizableY":false,"minWidth":null,"maxWidth":null,"minHeight":null,"maxHeight":null,
             "keepAspectRatio":false,"tileOpacity":1,"fillOpacity":1,"lineOpacity":1,"hollow":false,"color":"#FFCC00","renderMode":"Rectangle",
             "showName":true,"tilesetId":null,"tileRenderMode":"FitInside","tileRect":null,"uiTileRect":null,"nineSliceBorders":[],"maxCount":0,
-            "limitScope":"PerLevel","limitBehavior":"MoveLastOne","pivotX":0.5,"pivotY":1.0,"fieldDefs":[]});
+            "limitScope":"PerLevel","limitBehavior":"MoveLastOne","pivotX":pivot_x,"pivotY":pivot_y,"fieldDefs":[]});
         self.json["defs"]["entities"]
             .as_array_mut()
             .expect("validated definitions")
@@ -267,7 +501,7 @@ struct AtlasGeometry {
     cols: i64,
     rows: i64,
 }
-fn geometry(d: &Value) -> Result<AtlasGeometry> {
+fn geometry(d: &Value) -> Result<Option<AtlasGeometry>> {
     let grid = d["tileGridSize"]
         .as_i64()
         .filter(|n| *n > 0)
@@ -280,12 +514,17 @@ fn geometry(d: &Value) -> Result<AtlasGeometry> {
     let height = d["pxHei"]
         .as_i64()
         .ok_or_else(|| invalid("invalid atlas height"))?;
+    if width == 0 && height == 0 && d["relPath"].is_null() && d["embedAtlas"].is_null() {
+        return Ok(None);
+    }
+    // A failed external image load keeps the pointer without decoded dimensions.
+    let unresolved =
+        width == 0 && height == 0 && d["relPath"].is_string() && d["embedAtlas"].is_null();
     if padding < 0
         || spacing < 0
         || padding > i64::from(i32::MAX)
         || spacing > i64::from(i32::MAX)
-        || width <= 2 * padding
-        || height <= 2 * padding
+        || (!unresolved && (width <= 2 * padding || height <= 2 * padding))
         || width > i64::from(i32::MAX)
         || height > i64::from(i32::MAX)
         || grid > i64::from(i32::MAX)
@@ -293,14 +532,89 @@ fn geometry(d: &Value) -> Result<AtlasGeometry> {
         return Err(invalid("invalid atlas geometry"));
     }
     let stride = grid + spacing;
-    Ok(AtlasGeometry {
+    let (cols, rows) = if unresolved {
+        (0, 0)
+    } else {
+        (
+            (width - 2 * padding + stride - 1) / stride,
+            (height - 2 * padding + stride - 1) / stride,
+        )
+    };
+    Ok(Some(AtlasGeometry {
         grid,
         padding,
         spacing,
-        cols: (width - 2 * padding + stride - 1) / stride,
-        rows: (height - 2 * padding + stride - 1) / stride,
-    })
+        cols,
+        rows,
+    }))
 }
+fn atlas_coordinates(id: i64, cols: i64) -> (i64, i64) {
+    // LDtk converts division by zero to row zero when remapping an unresolved image.
+    let row = if cols == 0 { 0 } else { id / cols };
+    (id - row * cols, row)
+}
+
+fn flatten_auto_tiles(
+    original: &Value,
+    baked: &Value,
+    rules: &BTreeSet<i64>,
+    atlas: AtlasGeometry,
+    mut opaque: impl FnMut(i64, i64, i64) -> bool,
+) -> Value {
+    let grid = baked["__gridSize"].as_i64().unwrap();
+    let width = baked["__cWid"].as_i64().unwrap();
+    let height = baked["__cHei"].as_i64().unwrap();
+    let stride = atlas.grid + atlas.spacing;
+    let mut stacks = BTreeMap::<i64, Vec<(i64, i64)>>::new();
+    // The auto tile cache is serialized in rule display order, bottom to top.
+    for tile in original["autoLayerTiles"].as_array().into_iter().flatten() {
+        let (Some(rule), Some(x), Some(y), Some(id)) = (
+            tile["d"][0].as_i64(),
+            tile["px"][0].as_i64(),
+            tile["px"][1].as_i64(),
+            tile["t"].as_i64(),
+        ) else {
+            continue;
+        };
+        let (cx, cy) = (x / grid, y / grid);
+        if !rules.contains(&rule)
+            || !(0..width).contains(&cx)
+            || !(0..height).contains(&cy)
+            || !(0..atlas.cols * atlas.rows).contains(&id)
+        {
+            continue;
+        }
+        let flips = tile["f"].as_i64().unwrap_or_default();
+        let (col, row) = atlas_coordinates(id, atlas.cols);
+        let stack = stacks.entry(cy * width + cx).or_default();
+        if opaque(
+            id,
+            col * stride + atlas.padding,
+            row * stride + atlas.padding,
+        ) {
+            stack.clear();
+        } else {
+            stack.retain(|&t| t != (id, flips));
+        }
+        stack.push((id, flips));
+    }
+    Value::Array(
+        stacks
+            .into_iter()
+            .flat_map(|(cell, stack)| {
+                stack.into_iter().map(move |(id, flips)| {
+                    let (col, row) = atlas_coordinates(id, atlas.cols);
+                    json!({
+                        "t": id, "f": flips, "a": 1, "d": [cell],
+                        "px": [cell % width * grid, cell / width * grid],
+                        "src": [col * stride + atlas.padding, row * stride + atlas.padding],
+                    })
+                })
+            })
+            .collect(),
+    )
+}
+
 fn remap_id(
     id: i64,
     old: Option<AtlasGeometry>,
@@ -310,14 +624,15 @@ fn remap_id(
     if mode == TilesetRemap::Clear {
         return None;
     }
-    let Some(new) = new else { return Some(id) };
+    let Some(new) = new.filter(|atlas| atlas.cols > 0) else {
+        return Some(id);
+    };
     if id < 0 {
         return None;
     }
     if mode == TilesetRemap::AtlasCoordinates {
         let cols = old.map_or(new.cols, |a| a.cols);
-        let x = id % cols;
-        let y = id / cols;
+        let (x, y) = atlas_coordinates(id, cols);
         (x < new.cols && y < new.rows).then_some(y * new.cols + x)
     } else {
         (id < new.cols * new.rows).then_some(id)
@@ -366,9 +681,10 @@ fn remap_tiles(
             tile["src"] = new.map_or_else(
                 || json!([-1, -1]),
                 |a| {
+                    let (x, y) = atlas_coordinates(id, a.cols);
                     json!([
-                        a.padding + (id % a.cols) * (a.grid + a.spacing),
-                        a.padding + (id / a.cols) * (a.grid + a.spacing)
+                        a.padding + x * (a.grid + a.spacing),
+                        a.padding + y * (a.grid + a.spacing)
                     ])
                 },
             );
@@ -438,12 +754,14 @@ impl Project {
                         .ok_or_else(|| invalid("tileset definition not found"))
                         .and_then(geometry)
                 })
-                .transpose()?;
+                .transpose()?
+                .flatten();
             let old = definition["tilesetDefUid"]
                 .as_i64()
                 .and_then(|uid| p.tileset(uid))
                 .map(geometry)
-                .transpose()?;
+                .transpose()?
+                .flatten();
             let atlases = p.json["defs"]["tilesets"]
                 .as_array()
                 .ok_or_else(|| invalid("tileset definitions missing"))?
@@ -470,7 +788,8 @@ impl Project {
                     let override_geometry = layer["overrideTilesetUid"]
                         .as_i64()
                         .and_then(|uid| atlases.get(&uid))
-                        .copied();
+                        .copied()
+                        .flatten();
                     if !clear_overrides && !layer["overrideTilesetUid"].is_null() {
                         if let Some(tiles) = layer["gridTiles"].as_array_mut() {
                             removed += remap_tiles(
@@ -534,7 +853,8 @@ impl Project {
                 .or(default)
                 .and_then(|uid| p.tileset(uid))
                 .map(geometry)
-                .transpose()?;
+                .transpose()?
+                .flatten();
             let new = tileset_uid
                 .or(default)
                 .map(|uid| {
@@ -542,7 +862,8 @@ impl Project {
                         .ok_or_else(|| invalid("tileset definition not found"))
                         .and_then(geometry)
                 })
-                .transpose()?;
+                .transpose()?
+                .flatten();
             let layer = p.layer_mut(key, index).expect("validated layer");
             layer["overrideTilesetUid"] = json!(tileset_uid);
             let removed = remap_tiles(
@@ -559,6 +880,19 @@ impl Project {
             Ok(removed)
         })
     }
+    pub fn remove_tileset_image(&mut self, uid: i64) -> Result<()> {
+        let def = self
+            .tileset(uid)
+            .ok_or_else(|| invalid("tileset definition not found"))?;
+        if !def["embedAtlas"].is_null() {
+            return Err(invalid("embedded tileset images cannot be removed"));
+        }
+        self.update_tileset_definition(
+            uid,
+            &json!({"relPath":null,"pxWid":0,"pxHei":0,"savedSelections":[],"cachedPixelData":null}),
+        )
+    }
+
     /// Returns the number of discarded tile references when an explicit loss policy is selected.
     pub fn update_tileset_definition_with_policy(
         &mut self,
@@ -608,20 +942,20 @@ impl Project {
                 d["padding"] = json!(pad - (ow - nw).min(oh - nh) / 2);
             }
             let new = geometry(d)?;
-            d["__cWid"] = json!(new.cols);
-            d["__cHei"] = json!(new.rows);
+            d["__cWid"] = json!(new.map_or(0, |a| a.cols));
+            d["__cHei"] = json!(new.map_or(0, |a| a.rows));
             let mut removed = 0;
             if let Some(selections) = d["savedSelections"].as_array_mut() {
                 for selection in selections {
                     if let Some(ids) = selection["ids"].as_array_mut() {
-                        removed += remap_ids(ids, Some(old), Some(new), mode, allow_loss)?;
+                        removed += remap_ids(ids, old, new, mode, allow_loss)?;
                     }
                 }
             }
             if let Some(tags) = d["enumTags"].as_array_mut() {
                 for tag in tags {
                     if let Some(ids) = tag["tileIds"].as_array_mut() {
-                        removed += remap_ids(ids, Some(old), Some(new), mode, allow_loss)?;
+                        removed += remap_ids(ids, old, new, mode, allow_loss)?;
                     }
                 }
             }
@@ -630,7 +964,7 @@ impl Project {
                 for item in custom.iter() {
                     let id = item["tileId"]
                         .as_i64()
-                        .and_then(|id| remap_id(id, Some(old), Some(new), mode));
+                        .and_then(|id| remap_id(id, old, new, mode));
                     if let Some(id) = id {
                         let mut item = item.clone();
                         item["tileId"] = json!(id);
@@ -662,7 +996,7 @@ impl Project {
                     if effective == Some(uid)
                         && let Some(tiles) = layer["gridTiles"].as_array_mut()
                     {
-                        removed += remap_tiles(tiles, Some(old), Some(new), mode, allow_loss)?;
+                        removed += remap_tiles(tiles, old, new, mode, allow_loss)?;
                     }
                 }
             }
@@ -671,7 +1005,7 @@ impl Project {
                 .expect("validated layer definitions")
             {
                 if layer["tilesetDefUid"] == uid {
-                    removed += remap_rules(layer, Some(old), Some(new), mode, allow_loss)?;
+                    removed += remap_rules(layer, old, new, mode, allow_loss)?;
                 }
             }
             p.refresh_auto_and_derived()?;

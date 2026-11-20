@@ -845,33 +845,7 @@ impl Scene<'_> {
         }
     }
     pub(super) fn level_color(&self, level: &Value) -> Color32 {
-        for fd in values(&self.project.json["defs"]["levelFields"])
-            .iter()
-            .filter(|fd| fd["useForSmartColor"] == true)
-        {
-            let value = field_value(level, fd);
-            for item in if fd["isArray"] == true {
-                values(&value)
-            } else {
-                std::slice::from_ref(value.as_ref())
-            } {
-                if text(fd, "__type", "").contains("Color")
-                    && let Some(color) = item.as_str()
-                {
-                    return theme::color(color);
-                }
-                if let Some(color) =
-                    enum_value(self.project, fd, item).and_then(|ev| ev["color"].as_str())
-                {
-                    return theme::color(color);
-                }
-            }
-        }
-        theme::color(text(
-            level,
-            "__bgColor",
-            text(&self.project.json, "defaultLevelBgColor", "#696A79"),
-        ))
+        level_smart_color(self.project, level)
     }
     pub(super) fn level_fields(&mut self, painter: &Painter, level: &Value, origin: [f32; 2]) {
         let bounds = self.screen([
@@ -1099,7 +1073,6 @@ impl Scene<'_> {
         ];
         let start = self.point(transform.point(origin));
         let mut previous = start;
-        let mut count = 0;
         for point in items {
             if point.is_null() {
                 continue;
@@ -1133,9 +1106,8 @@ impl Scene<'_> {
             if mode == "PointPath" || mode == "PointPathLoop" {
                 previous = target;
             }
-            count += 1;
         }
-        if mode == "PointPathLoop" && count > 1 {
+        if mode == "PointPathLoop" && items.len() > 1 {
             render_link(
                 painter,
                 previous,
@@ -1520,4 +1492,32 @@ mod tests {
             "-locked"
         );
     }
+}
+
+pub(crate) fn level_smart_color(project: &Project, level: &Value) -> Color32 {
+    for fd in values(&project.json["defs"]["levelFields"])
+        .iter()
+        .filter(|fd| fd["useForSmartColor"] == true)
+    {
+        let value = field_value(level, fd);
+        for item in if fd["isArray"] == true {
+            values(&value)
+        } else {
+            std::slice::from_ref(value.as_ref())
+        } {
+            if text(fd, "__type", "").contains("Color")
+                && let Some(color) = item.as_str()
+            {
+                return theme::color(color);
+            }
+            if let Some(color) = enum_value(project, fd, item).and_then(|ev| ev["color"].as_str()) {
+                return theme::color(color);
+            }
+        }
+    }
+    theme::color(text(
+        level,
+        "__bgColor",
+        text(&project.json, "defaultLevelBgColor", "#696A79"),
+    ))
 }

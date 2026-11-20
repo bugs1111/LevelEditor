@@ -48,203 +48,755 @@ pub(super) fn changelog_is_open(ctx: &egui::Context) -> bool {
         .unwrap_or(false)
 }
 
+fn release_series(version: &str) -> &str {
+    version
+        .rsplit_once('.')
+        .map_or(version, |(series, _)| series)
+}
+
+fn is_major_release(version: &str) -> bool {
+    version
+        .rsplit_once('.')
+        .is_some_and(|(_, patch)| patch.split('-').next() == Some("0"))
+}
+
+fn changelog_body(
+    ui: &mut egui::Ui,
+    cache: &mut egui_commonmark::CommonMarkCache,
+    entry: &ChangelogEntry,
+) {
+    egui_commonmark::CommonMarkViewer::new()
+        .max_image_width(Some(ui.available_width() as usize))
+        .show(ui, cache, &changelog_markdown(entry));
+}
+
+const VIDEO_GUIDES: [(&str, &str); 2] = [
+    (
+        "O1pmIImzEts",
+        "General LDtk introduction by Gamefromscratch",
+    ),
+    ("ah5MLaU5m8s", "Unity integration by Cammin"),
+];
+
+fn request_video_thumbnails(ctx: &egui::Context) {
+    let key = egui::Id::new("help-video-thumbnails-requested");
+    let first_open = ctx.data_mut(|data| {
+        let requested = data.get_temp_mut_or_default::<bool>(key);
+        !std::mem::replace(requested, true)
+    });
+    if !first_open {
+        return;
+    }
+    let ctx = ctx.clone();
+    std::thread::spawn(move || {
+        let config = ureq::Agent::config_builder()
+            .https_only(true)
+            .timeout_global(Some(std::time::Duration::from_secs(5)))
+            .build();
+        let agent: ureq::Agent = config.into();
+        for (id, _) in VIDEO_GUIDES {
+            let url = format!("https://img.youtube.com/vi/{id}/0.jpg");
+            let Ok(mut response) = agent.get(&url).call() else {
+                continue;
+            };
+            let Ok(bytes) = response
+                .body_mut()
+                .with_config()
+                .limit(1024 * 1024)
+                .read_to_vec()
+            else {
+                continue;
+            };
+            if matches!(image::guess_format(&bytes), Ok(image::ImageFormat::Jpeg)) {
+                ctx.include_bytes(format!("bytes://help-videos/{id}.jpg"), bytes);
+                ctx.data_mut(|data| data.insert_temp(egui::Id::new(("help-video", id)), true));
+                ctx.request_repaint();
+            }
+        }
+    });
+}
+
+fn video_card(ui: &mut egui::Ui, id: &'static str, title: &'static str, width: f32) {
+    let title = locale::tr(ui, title);
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(width, 182.), Sense::click());
+    ui.painter().rect_filled(rect, 0., Color32::BLACK);
+    let inner = rect.shrink(1.);
+    if ui.data(|data| data.get_temp::<bool>(egui::Id::new(("help-video", id)))) == Some(true)
+        && let Ok(egui::load::TexturePoll::Ready { texture }) =
+            egui::Image::from_uri(format!("bytes://help-videos/{id}.jpg"))
+                .load_for_size(ui.ctx(), inner.size())
+    {
+        let crop = ((inner.size() / texture.size) / (inner.size() / texture.size).max_elem())
+            .min(Vec2::splat(1.));
+        ui.painter().image(
+            texture.id,
+            inner,
+            Rect::from_center_size(egui::pos2(0.5, 0.5), crop),
+            Color32::WHITE,
+        );
+    } else {
+        egui::Image::new(egui::include_image!("../../assets/img/stripesLight.png"))
+            .texture_options(egui::TextureOptions::NEAREST_REPEAT)
+            .uv(Rect::from_min_size(egui::Pos2::ZERO, inner.size() / 8.))
+            .paint_at(ui, inner);
+    }
+    if response.hovered() {
+        ui.painter()
+            .rect_stroke(rect, 0., Stroke::new(1., theme::ACCENT), StrokeKind::Inside);
+    }
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Link, true, title));
+    if response
+        .on_hover_text(title)
+        .on_hover_cursor(egui::CursorIcon::PointingHand)
+        .clicked()
+    {
+        ui.ctx()
+            .open_url(egui::OpenUrl::new_tab(format!("https://youtu.be/{id}")));
+    }
+}
+
+enum HelpKey<'a> {
+    Key(&'a str),
+    Mouse(egui::ImageSource<'static>),
+    Text(&'a str),
+}
+
+impl<'a> HelpKey<'a> {
+    fn parse(token: &'a str) -> Self {
+        let mouse = match token {
+            "mouseleft" => egui::include_image!("../../assets/icons/mouseLeft.png"),
+            "mouseright" => egui::include_image!("../../assets/icons/mouseRight.png"),
+            "mousemiddle" => egui::include_image!("../../assets/icons/mouseMiddle.png"),
+            "mousewheel" => egui::include_image!("../../assets/icons/mouseWheel.png"),
+            "/" | "or" | "to" | "(held)" | "(singleclick)" => return Self::Text(token),
+            _ => return Self::Key(token),
+        };
+        Self::Mouse(mouse)
+    }
+
+    fn width(&self, ui: &egui::Ui) -> f32 {
+        match self {
+            Self::Mouse(_) => 32.,
+            Self::Text(text) => {
+                ui.painter()
+                    .layout_no_wrap(
+                        locale::tr(ui, text).into(),
+                        FontId::proportional(14.),
+                        Color32::WHITE,
+                    )
+                    .size()
+                    .x
+                    + 4.
+            }
+            Self::Key(label) => {
+                ui.painter()
+                    .layout_no_wrap(
+                        (*label).into(),
+                        FontId::new(13.2, egui::FontFamily::Name("heading".into())),
+                        Color32::WHITE,
+                    )
+                    .size()
+                    .x
+                    .max(16.)
+                    + 10.
+            }
+        }
+    }
+
+    fn paint(&self, ui: &egui::Ui, center: egui::Pos2, width: f32) {
+        match self {
+            Self::Mouse(source) => {
+                egui::Image::new(source.clone())
+                    .paint_at(ui, Rect::from_center_size(center, Vec2::splat(32.)));
+            }
+            Self::Text(text) => {
+                ui.painter().text(
+                    center,
+                    Align2::CENTER_CENTER,
+                    locale::tr(ui, text),
+                    FontId::proportional(14.),
+                    Color32::WHITE,
+                );
+            }
+            Self::Key(label) => {
+                let tint = match *label {
+                    "CTRL" | "⌘" | "SHIFT" | "ALT" => Color32::from_rgb(255, 92, 130),
+                    "ESCAPE" | "DELETE" => Color32::from_rgb(195, 145, 255),
+                    name if name
+                        .strip_prefix('F')
+                        .is_some_and(|n| n.parse::<u8>().is_ok()) =>
+                    {
+                        Color32::from_rgb(195, 145, 255)
+                    }
+                    _ => Color32::WHITE,
+                };
+                super::chrome::paint_keycap(
+                    ui,
+                    Rect::from_center_size(center, egui::vec2(width, 21.)),
+                    label,
+                    tint,
+                    true,
+                );
+            }
+        }
+    }
+}
+
+fn help_section(ui: &mut egui::Ui, heading: &str, rows: &[(&str, &str)], major: bool) {
+    panels::source_controls::form_heading_line(ui, heading);
+    ui.add_space(18.);
+    let columns = ui.available_width();
+    let rows: Vec<_> = rows
+        .iter()
+        .map(|&(binding, description)| {
+            let keys: Vec<_> = binding
+                .split_whitespace()
+                .map(HelpKey::parse)
+                .map(|key| {
+                    let width = key.width(ui);
+                    (key, width)
+                })
+                .collect();
+            let width = keys.iter().map(|(_, w)| w + 2.).sum::<f32>();
+            (keys, width, description)
+        })
+        .collect();
+    let key_width = rows
+        .iter()
+        .map(|(_, w, _)| w + if major { 8. } else { 16. })
+        .fold(columns / 3., f32::max);
+    let indent = if major { 4. } else { 10. };
+    for (keys, width, description) in rows {
+        let galley = ui.painter().layout(
+            locale::tr(ui, description).into(),
+            FontId::new(
+                if major { 16. } else { 14. },
+                egui::FontFamily::Name("panel-title".into()),
+            ),
+            Color32::WHITE,
+            (columns - key_width - 2. * indent - 1.).max(30.),
+        );
+        let has_mouse = keys.iter().any(|(key, _)| matches!(key, HelpKey::Mouse(_)));
+        let height = (if has_mouse { 40_f32 } else { 31. }).max(galley.size().y + 8.);
+        let (row, _) = ui.allocate_exact_size(egui::vec2(columns, height), Sense::hover());
+        let key_rect = Rect::from_min_size(row.min, egui::vec2(key_width, height));
+        ui.painter().rect_filled(key_rect, 4., theme::DARK);
+        let value = Rect::from_min_max(egui::pos2(key_rect.max.x + 1., row.min.y), row.max);
+        if major {
+            ui.painter().rect_filled(value, 4., theme::LIGHT);
+        }
+        ui.painter().galley(
+            egui::pos2(
+                value.min.x + indent,
+                value.center().y - galley.size().y * 0.5,
+            ),
+            galley,
+            Color32::WHITE,
+        );
+        let mut x = key_rect.max.x - width - if major { 4. } else { 8. };
+        for (key, width) in keys {
+            key.paint(ui, egui::pos2(x + width * 0.5, row.center().y), width);
+            x += width + 2.;
+        }
+        ui.add_space(1.);
+    }
+}
+
 impl EditorApp {
     pub(super) fn help_contents(&mut self, ui: &mut egui::Ui) {
-        ui.heading("LDtk help");
-        ui.horizontal_wrapped(|ui| {
-            if ui.button("Release notes").clicked() {
-                ui.ctx()
-                    .data_mut(|d| d.insert_temp(egui::Id::new("release-notes-open"), true));
-            }
-            for (label, url) in [
-                ("Website documentation", "https://ldtk.io/docs"),
-                ("JSON file format", "https://ldtk.io/json"),
-                ("Discord", "https://ldtk.io/go/discord"),
-            ] {
-                ui.hyperlink_to(label, url);
-            }
+        request_video_thumbnails(ui.ctx());
+        let width = ui.available_width();
+        ui.horizontal_top(|ui| {
+            ui.spacing_mut().item_spacing.x = 16.;
+            let docs_width = ((width - 16.) * 0.548).round();
+            ui.with_layout(egui::Layout::top_down_justified(egui::Align::Min), |ui| {
+                ui.set_width(docs_width);
+                panels::source_controls::form_heading_line(ui, "Online documentation");
+                ui.add_space(10.);
+                for (label, icon, fill, url) in [
+                    (
+                        "Release notes",
+                        egui::include_image!("../../assets/icons/doc.svg"),
+                        Color32::from_rgb(235, 78, 0),
+                        None,
+                    ),
+                    (
+                        "Website",
+                        egui::include_image!("../../assets/icons/doc.svg"),
+                        Color32::from_rgb(68, 133, 78),
+                        Some("https://ldtk.io/docs"),
+                    ),
+                    (
+                        "JSON file format",
+                        egui::include_image!("../../assets/icons/json.svg"),
+                        Color32::from_rgb(68, 133, 78),
+                        Some("https://ldtk.io/json"),
+                    ),
+                    (
+                        "Discord",
+                        egui::include_image!("../../assets/icons/discord.svg"),
+                        Color32::from_rgb(119, 138, 214),
+                        Some("https://ldtk.io/go/discord"),
+                    ),
+                ] {
+                    let label = locale::tr(ui, label);
+                    let button = egui::Button::new("").fill(fill).corner_radius(2.);
+                    let response =
+                        panels::source_controls::add_sized_button(ui, [docs_width, 43.], button);
+                    let margin = response.rect.left_center();
+                    egui::Image::new(icon)
+                        .tint(Color32::from_white_alpha(if url.is_none() {
+                            255
+                        } else {
+                            190
+                        }))
+                        .paint_at(
+                            ui,
+                            Rect::from_center_size(margin + egui::vec2(22., 0.), Vec2::splat(21.)),
+                        );
+                    ui.painter().text(
+                        margin + egui::vec2(37., 0.),
+                        Align2::LEFT_CENTER,
+                        label,
+                        FontId::proportional(14.),
+                        Color32::WHITE,
+                    );
+                    response.widget_info(|| {
+                        egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label)
+                    });
+                    if response.clicked() {
+                        if let Some(url) = url {
+                            ui.ctx().open_url(egui::OpenUrl::new_tab(url));
+                        } else {
+                            self.dismiss_panel();
+                            ui.data_mut(|data| {
+                                data.insert_temp(egui::Id::new("release-notes-open"), true)
+                            });
+                        }
+                    }
+                    ui.add_space(1.);
+                }
+            });
+            ui.vertical(|ui| {
+                let video_width = (width - 16. - docs_width).max(80.);
+                ui.set_width(video_width);
+                panels::source_controls::form_heading_line(ui, "Video guides");
+                ui.add_space(8.);
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 4.;
+                    for (id, title) in VIDEO_GUIDES {
+                        video_card(ui, id, title, (video_width - 4.) * 0.5);
+                    }
+                });
+            });
         });
-        ui.label("Video guides");
-        ui.hyperlink_to(
-            "General LDtk introduction by Gamefromscratch",
-            "https://youtu.be/O1pmIImzEts",
-        );
-        ui.hyperlink_to(
-            "Unity integration by Cammin",
-            "https://youtu.be/ah5MLaU5m8s",
-        );
-        ui.separator();
-        ui.columns(2, |columns| {
-            for (column, title, rows) in [
-                (
-                    0,
+        ui.add_space(16.);
+        let navigation = self.settings.value["navigationKeys"]
+            .as_str()
+            .unwrap_or("Wasd");
+        let ctrl = if cfg!(target_os = "macos") {
+            "⌘"
+        } else {
+            "CTRL"
+        };
+        let toggle_details = if cfg!(target_os = "macos") {
+            "SHIFT H"
+        } else {
+            "CTRL H"
+        };
+        let fullscreen = if cfg!(target_os = "macos") {
+            "⌘ CTRL F"
+        } else if cfg!(target_os = "windows") {
+            "F11"
+        } else {
+            "CTRL SHIFT F"
+        };
+        let single_layer = if super::shortcuts::single_layer_shortcut_needs_shift(navigation) {
+            "SHIFT A"
+        } else {
+            "A"
+        };
+        let save_tiles = if super::shortcuts::save_tile_shortcut_needs_shift(navigation) {
+            "SHIFT S"
+        } else {
+            "S"
+        };
+        let world_key = if navigation == "Zqsd" {
+            "SHIFT W or ²"
+        } else {
+            "SHIFT W or ~"
+        };
+
+        ui.horizontal_top(|ui| {
+            ui.spacing_mut().item_spacing.x = 16.;
+            let column = (width - 16.) * 0.5;
+            ui.vertical(|ui| {
+                ui.set_width(column);
+                help_section(
+                    ui,
                     "Most important commands",
                     &[
-                        ("Left mouse", "Draw"),
-                        ("Right mouse", "Erase"),
-                        ("Middle mouse / Space + left drag", "Move the view"),
-                        ("Wheel / Space + right drag / + / −", "Zoom"),
-                        ("Escape", "Clear selection, close a panel or cancel"),
-                    ][..],
-                ),
-                (
-                    0,
+                        ("mouseleft", "Draw"),
+                        ("mouseright", "Erase"),
+                        ("mousemiddle or SPACE mouseleft", "Move the view"),
+                        ("mousewheel or SPACE mouseright", "Zoom"),
+                        ("+ / -", "Zoom"),
+                        (
+                            "ESCAPE",
+                            "Clear selection, close panel, cancel an action etc.",
+                        ),
+                    ],
+                    true,
+                );
+                ui.add_space(14.);
+                help_section(
+                    ui,
                     "General commands",
                     &[
-                        ("H", "Help"),
-                        ("Tab", "Zen mode"),
-                        ("Cmd/Ctrl + F / K / Shift + P", "Search"),
-                        (
-                            if cfg!(target_os = "macos") {
-                                "Shift + H"
-                            } else {
-                                "Ctrl + H"
-                            },
-                            "Show/hide details",
-                        ),
-                        ("F1–F10", "Select visible layers"),
-                        ("F11 / Cmd/Ctrl + Enter", "Fullscreen"),
-                        ("F12", "App settings"),
-                        ("Cmd/Ctrl + S", "Save"),
-                        ("Cmd/Ctrl + Shift + S", "Save as"),
-                        ("Cmd/Ctrl + W", "Close project"),
-                        ("Cmd/Ctrl + Q", "Quit"),
-                        ("G", "Grid"),
-                        ("Shift + A", "Single layer mode"),
-                        ("Cmd/Ctrl + A", "Select all"),
-                        ("Delete", "Delete selected elements"),
-                        ("Cmd/Ctrl + R", "Run project command"),
-                    ][..],
-                ),
-                (
-                    0,
+                        ("H", "Show this help"),
+                        ("TAB", "Toggle zen mode"),
+                        (&format!("{ctrl} F"), "Search"),
+                        (toggle_details, "Show/hide visual details"),
+                        ("F1 to F10", "Select layers"),
+                        (fullscreen, "Toggle fullscreen"),
+                        ("F12", "Open app settings"),
+                        (&format!("{ctrl} S"), "Save project"),
+                        (&format!("{ctrl} SHIFT S"), "Save project as..."),
+                        (&format!("{ctrl} W"), "Close project"),
+                        (&format!("{ctrl} Q"), "Quit LDtk"),
+                        ("G", "Enable/disable the grid"),
+                        (single_layer, "Toggle \"Single layer\" mode"),
+                        (&format!("{ctrl} A"), "Select all"),
+                        ("DELETE", "Delete selected elements"),
+                        (&format!("{ctrl} R"), "Run a project custom command"),
+                    ],
+                    false,
+                );
+                ui.add_space(14.);
+                help_section(
+                    ui,
                     "Sections",
                     &[
-                        ("P", "Project"),
-                        ("L", "Layers"),
-                        ("E", "Entities"),
-                        ("U", "Enumerations"),
-                        ("T", "Tilesets"),
-                        ("C", "Current level"),
-                    ][..],
-                ),
-                (
-                    1,
+                        ("P", "Open \"Project\" panel"),
+                        ("L", "Open \"Layers\" panel"),
+                        ("E", "Open \"Entities\" panel"),
+                        ("U", "Open \"Enumerations\" panel"),
+                        ("T", "Open \"Tileset\" panel"),
+                    ],
+                    false,
+                );
+            });
+            ui.vertical(|ui| {
+                ui.set_width(column);
+                help_section(
+                    ui,
                     "Editing commands",
                     &[
-                        ("Alt + left mouse", "Select a single element"),
+                        ("ALT mouseleft", "Select a single element"),
                         (
-                            "Shift + Alt + left drag",
-                            "Select all elements in a rectangle",
+                            "SHIFT ALT mouseleft",
+                            "Select all elements in a rectangle area",
                         ),
-                        ("Cmd/Ctrl + Alt + left drag", "Duplicate selected elements"),
-                        ("Space", "Fit view"),
-                        ("Shift + left drag", "Draw a rectangle"),
-                        ("Shift + single left click", "Flood fill"),
-                    ][..],
-                ),
-                (
-                    1,
+                        (
+                            &format!("{ctrl} ALT mouseleft"),
+                            "Duplicate all selected elements",
+                        ),
+                        ("SPACE", "Fit view"),
+                        ("SHIFT mouseleft (held)", "Draw a rectangle."),
+                        (
+                            "SHIFT mouseleft (singleclick)",
+                            "Flood-fill the current area with the selected value.",
+                        ),
+                    ],
+                    true,
+                );
+                ui.add_space(14.);
+                help_section(
+                    ui,
                     "Auto-layers",
-                    &[("Shift + R", "Toggle auto-layer rendering")][..],
-                ),
-                (
-                    1,
+                    &[("SHIFT R", "Toggle auto-layers rendering")],
+                    false,
+                );
+                ui.add_space(14.);
+                help_section(
+                    ui,
                     "Tile layers",
                     &[
-                        ("Shift + S", "Save tile selection"),
-                        ("Shift + L", "Recall saved tile selection"),
-                        ("R", "Stamp / Random mode"),
-                        ("X / Y", "Mirror selected tiles"),
-                        ("Shift + T", "Toggle stacking"),
-                        ("Shift + E", "Select empty cells"),
-                    ][..],
-                ),
-                (
-                    1,
+                        (save_tiles, "Save current tile selection."),
+                        (
+                            "SHIFT L",
+                            "Reload a saved tile selection from currently selected tile.",
+                        ),
+                        ("R", "Toggle randomization of current tile selection."),
+                        ("X", "X-mirror current tile(s)"),
+                        ("Y", "Y-mirror current tile(s)"),
+                    ],
+                    false,
+                );
+                ui.add_space(14.);
+                help_section(
+                    ui,
                     "World mode",
                     &[
-                        ("Shift + W / `", "World / level view"),
-                        ("Page Up / Page Down", "Change active world depth"),
+                        (world_key, "Switch between world/level views"),
+                        ("PGUP / PGDN", "Change active world layer"),
                         (
-                            "Cmd/Ctrl + Page Up / Page Down",
-                            "Move level to another depth",
+                            &format!("{ctrl} PGUP / {ctrl} PGDN"),
+                            "Move current level between world layers",
                         ),
-                        ("Double click a level", "Enter level"),
-                    ][..],
-                ),
-            ] {
-                let ui = &mut columns[column];
-                ui.add_space(12.0);
-                ui.label(
-                    RichText::new(title)
-                        .font(FontId::new(
-                            18.0,
-                            egui::FontFamily::Name("panel-title".into()),
-                        ))
-                        .color(theme::ACCENT),
+                    ],
+                    false,
                 );
-                egui::Grid::new(title)
-                    .num_columns(2)
-                    .max_col_width((ui.available_width() - 12.) * 0.5)
-                    .spacing([12.0, 8.0])
-                    .show(ui, |ui| {
-                        for (key, description) in rows {
-                            ui.label(RichText::new(*key).strong());
-                            ui.label(*description);
-                            ui.end_row();
-                        }
-                    });
-            }
+            });
         });
     }
     pub(super) fn changelog_dialog(&mut self, ctx: &egui::Context) {
         let id = egui::Id::new("release-notes-open");
-        let mut open = ctx.data_mut(|d| d.get_temp::<bool>(id)).unwrap_or(false);
-        if !open {
+        if !changelog_is_open(ctx) {
             return;
         }
         let entries = changelog_entries();
+        let version_id = id.with("version");
+        let default = entries
+            .iter()
+            .find(|entry| is_major_release(entry.version))
+            .unwrap_or(&entries[0]);
         let mut version = ctx
-            .data_mut(|d| d.get_temp::<String>(id.with("version")))
-            .unwrap_or_else(|| {
-                entries
-                    .iter()
-                    .find(|e| e.version.ends_with(".0"))
-                    .unwrap_or(&entries[0])
-                    .version
-                    .into()
-            });
-        let modal=egui::Modal::new(id).show(ctx, |ui| {
-                ui.set_width((ctx.content_rect().width()*0.8).min(980.));
-                egui::ComboBox::from_id_salt("changelog-version").selected_text(&version).show_ui(ui,|ui| {
-                    for entry in entries {ui.selectable_value(&mut version,entry.version.into(),entry.version);}
-                });
-                let entry=entries.iter().find(|e|e.version==version).unwrap_or(&entries[0]);
-                ui.heading(if entry.title.is_empty() {format!("LDtk {}",entry.version)}else{format!("LDtk {} — {}",entry.version,entry.title)});
-                let cache=ctx.data_mut(|d|d.get_temp_mut_or_default::<std::sync::Arc<std::sync::Mutex<egui_commonmark::CommonMarkCache>>>(id.with("cache")).clone());
-                let markdown=changelog_markdown(entry);
-                egui::ScrollArea::vertical()
-                    .id_salt(("changelog-body",entry.version))
-                    .max_height(ctx.content_rect().height()*0.7)
-                    .show(ui, |ui| {
-                        egui_commonmark::CommonMarkViewer::new()
-                            .max_image_width(Some(ui.available_width() as usize))
-                            .show(ui,&mut cache.lock().unwrap(),&markdown);
+            .data(|data| data.get_temp::<String>(version_id))
+            .unwrap_or_else(|| default.version.into());
+        let entry = entries
+            .iter()
+            .find(|entry| entry.version == version)
+            .unwrap_or(default);
+        let series = release_series(entry.version);
+        let patches: Vec<_> = entries
+            .iter()
+            .filter(|patch| {
+                release_series(patch.version) == series && !is_major_release(patch.version)
+            })
+            .collect();
+        let newest = patches.first().map_or(entry.version, |patch| patch.version);
+        let width = ctx.content_rect().width().min(900.);
+        let height = ctx.content_rect().height() * 0.96;
+        let cache = ctx.data_mut(|data| {
+            data.get_temp_mut_or_default::<std::sync::Arc<std::sync::Mutex<egui_commonmark::CommonMarkCache>>>(id.with("cache")).clone()
+        });
+
+        let mut open = true;
+        let modal = egui::Modal::new(id)
+            .frame(egui::Frame::new().fill(theme::DARK).corner_radius(4.))
+            .backdrop_color(Color32::from_black_alpha(220))
+            .show(ctx, |ui| {
+                ui.set_width(width);
+                ui.set_height(height);
+                ui.spacing_mut().item_spacing = Vec2::ZERO;
+                let (header, _) = ui.allocate_exact_size(egui::vec2(width, 105.), Sense::hover());
+                let badge = Rect::from_min_size(header.min, egui::vec2(161., 105.));
+                ui.painter().rect_filled(header, 0., theme::MEDIUM);
+                ui.painter().rect_filled(badge, 0., theme::ACCENT);
+                ui.painter().text(
+                    badge.center(),
+                    Align2::CENTER_CENTER,
+                    newest,
+                    FontId::new(68., egui::FontFamily::Name("panel-title".into())),
+                    theme::DARK,
+                );
+                if !entry.title.is_empty() {
+                    ui.painter().text(
+                        header.left_center() + egui::vec2(181., 0.),
+                        Align2::LEFT_CENTER,
+                        format!("“ {} ”", entry.title),
+                        FontId::new(26., egui::FontFamily::Name("panel-title".into())),
+                        theme::ACCENT,
+                    );
+                }
+                let button_pos = header.right_top() + egui::vec2(-52., 9.);
+                let button_size = egui::vec2(45., 42.);
+                let orange = Color32::from_rgb(235, 78, 0);
+                if ui
+                    .put(
+                        Rect::from_min_size(button_pos, button_size),
+                        egui::Button::new(RichText::new("×").size(24.).color(Color32::WHITE))
+                            .fill(orange),
+                    )
+                    .clicked()
+                {
+                    open = false;
+                }
+                let others = ui
+                    .put(
+                        Rect::from_min_size(button_pos + egui::vec2(0., 44.), button_size),
+                        egui::Button::image(
+                            egui::Image::new(egui::include_image!("../../assets/icons/list.svg"))
+                                .fit_to_exact_size(Vec2::splat(20.)),
+                        )
+                        .fill(orange),
+                    )
+                    .on_hover_text(locale::tr(ui, "All updates"));
+                egui::Popup::menu(&others)
+                    .align(egui::RectAlign::BOTTOM_END)
+                    .show(|ui| {
+                        ui.label(RichText::new(locale::tr(ui, "LDtk major updates")).strong());
+                        for release in entries
+                            .iter()
+                            .filter(|entry| is_major_release(entry.version))
+                        {
+                            let series = release_series(release.version);
+                            let title = if release.title.is_empty() {
+                                series.into()
+                            } else {
+                                format!("{series} - {}", release.title)
+                            };
+                            if ui
+                                .selectable_label(version == release.version, title)
+                                .clicked()
+                            {
+                                version = release.version.into();
+                                ui.close();
+                            }
+                        }
                     });
-                if panels::source_controls::button(ui,"Close").clicked() {open=false;}
+
+                ui.spacing_mut().scroll = egui::style::ScrollStyle {
+                    bar_width: 10.,
+                    bar_inner_margin: 0.,
+                    bar_outer_margin: 0.,
+                    ..egui::style::ScrollStyle::solid()
+                };
+                egui::ScrollArea::vertical()
+                    .id_salt(("changelog-body", entry.version))
+                    .max_height((height - header.height()).max(120.))
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        egui::Frame::new().inner_margin(20).show(ui, |ui| {
+                            ui.spacing_mut().item_spacing.y = 8.;
+                            let mut cache = cache.lock().unwrap();
+                            for patch in patches {
+                                let latest = entries[0].version == patch.version;
+                                egui::Frame::new()
+                                    .fill(if latest { theme::LIGHT } else { theme::MEDIUM })
+                                    .stroke(Stroke::new(
+                                        1.,
+                                        if latest { theme::TEXT } else { theme::LIGHT },
+                                    ))
+                                    .corner_radius(2.)
+                                    .inner_margin(8)
+                                    .show(ui, |ui| {
+                                        ui.set_min_width(ui.available_width());
+                                        egui::CollapsingHeader::new(
+                                            RichText::new(locale::format(ui, "Patch {version}", &[("version", patch.version)]))
+                                                .strong()
+                                                .color(theme::ACCENT),
+                                        )
+                                        .id_salt(patch.version)
+                                        .default_open(latest)
+                                        .show(ui, |ui| {
+                                            changelog_body(ui, &mut cache, patch);
+                                        });
+                                    });
+                            }
+                            if newest != entry.version {
+                                ui.heading(locale::format(
+                                    ui,
+                                    "Changes from {version}",
+                                    &[("version", entry.version)],
+                                ));
+                            }
+                            changelog_body(ui, &mut cache, entry);
+                        });
+                    });
             });
-        if modal.should_close() {
-            open = false;
-        }
-        ctx.data_mut(|d| d.insert_temp(id, open));
-        ctx.data_mut(|d| d.insert_temp(id.with("version"), version));
+        open &= !modal.should_close();
+        ctx.data_mut(|data| {
+            data.insert_temp(id, open);
+            if open {
+                data.insert_temp(version_id, version);
+            } else {
+                data.remove::<String>(version_id);
+            }
+        });
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn opening_release_notes_from_help_closes_the_help_panel() {
+        let ctx = egui::Context::default();
+        theme::configure(&ctx);
+        ctx.data_mut(|data| {
+            data.insert_temp(egui::Id::new("help-video-thumbnails-requested"), true)
+        });
+        let mut app = EditorApp::empty();
+        app.panel = Some(Panel::Help);
+        let mut draw = |events| {
+            ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(866., 775.),
+                    )),
+                    events,
+                    ..Default::default()
+                },
+                |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| app.help_contents(ui));
+                },
+            )
+        };
+        let output = draw(vec![]);
+        let pos = output
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) if text.galley.text() == "Release notes" => {
+                    Some(text.pos + text.galley.size() * 0.5)
+                }
+                _ => None,
+            })
+            .expect("visible release notes button");
+        for pressed in [true, false] {
+            let _ = draw(vec![
+                egui::Event::PointerMoved(pos),
+                egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ]);
+        }
+        assert!(changelog_is_open(&ctx));
+        assert!(app.panel.is_none());
+    }
+
+    #[test]
+    fn release_notes_initial_view_opens_the_154_patch() {
+        let ctx = egui::Context::default();
+        theme::configure(&ctx);
+        ctx.data_mut(|data| data.insert_temp(egui::Id::new("release-notes-open"), true));
+        let mut app = EditorApp::empty();
+        let mut found = false;
+        for _ in 0..3 {
+            let output = ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1440., 900.),
+                    )),
+                    ..Default::default()
+                },
+                |ctx| app.changelog_dialog(ctx),
+            );
+            found |= output.shapes.iter().any(|shape| {
+                matches!(&shape.shape, egui::Shape::Text(text) if text.galley.text() == "Patch 1.5.4")
+            });
+        }
+        assert!(found, "the preview patch is visible in the initial window");
+    }
+
     #[derive(Default)]
     struct ImageRequests(std::sync::Mutex<Vec<String>>);
     impl egui::load::BytesLoader for ImageRequests {
@@ -341,7 +893,8 @@ mod tests {
     #[test]
     fn original_release_entries_preserve_versions_text_and_bundled_images() {
         let entries = changelog_entries();
-        assert_eq!(entries[0].version, "1.5.3");
+        assert_eq!(entries[0].version, "1.5.4");
+        assert_eq!(entries[1].version, "1.5.3");
         let major = entries.iter().find(|e| e.version == "1.5.0").unwrap();
         assert_eq!(major.title, "New LDtk logo");
         let markdown = changelog_markdown(major);

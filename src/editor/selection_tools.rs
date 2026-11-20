@@ -50,6 +50,14 @@ impl EditorApp {
             })
     }
     pub(super) fn selection_world_delta(&self, start: [f32; 2], end: [f32; 2]) -> [f64; 2] {
+        if !self.grid
+            && self
+                .selection_group
+                .as_ref()
+                .is_some_and(ldtk_core::selection_group_is_entity_only)
+        {
+            return std::array::from_fn(|axis| f64::from((end[axis] - start[axis]).trunc()));
+        }
         let Some((key, index, grid, scale)) = self.selection_smart_layer() else {
             return [0.0; 2];
         };
@@ -61,6 +69,14 @@ impl EditorApp {
         })
     }
     pub(super) fn selection_arrow_origin(&self, point: [f32; 2]) -> [f32; 2] {
+        if !self.grid
+            && self
+                .selection_group
+                .as_ref()
+                .is_some_and(ldtk_core::selection_group_is_entity_only)
+        {
+            return point;
+        }
         let Some((key, index, grid, _)) = self.selection_smart_layer() else {
             return point;
         };
@@ -501,6 +517,71 @@ impl EditorApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn preview_154_entity_only_selection_moves_freely_when_grid_is_hidden() {
+        let mut p = Project::new();
+        p.add_layer("Actors12", "Entities", 12).unwrap();
+        p.add_layer("Actors16", "Entities", 16).unwrap();
+        let def = p.add_entity_def("Actor", 16, 16).unwrap();
+        let key = p.level_keys()[0];
+        p.add_entity(key, 0, def, 32, 32).unwrap();
+        p.add_entity(key, 1, def, 32, 32).unwrap();
+        let mut app = EditorApp::empty();
+        app.set_project(p);
+        app.grid = false;
+        app.capture_selection([0, 0, 6, 6]);
+        assert_eq!(app.selection_group.as_ref().unwrap()["elementCount"], 2);
+        assert_eq!(app.selection_world_delta([32., 32.], [51., 35.]), [19., 3.]);
+        app.gesture = Some(tools::Gesture::SelectionMove {
+            region: [0, 0, 6, 6],
+            start: [0, 0],
+            end: [0, 0],
+            copy: false,
+            world_start: [32., 32.],
+            world_end: [51., 35.],
+            moved: true,
+        });
+        app.finish_gesture();
+        for layer in 0..2 {
+            assert_eq!(
+                app.project.as_ref().unwrap().layer(key, layer).unwrap()["entityInstances"][0]["px"],
+                json!([51, 35])
+            );
+        }
+        app.undo_action(false);
+        for layer in 0..2 {
+            assert_eq!(
+                app.project.as_ref().unwrap().layer(key, layer).unwrap()["entityInstances"][0]["px"],
+                json!([32, 32])
+            );
+        }
+    }
+
+    #[test]
+    fn preview_154_mixed_entity_and_grid_selection_still_snaps_when_grid_is_hidden() {
+        let mut p = Project::new();
+        let grid = p.add_layer("Ground", "IntGrid", 16).unwrap();
+        p.add_layer("Actors", "Entities", 16).unwrap();
+        let def = p.add_entity_def("Actor", 16, 16).unwrap();
+        let key = p.level_keys()[0];
+        p.add_entity(key, 0, def, 32, 32).unwrap();
+        let grid_index = p.level(key).unwrap()["layerInstances"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .position(|l| l["layerDefUid"] == grid)
+            .unwrap();
+        p.paint_int_grid(key, grid_index, 2, 2, 1).unwrap();
+        let mut app = EditorApp::empty();
+        app.set_project(p);
+        app.grid = false;
+        app.capture_selection([0, 0, 6, 6]);
+        assert!(!ldtk_core::selection_group_is_entity_only(
+            app.selection_group.as_ref().unwrap()
+        ));
+        assert_eq!(app.selection_world_delta([32., 32.], [51., 35.]), [16., 0.]);
+    }
+
     #[test]
     fn empty_larger_grid_layer_never_changes_selection_movement_grid() {
         let mut p = Project::new();

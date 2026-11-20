@@ -88,12 +88,12 @@ fn layer_hit(project: &Project, layer: &Value, local: [f32; 2], cell: [i32; 2]) 
         }
         "Entities" => {
             let mut hit = None;
-            for (index, entity) in layer["entityInstances"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .enumerate()
-            {
+            let def = layer["layerDefUid"]
+                .as_i64()
+                .and_then(|uid| project.layer_def(uid))
+                .unwrap_or(&Value::Null);
+            for index in canvas::entity_display_order(layer, def) {
+                let entity = &layer["entityInstances"][index];
                 if entity_is_over(project, entity, local) {
                     hit = Some(Element::Entity(index));
                 } else {
@@ -674,5 +674,32 @@ mod tests {
         assert!(!entity_is_over(&p, entity, [32., 32.]));
         assert!(!entity_is_over(&p, entity, [0., 0.]));
         assert!(entity_is_over(&p, entity, [-2., 32.]));
+    }
+}
+
+#[cfg(test)]
+mod preview_154_sort_tests {
+    use super::*;
+    #[test]
+    fn entity_depth_order_drives_render_order_and_hit_testing() {
+        let mut p = Project::new();
+        let layer_uid = p.add_layer("Actors", "Entities", 16).unwrap();
+        let actor = p.add_entity_def("Actor", 64, 64).unwrap();
+        p.update_entity_definition(actor, &json!({"pivotX":0.,"pivotY":0.}))
+            .unwrap();
+        let key = p.level_keys()[0];
+        p.add_entity(key, 0, actor, 0, 16).unwrap();
+        p.add_entity(key, 0, actor, 0, 0).unwrap();
+        for (sort, expected) in [("Manual", 1), ("YAscending", 0), ("YDescending", 1)] {
+            p.update_layer_properties(layer_uid, &json!({"entityDepthSorting":sort}))
+                .unwrap();
+            let layer = p.layer(key, 0).unwrap();
+            let order = canvas::entity_display_order(layer, p.layer_def(layer_uid).unwrap());
+            assert_eq!(order.last().copied(), Some(expected));
+            assert_eq!(hit_entity(&p, layer, [32., 32.]).unwrap().0, expected);
+            assert!(
+                matches!(layer_hit(&p, layer, [32., 32.], [2, 2]), Some(Element::Entity(i)) if i == expected)
+            );
+        }
     }
 }

@@ -120,6 +120,22 @@ fn validate_dependencies(p: &Project, value: &Value) -> Result<()> {
     match value {
         Value::Object(map) => {
             for (key, value) in map {
+                if key == "layerUidsPreventingAutoTilingHere" {
+                    let blockers = value
+                        .as_array()
+                        .ok_or_else(|| invalid("invalid clipboard blocker layers"))?;
+                    for blocker in blockers {
+                        let uid = blocker
+                            .as_i64()
+                            .ok_or_else(|| invalid("invalid clipboard blocker UID"))?;
+                        let layer = definition(p, "layers", uid)?;
+                        if !matches!(layer["type"].as_str(), Some("Tiles" | "IntGrid")) {
+                            return Err(invalid(
+                                "clipboard blocker must be a Tiles or IntGrid layer",
+                            ));
+                        }
+                    }
+                }
                 let group = match key.as_str() {
                     "tilesetDefUid" | "tilesetId" | "tilesetUid" | "iconTilesetUid" => {
                         Some("tilesets")
@@ -510,28 +526,70 @@ impl Project {
         data: &ClipboardData,
         after: Option<i64>,
     ) -> Result<i64> {
+        if data.kind == ClipboardKind::RuleGroup {
+            return self.paste_auto_rule_group(layer, data, after);
+        }
         self.edit_document(|p| {
             validate_dependencies(p, &data.value)?;
-            match data.kind {
-                ClipboardKind::Rule => {
-                    let uid=alloc_uid(p)?;
-                    let copy=clipboard_rule(uid,&data.value)?;
-                    let groups=groups_mut(p,layer)?;
-                    let rules=groups.iter_mut().find(|g|g["uid"]==group).ok_or_else(||invalid("rule group missing"))?["rules"].as_array_mut().ok_or_else(||invalid("rule list missing"))?;
-                    rules.push(copy);move_after(rules,uid,after)?;
-                    p.refresh_auto_and_derived()?;Ok(uid)
-                }
-                ClipboardKind::RuleGroup => {
-                    let name=data.value["name"].as_str().filter(|s|!s.trim().is_empty()).ok_or_else(||invalid("clipboard group name missing"))?;
-                    let uid=alloc_uid(p)?;let mut generated=Vec::new();
-                    for rule in data.value["rules"].as_array().ok_or_else(||invalid("clipboard group rules missing"))?{let rule_uid=alloc_uid(p)?;generated.push(clipboard_rule(rule_uid,rule)?);}
-                    let mut copy=json!({"uid":uid,"name":name,"color":null,"icon":null,"active":true,"isOptional":false,"usesWizard":false,"requiredBiomeValues":[],"biomeRequirementMode":0,"rules":[]});
-                    copy.as_object_mut().expect("object").extend(data.value.as_object().ok_or_else(||invalid("clipboard group must be an object"))?.clone());copy["uid"]=json!(uid);copy["rules"]=json!(generated);
-                    let groups=groups_mut(p,layer)?;groups.push(copy);move_after(groups,uid,after)?;
-                    p.refresh_auto_and_derived()?;Ok(uid)
-                }
-                _ => Err(invalid("clipboard does not contain a rule or group")),
+            if data.kind != ClipboardKind::Rule {
+                return Err(invalid("clipboard does not contain a rule or group"));
             }
+            let uid = alloc_uid(p)?;
+            let copy = clipboard_rule(uid, &data.value)?;
+            let rules = groups_mut(p, layer)?
+                .iter_mut()
+                .find(|g| g["uid"] == group)
+                .ok_or_else(|| invalid("rule group missing"))?["rules"]
+                .as_array_mut()
+                .ok_or_else(|| invalid("rule list missing"))?;
+            rules.push(copy);
+            move_after(rules, uid, after)?;
+            p.refresh_auto_and_derived()?;
+            Ok(uid)
+        })
+    }
+
+    pub fn paste_auto_rule_group(
+        &mut self,
+        layer: i64,
+        data: &ClipboardData,
+        after: Option<i64>,
+    ) -> Result<i64> {
+        if data.kind != ClipboardKind::RuleGroup {
+            return Err(invalid("clipboard does not contain a rule group"));
+        }
+        self.edit_document(|p| {
+            validate_dependencies(p, &data.value)?;
+            let name = data.value["name"]
+                .as_str()
+                .filter(|s| !s.trim().is_empty())
+                .ok_or_else(|| invalid("clipboard group name missing"))?;
+            let uid = alloc_uid(p)?;
+            let mut generated = Vec::new();
+            for rule in data.value["rules"]
+                .as_array()
+                .ok_or_else(|| invalid("clipboard group rules missing"))?
+            {
+                generated.push(clipboard_rule(alloc_uid(p)?, rule)?);
+            }
+            let mut copy = json!({
+                "uid": uid, "name": name, "color": null, "icon": null, "active": true,
+                "isOptional": false, "usesWizard": false, "requiredBiomeValues": [],
+                "biomeRequirementMode": 0, "rules": []
+            });
+            copy.as_object_mut().expect("object").extend(
+                data.value
+                    .as_object()
+                    .ok_or_else(|| invalid("clipboard group must be an object"))?
+                    .clone(),
+            );
+            copy["uid"] = json!(uid);
+            copy["rules"] = json!(generated);
+            let groups = groups_mut(p, layer)?;
+            groups.push(copy);
+            move_after(groups, uid, after)?;
+            p.refresh_auto_and_derived()?;
+            Ok(uid)
         })
     }
 }

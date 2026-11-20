@@ -120,8 +120,8 @@ impl EditorApp {
                     ui.vertical_centered(|ui| {
                         ui.add_space((ui.available_height() * 0.4).max(20.));
                         ui.spinner();
-                        ui.heading("Installing update…");
-                        ui.label("LDtk will restart when installation is ready.");
+                        ui.heading(locale::tr(ui, "Installing update…"));
+                        ui.label(locale::tr(ui, "LDtk will restart when installation is ready."));
                     });
                 });
             if matches!(snapshot, State::Restarting) {
@@ -141,9 +141,10 @@ impl EditorApp {
                 done,
                 total,
             } => Some((
-                format!(
-                    "Downloading update: {}%",
-                    if *total == 0 { 0 } else { done * 100 / total }
+                locale::format_ctx(
+                    ctx,
+                    "Downloading update: {percent}%",
+                    &[("percent", &(if *total == 0 { 0 } else { done * 100 / total }).to_string())],
                 ),
                 Some(version.clone()),
             )),
@@ -162,8 +163,9 @@ impl EditorApp {
                 .order(egui::Order::Foreground)
                 .show(ctx, |ui| {
                     ui.horizontal(|ui| {
-                        let title = version.as_ref().map_or(label.clone(), |version| {
-                            format!("{label}\nVersion {version}")
+                        let label = locale::tr(ui, &label);
+                        let title = version.as_ref().map_or_else(|| label.to_owned(), |version| {
+                            locale::format(ui, "{label}\nVersion {version}", &[("label", label), ("version", version)])
                         });
                         if super::panels::source_controls::button(ui, title).clicked() {
                             match snapshot {
@@ -188,29 +190,29 @@ impl EditorApp {
             let mut close = false;
             let modal=egui::Modal::new(id().with("dialog")).show(ctx,|ui| {
                 ui.set_width(460.);ui.set_max_width(460.);
-                ui.heading("LevelEditor updates");
-                ui.label(format!("Installed version {}",env!("CARGO_PKG_VERSION")));
+                ui.heading(locale::tr(ui, "LevelEditor updates"));
+                ui.label(locale::format(ui, "Installed version {version}", &[("version", env!("CARGO_PKG_VERSION"))]));
                 match &snapshot {
-                    State::Idle=>{ui.label("Check for a published LevelEditor release.");},
-                    State::Checking=>{ui.horizontal(|ui|{ui.spinner();ui.label("Looking for update…");});if super::panels::source_controls::button(ui,"Cancel check").clicked(){dialog.updater.cancel();}},
-                    State::Current(version)=>{ui.label(format!("App is up-to-date ({version})."));},
+                    State::Idle=>{ui.label(locale::tr(ui, "Check for a published LevelEditor release."));},
+                    State::Checking=>{ui.horizontal(|ui|{ui.spinner();ui.label(locale::tr(ui, "Looking for update…"));});if super::panels::source_controls::button(ui,"Cancel check").clicked(){dialog.updater.cancel();}},
+                    State::Current(version)=>{ui.label(locale::format(ui, "App is up-to-date ({version}).", &[("version", version)]));},
                     State::Available(release)=>{
-                        ui.label(format!("Update {} is available.",release.version));
+                        ui.label(locale::format(ui, "Update {version} is available.", &[("version", &release.version)]));
                         if !release.notes.is_empty() {egui::ScrollArea::vertical().max_height(180.).show(ui,|ui|{ui.label(&release.notes);});}
-                        ui.hyperlink_to("Release notes",&release.page);
+                        ui.hyperlink_to(locale::tr(ui, "Release notes"),&release.page);
                         if super::panels::source_controls::button(ui,"Download update").clicked() {download(&mut dialog,ctx);}
                     },
                     State::Downloading{version,done,total}=>{
-                        ui.label(format!("Downloading update {version}…"));
+                        ui.label(locale::format(ui, "Downloading update {version}…", &[("version", version)]));
                         ui.add(egui::ProgressBar::new(if *total==0 {0.}else{*done as f32/ *total as f32}).show_percentage());
                         ui.label(format!("{:.1} / {:.1} MiB",*done as f64/1_048_576.,*total as f64/1_048_576.));
                         if super::panels::source_controls::button(ui,"Cancel download").clicked() {dialog.updater.cancel();}
                     },
                     State::Ready(prepared)=>{
-                        ui.label(format!("Update {} downloaded and SHA-256 verified.",prepared.version));
+                        ui.label(locale::format(ui, "Update {version} downloaded and SHA-256 verified.", &[("version", &prepared.version)]));
                         if super::panels::source_controls::button(ui,"Install update and restart").clicked() {install=true;}
                     },
-                    State::Cancelled=>{ui.label("Update cancelled. Nothing was installed.");},
+                    State::Cancelled=>{ui.label(locale::tr(ui, "Update cancelled. Nothing was installed."));},
                     State::Failed(error)=>{ui.colored_label(Color32::LIGHT_RED,error);},
                     State::Installing|State::Restarting=>{},
                 }
@@ -219,11 +221,11 @@ impl EditorApp {
                 if super::panels::source_controls::checkbox(ui,&mut automatic,"Automatically download updates").changed() {
                     self.settings.value["autoInstallUpdates"]=serde_json::json!(automatic);let _=self.settings.save();
                 }
-                ui.label("This repository is private. A token needs Contents: read access. It is used only for this session and is never saved in settings.");
-                ui.add(egui::TextEdit::singleline(&mut dialog.token).id(id().with("session-token")).password(true).hint_text("Session token, or GH_TOKEN / GITHUB_TOKEN"));
+                ui.label(locale::tr(ui, "This repository is private. A token needs Contents: read access. It is used only for this session and is never saved in settings."));
+                ui.add(egui::TextEdit::singleline(&mut dialog.token).id(id().with("session-token")).password(true).hint_text(locale::tr(ui, "Session token, or GH_TOKEN / GITHUB_TOKEN")));
                 ui.horizontal(|ui| {
                     ui.add_enabled_ui(!dialog.updater.busy(),|ui|{if super::panels::source_controls::button(ui,"Check for updates").clicked(){check(&mut dialog,ctx);}});
-                    ui.hyperlink_to("Open Releases",updater::RELEASES_URL);
+                    ui.hyperlink_to(locale::tr(ui, "Open Releases"),updater::RELEASES_URL);
                     close=super::panels::source_controls::button(ui,"Close").clicked();
                 });
             });
@@ -283,7 +285,7 @@ mod tests {
                 },
                 |ctx| {
                     app.shortcuts(ctx);
-                    app.dialogs(ctx);
+                    app.dialogs(ctx, false);
                     app.update_dialog(ctx);
                 },
             );
@@ -306,7 +308,7 @@ mod tests {
         };
         app.ui_commit_raw_input(ctx, &mut input);
         ctx.run(input, |ctx| {
-            app.dialogs(ctx);
+            app.dialogs(ctx, false);
             app.update_dialog(ctx);
             app.flush_ui_action(ctx);
         })

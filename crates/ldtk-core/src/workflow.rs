@@ -1,4 +1,5 @@
 //! Transactional document workflows. Unknown JSON members remain authoritative.
+use crate::grid_presence::{GridPresence, update_presence};
 use crate::{Error, LevelKey, Project, Result};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
@@ -150,6 +151,11 @@ pub(crate) fn remap_refs(level: &mut Value, remaps: &BTreeMap<String, Value>, cl
     });
 }
 impl Project {
+    pub fn cleanup_tag(input: &str) -> Option<String> {
+        let tag = crate::naming::cleanup(input, "Free");
+        (!tag.is_empty() && tag != "_").then_some(tag)
+    }
+
     pub fn edit_document<T>(&mut self, edit: impl FnOnce(&mut Self) -> Result<T>) -> Result<T> {
         let mut candidate = self.clone();
         let result = edit(&mut candidate)?;
@@ -168,6 +174,47 @@ impl Project {
         let mut name="World_0".to_owned();let mut suffix=1;while worlds.iter().any(|w|w["identifier"]==name){name=format!("World_{suffix}");suffix+=1;}world["identifier"]=json!(name);worlds.insert(0,world);
         let flags=p.json["flags"].as_array_mut().ok_or_else(||invalid("flags must be an array"))?;flags.push(json!("MultiWorlds"));p.refresh_derived_data()?;Ok(true)
     })
+    }
+    /// Move the only world back to the root, keeping its IID for references.
+    pub fn disable_multiworlds(&mut self) -> Result<bool> {
+        self.edit_document(|p| {
+            let flags = p.json["flags"]
+                .as_array_mut()
+                .ok_or_else(|| invalid("flags must be an array"))?;
+            if !flags.iter().any(|flag| flag == "MultiWorlds") {
+                return Ok(false);
+            }
+            flags.retain(|flag| flag != "MultiWorlds");
+            if p.json["levels"]
+                .as_array()
+                .is_some_and(|levels| !levels.is_empty())
+            {
+                return Err(invalid("project already contains levels at the root"));
+            }
+            let worlds = p.json["worlds"]
+                .as_array_mut()
+                .ok_or_else(|| invalid("worlds must be an array"))?;
+            if worlds.len() != 1 {
+                return Err(invalid(
+                    "exactly one world is required to disable MultiWorlds",
+                ));
+            }
+            let mut world = worlds.pop().expect("one remaining world");
+            if world["iid"].is_string() {
+                p.json["dummyWorldIid"] = std::mem::take(&mut world["iid"]);
+            }
+            for field in [
+                "levels",
+                "worldLayout",
+                "worldGridWidth",
+                "worldGridHeight",
+                "defaultLevelWidth",
+                "defaultLevelHeight",
+            ] {
+                p.json[field] = std::mem::take(&mut world[field]);
+            }
+            Ok(true)
+        })
     }
     pub fn add_world(&mut self, name: &str) -> Result<usize> {
         self.edit_document(|p|{
@@ -208,6 +255,7 @@ impl Project {
  unique_level(p,name)?;if width<=0||height<=0{return Err(invalid("level dimensions must be positive"));}container(p,world)?;let uid=alloc_uid(p)?;
  let mut level:Value=serde_json::from_str::<Value>(include_str!("empty.ldtk")).expect("template")["levels"][0].clone();level["identifier"]=json!(name);level["useAutoIdentifier"]=json!(false);level["iid"]=iid();level["uid"]=json!(uid);level["pxWid"]=json!(width);level["pxHei"]=json!(height);level["__bgColor"]=p.json["defaultLevelBgColor"].clone();
  let defs=p.json["defs"]["layers"].as_array().cloned().unwrap_or_default();let mut layers=vec![];for d in defs{let g=d["gridSize"].as_i64().filter(|v|*v>0).ok_or_else(||invalid("invalid layer grid"))?;let cw=(i64::from(width)+g-1)/g;let ch=(i64::from(height)+g-1)/g;let count=cw.checked_mul(ch).filter(|n|*n<=16_777_216).ok_or_else(||invalid("level IntGrid allocation too large"))?;let ts=p.tileset(d["tilesetDefUid"].as_i64().unwrap_or(-1));layers.push(json!({"__identifier":d["identifier"],"__type":d["type"],"__gridSize":g,"__cWid":cw,"__cHei":ch,"__opacity":d["displayOpacity"],"__pxTotalOffsetX":d["pxOffsetX"].as_i64().unwrap_or(0),"__pxTotalOffsetY":d["pxOffsetY"].as_i64().unwrap_or(0),"__tilesetDefUid":d["tilesetDefUid"],"__tilesetRelPath":ts.map(|v|v["relPath"].clone()),"iid":iid(),"levelId":uid,"layerDefUid":d["uid"],"pxOffsetX":0,"pxOffsetY":0,"visible":true,"optionalRules":[],"intGridCsv":if d["type"]=="IntGrid"{vec![json!(0);count as usize]}else{vec![]},"autoLayerTiles":[],"seed":0,"overrideTilesetUid":null,"gridTiles":[],"entityInstances":[]}));}
+ for layer in &layers { if layer["__type"] == "IntGrid" { let iid = layer["iid"].as_str().expect("new layer IID"); p.grid_presence.insert(iid.into(), GridPresence::empty()); } }
  level["layerInstances"]=json!(layers);let fields=p.json["defs"]["levelFields"].as_array().cloned().unwrap_or_default();level["fieldInstances"]=json!(fields.iter().map(|d|p.make_field_instance(d)).collect::<Result<Vec<_>>>()?);
  let levels=levels_mut(p,world)?;let key=LevelKey{world,level:levels.len()};levels.push(level);p.refresh_auto_and_derived()?;Ok(key)
  })
@@ -255,7 +303,16 @@ impl Project {
     }
     pub fn remove_level(&mut self, key: LevelKey) -> Result<()> {
         self.edit_document(|p| {
-            let _ = p.level(key).ok_or_else(|| invalid("level not loaded"))?;
+            let level = p.level(key).ok_or_else(|| invalid("level not loaded"))?;
+            let layer_iids: Vec<_> = level["layerInstances"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|layer| layer["iid"].as_str().map(str::to_owned))
+                .collect();
+            for iid in layer_iids {
+                p.grid_presence.remove(&iid);
+            }
             let level = levels_mut(p, key.world)?.remove(key.level);
             if let Some(path) = level["externalRelPath"].as_str() {
                 p.external_levels.remove(path);
@@ -291,6 +348,7 @@ impl Project {
                 .as_array()
                 .cloned()
                 .unwrap_or_default();
+            let mut grid_presence = std::mem::take(&mut p.grid_presence);
             let level = p
                 .level_mut(key)
                 .ok_or_else(|| invalid("level not loaded"))?;
@@ -319,15 +377,30 @@ impl Project {
                         let old = layer["intGridCsv"]
                             .as_array()
                             .ok_or_else(|| invalid("IntGrid missing"))?;
+                        let layer_iid = layer["iid"].as_str();
+                        let old_presence = layer_iid.and_then(|iid| grid_presence.get(iid));
+                        let remapped =
+                            ow != nw || old.len() != count as usize || cell_dx != 0 || cell_dy != 0;
+                        let mut new_presence = GridPresence::empty();
                         let mut cells = vec![json!(0); count as usize];
                         if ow > 0 {
                             for (i, v) in old.iter().enumerate() {
                                 let x = i as i64 % ow + cell_dx;
                                 let y = i as i64 / ow + cell_dy;
                                 if x >= 0 && y >= 0 && x < nw && y < nh {
-                                    cells[(y * nw + x) as usize] = v.clone();
+                                    let index = (y * nw + x) as usize;
+                                    cells[index] = v.clone();
+                                    if remapped
+                                        && *v == 0
+                                        && old_presence.is_none_or(|state| state.contains(i))
+                                    {
+                                        new_presence.set(index, true);
+                                    }
                                 }
                             }
+                        }
+                        if remapped && let Some(iid) = layer_iid {
+                            grid_presence.insert(iid.into(), new_presence);
                         }
                         layer["intGridCsv"] = json!(cells);
                     }
@@ -367,6 +440,7 @@ impl Project {
                     layer["pxOffsetY"] = json!(remainder_y);
                 }
             }
+            p.grid_presence = grid_presence;
             p.refresh_auto_and_derived()
         })
     }
@@ -509,6 +583,46 @@ impl Project {
             {
                 return Err(invalid("UID, type and grid size need explicit conversion"));
             }
+            let target = p
+                .layer_def(uid)
+                .ok_or_else(|| invalid("layer definition not found"))?;
+            let new_source_grid = if target["type"] == "AutoLayer"
+                && let Some(source) = fields.get("autoSourceLayerDefUid").filter(|v| !v.is_null())
+            {
+                let source = source
+                    .as_i64()
+                    .and_then(|id| p.layer_def(id))
+                    .filter(|layer| layer["type"] == "IntGrid")
+                    .ok_or_else(|| invalid("auto-layer source must be an IntGrid layer"))?;
+                let grid = source["gridSize"]
+                    .as_i64()
+                    .and_then(|n| i32::try_from(n).ok())
+                    .filter(|n| *n > 0)
+                    .ok_or_else(|| invalid("invalid source grid size"))?;
+                (target["gridSize"] != grid).then_some(grid)
+            } else {
+                None
+            };
+            if let Some(blockers) = fields.get("layerUidsPreventingAutoTilingHere") {
+                let blockers = blockers
+                    .as_array()
+                    .ok_or_else(|| invalid("blocker layers must be an array"))?;
+                let mut seen = std::collections::BTreeSet::new();
+                for blocker in blockers {
+                    let blocker = blocker
+                        .as_i64()
+                        .ok_or_else(|| invalid("invalid blocker layer UID"))?;
+                    let target = p
+                        .layer_def(blocker)
+                        .ok_or_else(|| invalid("blocker layer not found"))?;
+                    if blocker == uid
+                        || !seen.insert(blocker)
+                        || !matches!(target["type"].as_str(), Some("Tiles" | "IntGrid"))
+                    {
+                        return Err(invalid("invalid blocker layer"));
+                    }
+                }
+            }
             if let Some(name) = patch["identifier"].as_str() {
                 p.rename_definition("layers", uid, name)?;
             }
@@ -522,10 +636,13 @@ impl Project {
             for (k, v) in fields {
                 d[k] = v.clone();
             }
-            if d["type"] == "IntGrid"
+            let palette_edit = d["type"] == "IntGrid"
                 && (fields.contains_key("intGridValues")
-                    || fields.contains_key("intGridValuesGroups"))
-            {
+                    || fields.contains_key("intGridValuesGroups"));
+            let palette_only = palette_edit && fields.keys()
+                .all(|k| matches!(k.as_str(), "intGridValues" | "intGridValuesGroups"));
+            let mut palette_invalidated = Vec::new();
+            if palette_edit {
                 let mut group_ids = std::collections::BTreeSet::from([0]);
                 for group in d["intGridValuesGroups"]
                     .as_array()
@@ -555,25 +672,45 @@ impl Project {
                         value["groupUid"] = json!(0);
                     }
                 }
+                let mut grid_presence = std::mem::take(&mut p.grid_presence);
                 for key in p.level_keys() {
+                    let mut removed = false;
                     let layers = p
                         .level_mut(key)
                         .and_then(|l| l["layerInstances"].as_array_mut())
                         .ok_or_else(|| invalid("level layers not loaded"))?;
                     for layer in layers {
+                        let iid = layer["iid"].as_str().map(str::to_owned);
                         if layer["layerDefUid"] == uid
                             && let Some(csv) = layer["intGridCsv"].as_array_mut()
                         {
-                            for value in csv {
-                                if value.as_i64().is_none_or(|id| !palette.contains(&id)) {
-                                    *value = json!(0);
+                            update_presence(&mut grid_presence, iid.as_deref(), |presence| {
+                                for (index, value) in csv.iter_mut().enumerate() {
+                                    if value.as_i64().is_none_or(|id| !palette.contains(&id)) {
+                                        presence.write(index, value, json!(0));
+                                        removed = true;
+                                    }
                                 }
-                            }
+                            });
                         }
                     }
+                    if removed && palette_only {
+                        palette_invalidated.push(key);
+                    }
                 }
+                p.grid_presence = grid_presence;
             }
-            p.refresh_auto_and_derived()
+            if let Some(grid) = new_source_grid {
+                p.change_layer_grid_size(uid, grid)
+            } else if palette_only {
+                // Removing a painted value invalidates the layer that lost its cells.
+                for key in palette_invalidated {
+                    p.rebuild_auto_layer(key, uid)?;
+                }
+                p.refresh_derived_data()
+            } else {
+                p.refresh_auto_and_derived()
+            }
         })
     }
     pub fn remove_definition(&mut self, kind: &str, uid: i64) -> Result<()> {
@@ -600,13 +737,22 @@ impl Project {
                     }
                 }
             }
+            let mut grid_presence = std::mem::take(&mut p.grid_presence);
             for key in p.level_keys() {
                 let level = p
                     .level_mut(key)
                     .ok_or_else(|| invalid("level not loaded"))?;
                 if let Some(layers) = level["layerInstances"].as_array_mut() {
                     if kind == "layers" {
-                        layers.retain(|l| l["layerDefUid"] != uid);
+                        layers.retain(|layer| {
+                            if layer["layerDefUid"] != uid {
+                                return true;
+                            }
+                            if let Some(iid) = layer["iid"].as_str() {
+                                grid_presence.remove(iid);
+                            }
+                            false
+                        });
                     }
                     for layer in layers {
                         if kind == "entities"
@@ -624,10 +770,14 @@ impl Project {
                     }
                 }
             }
+            p.grid_presence = grid_presence;
             if kind == "layers"
                 && let Some(defs) = p.json["defs"]["layers"].as_array_mut()
             {
                 for d in defs {
+                    if let Some(blockers) = d["layerUidsPreventingAutoTilingHere"].as_array_mut() {
+                        blockers.retain(|blocker| blocker.as_i64() != Some(uid));
+                    }
                     for k in ["autoSourceLayerDefUid", "autoTilesKilledByOtherLayerUid"] {
                         if d[k] == uid {
                             d[k] = Value::Null;
@@ -647,6 +797,89 @@ impl Project {
             p.refresh_auto_and_derived()
         })
     }
+    pub(crate) fn refresh_table_of_contents(&mut self) -> Result<()> {
+        let keys = self.level_keys();
+        let old_toc = self.json["toc"].as_array();
+        let old_export = self.json["flags"].as_array().is_some_and(|flags| {
+            flags
+                .iter()
+                .any(|flag| flag == "ExportOldTableOfContentData")
+        });
+        let mut toc = Vec::new();
+        for def in self.json["defs"]["entities"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|def| def["exportToToc"] == true)
+        {
+            let mut entry = old_toc
+                .into_iter()
+                .flatten()
+                .find(|entry| entry["identifier"] == def["identifier"])
+                .cloned()
+                .unwrap_or_else(|| json!({}));
+            entry["identifier"] = def["identifier"].clone();
+            let mut instances = Vec::new();
+            let mut data = Vec::new();
+            for &key in &keys {
+                let level = self
+                    .level(key)
+                    .ok_or_else(|| invalid("all external levels must be loaded"))?;
+                let world_iid = if key.world.is_some() {
+                    &container(self, key.world)?["iid"]
+                } else {
+                    &self.json["dummyWorldIid"]
+                };
+                for layer in level["layerInstances"].as_array().into_iter().flatten() {
+                    for entity in layer["entityInstances"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .filter(|entity| entity["defUid"] == def["uid"])
+                    {
+                        let iids = json!({
+                            "entityIid": entity["iid"],
+                            "layerIid": layer["iid"],
+                            "levelIid": level["iid"],
+                            "worldIid": world_iid,
+                        });
+                        if old_export {
+                            instances.push(iids.clone());
+                        }
+                        let mut fields = serde_json::Map::new();
+                        for field in entity["fieldInstances"].as_array().into_iter().flatten() {
+                            if def["fieldDefs"].as_array().is_some_and(|defs| {
+                                defs.iter().any(|field_def| {
+                                    field_def["uid"] == field["defUid"]
+                                        && field_def["exportToToc"] == true
+                                })
+                            }) && let Some(name) = field["__identifier"].as_str()
+                            {
+                                fields.insert(name.to_owned(), field["__value"].clone());
+                            }
+                        }
+                        let (world_x, world_y) = effective_position(self, key)?;
+                        data.push(json!({
+                            "iids": iids,
+                            "worldX": world_x + entity["px"][0].as_i64().unwrap_or(0),
+                            "worldY": world_y + entity["px"][1].as_i64().unwrap_or(0),
+                            "widPx": entity["width"],
+                            "heiPx": entity["height"],
+                            "fields": fields,
+                        }));
+                    }
+                }
+            }
+            entry["instances"] = json!(instances);
+            entry["instancesData"] = json!(data);
+            toc.push(entry);
+        }
+        if !toc.is_empty() || old_toc.is_some() || self.json["jsonVersion"] == "1.5.4" {
+            self.json["toc"] = json!(toc);
+        }
+        Ok(())
+    }
+
     /// Refresh exported values after structural edits, including references in other external documents.
     pub fn refresh_derived_data(&mut self) -> Result<()> {
         self.refresh_level_names()?;
@@ -684,6 +917,10 @@ impl Project {
             .as_str()
             .unwrap_or("Capitalize")
             .to_owned();
+        let default_bg = self.json["defaultLevelBgColor"]
+            .as_str()
+            .or_else(|| self.json["bgColor"].as_str())
+            .map(str::to_owned);
         let mut refs = BTreeMap::new();
         for key in &keys {
             let world = container(self, key.world)?;
@@ -696,6 +933,9 @@ impl Project {
                 .as_str()
                 .is_none_or(|l| l == "Free" || l == "GridVania");
             let level = self.level_mut(*key).expect("validated level");
+            if let Some(bg) = level["bgColor"].as_str().or(default_bg.as_deref()) {
+                level["__bgColor"] = json!(bg);
+            }
             let level_iid = level["iid"].clone();
             let uid = level["uid"].clone();
             let wx = level["worldX"].as_i64().unwrap_or(0);
@@ -775,64 +1015,7 @@ impl Project {
             let level = self.level_mut(*key).expect("validated level");
             visit_fields_mut(level, |f| refresh_refs(f, &refs));
         }
-        let mut toc = vec![];
-        let old_toc = self.json["toc"].as_array().cloned().unwrap_or_default();
-        let old_export = self.json["flags"]
-            .as_array()
-            .is_some_and(|f| f.contains(&json!("ExportOldTableOfContentData")));
-        for d in &entity_defs {
-            if d["exportToToc"] != true {
-                continue;
-            }
-            let mut entry = old_toc
-                .iter()
-                .find(|e| e["identifier"] == d["identifier"])
-                .cloned()
-                .unwrap_or_else(|| json!({}));
-            entry["identifier"] = d["identifier"].clone();
-            let mut data = vec![];
-            let mut instances = vec![];
-            for key in &keys {
-                let level = self.level(*key).expect("validated level");
-                if let Some(layers) = level["layerInstances"].as_array() {
-                    for layer in layers {
-                        if let Some(entities) = layer["entityInstances"].as_array() {
-                            for e in entities {
-                                if e["defUid"] != d["uid"] {
-                                    continue;
-                                }
-                                let iids = refs
-                                    .get(e["iid"].as_str().unwrap_or(""))
-                                    .cloned()
-                                    .unwrap_or(Value::Null);
-                                if old_export {
-                                    instances.push(iids.clone());
-                                }
-                                let mut fields = serde_json::Map::new();
-                                if let Some(values) = e["fieldInstances"].as_array() {
-                                    for f in values {
-                                        if d["fieldDefs"].as_array().is_some_and(|defs| {
-                                            defs.iter().any(|fd| {
-                                                fd["uid"] == f["defUid"]
-                                                    && fd["exportToToc"] == true
-                                            })
-                                        }) && let Some(name) = f["__identifier"].as_str()
-                                        {
-                                            fields.insert(name.to_owned(), f["__value"].clone());
-                                        }
-                                    }
-                                }
-                                data.push(json!({"iids":iids,"worldX":effective_position(self,*key)?.0+e["px"][0].as_i64().unwrap_or(0),"worldY":effective_position(self,*key)?.1+e["px"][1].as_i64().unwrap_or(0),"widPx":e["width"],"heiPx":e["height"],"fields":fields}));
-                            }
-                        }
-                    }
-                }
-            }
-            entry["instances"] = json!(instances);
-            entry["instancesData"] = json!(data);
-            toc.push(entry);
-        }
-        self.json["toc"] = json!(toc);
+        self.refresh_table_of_contents()?;
         for key in &keys {
             let neighbours = level_neighbours(self, *key)?;
             let l = self.level_mut(*key).expect("validated level");
@@ -1017,6 +1200,88 @@ fn level_neighbours(p: &Project, key: LevelKey) -> Result<Vec<Value>> {
     Ok(overlaps)
 }
 impl Project {
+    /// Rename a definition tag using LDtk's Free identifier rules.
+    /// Entity-wide renames also update entity field and layer tag filters.
+    /// Layer renames are scoped to layer UI tags.
+    pub fn rename_definition_tag(
+        &mut self,
+        kind: &str,
+        uid: i64,
+        old: &str,
+        new: &str,
+        everywhere: bool,
+    ) -> Result<()> {
+        fn rename(tags: &mut Value, old: &str, new: &str) {
+            if let Some(tags) = tags.as_array_mut()
+                && tags.iter().any(|v| v == old)
+            {
+                tags.retain(|v| v != old);
+                if !tags.iter().any(|v| v == new) {
+                    tags.push(json!(new));
+                }
+            }
+        }
+        let new = Self::cleanup_tag(new).ok_or_else(|| invalid("invalid tag"))?;
+        let key = match kind {
+            "layers" => "uiFilterTags",
+            "entities" | "tilesets" | "enums" => "tags",
+            _ => return Err(invalid("unsupported tag definition kind")),
+        };
+        self.edit_document(|p| {
+            let defs = p.json["defs"][kind]
+                .as_array_mut()
+                .ok_or_else(|| invalid("definitions missing"))?;
+            if !defs.iter().any(|d| {
+                d["uid"] == uid
+                    && d[key]
+                        .as_array()
+                        .is_some_and(|t| t.iter().any(|v| v == old))
+            }) {
+                return Err(invalid("definition tag not found"));
+            }
+            if old == new {
+                return Ok(());
+            }
+            for def in defs {
+                if (everywhere || def["uid"] == uid)
+                    && let Some(tags) = def.get_mut(key)
+                {
+                    rename(tags, old, &new);
+                }
+                if everywhere && kind == "entities" {
+                    for field in def
+                        .get_mut("fieldDefs")
+                        .and_then(Value::as_array_mut)
+                        .into_iter()
+                        .flatten()
+                    {
+                        if let Some(tags) = field.get_mut("allowedRefTags") {
+                            rename(tags, old, &new);
+                        }
+                    }
+                }
+            }
+            if everywhere && kind == "entities" {
+                for layer in p.json["defs"]["layers"]
+                    .as_array_mut()
+                    .into_iter()
+                    .flatten()
+                {
+                    for key in ["requiredTags", "excludedTags"] {
+                        if let Some(tags) = layer.get_mut(key) {
+                            rename(tags, old, &new);
+                        }
+                    }
+                }
+            }
+            if kind == "layers" {
+                Ok(())
+            } else {
+                p.refresh_derived_data()
+            }
+        })
+    }
+
     pub fn update_entity_definition(&mut self, uid: i64, patch: &Value) -> Result<()> {
         self.edit_document(|p| {
             let old = p
@@ -1238,6 +1503,7 @@ impl Project {
                 .as_array()
                 .cloned()
                 .unwrap_or_default();
+            let mut grid_presence = std::mem::take(&mut p.grid_presence);
             for key in p.level_keys() {
                 let l = p
                     .level_mut(key)
@@ -1277,6 +1543,11 @@ impl Project {
                                     }
                                 }
                                 layer["intGridCsv"] = json!(out);
+                                if old != g
+                                    && let Some(iid) = layer["iid"].as_str()
+                                {
+                                    grid_presence.insert(iid.into(), GridPresence::empty());
+                                }
                             }
                             Some("Tiles") => {
                                 if let Some(tiles) = layer["gridTiles"].as_array_mut() {
@@ -1327,6 +1598,7 @@ impl Project {
                     }
                 }
             }
+            p.grid_presence = grid_presence;
             for d in p.json["defs"]["layers"]
                 .as_array_mut()
                 .expect("found layers")
@@ -1343,10 +1615,20 @@ impl Project {
     }
     /// Explicitly discard incompatible content. Auto-layer tiles can be flattened into Tiles.
     pub fn convert_layer_type(&mut self, uid: i64, kind: &str, allow_loss: bool) -> Result<()> {
-        self.edit_document(|p|{if !["IntGrid","Entities","Tiles","AutoLayer"].contains(&kind){return Err(invalid("unknown layer type"));}let d=p.layer_def(uid).ok_or_else(||invalid("layer definition not found"))?.clone();if d["type"]==kind{return Ok(());}for key in p.level_keys(){let l=p.level_mut(key).ok_or_else(||invalid("level not loaded"))?;if let Some(ls)=l["layerInstances"].as_array_mut(){for layer in ls{if layer["layerDefUid"]!=uid{continue;}let loses_grid=kind!="IntGrid"&&layer["intGridCsv"].as_array().is_some_and(|vs|vs.iter().any(|v|*v!=0));let loses_entities=kind!="Entities"&&layer["entityInstances"].as_array().is_some_and(|vs|!vs.is_empty());let loses_tiles=kind!="Tiles"&&layer["gridTiles"].as_array().is_some_and(|vs|!vs.is_empty());if !allow_loss&&(loses_grid||loses_entities||loses_tiles){return Err(invalid("layer conversion would discard content; explicit allow_loss is required"));}
+        self.edit_document(|p|{if !["IntGrid","Entities","Tiles","AutoLayer"].contains(&kind){return Err(invalid("unknown layer type"));}let d=p.layer_def(uid).ok_or_else(||invalid("layer definition not found"))?.clone();if d["type"]==kind{return Ok(());}
+ let mut grid_presence = std::mem::take(&mut p.grid_presence);
+ for key in p.level_keys(){let l=p.level_mut(key).ok_or_else(||invalid("level not loaded"))?;if let Some(ls)=l["layerInstances"].as_array_mut(){for layer in ls{if layer["layerDefUid"]!=uid{continue;}let loses_grid=kind!="IntGrid"&&layer["intGridCsv"].as_array().is_some_and(|vs|vs.iter().any(|v|*v!=0));let loses_entities=kind!="Entities"&&layer["entityInstances"].as_array().is_some_and(|vs|!vs.is_empty());let loses_tiles=kind!="Tiles"&&layer["gridTiles"].as_array().is_some_and(|vs|!vs.is_empty());if !allow_loss&&(loses_grid||loses_entities||loses_tiles){return Err(invalid("layer conversion would discard content; explicit allow_loss is required"));}
  if kind=="Tiles"&&d["type"]!="Tiles"{let w=layer["__cWid"].as_i64().unwrap_or(1).max(1);let g=layer["__gridSize"].as_i64().unwrap_or(1).max(1);let mut tiles=layer["autoLayerTiles"].as_array().cloned().unwrap_or_default();for t in &mut tiles{let x=t["px"][0].as_i64().unwrap_or(0)/g;let y=t["px"][1].as_i64().unwrap_or(0)/g;t["px"]=json!([x*g,y*g]);t["d"]=json!([y*w+x]);}layer["gridTiles"]=json!(tiles);}else if kind!="Tiles"{layer["gridTiles"]=json!([]);}
 if kind!="Entities"{layer["entityInstances"]=json!([]);}
+if let Some(iid) = layer["iid"].as_str() {
+    if kind == "IntGrid" {
+        grid_presence.insert(iid.into(), GridPresence::empty());
+    } else {
+        grid_presence.remove(iid);
+    }
+}
 if kind=="IntGrid"{let count=layer["__cWid"].as_u64().unwrap_or(0).checked_mul(layer["__cHei"].as_u64().unwrap_or(0)).filter(|n|*n<=16_777_216).ok_or_else(||invalid("IntGrid allocation too large"))?;layer["intGridCsv"]=json!(vec![0;count as usize]);}else{layer["intGridCsv"]=json!([]);}layer["__type"]=json!(kind);layer["autoLayerTiles"]=json!([]);}}}
+ p.grid_presence = grid_presence;
  let def=p.json["defs"]["layers"].as_array_mut().expect("found layers").iter_mut().find(|d|d["uid"]==uid).expect("found definition");def["type"]=json!(kind);def["__type"]=json!(kind);if kind=="Tiles"||kind=="Entities"{def["autoRuleGroups"]=json!([]);def["autoSourceLayerDefUid"]=Value::Null;}
 if kind=="IntGrid"&&def["intGridValues"].as_array().is_none_or(|vs|vs.is_empty()){def["intGridValues"]=json!([{"value":1,"identifier":null,"color":"#000000","tile":null,"groupUid":0}]);}
 if kind!="IntGrid"{for other in p.json["defs"]["layers"].as_array_mut().expect("found layers"){if other["autoSourceLayerDefUid"]==uid{other["autoSourceLayerDefUid"]=Value::Null;other["autoRuleGroups"]=json!([]);}}}p.refresh_derived_data()})
@@ -1484,7 +1766,7 @@ fn canonical_number(n: f64) -> Value {
         json!(n)
     }
 }
-fn effective_position(p: &Project, key: LevelKey) -> Result<(i64, i64)> {
+pub(crate) fn effective_position(p: &Project, key: LevelKey) -> Result<(i64, i64)> {
     let world = container(p, key.world)?;
     let layout = world["worldLayout"].as_str().unwrap_or("Free");
     if layout.starts_with("Linear") {

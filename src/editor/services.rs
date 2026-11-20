@@ -12,6 +12,11 @@ pub(super) struct SavedProject {
     pub report: ldtk_core::SaveReport,
 }
 
+pub(super) enum SaveFailure {
+    Write { path: PathBuf, message: String },
+    MissingTarget(PathBuf),
+}
+
 pub(super) fn prepare_project(
     mut project: Project,
     warnings: Vec<String>,
@@ -74,15 +79,29 @@ impl EditorApp {
     pub(super) fn is_busy(&self) -> bool {
         self.loading.is_some()
             || self.saving.is_some()
+            || self.holding_save_completion()
+            || self.save_failure.is_some()
+            || self.application_write.is_some()
             || self.exporting.is_some()
             || self.hook_flow.is_some()
+            || matches!(self.layer_bake, Some(bake_dialog::LayerBake::Running(_)))
+            || self.rebuilding_auto_layers.is_some()
     }
 
     pub(super) fn poll_services(&mut self, ctx: &egui::Context) {
+        self.poll_layer_bake();
+        self.poll_auto_layer_rebuild();
+        // Keep completed load progress visible for the frame that installs the project.
+        if self.loading.is_none() {
+            self.loading_progress = None;
+        }
         if let Some(result) = self.loading.as_ref().and_then(|rx| rx.try_recv().ok()) {
             self.loading = None;
             match result {
                 Ok(loaded) => {
+                    if self.loading_progress.is_some() {
+                        ctx.request_repaint();
+                    }
                     if let Some(original) = loaded.backup_original {
                         let iid = text(&loaded.project.json, "iid", "").to_owned();
                         ctx.data_mut(|d| {
@@ -99,6 +118,7 @@ impl EditorApp {
                     }
                 }
                 Err(e) => {
+                    self.loading_progress = None;
                     self.status = format!("Open failed: {e}");
                     self.status_error = true;
                 }
@@ -108,7 +128,11 @@ impl EditorApp {
             self.saving = None;
             match result {
                 Ok(saved) => {
+                    for diagnostic in &saved.report.export_diagnostics {
+                        app_log::record(ctx, self.settings.path.as_deref(), diagnostic, true);
+                    }
                     let changed_resources = self.changed_resource_files();
+                    self.discard_unused_images(&saved.project);
                     self.project = Some(saved.project);
                     self.dirty = false;
                     self.file_snapshot = self
@@ -121,6 +145,14 @@ impl EditorApp {
                         format!("Project saved; {}", saved.report.export_errors.join("; "))
                     };
                     self.status_error = !saved.report.export_errors.is_empty();
+                    if let Some(progress) = &self.saving_progress {
+                        progress
+                            .lock()
+                            .unwrap_or_else(|error| error.into_inner())
+                            .finish(Instant::now());
+                    } else {
+                        self.save_attempt = None;
+                    }
                     if !changed_resources.is_empty() {
                         self.changed_resources(ctx, changed_resources);
                     }
@@ -137,13 +169,36 @@ impl EditorApp {
                     self.queue_project_hooks(ctx, "AfterSave", hooks::Continuation::AfterSave);
                 }
                 Err(e) => {
+                    self.saving_progress = None;
                     self.status = format!("Save failed: {e}");
                     self.status_error = true;
+                    if let Some(path) = self.save_attempt.take() {
+                        let folder = path.with_extension("");
+                        let message = match &e {
+                            ldtk_core::Error::Io { path: failed, .. }
+                                if folder != path
+                                    && failed.starts_with(&folder)
+                                    && folder.is_file() =>
+                            {
+                                format!(
+                                    "I need to create a folder named \"{}\", but there is a file with the exact same name there.",
+                                    folder
+                                        .file_name()
+                                        .unwrap_or(folder.as_os_str())
+                                        .to_string_lossy()
+                                )
+                            }
+                            _ => e.to_string(),
+                        };
+                        self.save_failure = Some(SaveFailure::Write { path, message });
+                    }
                 }
             }
         }
+        self.animate_save_progress(ctx, Instant::now());
         if let Some(result) = self.exporting.as_ref().and_then(|rx| rx.try_recv().ok()) {
             self.exporting = None;
+            self.exporting_progress = None;
             match result {
                 Ok(report) => {
                     self.status = format!(
@@ -163,12 +218,16 @@ impl EditorApp {
                 }
             }
         }
-        if self.is_busy() || self.project.is_some() && !self.capture_ready() {
+        if self.save_failure.is_none()
+            && self.application_write.is_none()
+            && (self.is_busy() || self.project.is_some() && !self.capture_ready())
+        {
             ctx.request_repaint_after(std::time::Duration::from_millis(30));
         }
         self.pump_resources(ctx);
         if self.last_file_check.elapsed() > std::time::Duration::from_secs(2)
             && !self.is_busy()
+            && self.pending.is_none()
             && !self.stroke
             && self.gesture.is_none()
             && self.level_resize.is_none()
@@ -184,27 +243,100 @@ impl EditorApp {
         }
     }
 
-    pub(super) fn export_async(&mut self, format: &str, dir: PathBuf) {
-        if self.is_busy() {
+    pub(super) fn start_auto_layer_rebuild(&mut self, ctx: &egui::Context) {
+        if self.is_busy() || !self.settle_deferred_auto_paint() {
             return;
         }
+        self.finish_gesture();
+        self.finish_stroke();
+        let Some(mut project) = self.project.clone() else {
+            return;
+        };
+        let keys = project.level_keys();
+        let progress = Arc::new(Mutex::new(Some((0, keys.len()))));
+        let written = progress.clone();
+        let (tx, rx) = mpsc::channel();
+        let ctx = ctx.clone();
+        self.rebuilding_auto_layers = Some(rx);
+        self.auto_layer_rebuild_progress = Some(progress);
+        self.pending_auto_layer_rebuild = false;
+        self.status = "Updating auto-layers…".into();
+        self.status_error = false;
+        std::thread::spawn(move || {
+            let result = (|| {
+                for (i, &key) in keys.iter().enumerate() {
+                    project.rebuild_auto_layers(key)?;
+                    *written.lock().unwrap_or_else(|e| e.into_inner()) = Some((i + 1, keys.len()));
+                    ctx.request_repaint();
+                }
+                Ok(project)
+            })();
+            let _ = tx.send(result);
+            ctx.request_repaint();
+        });
+    }
+
+    fn poll_auto_layer_rebuild(&mut self) {
+        let Some(job) = &self.rebuilding_auto_layers else {
+            return;
+        };
+        let result = match job.try_recv() {
+            Ok(result) => result,
+            Err(mpsc::TryRecvError::Empty) => return,
+            Err(mpsc::TryRecvError::Disconnected) => Err(ldtk_core::Error::Invalid(
+                "Auto-layer rebuild was interrupted.".into(),
+            )),
+        };
+        self.rebuilding_auto_layers = None;
+        self.auto_layer_rebuild_progress = None;
+        match result {
+            Ok(project) => {
+                self.pending_auto_layer_rebuild = self
+                    .edit("Auto-layers rebuilt", |p| {
+                        *p = project;
+                        Ok(())
+                    })
+                    .is_none();
+            }
+            Err(error) => {
+                self.pending_auto_layer_rebuild = true;
+                self.status = error.to_string();
+                self.status_error = true;
+            }
+        }
+    }
+
+    pub(super) fn export_async(&mut self, format: &str, dir: PathBuf) {
+        if self.is_busy() || !self.settle_deferred_auto_paint() {
+            return;
+        }
+        self.finish_stroke();
         let Some(project) = self.project.clone() else {
             return;
         };
         let format = format.to_owned();
         let (tx, rx) = mpsc::channel();
         self.exporting = Some(rx);
+        let progress = Arc::new(Mutex::new(None));
+        self.exporting_progress = Some(progress.clone());
         self.status = "Exporting…".into();
         let repaint = self.repaint.clone();
         std::thread::spawn(move || {
+            let mut report_progress = |done, total| {
+                *progress.lock().unwrap_or_else(|e| e.into_inner()) =
+                    (total > 0).then_some((done, total));
+                if let Some(ctx) = &repaint {
+                    ctx.request_repaint();
+                }
+            };
             let result = if format == "tmx" {
-                project.export_tiled_with_report(&dir)
+                project.export_tiled_with_report_progress(&dir, &mut report_progress)
             } else {
                 match format.as_str() {
-                    "simple" => project.export_simplified(&dir),
-                    "png" => project.export_png(&dir),
-                    "csv" => project.export_csv(&dir),
-                    _ => project.export_gamemaker(&dir),
+                    "simple" => project.export_simplified_with_progress(&dir, &mut report_progress),
+                    "png" => project.export_png_with_progress(&dir, &mut report_progress),
+                    "csv" => project.export_csv_with_progress(&dir, &mut report_progress),
+                    _ => project.export_gamemaker_with_progress(&dir, &mut report_progress),
                 }
                 .map(|outputs| ldtk_core::exports::ExportReport {
                     outputs,
@@ -248,7 +380,7 @@ impl EditorApp {
     }
 
     pub(super) fn browse_ogmo(&mut self, ctx: &egui::Context) {
-        let mut dialog = rfd::FileDialog::new().add_filter("Ogmo project", &["ogmo"]);
+        let mut dialog = FileDialog::new().add_filter("Ogmo project", &["ogmo"]);
         if let Some(dir) = self.settings.ui_dir(None, "ImportOgmo", None) {
             dialog = dialog.set_directory(dir);
         }
@@ -313,15 +445,58 @@ impl EditorApp {
         std::thread::spawn(move || {
             let result = project
                 .rename_project(&name)
-                .map(|report| SavedProject { project, report })
-                .map_err(|e| e.to_string());
+                .map(|report| SavedProject { project, report });
             let _ = tx.send(result);
             ctx.request_repaint();
         });
     }
 
+    pub(super) fn change_project_extension(&mut self, use_ldtk: bool) {
+        if self.is_busy() {
+            return;
+        }
+        let Some(project) = self.project.as_mut() else {
+            return;
+        };
+        let old = project.path.clone();
+        match project.rename_project_extension(use_ldtk, self.file_snapshot.as_mut()) {
+            Ok(true) => {
+                let path = project.path.as_ref().expect("renamed project path");
+                let uid = self
+                    .selected
+                    .and_then(|key| project.level(key))
+                    .and_then(|level| level["uid"].as_i64())
+                    .unwrap_or(0);
+                if let Some(old) = old {
+                    let name = old.to_string_lossy();
+                    self.settings.value["recentProjects"]
+                        .as_array_mut()
+                        .unwrap()
+                        .retain(|p| p.as_str() != Some(name.as_ref()));
+                }
+                self.settings.remember(path, uid);
+                let extension = if use_ldtk { ".ldtk" } else { ".json" };
+                self.status = format!("Changed file extension to {extension}");
+                self.status_error = false;
+            }
+            Ok(false) => {}
+            Err(error) => {
+                self.status = format!("Couldn't rename project file: {error}");
+                self.status_error = true;
+            }
+        }
+    }
+
     pub(super) fn service_dialogs(&mut self, ctx: &egui::Context) {
-        if self.hook_flow.is_some() {
+        if self.hook_flow.is_some() || self.layer_bake.is_some() {
+            return;
+        }
+        if self.application_write.is_some() {
+            self.show_application_directory_warning(ctx);
+            return;
+        }
+        if self.save_failure.is_some() {
+            self.show_save_failure(ctx);
             return;
         }
         if self.is_busy() {
@@ -335,18 +510,18 @@ impl EditorApp {
         }
         if let Some(paths) = self.external_changes.clone() {
             egui::Modal::new(egui::Id::new("external-file-change")).show(ctx, |ui| {
-                ui.heading("Project files changed outside LDtk");
+                ui.heading(locale::tr(ui, "Project files changed outside LDtk"));
                 for path in &paths {
                     ui.label(path.display().to_string());
                 }
                 ui.horizontal(|ui| {
-                    if ui.button("Reload from disk").clicked()
+                    if ui.button(locale::tr(ui, "Reload from disk")).clicked()
                         && let Some(path) = self.project.as_ref().and_then(|p| p.path.clone())
                     {
                         self.external_changes = None;
                         self.request(ctx, Action::Open(path));
                     }
-                    if ui.button("Keep my version").clicked() {
+                    if ui.button(locale::tr(ui, "Keep my version")).clicked() {
                         self.external_changes = None;
                         self.file_snapshot = self
                             .project
@@ -418,6 +593,117 @@ mod creation_tests {
         }
         assert!(app.loading.is_none());
     }
+
+    #[test]
+    fn external_file_poll_waits_for_unsaved_reload_confirmation() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("Map.ldtk");
+        let mut project = Project::new();
+        project.save(&path).unwrap();
+        let ctx = egui::Context::default();
+        let mut app = EditorApp::empty();
+        app.set_project(project);
+        app.dirty = true;
+
+        let mut external = Project::load(&path).unwrap();
+        external.json["bgColor"] = "#123456".into();
+        external.save(&path).unwrap();
+        app.request(&ctx, Action::Open(path.clone()));
+        assert!(matches!(app.pending, Some(Action::Open(_))));
+
+        app.last_file_check = Instant::now() - std::time::Duration::from_secs(3);
+        app.poll_services(&ctx);
+        assert!(app.external_changes.is_none());
+
+        app.pending = None;
+        app.poll_services(&ctx);
+        assert_eq!(app.external_changes, Some(vec![path]));
+    }
+
+    #[test]
+    fn preview_154_completed_load_progress_survives_project_installation_frame() {
+        let ctx = egui::Context::default();
+        let mut app = EditorApp::empty();
+        let (tx, rx) = mpsc::channel();
+        app.loading = Some(rx);
+        app.loading_progress = Some(Arc::new(Mutex::new(Some((2, 2)))));
+        tx.send(prepare_project(Project::new(), Vec::new()))
+            .unwrap();
+
+        app.poll_services(&ctx);
+        assert!(app.project.is_some());
+        assert!(app.loading.is_none());
+        assert_eq!(
+            *app.loading_progress.as_ref().unwrap().lock().unwrap(),
+            Some((2, 2))
+        );
+
+        app.poll_services(&ctx);
+        assert!(app.loading_progress.is_none());
+    }
+
+    #[test]
+    fn preview_154_background_export_completion_clears_progress() {
+        let ctx = egui::Context::default();
+        for result in [
+            Ok(ldtk_core::exports::ExportReport {
+                outputs: vec![PathBuf::from("level.png")],
+                warnings: vec![],
+            }),
+            Err("write failed".to_owned()),
+        ] {
+            let failed = result.is_err();
+            let mut app = EditorApp::empty();
+            let (tx, rx) = mpsc::channel();
+            app.exporting = Some(rx);
+            app.exporting_progress = Some(Arc::new(Mutex::new(Some((1, 2)))));
+            tx.send(result).unwrap();
+            app.poll_services(&ctx);
+            assert!(app.exporting.is_none());
+            assert!(app.exporting_progress.is_none());
+            assert_eq!(app.status_error, failed);
+        }
+    }
+
+    #[test]
+    fn preview_154_saved_png_logs_unavailable_background_without_save_failure() {
+        let directory = tempfile::tempdir().unwrap();
+        let ctx = egui::Context::default();
+        let mut app = EditorApp::empty();
+        let settings_path = directory.path().join("settings.json");
+        app.settings.path = Some(settings_path.clone());
+        let mut project = Project::new();
+        let level = project.level_keys()[0];
+        project.resize_level(level, 32, 32, 0, 0).unwrap();
+        project.add_layer("Solid", "IntGrid", 16).unwrap();
+        project.json["imageExportMode"] = "OneImagePerLevel".into();
+        let level = project.level_mut(level).unwrap();
+        level["bgRelPath"] = "missing.png".into();
+        level["bgPos"] = "Unscaled".into();
+        app.set_project(project);
+        app.save_async_at(directory.path().join("Game.ldtk"));
+
+        let until = Instant::now() + std::time::Duration::from_secs(5);
+        while app.saving.is_some() && Instant::now() < until {
+            app.poll_services(&ctx);
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(app.saving.is_none());
+        assert!(!app.status_error, "{}", app.status);
+        assert!(app.status.starts_with("Saved "), "{}", app.status);
+        assert!(directory.path().join("Game/png/Level_0.png").is_file());
+
+        app_log::flush();
+        let log = std::fs::read_to_string(app_log::path(Some(&settings_path)).unwrap())
+            .unwrap_or_default();
+        assert!(
+            log.lines().any(|line| line.contains("ERROR")
+                && line.contains("Level_0")
+                && line.contains("missing.png")),
+            "Missing PNG background diagnostic in application log: {log:?}"
+        );
+    }
+
     #[test]
     fn new_project_is_published_before_editor_becomes_editable() {
         let dir = tempfile::tempdir().unwrap();

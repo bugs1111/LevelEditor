@@ -35,6 +35,12 @@ impl Project {
                 rebase_paths(level, &old_base, base)?;
             }
         }
+        let compatibility = if snapshot.json["jsonVersion"] == "1.5.4" {
+            snapshot.refresh_table_of_contents()?;
+            Some(OutputCompatibility::new(&snapshot.json))
+        } else {
+            None
+        };
         let minify = snapshot.json["minifyJson"] == true;
         let mut outputs = Vec::new();
         let mut paths = BTreeSet::from([PathBuf::from(filename)]);
@@ -77,7 +83,16 @@ impl Project {
                 level["externalRelPath"] = Value::String(target_rel);
             }
             sync_summary(&mut snapshot.json, key, &level);
+            if let Some(compatibility) = &compatibility {
+                if let Some(header) = updated_external_level_header(&level) {
+                    apply_external_level_header(&mut level, header);
+                }
+                compatibility.apply_level(&mut level, &snapshot.grid_presence);
+            }
             outputs.push((target, encode(&level, minify)?));
+        }
+        if let Some(compatibility) = compatibility {
+            compatibility.project_output(&mut snapshot.json, &snapshot.grid_presence);
         }
         outputs.push((PathBuf::from(filename), encode(&snapshot.json, minify)?));
         fs::create_dir_all(&directory).map_err(|source| Error::Io {

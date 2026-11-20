@@ -1,5 +1,423 @@
 //! Shared native rendering of source form help and button treatments.
 use super::*;
+
+pub(in crate::app) fn edit_text(
+    ui: &mut egui::Ui,
+    key: impl std::hash::Hash,
+    current: &str,
+    widget: impl FnOnce(&mut egui::Ui, &mut String, egui::Id) -> egui::Response,
+) -> Option<String> {
+    let id = ui.make_persistent_id(key);
+    let (original, mut draft) = ui
+        .data_mut(|d| d.get_temp::<(String, String)>(id))
+        .filter(|(original, _)| original == current)
+        .unwrap_or_else(|| (current.into(), current.into()));
+    ui_commit::prepare_editor(ui.ctx(), id);
+    let response = widget(ui, &mut draft, id);
+    ui_commit::track_editor(ui.ctx(), &response);
+    let commit = (response.lost_focus()
+        || response.has_focus() && ui.input(|i| i.key_pressed(Key::Enter)))
+        && draft != current;
+    ui.data_mut(|d| {
+        if commit {
+            d.remove::<(String, String)>(id);
+        } else {
+            d.insert_temp(id, (original, draft.clone()));
+        }
+    });
+    commit.then_some(draft)
+}
+
+#[derive(Clone, Copy)]
+pub(in crate::app) enum NumberStyle {
+    Plain { placeholder: Option<&'static str> },
+    Percent,
+    PercentSlider { min: f64, max: f64 },
+}
+
+pub(in crate::app) fn number_input(
+    ui: &mut egui::Ui,
+    key: &str,
+    current: &str,
+    style: NumberStyle,
+) -> Option<String> {
+    let percent = !matches!(style, NumberStyle::Plain { .. });
+    let slider = matches!(style, NumberStyle::PercentSlider { .. });
+    let mut immediate = None;
+    let mut previewing = false;
+    let id = ui.make_persistent_id(key);
+    let typed = edit_text(ui, key, current, |ui, draft, id| {
+        let gesture = id.with("slider-start");
+        let (pressed, held, released, position) = ui.input(|input| {
+            let pointer = &input.pointer;
+            (
+                pointer.primary_pressed(),
+                pointer.primary_down(),
+                pointer.primary_released(),
+                pointer.interact_pos(),
+            )
+        });
+        let distance = ui
+            .data(|data| data.get_temp::<f32>(gesture))
+            .zip(position)
+            .map_or(0., |(start, current)| current.x - start);
+        let mut preview = match style {
+            NumberStyle::PercentSlider { min, max }
+                if ui.is_enabled() && (held || released) && distance.abs() >= 3. =>
+            {
+                let start = current.parse::<f64>().unwrap_or(0.);
+                Some(
+                    (start + f64::from(distance) * 0.4 + 0.5)
+                        .floor()
+                        .clamp(min, max)
+                        .to_string(),
+                )
+            }
+            _ => None,
+        };
+        previewing = preview.is_some();
+        if ui.is_enabled() && !previewing && ui.memory(|memory| memory.has_focus(id)) {
+            let step = ui.input_mut(|input| {
+                let up = input.count_and_consume_key(egui::Modifiers::NONE, Key::ArrowUp);
+                let down = input.count_and_consume_key(egui::Modifiers::NONE, Key::ArrowDown);
+                up as f64 - down as f64
+            });
+            if step != 0. {
+                let current = draft
+                    .trim()
+                    .parse::<f64>()
+                    .ok()
+                    .filter(|value| value.is_finite());
+                *draft = (current.unwrap_or(0.) + step).to_string();
+                immediate = Some(draft.clone());
+            }
+        }
+        let text = preview.as_mut().unwrap_or(draft);
+        let mut edit = egui::TextEdit::singleline(text)
+            .id(id)
+            .font(FontId::proportional(13.333))
+            .vertical_align(egui::Align::Center)
+            .margin(egui::Margin {
+                left: 8,
+                right: if percent { 22 } else { 8 },
+                top: 0,
+                bottom: 0,
+            })
+            .interactive(!previewing);
+        let glow = previewing.then(|| shadow(ui));
+        if previewing {
+            edit = edit.text_color(theme::ACCENT);
+        }
+        let placeholder = match style {
+            NumberStyle::Plain { placeholder } => placeholder,
+            _ => None,
+        };
+        if let Some(placeholder) = placeholder {
+            edit = edit.hint_text(locale::tr(ui, placeholder));
+        }
+        let width = if percent || placeholder.is_some() {
+            90.
+        } else {
+            60.
+        };
+        let response = ui.add_sized([width, 33.], edit);
+        if slider && response.enabled() {
+            if pressed
+                && response.is_pointer_button_down_on()
+                && let Some(position) = position
+            {
+                ui.data_mut(|data| data.insert_temp(gesture, position.x));
+            }
+        }
+        if percent {
+            let (icon, size) = if slider && response.enabled() {
+                (egui::include_image!("../../assets/icons/slide.svg"), 18.)
+            } else {
+                (
+                    egui::include_image!("../../assets/icons/percent.svg"),
+                    13.333,
+                )
+            };
+            egui::Image::new(icon).paint_at(
+                ui,
+                Rect::from_center_size(
+                    response.rect.right_center() - egui::vec2(4. + size / 2., 0.),
+                    Vec2::splat(size),
+                ),
+            );
+        }
+        if let Some(glow) = glow {
+            ui.painter().set(
+                glow,
+                egui::epaint::Shadow {
+                    offset: [0, 0],
+                    blur: 8,
+                    spread: 0,
+                    color: Color32::from_rgb(213, 105, 50),
+                }
+                .as_shape(response.rect, 0.),
+            );
+            let rect = response.rect.shrink(0.5);
+            ui.painter().extend(egui::Shape::dashed_line(
+                &[
+                    rect.left_top(),
+                    rect.right_top(),
+                    rect.right_bottom(),
+                    rect.left_bottom(),
+                    rect.left_top(),
+                ],
+                Stroke::new(1., theme::ACCENT),
+                3.,
+                2.,
+            ));
+        }
+        if !held {
+            ui.data_mut(|data| data.remove::<f32>(gesture));
+        }
+        if released && distance.abs() > 3. && previewing {
+            immediate = preview;
+            ui.memory_mut(|memory| memory.surrender_focus(id));
+        } else if !previewing && (response.gained_focus() || slider && response.clicked()) {
+            use egui::text::{CCursor, CCursorRange};
+            if let Some(mut state) = egui::TextEdit::load_state(ui.ctx(), id) {
+                state.cursor.set_char_range(Some(CCursorRange::two(
+                    CCursor::new(0),
+                    CCursor::new(draft.chars().count()),
+                )));
+                state.store(ui.ctx(), id);
+            }
+        }
+        if slider {
+            response.on_hover_cursor(egui::CursorIcon::ResizeHorizontal)
+        } else {
+            response
+        }
+    });
+    if immediate.is_some() {
+        ui.data_mut(|data| data.remove::<(String, String)>(id));
+        immediate
+    } else if previewing {
+        None
+    } else {
+        typed
+    }
+}
+
+pub(in crate::app) fn palette_columns_menu(button: &egui::Response) -> Option<usize> {
+    columns_menu(button, None)
+}
+
+pub(in crate::app) fn select_picker_columns_menu(
+    button: &egui::Response,
+    id: egui::Id,
+) -> Option<usize> {
+    columns_menu(button, Some(id))
+}
+
+fn columns_menu(button: &egui::Response, picker_id: Option<egui::Id>) -> Option<usize> {
+    let popup = egui::Popup::menu(button);
+    let popup = match picker_id {
+        Some(id) => popup.id(id),
+        None => popup,
+    };
+    popup
+        .frame(
+            egui::Frame::new()
+                .fill(theme::DARK)
+                .stroke(Stroke::new(1., theme::LIGHT))
+                .shadow(egui::Shadow {
+                    offset: [0, 3],
+                    blur: 10,
+                    spread: 1,
+                    color: Color32::from_black_alpha(180),
+                }),
+        )
+        .show(|ui| {
+            ui.spacing_mut().item_spacing.y = 0.;
+            let mut choice = None;
+            for columns in 1..=10 {
+                if columns == 2 && picker_id.is_some() {
+                    let (rect, _) = ui.allocate_exact_size(egui::vec2(158., 33.), Sense::hover());
+                    ui.painter().rect_filled(rect, 0., theme::MEDIUM);
+                    ui.painter().text(
+                        rect.left_center() + egui::vec2(22., 0.),
+                        Align2::LEFT_CENTER,
+                        locale::tr(ui, "Grid view"),
+                        FontId::proportional(14.),
+                        Color32::WHITE,
+                    );
+                }
+                let (rect, response) =
+                    ui.allocate_exact_size(egui::vec2(158., 39.), Sense::click());
+                let label = match columns {
+                    1 if picker_id.is_some() => locale::tr(ui, "List view").into(),
+                    1 => locale::tr(ui, "List").into(),
+                    _ => locale::format(
+                        ui,
+                        "{columns} columns",
+                        &[("columns", &columns.to_string())],
+                    ),
+                };
+                response.widget_info(|| {
+                    egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &label)
+                });
+                if response.hovered() || response.has_focus() {
+                    ui.painter().rect_filled(rect, 0., theme::MEDIUM);
+                }
+                let icon = if columns == 1 {
+                    egui::include_image!("../../assets/icons/listView.svg")
+                } else {
+                    egui::include_image!("../../assets/icons/gridView.svg")
+                };
+                egui::Image::new(icon)
+                    .tint(Color32::from_gray(180))
+                    .paint_at(
+                        ui,
+                        Rect::from_center_size(
+                            rect.left_center() + egui::vec2(31., 0.),
+                            Vec2::splat(17.),
+                        ),
+                    );
+                ui.painter().text(
+                    rect.left_center() + egui::vec2(50., 0.),
+                    Align2::LEFT_CENTER,
+                    label.to_uppercase(),
+                    FontId::proportional(14.),
+                    theme::ACCENT,
+                );
+                if columns < 10 {
+                    ui.painter().hline(
+                        rect.x_range(),
+                        rect.bottom(),
+                        Stroke::new(1., theme::MEDIUM),
+                    );
+                }
+                if response.clicked() {
+                    choice = Some(columns);
+                }
+            }
+            if choice.is_some() {
+                ui.close();
+            }
+            choice
+        })
+        .and_then(|menu| menu.inner)
+}
+
+pub(in crate::app) fn pivot_grid(ui: &mut egui::Ui, pivot: [f64; 2]) -> Option<[f64; 2]> {
+    pivot_grid_sized(ui, pivot, 20.)
+}
+
+pub(super) fn pivot_grid_sized(ui: &mut egui::Ui, pivot: [f64; 2], cell: f32) -> Option<[f64; 2]> {
+    let (grid, _) = ui.allocate_exact_size(Vec2::splat(cell * 3.), Sense::hover());
+    let mut selected = None;
+    for y in 0..3 {
+        for x in 0..3 {
+            let ratio = [f64::from(x) * 0.5, f64::from(y) * 0.5];
+            let rect = Rect::from_min_size(
+                grid.min + egui::vec2(x as f32 * cell, y as f32 * cell),
+                Vec2::splat(cell),
+            );
+            ui.painter().rect_filled(
+                rect,
+                0.,
+                if pivot == ratio {
+                    theme::ACCENT
+                } else {
+                    theme::MEDIUM
+                },
+            );
+            ui.painter().rect_stroke(
+                rect,
+                0.,
+                Stroke::new(1., Color32::from_rgb(117, 130, 164)),
+                StrokeKind::Inside,
+            );
+            if ui
+                .interact(rect, ui.id().with(("pivot", x, y)), Sense::click())
+                .clicked()
+            {
+                selected = Some(ratio);
+            }
+        }
+    }
+    selected
+}
+
+/// Uppercase source form title and its divider.
+pub(in crate::app) fn form_heading(ui: &mut egui::Ui, name: &str) {
+    ui.add_space(16.);
+    form_heading_line(ui, name);
+    ui.add_space(8.);
+}
+
+pub(in crate::app) fn form_heading_line(ui: &mut egui::Ui, name: &str) {
+    let response = ui.label(
+        RichText::new(locale::tr(ui, name).to_uppercase())
+            .color(theme::ACCENT)
+            .font(FontId::new(
+                17.333,
+                egui::FontFamily::Name("panel-title".into()),
+            )),
+    );
+    ui.painter().hline(
+        ui.max_rect().x_range(),
+        response.rect.bottom() + 2.,
+        Stroke::new(1_f32, theme::ACCENT),
+    );
+}
+
+pub(in crate::app) fn form_row<R>(
+    ui: &mut egui::Ui,
+    label: &str,
+    key: &str,
+    label_width: f32,
+    body: impl FnOnce(&mut egui::Ui) -> R,
+) -> R {
+    form_row_inner(ui, label, key, egui::vec2(label_width, 30.), false, body)
+}
+
+pub(in crate::app) fn form_row_wrapped<R>(
+    ui: &mut egui::Ui,
+    label: &str,
+    key: &str,
+    label_width: f32,
+    body: impl FnOnce(&mut egui::Ui) -> R,
+) -> R {
+    form_row_wrapped_sized(ui, label, key, egui::vec2(label_width, 30.), body)
+}
+
+pub(in crate::app) fn form_row_wrapped_sized<R>(
+    ui: &mut egui::Ui,
+    label: &str,
+    key: &str,
+    label_size: Vec2,
+    body: impl FnOnce(&mut egui::Ui) -> R,
+) -> R {
+    form_row_inner(ui, label, key, label_size, true, body)
+}
+
+fn form_row_inner<R>(
+    ui: &mut egui::Ui,
+    label: &str,
+    key: &str,
+    label_size: Vec2,
+    wrap: bool,
+    body: impl FnOnce(&mut egui::Ui) -> R,
+) -> R {
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 8.;
+        property_label_layout(ui, label, key, label_size, wrap);
+        ui.allocate_ui_with_layout(
+            egui::vec2(ui.available_width(), label_size.y),
+            egui::Layout::left_to_right(egui::Align::Center),
+            body,
+        )
+        .inner
+    })
+    .inner
+}
+
 use std::sync::LazyLock;
 static HELP: LazyLock<Value> = LazyLock::new(|| {
     serde_json::from_str(include_str!("../../assets/forms/source-help.json"))
@@ -20,6 +438,7 @@ fn help_text(key: &str, label: &str) -> Option<&'static str> {
         .or_else(|| HELP[label].as_str())
 }
 pub(in crate::app) const PROPERTY_LABEL_WIDTH: f32 = 124.;
+const PROPERTY_LABEL_FONT_SIZE: f32 = 12.667;
 pub(in crate::app) fn property_label(ui: &mut egui::Ui, label: &str, key: &str) {
     property_label_with_width(ui, label, key, PROPERTY_LABEL_WIDTH);
 }
@@ -29,29 +448,39 @@ pub(in crate::app) fn property_label_with_width(
     key: &str,
     label_width: f32,
 ) {
-    property_label_layout(ui, label, key, label_width, true);
+    property_label_layout(ui, label, key, egui::vec2(label_width, 30.), true);
 }
-pub(in crate::app) fn property_label_nowrap(
-    ui: &mut egui::Ui,
-    label: &str,
-    key: &str,
-    label_width: f32,
-) {
-    property_label_layout(ui, label, key, label_width, false);
+pub(in crate::app) fn property_label_intrinsic_width(ui: &egui::Ui, label: &str, key: &str) -> f32 {
+    let (_, reserve) = property_label_help(label, key);
+    ui.painter()
+        .layout_no_wrap(
+            locale::tr(ui, label).to_owned(),
+            FontId::proportional(PROPERTY_LABEL_FONT_SIZE),
+            ui.visuals().text_color(),
+        )
+        .size()
+        .x
+        + reserve
 }
-fn property_label_layout(ui: &mut egui::Ui, label: &str, key: &str, label_width: f32, wrap: bool) {
+
+fn property_label_help(label: &str, key: &str) -> (Option<&'static str>, f32) {
     let info = HELP["__info__"][key]
         .as_str()
         .or_else(|| HELP["__info__"][label].as_str());
-    let width = ui.available_width().min(label_width);
-    let reserve = if info.is_some() { 32. } else { 8. };
+    (info, if info.is_some() { 32. } else { 8. })
+}
+
+fn property_label_layout(ui: &mut egui::Ui, label: &str, key: &str, label_size: Vec2, wrap: bool) {
+    let (info, reserve) = property_label_help(label, key);
+    let width = ui.available_width().min(label_size.x);
     let text_width = (width - reserve).max(0.);
-    let font = FontId::proportional(12.667);
+    let font = FontId::proportional(PROPERTY_LABEL_FONT_SIZE);
     let color = ui.visuals().text_color();
     // CSS dt labels wrap at spaces, without splitting an individual word.
     let mut lines = Vec::new();
     let mut line = String::new();
-    for word in label.split_whitespace() {
+    let displayed = locale::tr(ui, label);
+    for word in displayed.split_whitespace() {
         let candidate = if line.is_empty() {
             word.to_owned()
         } else {
@@ -73,9 +502,17 @@ fn property_label_layout(ui: &mut egui::Ui, label: &str, key: &str, label_width:
         }
     }
     lines.push(line);
-    let galley = ui.painter().layout_no_wrap(lines.join("\n"), font, color);
+    let galley = if wrap && displayed != label {
+        ui.painter()
+            .layout(displayed.to_owned(), font, color, text_width)
+    } else {
+        ui.painter().layout_no_wrap(lines.join("\n"), font, color)
+    };
     let (rect, response) =
-        ui.allocate_exact_size(egui::vec2(width, galley.size().y.max(30.)), Sense::hover());
+        ui.allocate_exact_size(
+            egui::vec2(width, galley.size().y.max(label_size.y)),
+            Sense::hover(),
+        );
     let right = rect.right() - reserve;
     ui.painter()
         .with_clip_rect(
@@ -114,7 +551,11 @@ fn help_tooltip(response: egui::Response, help: &str) -> egui::Response {
             .show(ui, |ui| {
                 ui.set_max_width(250.);
                 let mut job = egui::text::LayoutJob::default();
-                for (index, part) in help.replace("\\n", "\n").split("**").enumerate() {
+                for (index, part) in locale::tr(ui, help)
+                    .replace("\\n", "\n")
+                    .split("**")
+                    .enumerate()
+                {
                     job.append(
                         part,
                         0.,
@@ -163,7 +604,45 @@ fn help_badge(ui: &mut egui::Ui, help: &str) -> egui::Response {
     help_tooltip(response.on_hover_cursor(egui::CursorIcon::Help), help)
 }
 
-fn disabled_hatch(ui: &egui::Ui, rect: Rect) {
+pub(super) fn field_instance_label(
+    ui: &mut egui::Ui,
+    name: &str,
+    width: f32,
+    help: Option<&str>,
+    using_default: bool,
+    required: bool,
+) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(width, 24.), Sense::click());
+    let reserve = if help.is_some() { 40. } else { 8. };
+    let mut label = RichText::new(name).color(theme::TEXT);
+    if required {
+        label = label.color(Color32::from_rgb(255, 163, 134));
+    } else if using_default {
+        label = label.italics().color(theme::TEXT.gamma_multiply(0.9));
+    }
+    let galley = egui::WidgetText::from(label).into_galley(
+        ui,
+        Some(egui::TextWrapMode::Truncate),
+        (width - reserve).max(0.),
+        FontId::proportional(PROPERTY_LABEL_FONT_SIZE),
+    );
+    ui.painter().galley(
+        egui::pos2(rect.right() - reserve - galley.size().x, rect.top() + 4.),
+        galley,
+        theme::TEXT,
+    );
+    if let Some(help) = help {
+        let badge = Rect::from_min_size(
+            rect.right_top() + egui::vec2(-32., 4.),
+            egui::vec2(24., 16.),
+        );
+        let mut child = ui.new_child(egui::UiBuilder::new().max_rect(badge));
+        help_badge(&mut child, help);
+    }
+    response.on_hover_text(name)
+}
+
+pub(super) fn disabled_hatch(ui: &egui::Ui, rect: Rect) {
     egui::Image::new(egui::include_image!("../../assets/img/stripesLight.png"))
         .texture_options(egui::TextureOptions::NEAREST_REPEAT)
         .uv(Rect::from_min_size(egui::Pos2::ZERO, rect.size() / 8.))
@@ -219,7 +698,7 @@ pub(in crate::app) fn button(
     label: impl Into<egui::WidgetText>,
 ) -> egui::Response {
     let index = shadow(ui);
-    let response = ui.button(label);
+    let response = ui.button(locale::widget(ui, label.into()));
     finish(ui, index, &response);
     response
 }
@@ -228,7 +707,7 @@ pub(in crate::app) fn small_button(
     label: impl Into<egui::WidgetText>,
 ) -> egui::Response {
     let index = shadow(ui);
-    let response = ui.small_button(label);
+    let response = ui.small_button(locale::widget(ui, label.into()));
     finish(ui, index, &response);
     response
 }
@@ -241,6 +720,35 @@ pub(in crate::app) fn add_sized_button(
     let response = ui.add_sized(size, button);
     finish(ui, index, &response);
     response
+}
+pub(in crate::app) fn form_help_link(ui: &mut egui::Ui, width: f32, label: &str, url: &str) {
+    ui.scope(|ui| {
+        let normal = Color32::from_rgb(73, 141, 85);
+        let hover = Color32::from_rgb(94, 171, 107);
+        ui.spacing_mut().button_padding = egui::vec2(8., 2.);
+        let widgets = &mut ui.visuals_mut().widgets;
+        for (style, fill) in [
+            (&mut widgets.inactive, normal),
+            (&mut widgets.hovered, hover),
+            (&mut widgets.active, hover),
+        ] {
+            style.weak_bg_fill = fill;
+            style.bg_stroke = Stroke::NONE;
+            style.corner_radius = 0.into();
+        }
+        let title = locale::tr(ui, label);
+        let response = add_sized_button(
+            ui,
+            [width, 22.],
+            egui::Button::new(RichText::new(title).color(Color32::WHITE).size(14.667)).truncate(),
+        )
+        .on_hover_cursor(egui::CursorIcon::PointingHand)
+        .on_hover_text(url);
+        response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Link, true, title));
+        if response.clicked() || response.middle_clicked() {
+            ui.ctx().open_url(egui::OpenUrl::new_tab(url));
+        }
+    });
 }
 pub(in crate::app) fn add_enabled_button(
     ui: &mut egui::Ui,
@@ -272,7 +780,7 @@ pub(in crate::app) fn checkbox(ui: &mut egui::Ui, value: &mut bool, label: &str)
             state.bg_stroke = Stroke::new(1_f32, Color32::GRAY);
             state.corner_radius = 2.into();
         }
-        let response = ui.checkbox(value, label);
+        let response = ui.checkbox(value, locale::tr(ui, label));
         let response = if let Some(help) = help_text(label, label) {
             help_tooltip(response, help)
         } else {

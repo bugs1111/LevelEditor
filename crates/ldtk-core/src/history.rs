@@ -1,5 +1,7 @@
+use crate::grid_presence::{GridPresence, GridPresences};
 use crate::{LevelKey, Project};
 use serde_json::{Value, json};
+use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 const MAX_ACTIONS: usize = 30;
@@ -25,6 +27,7 @@ fn find_level(p: &Project, iid: &str) -> Option<LevelKey> {
 }
 struct Snapshot {
     json: Value,
+    grid_presence: GridPresences,
     storage: BTreeMap<String, String>,
     base: Option<PathBuf>,
     level_iid: Option<String>,
@@ -50,6 +53,7 @@ impl Snapshot {
         }
         Self {
             json: logical,
+            grid_presence: p.grid_presence.clone(),
             storage,
             level_iid: None,
             layer_uids: None,
@@ -74,8 +78,16 @@ impl Snapshot {
             })
             .cloned()
             .collect::<Vec<_>>();
+        let grid_presence = layers
+            .iter()
+            .filter_map(|layer| {
+                let iid = layer["iid"].as_str()?;
+                Some((iid.to_owned(), p.grid_presence.get(iid)?.clone()))
+            })
+            .collect();
         Self {
             json: json!({"layerInstances":layers}),
+            grid_presence,
             storage: BTreeMap::new(),
             base: p
                 .path
@@ -100,8 +112,14 @@ struct Change {
     before: Option<Value>,
     after: Option<Value>,
 }
+struct GridPresenceChange {
+    iid: String,
+    before: Option<GridPresence>,
+    after: Option<GridPresence>,
+}
 struct Action {
     changes: Vec<Change>,
+    grid_presence: Vec<GridPresenceChange>,
     bytes: usize,
     storage: BTreeMap<String, String>,
     base: Option<PathBuf>,
@@ -212,6 +230,36 @@ fn other_level(path: &[Segment], iid: &str) -> bool {
     path.windows(2).any(|pair| matches!(pair,
         [Segment::Key(key), Segment::Item(id_key, id)] if key == "levels" && id_key == "iid" && id != iid))
 }
+fn current_level_path<'a>(
+    path: &'a [Segment],
+    world_iid: &str,
+    nested: bool,
+) -> Cow<'a, [Segment]> {
+    match path {
+        [
+            Segment::Key(worlds),
+            Segment::Item(key, iid),
+            Segment::Key(levels),
+            ..,
+        ] if !nested
+            && worlds == "worlds"
+            && key == "iid"
+            && iid == world_iid
+            && levels == "levels" =>
+        {
+            Cow::Borrowed(&path[2..])
+        }
+        [Segment::Key(levels), ..] if nested && levels == "levels" => {
+            let mut nested_path = vec![
+                Segment::Key("worlds".into()),
+                Segment::Item("iid".into(), json!(world_iid)),
+            ];
+            nested_path.extend_from_slice(path);
+            Cow::Owned(nested_path)
+        }
+        _ => Cow::Borrowed(path),
+    }
+}
 fn put(root: &mut Value, path: &[Segment], value: &Option<Value>) {
     if path.is_empty() {
         *root = value.clone().unwrap_or(Value::Null);
@@ -288,6 +336,22 @@ impl Action {
             &mut vec![],
             &mut changes,
         );
+        let grid_presence = snapshot
+            .grid_presence
+            .keys()
+            .chain(current.grid_presence.keys())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .filter_map(|iid| {
+                let before = snapshot.grid_presence.get(iid);
+                let after = current.grid_presence.get(iid);
+                (before != after).then(|| GridPresenceChange {
+                    iid: iid.clone(),
+                    before: before.cloned(),
+                    after: after.cloned(),
+                })
+            })
+            .collect::<Vec<_>>();
         let mut storage = snapshot.storage;
         storage.extend(current.storage);
         let bytes = changes
@@ -297,12 +361,21 @@ impl Action {
                     + c.after.as_ref().map_or(0, |v| v.to_string().len())
             })
             .sum::<usize>()
+            + grid_presence
+                .iter()
+                .map(|change| {
+                    change.iid.len()
+                        + change.before.as_ref().map_or(0, GridPresence::bytes)
+                        + change.after.as_ref().map_or(0, GridPresence::bytes)
+                })
+                .sum::<usize>()
             + storage
                 .iter()
                 .map(|(id, path)| id.len() + path.len())
                 .sum::<usize>();
         Self {
             changes,
+            grid_presence,
             bytes,
             storage,
             base: snapshot.base,
@@ -310,6 +383,39 @@ impl Action {
             layer_uids: snapshot.layer_uids,
             bounds: snapshot.bounds,
         }
+    }
+    fn restore_grid_presence(&self, p: &mut Project, undo: bool, selective: bool) {
+        for change in &self.grid_presence {
+            let (previous, next) = if undo {
+                (&change.after, &change.before)
+            } else {
+                (&change.before, &change.after)
+            };
+            if selective && p.grid_presence.get(&change.iid) != previous.as_ref() {
+                continue;
+            }
+            if let Some(state) = next {
+                p.grid_presence.insert(change.iid.clone(), state.clone());
+            } else {
+                p.grid_presence.remove(&change.iid);
+            }
+        }
+    }
+    fn reload_level_grid_presence(&self, p: &mut Project) {
+        let Some(level) = self.level_iid.as_deref().and_then(|iid| find_level(p, iid)) else {
+            return;
+        };
+        // LDtk's level timeline reconstructs every layer from its saved CSV.
+        let mut presence = std::mem::take(&mut p.grid_presence);
+        if let Some(layers) = p
+            .level(level)
+            .and_then(|level| level["layerInstances"].as_array())
+        {
+            for iid in layers.iter().filter_map(|layer| layer["iid"].as_str()) {
+                presence.remove(iid);
+            }
+        }
+        p.grid_presence = presence;
     }
     fn restore(&self, p: &mut Project, undo: bool, selective: bool) {
         if let (Some(iid), Some(uids)) = (&self.level_iid, &self.layer_uids) {
@@ -353,9 +459,11 @@ impl Action {
                     }
                 }
             }
+            self.restore_grid_presence(p, undo, selective);
             return;
         }
         let current = Snapshot::capture(p);
+        self.restore_grid_presence(p, undo, selective);
         let stubs: BTreeMap<_, _> = p
             .level_keys()
             .into_iter()
@@ -375,28 +483,50 @@ impl Action {
             crate::project::rebase_paths(&mut p.json, old, new)
                 .expect("saved project directories are absolute");
         }
+        // MultiWorlds stores the dummy world's levels under a different JSON path.
+        let dummy_world = p.json["dummyWorldIid"]
+            .as_str()
+            .filter(|_| self.level_iid.is_some());
+        let worlds = p.json["worlds"]
+            .as_array()
+            .filter(|worlds| !worlds.is_empty());
+        let level_location = match (dummy_world, worlds) {
+            (Some(iid), None) => Some((iid, false)),
+            (Some(iid), Some(worlds))
+                if p.json["levels"].as_array().is_none_or(Vec::is_empty)
+                    && worlds.iter().any(|world| world["iid"] == iid) =>
+            {
+                Some((iid, true))
+            }
+            _ => None,
+        };
         // Other levels may have been edited since this level's action. Restore its
         // cross-level side effects only where those values still match that action.
         let restore = self
             .changes
             .iter()
             .map(|c| {
-                !selective
+                let path = match level_location {
+                    Some((iid, nested)) => current_level_path(&c.path, iid, nested),
+                    None => Cow::Borrowed(c.path.as_slice()),
+                };
+                let restore = !selective
                     || self
                         .level_iid
                         .as_deref()
-                        .is_none_or(|iid| !other_level(&c.path, iid))
+                        .is_none_or(|iid| !other_level(&path, iid))
                     || matches_at(
                         Some(&p.json),
-                        &c.path,
+                        &path,
                         if undo { &c.after } else { &c.before },
-                    )
+                    );
+                (path, restore)
             })
             .collect::<Vec<_>>();
-        for (c, restore) in self.changes.iter().zip(restore) {
+        for (c, (path, restore)) in self.changes.iter().zip(restore) {
             if restore {
                 let value = if undo { &c.before } else { &c.after };
-                put(&mut p.json, &c.path, value);
+                put(&mut p.json, &path, value);
             }
         }
         if let (Some(old), Some(new)) = (&self.base, &current.base)
@@ -544,7 +674,7 @@ impl History {
         let mut uids = BTreeSet::from([uid]);
         for def in p.json["defs"]["layers"].as_array().into_iter().flatten() {
             if (def["autoSourceLayerDefUid"].as_i64() == Some(uid)
-                || def["autoTilesKilledByOtherLayerUid"].as_i64() == Some(uid))
+                || crate::autotile::blocks_auto_layer(def, uid))
                 && let Some(uid) = def["uid"].as_i64()
             {
                 uids.insert(uid);
@@ -562,7 +692,7 @@ impl History {
             return false;
         };
         let action = Action::between(snapshot, p);
-        if action.changes.is_empty() {
+        if action.changes.is_empty() && action.grid_presence.is_empty() {
             return false;
         }
         if action.level_iid.is_some() {
@@ -619,6 +749,7 @@ impl History {
             return false;
         };
         a.restore(p, true, false);
+        a.reload_level_grid_presence(p);
         self.redo.push(a);
         true
     }
@@ -628,6 +759,7 @@ impl History {
             return false;
         };
         a.restore(p, false, false);
+        a.reload_level_grid_presence(p);
         self.undo.push(a);
         true
     }
@@ -655,6 +787,7 @@ impl History {
             self.undo.insert(index, action);
             return false;
         }
+        action.reload_level_grid_presence(p);
         self.redo.push(action);
         true
     }
@@ -681,6 +814,7 @@ impl History {
             self.redo.insert(index, action);
             return false;
         }
+        action.reload_level_grid_presence(p);
         self.undo.push(action);
         true
     }

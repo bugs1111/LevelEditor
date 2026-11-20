@@ -81,10 +81,14 @@ impl EditorApp {
         let loading = state.loading;
         drop(state);
         if let Some(entries) = entries.filter(|e| !e.is_empty()) {
-            ui.menu_button("Backups", |ui| {
+            ui.menu_button(locale::tr(ui, "Backups"), |ui| {
                 for entry in entries {
                     let title = if entry.crash {
-                        format!("Crash recovery · {}", entry.timestamp)
+                        locale::format(
+                            ui,
+                            "Crash recovery · {timestamp}",
+                            &[("timestamp", &entry.timestamp)],
+                        )
                     } else {
                         entry.timestamp
                     };
@@ -106,11 +110,11 @@ impl EditorApp {
     }
     pub(super) fn recent_file_menu(&mut self, ui: &mut egui::Ui, path: &Path) {
         let dir = path.parent().unwrap_or(Path::new("."));
-        if ui.button("Load from this folder").clicked() {
+        if ui.button(locale::tr(ui, "Load from this folder")).clicked() {
             self.request(ui.ctx(), Action::BrowseInDir(dir.to_owned()));
             ui.close();
         }
-        if ui.button("Locate file").clicked() {
+        if ui.button(locale::tr(ui, "Locate file")).clicked() {
             if let Err(error) = locate(path, true) {
                 self.status = error.to_string();
                 self.status_error = true;
@@ -118,22 +122,25 @@ impl EditorApp {
             ui.close();
         }
         self.directory_color_menu(ui, dir);
-        if ui.button("Remove from history").clicked() {
+        if ui.button(locale::tr(ui, "Remove from history")).clicked() {
             self.remove_recent("recentProjects", path);
             ui.close();
         }
-        if ui.button("Clear all history").clicked() {
+        if ui.button(locale::tr(ui, "Clear all history")).clicked() {
             self.settings.value["recentProjects"] = serde_json::json!([]);
             let _ = self.settings.save();
             ui.close();
         }
     }
     pub(super) fn recent_folder_menu(&mut self, ui: &mut egui::Ui, path: &Path) {
-        if ui.button("New project in this folder").clicked() {
+        if ui
+            .button(locale::tr(ui, "New project in this folder"))
+            .clicked()
+        {
             self.request(ui.ctx(), Action::NewInDir(path.to_owned()));
             ui.close();
         }
-        if ui.button("Locate folder").clicked() {
+        if ui.button(locale::tr(ui, "Locate folder")).clicked() {
             if let Err(error) = locate(path, false) {
                 self.status = error.to_string();
                 self.status_error = true;
@@ -141,11 +148,14 @@ impl EditorApp {
             ui.close();
         }
         self.directory_color_menu(ui, path);
-        if ui.button("Remove from history").clicked() {
+        if ui.button(locale::tr(ui, "Remove from history")).clicked() {
             self.remove_recent("recentDirs", path);
             ui.close();
         }
-        if ui.button("Clear all folder history").clicked() {
+        if ui
+            .button(locale::tr(ui, "Clear all folder history"))
+            .clicked()
+        {
             self.settings.value["recentDirs"] = serde_json::json!([]);
             let _ = self.settings.save();
             ui.close();

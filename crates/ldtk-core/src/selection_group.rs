@@ -1,8 +1,36 @@
 //! Mixed-layer selections retain stable object identities and original layer-local data.
 use crate::workflow::{iid, invalid, remap_refs};
-use crate::{LevelKey, Project, Result};
+use crate::{DeferredAutoLayers, LevelKey, Project, Result};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
+pub fn selection_group_is_entity_only(group: &Value) -> bool {
+    let Some(layers) = group["layers"].as_array() else {
+        return false;
+    };
+    let mut found = false;
+    for entry in layers {
+        if entry["points"].as_array().is_some_and(|v| !v.is_empty())
+            || entry["cellMask"].as_array().is_some_and(|v| !v.is_empty())
+            || (group["emptySpace"] == true
+                && matches!(
+                    entry["clipboard"]["type"].as_str(),
+                    Some("IntGrid" | "Tiles")
+                ))
+            || entry["clipboard"]["gridTiles"]
+                .as_array()
+                .is_some_and(|v| !v.is_empty())
+            || entry["clipboard"]["intGridCsv"]
+                .as_array()
+                .is_some_and(|v| v.iter().any(|n| n.as_i64().unwrap_or(0) != 0))
+        {
+            return false;
+        }
+        found |= entry["clipboard"]["entityInstances"]
+            .as_array()
+            .is_some_and(|v| !v.is_empty());
+    }
+    found
+}
 fn n(v: &Value, k: &str) -> i64 {
     v[k].as_i64().unwrap_or(0)
 }
@@ -242,33 +270,37 @@ fn delete(p: &mut Project, key: LevelKey, group: &Value, delete_points: bool) ->
         .ok_or_else(|| invalid("selection layers missing"))?
     {
         let index = layer_index(p, key, entry)?;
-        let layer = p.layer_mut(key, index).expect("selected layer");
+        let layer = p.layer(key, index).expect("selected layer");
         let g = grid(layer)?;
         let cell = pair(&entry["rect"])?;
         let cw = n(&entry["clipboard"], "width");
         let width = n(layer, "__cWid");
         let height = n(layer, "__cHei");
-        if let Some(csv) = layer["intGridCsv"].as_array_mut() {
-            for mask in entry["cellMask"].as_array().into_iter().flatten() {
-                let i = mask
-                    .as_i64()
-                    .ok_or_else(|| invalid("selection cell index invalid"))?;
-                if cw <= 0 {
-                    return Err(invalid("selection width invalid"));
-                }
-                let x = cell[0] + i % cw;
-                let y = cell[1] + i / cw;
-                if x >= 0
-                    && y >= 0
-                    && x < width
-                    && y < height
-                    && let Some(v) = csv.get_mut((y * width + x) as usize)
-                {
-                    *v = json!(0);
-                    count += 1;
+        p.edit_layer_presence(key, index, |layer, presence| {
+            if let Some(csv) = layer["intGridCsv"].as_array_mut() {
+                for mask in entry["cellMask"].as_array().into_iter().flatten() {
+                    let i = mask
+                        .as_i64()
+                        .ok_or_else(|| invalid("selection cell index invalid"))?;
+                    if cw <= 0 {
+                        return Err(invalid("selection width invalid"));
+                    }
+                    let x = cell[0] + i % cw;
+                    let y = cell[1] + i / cw;
+                    if x >= 0
+                        && y >= 0
+                        && x < width
+                        && y < height
+                        && let Some(v) = csv.get_mut((y * width + x) as usize)
+                    {
+                        presence.write((y * width + x) as usize, v, json!(0));
+                        count += 1;
+                    }
                 }
             }
-        }
+            Ok(())
+        })?;
+        let layer = p.layer_mut(key, index).expect("selected layer");
         let tile_cells: BTreeSet<_> = entry["clipboard"]["gridTiles"]
             .as_array()
             .into_iter()
@@ -638,19 +670,23 @@ fn apply_deferred(
             let top = (target[1] - offset[1]) / g;
             let right = (target[0] + size[0] - 1 - offset[0]) / g;
             let bottom = (target[1] + size[1] - 1 - offset[1]) / g;
-            let layer = p.layer_mut(key, index).expect("selected layer");
             if kind == "IntGrid" {
-                let csv = layer["intGridCsv"]
-                    .as_array_mut()
-                    .ok_or_else(|| invalid("IntGrid missing"))?;
-                for y in top.max(0)..=bottom.min(height - 1) {
-                    for x in left.max(0)..=right.min(width - 1) {
-                        if let Some(v) = csv.get_mut((y * width + x) as usize) {
-                            *v = json!(0);
+                p.edit_layer_presence(key, index, |layer, presence| {
+                    let csv = layer["intGridCsv"]
+                        .as_array_mut()
+                        .ok_or_else(|| invalid("IntGrid missing"))?;
+                    for y in top.max(0)..=bottom.min(height - 1) {
+                        for x in left.max(0)..=right.min(width - 1) {
+                            if let Some(v) = csv.get_mut((y * width + x) as usize) {
+                                presence.write((y * width + x) as usize, v, json!(0));
+                            }
                         }
                     }
-                }
-            } else if let Some(tiles) = layer["gridTiles"].as_array_mut() {
+                    Ok(())
+                })?;
+            } else if let Some(tiles) =
+                p.layer_mut(key, index).expect("selected layer")["gridTiles"].as_array_mut()
+            {
                 tiles.retain(|t| {
                     let x = t["px"][0].as_i64().unwrap_or(0) / g;
                     let y = t["px"][1].as_i64().unwrap_or(0) / g;
@@ -701,16 +737,19 @@ fn apply_deferred(
                 {
                     return Err(invalid("clipboard contains undefined IntGrid values"));
                 }
-                let csv = p.layer_mut(key, index).expect("selected layer")["intGridCsv"]
-                    .as_array_mut()
-                    .ok_or_else(|| invalid("IntGrid missing"))?;
-                for (i, v) in cells {
-                    let dst = csv
-                        .get_mut(i)
-                        .ok_or_else(|| invalid("IntGrid dimensions invalid"))?;
-                    *dst = v;
-                    count += 1;
-                }
+                p.edit_layer_presence(key, index, |layer, presence| {
+                    let csv = layer["intGridCsv"]
+                        .as_array_mut()
+                        .ok_or_else(|| invalid("IntGrid missing"))?;
+                    for (i, v) in cells {
+                        let dst = csv
+                            .get_mut(i)
+                            .ok_or_else(|| invalid("IntGrid dimensions invalid"))?;
+                        presence.write(i, dst, v);
+                        count += 1;
+                    }
+                    Ok(())
+                })?;
             }
             "Tiles" => {
                 if entry["clipboard"]["tilesetUid"]
@@ -1300,6 +1339,33 @@ impl Project {
         geometry_stats(&mut group)?;
         Ok(group)
     }
+    pub fn move_entity_selection_freely_with_geometry(
+        &mut self,
+        key: LevelKey,
+        group: &Value,
+        delta_world: [f64; 2],
+        geometries: &Value,
+    ) -> Result<Value> {
+        self.edit_document(|p| {
+            let group = p.refresh_selection_group_geometry(key, group, geometries)?;
+            if !selection_group_is_entity_only(&group) {
+                return Err(invalid("free movement requires an entity-only selection"));
+            }
+            apply_geometry(
+                p,
+                key,
+                &group,
+                delta_world,
+                geometries,
+                [false, false],
+                false,
+                false,
+                true,
+                true,
+            )
+        })
+    }
+
     /// Geometry records cover all destination layers; `visible: false` excludes
     /// a layer from empty-space arrival cleanup, independently of selectability.
     pub fn move_selection_group_with_geometry(
@@ -1322,6 +1388,8 @@ impl Project {
                 [flip_x, flip_y],
                 false,
                 false,
+                false,
+                true,
             )
         })
     }
@@ -1337,19 +1405,7 @@ impl Project {
         stack: bool,
     ) -> Result<Value> {
         self.edit_document(|p| {
-            let mut group = group.clone();
-            for entry in group["layers"]
-                .as_array_mut()
-                .ok_or_else(|| invalid("selection layers missing"))?
-            {
-                if let Some(geo) = geometries
-                    .as_array()
-                    .and_then(|gs| gs.iter().find(|g| g["layerDefUid"] == entry["layerDefUid"]))
-                {
-                    entry["geometry"] = geo.clone();
-                }
-            }
-            geometry_stats(&mut group)?;
+            let group = paste_geometry(group, geometries)?;
             let delta = [
                 origin_world[0] - group["origin"][0].as_f64().unwrap_or(0.),
                 origin_world[1] - group["origin"][1].as_f64().unwrap_or(0.),
@@ -1363,9 +1419,88 @@ impl Project {
                 [flip_x, flip_y],
                 stack,
                 true,
+                false,
+                true,
             )
         })
     }
+
+    /// Apply a tool drag together with immediate rule updates. The caller settles
+    /// the delayed generated layers before publishing the edit's history entry.
+    #[allow(clippy::too_many_arguments)]
+    pub fn drag_selection_group_with_geometry(
+        &mut self,
+        key: LevelKey,
+        group: &Value,
+        delta: [f64; 2],
+        geometries: &Value,
+        copy: bool,
+        free_entities: bool,
+        pending: Option<&mut DeferredAutoLayers>,
+    ) -> Result<Value> {
+        let mut candidate = self.clone();
+        let group = if copy {
+            paste_geometry(group, geometries)?
+        } else {
+            candidate.refresh_selection_group_geometry(key, group, geometries)?
+        };
+        let free_entities = free_entities && !copy;
+        if free_entities && !selection_group_is_entity_only(&group) {
+            return Err(invalid("free movement requires an entity-only selection"));
+        }
+        let next = apply_geometry(
+            &mut candidate,
+            key,
+            &group,
+            delta,
+            geometries,
+            [false; 2],
+            copy,
+            copy,
+            free_entities,
+            pending.is_none(),
+        )?;
+        if let Some(pending) = pending {
+            let old = self
+                .level(key)
+                .and_then(|level| level["layerInstances"].as_array())
+                .ok_or_else(|| invalid("selection layers missing"))?;
+            let new = candidate
+                .level(key)
+                .and_then(|level| level["layerInstances"].as_array())
+                .ok_or_else(|| invalid("selection layers missing"))?;
+            let changed = old
+                .iter()
+                .zip(new)
+                .filter_map(|(before, after)| {
+                    let uid = after["layerDefUid"].as_i64()?;
+                    (before["intGridCsv"] != after["intGridCsv"]
+                        || before["gridTiles"] != after["gridTiles"])
+                        .then_some(uid)
+                })
+                .collect();
+            candidate.update_auto_layers_after_selection(key, &changed, pending)?;
+        }
+        *self = candidate;
+        Ok(next)
+    }
+}
+
+fn paste_geometry(group: &Value, geometries: &Value) -> Result<Value> {
+    let mut group = group.clone();
+    for entry in group["layers"]
+        .as_array_mut()
+        .ok_or_else(|| invalid("selection layers missing"))?
+    {
+        if let Some(geo) = geometries
+            .as_array()
+            .and_then(|gs| gs.iter().find(|g| g["layerDefUid"] == entry["layerDefUid"]))
+        {
+            entry["geometry"] = geo.clone();
+        }
+    }
+    geometry_stats(&mut group)?;
+    Ok(group)
 }
 /// Source originalRects are level-space pixels, deliberately converted with
 /// raw layer offsets/grid (not the layer's parallax render geometry).
@@ -1406,7 +1541,7 @@ fn clear_arrival_rectangles(
             continue;
         }
         let index = layer_index(p, key, geo)?;
-        let layer = p.layer_mut(key, index).expect("validated layer");
+        let layer = p.layer(key, index).expect("validated layer");
         if layer["visible"] == false
             || !matches!(layer["__type"].as_str(), Some("IntGrid" | "Tiles"))
         {
@@ -1419,6 +1554,7 @@ fn clear_arrival_rectangles(
         ];
         let width = n(layer, "__cWid");
         let height = n(layer, "__cHei");
+        let is_int_grid = layer["__type"] == "IntGrid";
         for rect in &rects {
             let left = ((rect["leftPx"].as_f64().unwrap() - offset[0]) / grid).trunc() as i64;
             let right =
@@ -1426,18 +1562,23 @@ fn clear_arrival_rectangles(
             let top = ((rect["topPx"].as_f64().unwrap() - offset[1]) / grid).trunc() as i64;
             let bottom =
                 ((rect["bottomPx"].as_f64().unwrap() + 1. - offset[1]) / grid).trunc() as i64;
-            if layer["__type"] == "IntGrid" {
-                let csv = layer["intGridCsv"]
-                    .as_array_mut()
-                    .ok_or_else(|| invalid("IntGrid missing"))?;
-                for y in top.max(0)..bottom.min(height) {
-                    for x in left.max(0)..right.min(width) {
-                        if let Some(value) = csv.get_mut((y * width + x) as usize) {
-                            *value = json!(0);
+            if is_int_grid {
+                p.edit_layer_presence(key, index, |layer, presence| {
+                    let csv = layer["intGridCsv"]
+                        .as_array_mut()
+                        .ok_or_else(|| invalid("IntGrid missing"))?;
+                    for y in top.max(0)..bottom.min(height) {
+                        for x in left.max(0)..right.min(width) {
+                            if let Some(value) = csv.get_mut((y * width + x) as usize) {
+                                presence.write((y * width + x) as usize, value, json!(0));
+                            }
                         }
                     }
-                }
-            } else if let Some(tiles) = layer["gridTiles"].as_array_mut() {
+                    Ok(())
+                })?;
+            } else if let Some(tiles) =
+                p.layer_mut(key, index).expect("validated layer")["gridTiles"].as_array_mut()
+            {
                 tiles.retain(|tile| {
                     let x = tile["px"][0].as_i64().unwrap_or(0) / grid as i64;
                     let y = tile["px"][1].as_i64().unwrap_or(0) / grid as i64;
@@ -1459,6 +1600,8 @@ fn apply_geometry(
     flips: [bool; 2],
     stack: bool,
     duplicate: bool,
+    free_entities: bool,
+    rebuild_all_rules: bool,
 ) -> Result<Value> {
     if delta
         .iter()
@@ -1469,7 +1612,7 @@ fn apply_geometry(
     if element_count(group) == 0 {
         return Ok(group.clone());
     }
-    if !duplicate && group["compatibleGrids"] == false {
+    if !duplicate && !free_entities && group["compatibleGrids"] == false {
         return Err(invalid("selection contains incompatible layer grid sizes"));
     }
     let smart = group["scaledGridSize"]
@@ -1486,7 +1629,7 @@ fn apply_geometry(
         delete(p, key, group, false)?;
     }
     let mut out = group.clone();
-    if group["emptySpace"] == true {
+    if group["emptySpace"] == true && !free_entities {
         out["originalRects"] = clear_arrival_rectangles(p, key, group, delta, geometries)?;
     }
     let mut entries = vec![];
@@ -1575,7 +1718,11 @@ fn apply_geometry(
             .remove("pointTranslation");
         entries.push(entry);
     }
-    p.refresh_auto_and_derived()?;
+    if rebuild_all_rules {
+        p.refresh_auto_and_derived()?;
+    } else {
+        p.refresh_derived_data()?;
+    }
     out["layers"] = json!(entries);
     out["origin"] = json!([
         group["origin"][0].as_f64().unwrap_or(0.) + delta[0],

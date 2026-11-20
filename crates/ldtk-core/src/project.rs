@@ -1,10 +1,13 @@
+use crate::grid_presence::GridPresences;
 use crate::{Error, Result};
 use serde_json::Value;
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
-    io::Write,
+    io::{Read, Write},
+    ops::Index,
     path::{Component, Path, PathBuf},
+    sync::{Arc, LazyLock, Weak},
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -13,11 +16,133 @@ pub struct LevelKey {
     pub level: usize,
 }
 
+/// External documents share data between project snapshots until edited.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ExternalLevels(BTreeMap<String, Arc<Value>>);
+
+impl ExternalLevels {
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    pub fn keys(&self) -> impl ExactSizeIterator<Item = &String> {
+        self.0.keys()
+    }
+
+    pub fn values(&self) -> impl ExactSizeIterator<Item = &Value> {
+        self.0.values().map(Arc::as_ref)
+    }
+
+    pub fn values_mut(&mut self) -> impl ExactSizeIterator<Item = &mut Value> {
+        self.0.values_mut().map(Arc::make_mut)
+    }
+
+    pub fn get(&self, path: &str) -> Option<&Value> {
+        self.0.get(path).map(Arc::as_ref)
+    }
+
+    pub fn get_mut(&mut self, path: &str) -> Option<&mut Value> {
+        self.0.get_mut(path).map(Arc::make_mut)
+    }
+
+    pub fn insert(&mut self, path: String, level: Value) -> Option<Value> {
+        self.0
+            .insert(path, Arc::new(level))
+            .map(Arc::unwrap_or_clone)
+    }
+
+    pub fn remove(&mut self, path: &str) -> Option<Value> {
+        self.0.remove(path).map(Arc::unwrap_or_clone)
+    }
+
+    pub fn clear(&mut self) {
+        self.0.clear();
+    }
+}
+
+impl Index<&str> for ExternalLevels {
+    type Output = Value;
+
+    fn index(&self, path: &str) -> &Value {
+        &self.0[path]
+    }
+}
+
 #[derive(Clone)]
 pub struct Project {
     pub json: Value,
     pub path: Option<PathBuf>,
-    pub external_levels: BTreeMap<String, Value>,
+    pub external_levels: ExternalLevels,
+    pub(crate) grid_presence: GridPresences,
+    external_level_cache: Option<Arc<ExternalLevelCache>>,
+    repaired_external_paths: bool,
+}
+
+struct ExternalLevelCache {
+    settings: [Value; 3],
+    fingerprints: BTreeMap<PathBuf, ExternalLevelFingerprint>,
+}
+
+struct ExternalLevelFingerprint {
+    length: usize,
+    bytes: u64,
+    // A write via Arc::make_mut detaches this reference. The cache never owns a level.
+    level: Weak<Value>,
+}
+
+fn external_level_save_settings(root: &Value) -> [&Value; 3] {
+    ["jsonStyle", "minifyJson", "flags"].map(|key| &root[key])
+}
+
+impl ExternalLevelCache {
+    fn capture(
+        root: &Value,
+        fingerprints: BTreeMap<PathBuf, ExternalLevelFingerprint>,
+    ) -> Option<Arc<Self>> {
+        (!fingerprints.is_empty()).then(|| {
+            Arc::new(Self {
+                settings: external_level_save_settings(root).map(Value::clone),
+                fingerprints,
+            })
+        })
+    }
+
+    fn verified_bytes(
+        &self,
+        path: &Path,
+        level: &Value,
+        revision: Option<&Arc<Value>>,
+        same_path: bool,
+    ) -> Option<(Vec<u8>, u64)> {
+        let cached = self.fingerprints.get(path)?;
+        let unchanged =
+            revision.is_some_and(|revision| Arc::as_ptr(revision) == cached.level.as_ptr());
+        if same_path && !unchanged {
+            return None;
+        }
+        let metadata = fs::symlink_metadata(path).ok()?;
+        if !metadata.is_file() || metadata.len() != cached.length as u64 {
+            return None;
+        }
+        let mut bytes = Vec::new();
+        fs::File::open(path)
+            .ok()?
+            .take((cached.length as u64).saturating_add(1))
+            .read_to_end(&mut bytes)
+            .ok()?;
+        if bytes.len() == cached.length
+            && bytes_fingerprint(&bytes) == cached.bytes
+            && (unchanged || serde_json::from_slice::<Value>(&bytes).ok().as_ref() == Some(level))
+        {
+            Some((bytes, cached.bytes))
+        } else {
+            None
+        }
+    }
 }
 
 impl Default for Project {
@@ -26,17 +151,26 @@ impl Default for Project {
     }
 }
 
+fn project_template() -> &'static Value {
+    static TEMPLATE: LazyLock<Value> = LazyLock::new(|| {
+        serde_json::from_str(include_str!("empty.ldtk")).expect("bundled project template")
+    });
+    &TEMPLATE
+}
+
 impl Project {
     pub fn new() -> Self {
-        let mut json: Value =
-            serde_json::from_str(include_str!("empty.ldtk")).expect("bundled project template");
+        let mut json = project_template().clone();
         json["iid"] = Value::String(uuid::Uuid::new_v4().to_string());
         json["dummyWorldIid"] = Value::String(uuid::Uuid::new_v4().to_string());
         json["levels"][0]["iid"] = Value::String(uuid::Uuid::new_v4().to_string());
         Self {
             json,
             path: None,
-            external_levels: BTreeMap::new(),
+            external_levels: ExternalLevels::default(),
+            grid_presence: GridPresences::new(),
+            external_level_cache: None,
+            repaired_external_paths: false,
         }
     }
 
@@ -45,28 +179,84 @@ impl Project {
         Ok(Self {
             json,
             path: None,
-            external_levels: BTreeMap::new(),
+            external_levels: ExternalLevels::default(),
+            grid_presence: GridPresences::new(),
+            external_level_cache: None,
+            repaired_external_paths: false,
         })
     }
 
     pub fn load(path: impl AsRef<Path>) -> Result<Self> {
+        Self::load_with_progress(path, |_, _| {})
+    }
+
+    /// Reports completed external level reads; inline-only projects emit no updates.
+    pub fn load_with_progress(
+        path: impl AsRef<Path>,
+        mut progress: impl FnMut(usize, usize),
+    ) -> Result<Self> {
         let path = absolute(path.as_ref())?;
         let mut project = Self::from_json(read_json(&path)?)?;
-        for key in project.level_keys() {
-            if let Some(rel) = external_path(project.level_stub(key).expect("enumerated level"))? {
-                if project.external_levels.contains_key(rel) {
+        let mut fingerprints = BTreeMap::new();
+        let keys = project.level_keys();
+        let mut total = 0;
+        for key in &keys {
+            if external_path(project.level_stub(*key).expect("enumerated level"))?.is_some() {
+                total += 1;
+            }
+        }
+        if total > 0 {
+            progress(0, total);
+        }
+        let mut done = 0;
+        for key in keys {
+            let stub = project.level_stub(key).expect("enumerated level");
+            if let Some(rel) = external_path(stub)? {
+                let mut rel = rel.to_owned();
+                let base = path.parent().expect("absolute path");
+                let mut external = base.join(&rel);
+                let (value, bytes) = match read_json_with_bytes(&external) {
+                    Ok(result) => result,
+                    Err(error) if project.json["externalLevels"] == true => {
+                        let (repaired, value, bytes) =
+                            recover_renamed_external_level(&path, &rel, stub, error)?;
+                        project.level_stub_mut(key).expect("enumerated level")["externalRelPath"] =
+                            Value::String(repaired.clone());
+                        project.repaired_external_paths = true;
+                        rel = repaired;
+                        external = base.join(&rel);
+                        (value, bytes)
+                    }
+                    Err(error) => return Err(error),
+                };
+                if project.external_levels.0.contains_key(&rel) {
                     return Err(Error::Invalid(format!(
                         "duplicate external level path: {rel}"
                     )));
                 }
-                let value = read_json(&path.parent().expect("absolute path").join(rel))?;
                 if !value.is_object() {
                     return Err(Error::Invalid(format!(
                         "external level {rel} must be an object"
                     )));
                 }
-                project.external_levels.insert(rel.to_owned(), value);
+                let value = Arc::new(value);
+                if project.json["jsonVersion"] == "1.5.4" {
+                    fingerprints.insert(
+                        external,
+                        ExternalLevelFingerprint {
+                            length: bytes.len(),
+                            bytes: bytes_fingerprint(&bytes),
+                            level: Arc::downgrade(&value),
+                        },
+                    );
+                }
+                project.external_levels.0.insert(rel, value);
+                done += 1;
+                progress(done, total);
             }
+        }
+        if !project.repaired_external_paths {
+            project.external_level_cache = ExternalLevelCache::capture(&project.json, fingerprints);
         }
         project.path = Some(path);
         Ok(project)
@@ -76,6 +266,14 @@ impl Project {
         self.save_document(path, true)
     }
     fn save_document(&mut self, path: impl AsRef<Path>, make_backup: bool) -> Result<()> {
+        self.save_document_with_progress(path, make_backup, &mut |_, _, _, _| {})
+    }
+    fn save_document_with_progress(
+        &mut self,
+        path: impl AsRef<Path>,
+        make_backup: bool,
+        progress: &mut impl FnMut(SaveStage, usize, usize, Option<&str>),
+    ) -> Result<()> {
         validate_project(&self.json)?;
         let path = absolute(path.as_ref())?;
         let base = path
@@ -120,13 +318,9 @@ impl Project {
                     .and_then(|v| v["externalRelPath"].as_str())
                     .map(str::to_owned);
                 if let Some(old) = old {
-                    let level = candidate
-                        .external_levels
-                        .get(&old)
-                        .cloned()
-                        .ok_or_else(|| {
-                            Error::Invalid(format!("external level {old} has not been loaded"))
-                        })?;
+                    let level = candidate.external_levels.0.remove(&old).ok_or_else(|| {
+                        Error::Invalid(format!("external level {old} has not been loaded"))
+                    })?;
                     let id = level["identifier"].as_str().unwrap_or("Level");
                     if id.contains('/') || id.contains('\\') || id == "." || id == ".." {
                         return Err(Error::Invalid("unsafe external level identifier".into()));
@@ -154,7 +348,7 @@ impl Project {
                     levels.insert(rel, level);
                 }
             }
-            candidate.external_levels = levels;
+            candidate.external_levels = ExternalLevels(levels);
         }
         if candidate.json["externalLevels"].as_bool().unwrap_or(false) {
             let mut external = BTreeMap::new();
@@ -163,10 +357,20 @@ impl Project {
                     .level_stub(key)
                     .and_then(|v| v["externalRelPath"].as_str())
                     .map(str::to_owned);
-                let mut level = candidate
-                    .level(key)
-                    .ok_or_else(|| Error::Invalid("external level has not been loaded".into()))?
-                    .clone();
+                let mut level = if let Some(rel) = old_rel.as_deref() {
+                    candidate.external_levels.0.remove(rel).ok_or_else(|| {
+                        Error::Invalid("external level has not been loaded".into())
+                    })?
+                } else {
+                    Arc::new(
+                        candidate
+                            .level(key)
+                            .ok_or_else(|| {
+                                Error::Invalid("external level has not been loaded".into())
+                            })?
+                            .clone(),
+                    )
+                };
                 let id = level["identifier"].as_str().unwrap_or("Level");
                 if id.contains('/') || id.contains('\\') || id == "." || id == ".." {
                     return Err(Error::Invalid("unsafe external level identifier".into()));
@@ -198,32 +402,73 @@ impl Project {
                 let stub = candidate.level_stub_mut(key).expect("enumerated level");
                 stub["externalRelPath"] = Value::String(rel.clone());
                 stub["layerInstances"] = Value::Null;
-                if self.path.is_some() {
-                    level["externalRelPath"] = Value::Null;
+                if self.path.is_some() && level.get("externalRelPath") != Some(&Value::Null) {
+                    Arc::make_mut(&mut level)["externalRelPath"] = Value::Null;
                 }
                 external.insert(rel, level);
             }
-            candidate.external_levels = external;
+            candidate.external_levels = ExternalLevels(external);
         }
-        let mut root = candidate.json.clone();
+        let current_version = candidate.json["jsonVersion"] == "1.5.4";
+        // Derive the current output dialect only after an explicit migration.
+        let compatibility = if current_version {
+            candidate.refresh_table_of_contents()?;
+            Some(OutputCompatibility::new(&candidate.json))
+        } else {
+            None
+        };
+        if current_version
+            && let Some(header) = candidate
+                .json
+                .get_mut("__header__")
+                .and_then(Value::as_object_mut)
+        {
+            header.insert("appVersion".into(), Value::String("1.5.4".into()));
+        }
         let minify = self
             .json
             .get("minifyJson")
             .and_then(Value::as_bool)
             .unwrap_or(false);
-        let mut outputs = Vec::new();
+        let style = match self.json.get("jsonStyle").and_then(Value::as_str) {
+            None => None,
+            Some("Full") => Some(JsonStyle::Full),
+            Some("Compact") => Some(JsonStyle::Compact),
+            Some("Minified") => Some(JsonStyle::Minified),
+            Some(style) => return Err(Error::Invalid(format!("unsupported JSON style {style}"))),
+        };
+        let source_cache = self
+            .path
+            .as_deref()
+            .and_then(Path::parent)
+            .zip(self.external_level_cache.as_deref())
+            .filter(|(_, cache)| {
+                current_version
+                    && cache.settings.each_ref() == external_level_save_settings(&candidate.json)
+            });
+        let mut fingerprints = BTreeMap::new();
+        let mut staged = StagedSave::default();
         let mut paths = BTreeSet::from([path.clone()]);
+        let document_dir = base.join(path.file_stem().unwrap_or_default());
+        let preserve_identical_levels = current_version && self.path.as_ref() == Some(&path);
+        let mut external = Vec::new();
         for key in candidate.level_keys() {
             if let Some(rel) = external_path(candidate.level_stub(key).expect("enumerated level"))?
+                .map(str::to_owned)
             {
-                let target = absolute(&base.join(rel))?;
+                let target = absolute(&base.join(&rel))?;
                 if !paths.insert(target.clone()) {
                     return Err(Error::Invalid(format!(
                         "duplicate output path: {}",
                         target.display()
                     )));
                 }
-                let level = candidate.external_levels.get(rel).ok_or_else(|| {
+                if target.starts_with(&path) {
+                    return Err(Error::Invalid(
+                        "The project file conflicts with the folder for its external levels. Use a .ldtk or .json extension.".into(),
+                    ));
+                }
+                let level = candidate.external_levels.0.get_mut(&rel).ok_or_else(|| {
                     Error::Invalid(format!("external level {rel} has not been loaded"))
                 })?;
                 if !level.is_object() {
@@ -231,58 +476,121 @@ impl Project {
                         "external level {rel} must be an object"
                     )));
                 }
-                sync_summary(&mut root, key, level);
-                outputs.push((target, encode(level, minify)?));
+                if current_version && let Some(header) = updated_external_level_header(level) {
+                    apply_external_level_header(Arc::make_mut(level), header);
+                }
+                sync_summary(&mut candidate.json, key, level);
+                external.push((key, rel, target));
             }
         }
-        // Publish the root last, after every referenced document has been staged.
-        outputs.push((path.clone(), encode(&root, minify)?));
         if make_backup && candidate.json["backupOnSave"].as_bool().unwrap_or(false) {
-            let mut backup = candidate.clone();
-            backup.path = Some(path.clone());
-            backup.backup()?;
+            candidate.path = Some(path.clone());
+            candidate.backup_with_progress(&mut |done, total, label| {
+                progress(SaveStage::Backup, done, total, label);
+            })?;
         }
-        // Create external document folders, but keep a missing project directory an error.
-        for (target, _) in &outputs {
-            if target != &path
-                && target.starts_with(base.join(path.file_stem().unwrap_or_default()))
-            {
-                fs::create_dir_all(target.parent().expect("absolute output path")).map_err(
-                    |source| Error::Io {
-                        path: target.clone(),
-                        source,
+        progress(SaveStage::WriteProject, 0, 1, None);
+        let mut root = candidate.json.clone();
+        if let Some(compatibility) = &compatibility {
+            compatibility.project_output(&mut root, &candidate.grid_presence);
+        }
+        staged.add(
+            path.clone(),
+            &encode_with_style(&root, minify, style)?,
+            false,
+        )?;
+        drop(root);
+        let total = external.len();
+        for (done, (key, rel, target)) in external.into_iter().enumerate() {
+            let document = &candidate.external_levels.0[&rel];
+            progress(
+                SaveStage::PrepareLevels,
+                done,
+                total,
+                document["identifier"].as_str(),
+            );
+            let projected = compatibility.as_ref().map(|compatibility| {
+                compatibility.level_output(document, &candidate.grid_presence)
+            });
+            let level = projected.as_deref().unwrap_or(document);
+            let revision = std::ptr::eq(level, document.as_ref()).then_some(document);
+            let cached = source_cache.and_then(|(source, cache)| {
+                let rel = self.level_stub(key)?["externalRelPath"].as_str()?;
+                let source = source.join(rel);
+                let same_path = source == target;
+                let (bytes, fingerprint) =
+                    cache.verified_bytes(&source, level, revision, same_path)?;
+                Some((bytes, fingerprint, same_path))
+            });
+            let (bytes, cached_fingerprint, reuse_current_file) = match cached {
+                Some((bytes, fingerprint, same_path)) => (bytes, Some(fingerprint), same_path),
+                None => (encode_with_style(level, minify, style)?, None, false),
+            };
+            if current_version {
+                fingerprints.insert(
+                    target.clone(),
+                    ExternalLevelFingerprint {
+                        length: bytes.len(),
+                        bytes: cached_fingerprint.unwrap_or_else(|| bytes_fingerprint(&bytes)),
+                        level: revision.map_or_else(Weak::new, Arc::downgrade),
                     },
-                )?;
+                );
             }
+            if reuse_current_file {
+                continue;
+            }
+            if target.starts_with(&document_dir) {
+                ensure_parent_directory(&target)?;
+            }
+            staged.add(target, &bytes, preserve_identical_levels)?;
         }
-        atomic_save(outputs)?;
+        if total > 0 {
+            progress(SaveStage::PrepareLevels, total, total, None);
+            progress(SaveStage::PrepareLevels, 0, 0, None);
+        }
+        // The main document is prepared first but published after all referenced files.
+        staged.files.rotate_left(1);
+        staged.publish()?;
         self.external_levels = candidate.external_levels;
-        self.json = root;
-        let document_dir = base.join(path.file_stem().unwrap_or_default());
-        let published_real_paths = paths
-            .iter()
-            .filter_map(|path| fs::canonicalize(path).ok())
-            .collect::<BTreeSet<_>>();
-        #[cfg(unix)]
-        let published_files = paths
-            .iter()
-            .filter_map(|path| file_identity(path))
-            .collect::<BTreeSet<_>>();
-        for rel in retired {
-            let target = absolute(&base.join(rel))?;
-            let live_alias = fs::canonicalize(&target)
-                .ok()
-                .is_some_and(|real| published_real_paths.contains(&real));
+        self.json = candidate.json;
+        self.external_level_cache = ExternalLevelCache::capture(&self.json, fingerprints);
+        self.repaired_external_paths = false;
+        if !retired.is_empty() {
+            let total = retired.len();
+            progress(SaveStage::RemoveObsoleteLevels, 0, total, None);
+            let published_real_paths = paths
+                .iter()
+                .filter_map(|path| fs::canonicalize(path).ok())
+                .collect::<BTreeSet<_>>();
             #[cfg(unix)]
-            let live_alias = live_alias
-                || file_identity(&target).is_some_and(|id| published_files.contains(&id));
-            // Case-only renames on case-insensitive volumes still resolve the retired
-            // spelling to the newly published file. Never unlink a live output alias.
-            if target.starts_with(&document_dir) && !paths.contains(&target) && !live_alias {
-                let _ = fs::remove_file(target);
+            let published_files = paths
+                .iter()
+                .filter_map(|path| file_identity(path))
+                .collect::<BTreeSet<_>>();
+            for (done, rel) in retired.into_iter().enumerate() {
+                let target = absolute(&base.join(rel))?;
+                progress(
+                    SaveStage::RemoveObsoleteLevels,
+                    done,
+                    total,
+                    target.file_name().and_then(|name| name.to_str()),
+                );
+                let live_alias = fs::canonicalize(&target)
+                    .ok()
+                    .is_some_and(|real| published_real_paths.contains(&real));
+                #[cfg(unix)]
+                let live_alias = live_alias
+                    || file_identity(&target).is_some_and(|id| published_files.contains(&id));
+                // Case-only renames on case-insensitive volumes still resolve the retired
+                // spelling to the newly published file. Never unlink a live output alias.
+                if target.starts_with(&document_dir) && !paths.contains(&target) && !live_alias {
+                    let _ = fs::remove_file(target);
+                }
             }
+            progress(SaveStage::RemoveObsoleteLevels, total, total, None);
         }
         self.path = Some(path);
+        progress(SaveStage::WriteProject, 1, 1, None);
         Ok(())
     }
 
@@ -422,6 +730,50 @@ fn external_path(level: &Value) -> Result<Option<&str>> {
         )),
     }
 }
+
+fn recover_renamed_external_level(
+    project: &Path,
+    rel: &str,
+    stub: &Value,
+    original_error: Error,
+) -> Result<(String, Value, Vec<u8>)> {
+    if !matches!(&original_error, Error::Io {source, ..} if source.kind() == std::io::ErrorKind::NotFound)
+    {
+        return Err(original_error);
+    }
+    let (Some(stem), Some(filename)) = (
+        project.file_stem().and_then(std::ffi::OsStr::to_str),
+        Path::new(rel).file_name().and_then(std::ffi::OsStr::to_str),
+    ) else {
+        return Err(original_error);
+    };
+    let repaired = format!("{stem}/{filename}");
+    if repaired == rel {
+        return Err(original_error);
+    }
+    let path = project
+        .parent()
+        .expect("absolute project path")
+        .join(&repaired);
+    let (level, bytes) = match read_json_with_bytes(&path) {
+        Err(Error::Io { source, .. }) if source.kind() == std::io::ErrorKind::NotFound => {
+            return Err(original_error);
+        }
+        result => result?,
+    };
+    let uid = stub.get("uid").filter(|value| value.is_i64());
+    let iid = stub.get("iid").filter(|value| value.is_string());
+    if (uid.is_none() && iid.is_none())
+        || uid.is_some_and(|uid| level.get("uid") != Some(uid))
+        || iid.is_some_and(|iid| level.get("iid") != Some(iid))
+    {
+        return Err(Error::Invalid(format!(
+            "external level {repaired} does not match the identity of {rel}"
+        )));
+    }
+    Ok((repaired, level, bytes))
+}
+
 pub(crate) fn absolute(path: &Path) -> Result<PathBuf> {
     let path = if path.is_absolute() {
         path.to_path_buf()
@@ -446,15 +798,233 @@ pub(crate) fn absolute(path: &Path) -> Result<PathBuf> {
     Ok(result)
 }
 pub(crate) fn read_json(path: &Path) -> Result<Value> {
+    read_json_with_bytes(path).map(|(value, _)| value)
+}
+
+fn read_json_with_bytes(path: &Path) -> Result<(Value, Vec<u8>)> {
     let bytes = fs::read(path).map_err(|source| Error::Io {
         path: path.to_path_buf(),
         source,
     })?;
-    serde_json::from_slice(&bytes).map_err(|source| Error::Json {
+    let value = serde_json::from_slice(&bytes).map_err(|source| Error::Json {
         path: path.to_path_buf(),
         source,
-    })
+    })?;
+    Ok((value, bytes))
 }
+
+struct OutputCompatibility {
+    multiline: bool,
+    legacy_int_grid: bool,
+    text_arrays: BTreeMap<i64, bool>,
+}
+
+impl OutputCompatibility {
+    fn new(root: &Value) -> Self {
+        let flag = |name: &str| {
+            root["flags"]
+                .as_array()
+                .is_some_and(|flags| flags.iter().any(|flag| flag == name))
+        };
+        let mut result = Self {
+            multiline: flag("UseMultilinesType"),
+            legacy_int_grid: flag("ExportPreCsvIntGridFormat"),
+            text_arrays: BTreeMap::new(),
+        };
+        let defs = &root["defs"];
+        let entity_fields = defs["entities"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .flat_map(|entity| entity["fieldDefs"].as_array().into_iter().flatten());
+        for field in defs["levelFields"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .chain(entity_fields)
+        {
+            if field["type"] == "F_Text"
+                && let Some(uid) = field["uid"].as_i64()
+            {
+                result.text_arrays.insert(uid, field["isArray"] == true);
+            }
+        }
+        result
+    }
+
+    fn text_type(multiline: bool, array: bool) -> &'static str {
+        match (multiline, array) {
+            (false, false) => "String",
+            (true, false) => "Multilines",
+            (false, true) => "Array<String>",
+            (true, true) => "Array<Multilines>",
+        }
+    }
+
+    fn project_output(&self, root: &mut Value, presence: &GridPresences) {
+        Self::apply_definition_types(root, self.multiline);
+        visit_level_documents(root, |level| self.apply_level(level, presence));
+    }
+
+    fn apply_definition_types(root: &mut Value, multiline: bool) {
+        let apply_type = |field: &mut Value| {
+            if field["type"] == "F_Text" {
+                field["__type"] = Self::text_type(multiline, field["isArray"] == true).into();
+            }
+        };
+        if let Some(defs) = root.get_mut("defs") {
+            for field in defs
+                .get_mut("levelFields")
+                .and_then(Value::as_array_mut)
+                .into_iter()
+                .flatten()
+            {
+                apply_type(field);
+            }
+            for entity in defs
+                .get_mut("entities")
+                .and_then(Value::as_array_mut)
+                .into_iter()
+                .flatten()
+            {
+                for field in entity
+                    .get_mut("fieldDefs")
+                    .and_then(Value::as_array_mut)
+                    .into_iter()
+                    .flatten()
+                {
+                    apply_type(field);
+                }
+            }
+        }
+    }
+
+    fn level_output<'a>(
+        &self,
+        level: &'a Value,
+        presence: &GridPresences,
+    ) -> std::borrow::Cow<'a, Value> {
+        if self.text_arrays.is_empty()
+            && !self.legacy_int_grid
+            && !level["layerInstances"]
+                .as_array()
+                .is_some_and(|layers| layers.iter().any(|layer| layer.get("intGrid").is_some()))
+        {
+            return std::borrow::Cow::Borrowed(level);
+        }
+        let mut output = level.clone();
+        self.apply_level(&mut output, presence);
+        std::borrow::Cow::Owned(output)
+    }
+
+    fn apply_field_types(&self, level: &mut Value, multiline: bool) {
+        if !self.text_arrays.is_empty() {
+            crate::workflow::visit_fields_mut(level, |field| {
+                if let Some(&array) = field["defUid"]
+                    .as_i64()
+                    .and_then(|uid| self.text_arrays.get(&uid))
+                {
+                    field["__type"] = Self::text_type(multiline, array).into();
+                }
+            });
+        }
+    }
+
+    fn apply_project_text_types(&self, project: &mut Project, multiline: bool) {
+        Self::apply_definition_types(&mut project.json, multiline);
+        visit_level_documents(&mut project.json, |level| {
+            self.apply_field_types(level, multiline)
+        });
+        for level in project.external_levels.values_mut() {
+            self.apply_field_types(level, multiline);
+        }
+    }
+
+    fn apply_level(&self, level: &mut Value, presence: &GridPresences) {
+        self.apply_field_types(level, self.multiline);
+        for layer in level
+            .get_mut("layerInstances")
+            .and_then(Value::as_array_mut)
+            .into_iter()
+            .flatten()
+        {
+            let Some(layer) = layer.as_object_mut() else {
+                continue;
+            };
+            if let Some(csv) = layer.get("intGridCsv").and_then(Value::as_array) {
+                if self.legacy_int_grid {
+                    let state = layer
+                        .get("iid")
+                        .and_then(Value::as_str)
+                        .and_then(|iid| presence.get(iid));
+                    let legacy = csv
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(coord, value)| {
+                            let value = value.as_i64().filter(|value| {
+                                *value > 0
+                                    || *value == 0
+                                        && state.is_none_or(|state| state.contains(coord))
+                            })?;
+                            Some(serde_json::json!({"coordId":coord,"v":value - 1}))
+                        })
+                        .collect();
+                    layer.insert("intGrid".into(), Value::Array(legacy));
+                } else {
+                    layer.remove("intGrid");
+                }
+            }
+        }
+    }
+}
+
+fn visit_level_documents(root: &mut Value, mut visit: impl FnMut(&mut Value)) {
+    for level in root
+        .get_mut("levels")
+        .and_then(Value::as_array_mut)
+        .into_iter()
+        .flatten()
+    {
+        visit(level);
+    }
+    for world in root
+        .get_mut("worlds")
+        .and_then(Value::as_array_mut)
+        .into_iter()
+        .flatten()
+    {
+        for level in world
+            .get_mut("levels")
+            .and_then(Value::as_array_mut)
+            .into_iter()
+            .flatten()
+        {
+            visit(level);
+        }
+    }
+}
+
+fn updated_external_level_header(level: &Value) -> Option<Value> {
+    let mut header = project_template()["__header__"].clone();
+    if let Some(previous) = level["__header__"].as_object() {
+        let header = header.as_object_mut().expect("bundled project header");
+        for (key, value) in previous {
+            header.entry(key.clone()).or_insert_with(|| value.clone());
+        }
+    }
+    (!level
+        .as_object()
+        .and_then(|level| level.iter().next())
+        .is_some_and(|(key, value)| key == "__header__" && *value == header))
+    .then_some(header)
+}
+
+fn apply_external_level_header(level: &mut Value, header: Value) {
+    let level = level.as_object_mut().expect("validated external level");
+    level.shift_remove("__header__");
+    level.shift_insert(0, "__header__".into(), header);
+}
+
 fn encode(value: &Value, minify: bool) -> Result<Vec<u8>> {
     let mut bytes = if minify {
         serde_json::to_vec(value)
@@ -466,93 +1036,298 @@ fn encode(value: &Value, minify: bool) -> Result<Vec<u8>> {
     Ok(bytes)
 }
 
-struct StagedFile {
-    target: PathBuf,
-    staged: PathBuf,
-    original: Option<Vec<u8>>,
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum JsonStyle {
+    Full,
+    Compact,
+    Minified,
 }
-impl Drop for StagedFile {
-    fn drop(&mut self) {
-        let _ = fs::remove_file(&self.staged);
+
+fn encode_with_style(
+    value: &Value,
+    legacy_minify: bool,
+    style: Option<JsonStyle>,
+) -> Result<Vec<u8>> {
+    let Some(style) = style else {
+        return encode(value, legacy_minify);
+    };
+    if style == JsonStyle::Minified {
+        return serde_json::to_vec(value).map_err(|e| Error::Invalid(e.to_string()));
+    }
+    let mut output = String::new();
+    format_json(value, style, 0, false, &mut output)?;
+    Ok(output.into_bytes())
+}
+
+fn compact_length(value: &Value, depth: usize) -> usize {
+    match value {
+        Value::Null => 4,
+        Value::Bool(v) => {
+            if *v {
+                4
+            } else {
+                5
+            }
+        }
+        Value::Number(n) => {
+            if n.is_i64() || n.is_u64() {
+                4
+            } else {
+                5
+            }
+        }
+        Value::String(s) => s.encode_utf16().count() + 2,
+        Value::Object(map) => {
+            if depth == 0 && map.len() <= 5 {
+                map.values().map(|v| compact_length(v, depth + 1)).sum()
+            } else {
+                map.len() * 10
+            }
+        }
+        Value::Array(a) if a.is_empty() => 2,
+        Value::Array(a) if a.len() < 50 && a[0].is_number() => a.len(),
+        Value::Array(a) if a.len() > 5 || depth > 0 => 99,
+        Value::Array(a) => a.iter().map(|v| compact_length(v, depth + 1)).sum(),
     }
 }
-fn stage(target: PathBuf, bytes: &[u8]) -> Result<StagedFile> {
-    let original = match fs::read(&target) {
-        Ok(bytes) => Some(bytes),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
-        Err(source) => {
-            return Err(Error::Io {
-                path: target,
-                source,
-            });
+
+fn format_json(
+    value: &Value,
+    style: JsonStyle,
+    indent: usize,
+    force_multiline: bool,
+    out: &mut String,
+) -> Result<()> {
+    let inline = style == JsonStyle::Compact && !force_multiline && compact_length(value, 0) <= 85;
+    let write_indent = |out: &mut String, n| {
+        for _ in 0..n {
+            out.push('\t');
         }
     };
+    match value {
+        Value::Object(map) if !map.is_empty() => {
+            out.push('{');
+            if inline {
+                out.push(' ');
+            } else {
+                out.push('\n');
+            }
+            for (i, (key, val)) in map.iter().enumerate() {
+                if !inline {
+                    write_indent(out, indent + 1);
+                }
+                out.push_str(
+                    &serde_json::to_string(key).map_err(|e| Error::Invalid(e.to_string()))?,
+                );
+                out.push_str(": ");
+                format_json(val, style, indent + 1, key == "__header__", out)?;
+                if i + 1 < map.len() {
+                    out.push(',');
+                    if inline {
+                        out.push(' ');
+                    } else {
+                        out.push('\n');
+                    }
+                }
+            }
+            if inline {
+                out.push(' ');
+            } else {
+                out.push('\n');
+                write_indent(out, indent);
+            }
+            out.push('}');
+        }
+        Value::Array(array) if !array.is_empty() => {
+            let numeric = array[0].is_number();
+            let grid = numeric && array.len() > 85 && !force_multiline;
+            let array_inline = inline && !grid;
+            let space = array_inline
+                && !numeric
+                && (array[0].as_bool().is_none() && array.len() != 1
+                    || array[0].is_boolean() && array.len() <= 5);
+            out.push('[');
+            if array_inline {
+                if space {
+                    out.push(' ');
+                }
+            } else {
+                out.push('\n');
+            }
+            for (i, val) in array.iter().enumerate() {
+                if !array_inline && (!grid || i % 35 == 0) {
+                    write_indent(out, indent + 1);
+                }
+                format_json(val, style, indent + 1, false, out)?;
+                if i + 1 < array.len() {
+                    out.push(',');
+                    if grid && i % 35 == 34 {
+                        out.push('\n');
+                    } else if !grid && !array_inline {
+                        out.push('\n');
+                    } else if space {
+                        out.push(' ');
+                    }
+                }
+            }
+            if array_inline {
+                if space {
+                    out.push(' ');
+                }
+            } else {
+                out.push('\n');
+                write_indent(out, indent);
+            }
+            out.push(']');
+        }
+        _ => {
+            out.push_str(&serde_json::to_string(value).map_err(|e| Error::Invalid(e.to_string()))?)
+        }
+    }
+    Ok(())
+}
+
+/// Staging and rollback copies are adjacent to their destination, so publication
+/// and recovery can each rename within the same filesystem.
+struct TemporaryFile(PathBuf);
+
+impl Drop for TemporaryFile {
+    fn drop(&mut self) {
+        let Err(_error) = fs::remove_file(&self.0) else {
+            return;
+        };
+        // A staging copy can inherit the destination's read-only bit.
+        #[cfg(windows)]
+        if _error.kind() == std::io::ErrorKind::PermissionDenied
+            && let Ok(metadata) = fs::metadata(&self.0)
+            && metadata.permissions().readonly()
+        {
+            let mut permissions = metadata.permissions();
+            permissions.set_readonly(false);
+            if fs::set_permissions(&self.0, permissions).is_ok() {
+                let _ = fs::remove_file(&self.0);
+            }
+        }
+    }
+}
+
+struct StagedFile {
+    target: PathBuf,
+    staged: TemporaryFile,
+    original: Option<TemporaryFile>,
+}
+
+fn ensure_parent_directory(target: &Path) -> Result<()> {
+    fs::create_dir_all(target.parent().expect("output path parent")).map_err(|source| Error::Io {
+        path: target.to_owned(),
+        source,
+    })
+}
+
+fn existing_file_bytes(target: &Path) -> Result<Option<Vec<u8>>> {
+    match fs::read(target) {
+        Ok(bytes) => Ok(Some(bytes)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(source) => Err(Error::Io {
+            path: target.to_owned(),
+            source,
+        }),
+    }
+}
+
+fn stage_file(
+    target: &Path,
+    bytes: &[u8],
+    permissions: Option<fs::Permissions>,
+) -> Result<TemporaryFile> {
     let staged = target.with_file_name(format!(".ldtk-{}.tmp", uuid::Uuid::new_v4()));
-    let record = StagedFile {
-        target,
-        staged,
-        original,
-    };
     let mut file = fs::OpenOptions::new()
         .write(true)
         .create_new(true)
-        .open(&record.staged)
+        .open(&staged)
         .map_err(|source| Error::Io {
-            path: record.staged.clone(),
+            path: staged.clone(),
             source,
         })?;
-    file.write_all(bytes)
-        .and_then(|()| file.sync_all())
-        .map_err(|source| Error::Io {
-            path: record.staged.clone(),
-            source,
-        })?;
-    if let Ok(metadata) = fs::metadata(&record.target) {
-        fs::set_permissions(&record.staged, metadata.permissions()).map_err(|source| {
-            Error::Io {
-                path: record.staged.clone(),
-                source,
-            }
-        })?;
-    }
-    Ok(record)
+    let staged = TemporaryFile(staged);
+    let written = file.write_all(bytes).and_then(|()| {
+        if let Some(permissions) = permissions {
+            file.set_permissions(permissions)?;
+        }
+        file.sync_all()
+    });
+    drop(file);
+    written.map_err(|source| Error::Io {
+        path: staged.0.clone(),
+        source,
+    })?;
+    Ok(staged)
 }
-pub(crate) fn atomic_save(outputs: Vec<(PathBuf, Vec<u8>)>) -> Result<()> {
-    let files: Vec<StagedFile> = outputs
-        .into_iter()
-        .map(|(path, bytes)| stage(path, &bytes))
-        .collect::<Result<_>>()?;
-    for index in 0..files.len() {
-        if let Err(source) = fs::rename(&files[index].staged, &files[index].target) {
-            let failure = Error::Io {
-                path: files[index].target.clone(),
-                source,
-            };
-            for file in files[..index].iter().rev() {
-                let rollback = match &file.original {
-                    Some(bytes) => stage(file.target.clone(), bytes).and_then(|rollback| {
-                        fs::rename(&rollback.staged, &rollback.target).map_err(|source| Error::Io {
-                            path: rollback.target.clone(),
-                            source,
-                        })
-                    }),
-                    None => fs::remove_file(&file.target).map_err(|source| Error::Io {
-                        path: file.target.clone(),
-                        source,
-                    }),
+
+#[derive(Default)]
+struct StagedSave {
+    files: Vec<StagedFile>,
+}
+
+impl StagedSave {
+    fn add(&mut self, target: PathBuf, bytes: &[u8], preserve_identical: bool) -> Result<()> {
+        let original_bytes = existing_file_bytes(&target)?;
+        if preserve_identical
+            && original_bytes.as_deref() == Some(bytes)
+            && fs::symlink_metadata(&target).is_ok_and(|metadata| metadata.is_file())
+        {
+            return Ok(());
+        }
+
+        let permissions = fs::metadata(&target)
+            .ok()
+            .map(|metadata| metadata.permissions());
+        let original = original_bytes
+            .as_deref()
+            .map(|bytes| stage_file(&target, bytes, permissions.clone()))
+            .transpose()?;
+        let staged = stage_file(&target, bytes, permissions)?;
+        self.files.push(StagedFile {
+            target,
+            staged,
+            original,
+        });
+        Ok(())
+    }
+
+    fn publish(self) -> Result<()> {
+        for (index, file) in self.files.iter().enumerate() {
+            if let Err(source) = fs::rename(&file.staged.0, &file.target) {
+                let failure = Error::Io {
+                    path: file.target.clone(),
+                    source,
                 };
-                if let Err(error) = rollback {
+                let mut rollback_errors = Vec::new();
+                for file in self.files[..index].iter().rev() {
+                    let rollback = match &file.original {
+                        Some(original) => fs::rename(&original.0, &file.target),
+                        None => fs::remove_file(&file.target),
+                    };
+                    if let Err(error) = rollback {
+                        rollback_errors.push(format!("{}: {error}", file.target.display()));
+                    }
+                }
+                if !rollback_errors.is_empty() {
                     return Err(Error::Invalid(format!(
-                        "save failed ({failure}); rollback also failed ({error}); inspect project files"
+                        "save failed ({failure}); rollback also failed ({}); inspect project files",
+                        rollback_errors.join(", ")
                     )));
                 }
+                return Err(failure);
             }
-            return Err(failure);
         }
-    }
-    #[cfg(unix)]
-    for file in &files {
-        if let Some(parent) = file.target.parent() {
+        #[cfg(unix)]
+        for parent in self
+            .files
+            .iter()
+            .filter_map(|file| file.target.parent())
+            .collect::<BTreeSet<_>>()
+        {
             // Windows cannot open directory handles this way; file sync and rename still apply.
             fs::File::open(parent)
                 .and_then(|dir| dir.sync_all())
@@ -561,8 +1336,43 @@ pub(crate) fn atomic_save(outputs: Vec<(PathBuf, Vec<u8>)>) -> Result<()> {
                     source,
                 })?;
         }
+        Ok(())
     }
-    Ok(())
+}
+
+pub(crate) fn atomic_save(outputs: Vec<(PathBuf, Vec<u8>)>) -> Result<()> {
+    let mut staged = StagedSave::default();
+    for (target, bytes) in outputs {
+        staged.add(target, &bytes, false)?;
+    }
+    staged.publish()
+}
+
+#[cfg(test)]
+mod save_transaction_tests {
+    use super::*;
+
+    #[test]
+    fn a_late_rename_failure_restores_existing_files_and_removes_new_ones() {
+        let dir = tempfile::tempdir().unwrap();
+        let first = dir.path().join("existing.ldtkl");
+        let created = dir.path().join("created.ldtkl");
+        let last = dir.path().join("project.ldtk");
+        fs::write(&first, b"old level").unwrap();
+        fs::write(&last, b"old project").unwrap();
+
+        let mut staged = StagedSave::default();
+        staged.add(first.clone(), b"new level", false).unwrap();
+        staged.add(created.clone(), b"new level", false).unwrap();
+        staged.add(last.clone(), b"new project", false).unwrap();
+        fs::remove_file(&staged.files[2].staged.0).unwrap();
+
+        assert!(staged.publish().is_err());
+        assert_eq!(fs::read(first).unwrap(), b"old level");
+        assert_eq!(fs::read(last).unwrap(), b"old project");
+        assert!(!created.exists());
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 2);
+    }
 }
 
 pub(crate) fn sync_summary(root: &mut Value, key: LevelKey, external: &Value) {
@@ -604,6 +1414,11 @@ pub struct FilesystemSnapshot {
     files: BTreeMap<PathBuf, Option<u64>>,
 }
 impl FilesystemSnapshot {
+    pub fn refresh_file(&mut self, path: &Path) -> Result<()> {
+        self.files.insert(path.to_owned(), file_fingerprint(path)?);
+        Ok(())
+    }
+
     pub fn changed_files(&self) -> Result<Vec<PathBuf>> {
         let mut changed = Vec::new();
         for (path, fingerprint) in &self.files {
@@ -633,6 +1448,13 @@ impl Project {
     }
     /// Copy the currently saved project and external documents, retaining backupLimit copies.
     pub fn backup(&self) -> Result<Option<PathBuf>> {
+        self.backup_with_progress(&mut |_, _, _| {})
+    }
+
+    fn backup_with_progress(
+        &self,
+        progress: &mut impl FnMut(usize, usize, Option<&str>),
+    ) -> Result<Option<PathBuf>> {
         let Some(path) = &self.path else {
             return Ok(None);
         };
@@ -641,10 +1463,7 @@ impl Project {
         }
         let base = path.parent().expect("absolute project path");
         let stem = path.file_stem().unwrap_or_default().to_string_lossy();
-        let directory = match self.json["backupRelPath"].as_str() {
-            Some(rel) => absolute(&base.join(rel))?,
-            None => base.join(stem.as_ref()).join("backups"),
-        };
+        let directory = absolute(&self.backup_directory().expect("saved project path"))?;
         let id = self.json["iid"].as_str().unwrap_or("backup");
         if id.contains('/') || id.contains('\\') {
             return Err(Error::Invalid("unsafe backup project IID".into()));
@@ -669,8 +1488,9 @@ impl Project {
             .and_then(|json| Project::from_json(json).ok());
         let corrupt = saved_json.is_none();
         let mut saved = saved_json.unwrap_or_else(|| self.clone());
-        let mut outputs = Vec::new();
+        let mut staged = StagedSave::default();
         let mut remapped = false;
+        let mut loose_levels = Vec::new();
         if corrupt {
             let old_dir = base.join(stem.as_ref());
             if old_dir.is_dir() {
@@ -686,32 +1506,59 @@ impl Project {
                     if entry.file_type().is_ok_and(|t| t.is_file())
                         && source.extension().is_some_and(|e| e == "ldtkl")
                     {
-                        let target = destination.join(stem.as_ref()).join(entry.file_name());
-                        fs::create_dir_all(target.parent().unwrap()).map_err(|source| {
-                            Error::Io {
-                                path: target.clone(),
-                                source,
-                            }
-                        })?;
-                        outputs.push((
-                            target,
-                            fs::read(&source).map_err(|error| Error::Io {
-                                path: source,
-                                source: error,
-                            })?,
-                        ));
+                        loose_levels.push(source);
                     }
                 }
             }
         }
-        for (index, key) in if corrupt { vec![] } else { saved.level_keys() }
-            .into_iter()
-            .enumerate()
-        {
+        let keys = if corrupt { vec![] } else { saved.level_keys() };
+        let total = 2
+            + loose_levels.len()
+            + keys
+                .iter()
+                .filter(|&&key| {
+                    saved.level_stub(key).expect("enumerated level")["externalRelPath"].is_string()
+                })
+                .count();
+        let mut done = 0;
+        for source in loose_levels {
+            let filename = source.file_name().expect("backup level filename");
+            progress(done, total, filename.to_str());
+            let target = destination.join(stem.as_ref()).join(filename);
+            ensure_parent_directory(&target)?;
+            let bytes = fs::read(&source).map_err(|error| Error::Io {
+                path: source,
+                source: error,
+            })?;
+            staged.add(target, &bytes, false)?;
+            done += 1;
+        }
+        for (index, key) in keys.into_iter().enumerate() {
             if let Some(rel) =
                 external_path(saved.level_stub(key).expect("enumerated level"))?.map(str::to_owned)
             {
                 let source = absolute(&base.join(&rel))?;
+                progress(
+                    done,
+                    total,
+                    source.file_name().and_then(|name| name.to_str()),
+                );
+                let (bytes, repaired) = match fs::read(&source) {
+                    Ok(bytes) => (bytes, None),
+                    Err(source_error) => {
+                        let error = Error::Io {
+                            path: source.clone(),
+                            source: source_error,
+                        };
+                        if saved.json["externalLevels"] != true {
+                            return Err(error);
+                        }
+                        let stub = saved.level_stub(key).expect("enumerated level");
+                        let (repaired, _, bytes) =
+                            recover_renamed_external_level(path, &rel, stub, error)?;
+                        (bytes, Some(repaired))
+                    }
+                };
                 let relative = if Path::new(&rel)
                     .components()
                     .any(|c| c == Component::ParentDir)
@@ -725,33 +1572,24 @@ impl Project {
                         Value::String(rel.clone());
                     rel
                 } else {
-                    rel
+                    repaired.unwrap_or(rel)
                 };
                 let target = destination.join(relative);
-                fs::create_dir_all(target.parent().expect("backup file parent")).map_err(
-                    |source| Error::Io {
-                        path: target.clone(),
-                        source,
-                    },
-                )?;
-                outputs.push((
-                    target,
-                    fs::read(&source).map_err(|source_error| Error::Io {
-                        path: source,
-                        source: source_error,
-                    })?,
-                ));
+                ensure_parent_directory(&target)?;
+                staged.add(target, &bytes, false)?;
+                done += 1;
             }
         }
-        outputs.push((
-            destination.join(path.file_name().expect("project filename")),
-            if remapped {
-                encode(&saved.json, saved.json["minifyJson"] == true)?
-            } else {
-                original
-            },
-        ));
-        atomic_save(outputs)?;
+        let filename = path.file_name().expect("project filename");
+        progress(done, total, filename.to_str());
+        let root = if remapped {
+            encode(&saved.json, saved.json["minifyJson"] == true)?
+        } else {
+            original
+        };
+        staged.add(destination.join(filename), &root, false)?;
+        staged.publish()?;
+        progress(done + 1, total, None);
         let mut backups = self.list_backups()?;
         let mut directories = BTreeSet::new();
         backups.retain(|backup| directories.insert(backup.path.parent().unwrap().to_path_buf()));
@@ -760,17 +1598,19 @@ impl Project {
             let old = backup.path.parent().unwrap().to_path_buf();
             fs::remove_dir_all(&old).map_err(|source| Error::Io { path: old, source })?;
         }
+        progress(total, total, None);
         Ok(Some(destination))
     }
 }
-fn file_fingerprint(path: &Path) -> Result<Option<u64>> {
+fn bytes_fingerprint(bytes: &[u8]) -> u64 {
     use std::hash::{Hash, Hasher};
+    let mut hash = std::collections::hash_map::DefaultHasher::new();
+    bytes.hash(&mut hash);
+    hash.finish()
+}
+fn file_fingerprint(path: &Path) -> Result<Option<u64>> {
     match fs::read(path) {
-        Ok(bytes) => {
-            let mut hash = std::collections::hash_map::DefaultHasher::new();
-            bytes.hash(&mut hash);
-            Ok(Some(hash.finish()))
-        }
+        Ok(bytes) => Ok(Some(bytes_fingerprint(&bytes))),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(source) => Err(Error::Io {
             path: path.to_path_buf(),
@@ -984,25 +1824,78 @@ fn backup_timestamp() -> String {
 pub struct SaveReport {
     pub outputs: Vec<PathBuf>,
     pub export_errors: Vec<String>,
+    /// Resource problems to log separately from the success or failure of an export.
+    pub export_diagnostics: Vec<String>,
 }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SaveStage {
+    PrepareLevels,
+    Backup,
+    WriteProject,
+    RemoveObsoleteLevels,
+    ExportPng,
+    ExportSimplified,
+    ExportTiled,
+}
+
 impl Project {
     /// Save the document first, then attempt configured exports independently.
     /// Export diagnostics never disguise a successfully published document as an unsaved one.
     pub fn save_with_exports(&mut self, path: impl AsRef<Path>) -> Result<SaveReport> {
-        self.save(path)?;
-        Ok(self.configured_exports_report())
+        self.save_with_operation_progress(path, |_, _, _| {})
+    }
+    /// Reports completed preparation and export tasks, with (0, 0) ending each stage.
+    pub fn save_with_exports_progress(
+        &mut self,
+        path: impl AsRef<Path>,
+        mut progress: impl FnMut(&'static str, usize, usize),
+    ) -> Result<SaveReport> {
+        self.save_with_operation_progress(path, |stage, done, total| match stage {
+            SaveStage::PrepareLevels => progress("Preparing levels", done, total),
+            SaveStage::Backup | SaveStage::WriteProject | SaveStage::RemoveObsoleteLevels => {}
+            _ => progress("Processing export tasks", done, total),
+        })
+    }
+    /// Report the active operation while preparing, publishing, and exporting a project.
+    /// Export and preparation counters use (0, 0) to close their current progress bar.
+    /// WriteProject reaches (1, 1) only after the project is published.
+    pub fn save_with_operation_progress(
+        &mut self,
+        path: impl AsRef<Path>,
+        mut progress: impl FnMut(SaveStage, usize, usize),
+    ) -> Result<SaveReport> {
+        self.save_with_labeled_operation_progress(path, |stage, done, total, _| {
+            progress(stage, done, total);
+        })
+    }
+    /// Also reports the current level identifier or filename when available.
+    pub fn save_with_labeled_operation_progress(
+        &mut self,
+        path: impl AsRef<Path>,
+        mut progress: impl FnMut(SaveStage, usize, usize, Option<&str>),
+    ) -> Result<SaveReport> {
+        self.save_document_with_progress(path, true, &mut progress)?;
+        Ok(
+            self.configured_exports_report_progress(&mut |stage, done, total| {
+                progress(stage, done, total, None);
+            }),
+        )
     }
     pub fn configured_exports_report(&self) -> SaveReport {
+        self.configured_exports_report_progress(&mut |_, _, _| {})
+    }
+    fn configured_exports_report_progress(
+        &self,
+        progress: &mut impl FnMut(SaveStage, usize, usize),
+    ) -> SaveReport {
         let Some(path) = self.path.as_ref() else {
             return SaveReport::default();
         };
-        let dir = path
-            .parent()
-            .expect("absolute path")
-            .join(path.file_stem().unwrap_or_default());
+        let dir = self.external_files_directory().expect("saved project path");
         let mut report = SaveReport {
             outputs: vec![path.clone()],
-            export_errors: Vec::new(),
+            ..SaveReport::default()
         };
         for rel in self.external_levels.keys() {
             report
@@ -1019,12 +1912,12 @@ impl Project {
             })
         };
         if self.json["simplifiedExport"] == true {
-            collect_configured_export(
-                &mut report,
+            let outputs = self.export_simplified_with_diagnostics(
                 &simple,
-                &["json", "csv", "png"],
-                wrap(self.export_simplified(&simple)),
+                |done, total| progress(SaveStage::ExportSimplified, done, total),
+                &mut report.export_diagnostics,
             );
+            collect_configured_export(&mut report, &simple, &["json", "csv", "png"], wrap(outputs));
             collect_configured_export(&mut report, &png, &["png"], wrap(Ok(vec![])));
         } else {
             collect_configured_export(
@@ -1037,14 +1930,20 @@ impl Project {
                 .as_str()
                 .is_some_and(|mode| mode != "None")
             {
-                self.export_png(&png)
+                self.export_png_with_diagnostics(
+                    &png,
+                    |done, total| progress(SaveStage::ExportPng, done, total),
+                    &mut report.export_diagnostics,
+                )
             } else {
                 Ok(vec![])
             };
             collect_configured_export(&mut report, &png, &["png"], wrap(outputs));
         }
         let output = if self.json["exportTiled"] == true {
-            self.export_tiled_with_report(&tiled)
+            self.export_tiled_with_report_progress(&tiled, |done, total| {
+                progress(SaveStage::ExportTiled, done, total)
+            })
         } else {
             wrap(Ok(vec![]))
         };

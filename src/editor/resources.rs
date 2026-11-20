@@ -2,7 +2,7 @@ use super::*;
 use serde_json::json;
 use std::path::Path;
 
-fn clean(path: &Path) -> PathBuf {
+pub(super) fn clean(path: &Path) -> PathBuf {
     let path = if path.is_absolute() {
         path.to_owned()
     } else {
@@ -34,6 +34,9 @@ fn document_paths(project: &Project) -> HashSet<PathBuf> {
         .map(|path| clean(&path))
         .collect()
 }
+pub(super) fn is_missing_file(path: &Path) -> bool {
+    std::fs::exists(path).is_ok_and(|exists| !exists)
+}
 fn atlas_paths(project: &Project) -> Vec<(PathBuf, i64)> {
     project.json["defs"]["tilesets"]
         .as_array()
@@ -47,6 +50,14 @@ fn atlas_paths(project: &Project) -> Vec<(PathBuf, i64)> {
         })
         .collect()
 }
+fn background_paths(project: &Project) -> impl Iterator<Item = PathBuf> + '_ {
+    project
+        .level_keys()
+        .into_iter()
+        .filter_map(|key| project.level(key)?.get("bgRelPath")?.as_str())
+        .map(|relative| clean(&canvas::asset_path(project, relative)))
+}
+
 fn enum_paths(project: &Project) -> HashSet<PathBuf> {
     project.json["defs"]["externalEnums"]
         .as_array()
@@ -87,7 +98,7 @@ fn replace_resource_paths(
     }
 }
 
-fn atlas_pixel_data(
+pub(super) fn atlas_pixel_data(
     assets: &mut Assets,
     path: &Path,
     size: [usize; 2],
@@ -134,18 +145,38 @@ fn atlas_pixel_data(
     Some(json!({"opaqueTiles":opaque,"averageColors":colors}))
 }
 
+pub(super) fn trimmed_atlas_padding(old: &Value, width: i64, height: i64, padding: i64) -> i64 {
+    let old_w = number(old, "pxWid", 0.0) as i64;
+    let old_h = number(old, "pxHei", 0.0) as i64;
+    if padding > 0
+        && old_w > width
+        && old_h > height
+        && old_w - width <= padding * 2
+        && old_h - height <= padding * 2
+        && width % 2 == 0
+        && height % 2 == 0
+    {
+        padding - (old_w - width).min(old_h - height) / 2
+    } else {
+        padding
+    }
+}
+
 impl EditorApp {
     pub(super) fn changed_document_files(&self) -> Vec<PathBuf> {
         let Some(project) = &self.project else {
             return Vec::new();
         };
         let documents = document_paths(project);
+        let root_missing = project.path.as_deref().is_some_and(is_missing_file);
         self.file_snapshot
             .as_ref()
             .and_then(|snapshot| snapshot.changed_files().ok())
             .unwrap_or_default()
             .into_iter()
-            .filter(|path| documents.contains(&clean(path)))
+            .filter(|path| {
+                documents.contains(&clean(path)) && (!root_missing || !is_missing_file(path))
+            })
             .collect()
     }
     pub(super) fn changed_resource_files(&self) -> Vec<PathBuf> {
@@ -267,22 +298,32 @@ impl EditorApp {
         self.changed_resources(ctx, vec![new]);
         true
     }
+    pub(super) fn discard_unused_images(&mut self, project: &Project) {
+        let referenced = atlas_paths(project)
+            .into_iter()
+            .map(|(path, _)| path)
+            .chain(background_paths(project))
+            .collect::<HashSet<_>>();
+        self.assets
+            .discard_unused_file_images(|path| referenced.contains(&clean(path)));
+    }
+
     pub(super) fn resource_scan(&mut self, ctx: &egui::Context) {
         let Some(project) = &self.project else {
             return;
         };
         let atlases = atlas_paths(project);
-        let enums = if project.is_backup() {
-            HashSet::new()
-        } else {
-            enum_paths(project)
-        };
-        let backgrounds = project
-            .level_keys()
+        let mut enums = enum_paths(project).into_iter().collect::<Vec<_>>();
+        enums.sort();
+        let enum_checks = enums
             .into_iter()
-            .filter_map(|key| project.level(key)?.get("bgRelPath")?.as_str())
-            .map(|rel| clean(&canvas::asset_path(project, rel)))
+            .filter(|_| !project.is_backup())
+            .map(|path| {
+                let changed = project.external_enum_source_changed(&path);
+                (path, changed)
+            })
             .collect::<Vec<_>>();
+        let backgrounds = background_paths(project).collect::<Vec<_>>();
         for (path, uid) in atlases {
             let uids = self.resource_checks.entry(path).or_default();
             if !uids.contains(&uid) {
@@ -292,8 +333,12 @@ impl EditorApp {
         for path in backgrounds {
             self.resource_checks.entry(path).or_default();
         }
-        if !enums.is_empty() {
-            self.changed_resources(ctx, enums.into_iter().collect());
+        for (path, changed) in enum_checks {
+            match changed {
+                Ok(true) => self.external_enum_reloads.push_back(path),
+                Ok(false) => (),
+                Err(error) => self.resource_failure(path, Vec::new(), error.to_string()),
+            }
         }
         self.pump_resources(ctx);
     }
@@ -304,13 +349,9 @@ impl EditorApp {
         let documents = document_paths(project);
         let enums = enum_paths(project);
         let atlases = atlas_paths(project);
-        let backgrounds = project
-            .level_keys()
-            .into_iter()
-            .filter_map(|key| project.level(key)?.get("bgRelPath")?.as_str())
-            .map(|rel| clean(&canvas::asset_path(project, rel)))
-            .collect::<HashSet<_>>();
+        let backgrounds = background_paths(project).collect::<HashSet<_>>();
         let backup = project.is_backup();
+        let root_missing = project.path.as_deref().is_some_and(is_missing_file);
         // Preserve an existing document conflict even if only a resource retry
         // triggered this pass; accepting its baseline would hide disk edits.
         let mut conflicts = self.changed_document_files();
@@ -318,13 +359,13 @@ impl EditorApp {
         for path in paths {
             let path = clean(&path);
             if documents.contains(&path) {
-                if !conflicts.contains(&path) {
+                if (!root_missing || !is_missing_file(&path)) && !conflicts.contains(&path) {
                     conflicts.push(path);
                 }
                 continue;
             }
             if enums.contains(&path) {
-                if !backup {
+                if !backup && !self.external_enum_reloads.contains(&path) {
                     enum_files.insert(path);
                 }
                 continue;
@@ -345,14 +386,10 @@ impl EditorApp {
             }
         }
         for path in enum_files {
-            match self.edit("External enums updated", |p| p.sync_external_enums(&path)) {
-                Some(report) => {
-                    self.ignore_resource(&path);
-                    if report.requires_confirmation {
-                        self.begin_enum_sync(ctx, path);
-                    }
-                }
-                None => self.resource_failure(path, Vec::new(), self.status.clone()),
+            if self.begin_enum_sync(ctx, path.clone()) {
+                self.ignore_resource(&path);
+            } else {
+                self.resource_failure(path, Vec::new(), self.status.clone());
             }
         }
         if conflicts.is_empty() {
@@ -360,9 +397,8 @@ impl EditorApp {
                 .project
                 .as_ref()
                 .and_then(|p| p.filesystem_snapshot().ok());
-        } else {
-            self.external_changes = Some(conflicts);
         }
+        self.external_changes = (!conflicts.is_empty()).then_some(conflicts);
         self.pump_resources(ctx);
     }
     pub(super) fn pump_resources(&mut self, ctx: &egui::Context) {
@@ -379,7 +415,18 @@ impl EditorApp {
             };
             self.ignore_resource(&path);
             for uid in uids {
-                let Some(def) = self.project.as_ref().and_then(|p| p.tileset(uid)).cloned() else {
+                let Some(def) = self
+                    .project
+                    .as_ref()
+                    .and_then(|p| {
+                        p.tileset(uid).filter(|def| {
+                            def["relPath"].as_str().is_some_and(|relative| {
+                                clean(&canvas::asset_path(p, relative)) == clean(&path)
+                            })
+                        })
+                    })
+                    .cloned()
+                else {
                     continue;
                 };
                 let geometry_changed = def["pxWid"].as_u64() != Some(size[0] as u64)
@@ -387,23 +434,10 @@ impl EditorApp {
                 let width = size[0] as i64;
                 let height = size[1] as i64;
                 let max = width.min(height).max(1);
-                let old_w = number(&def, "pxWid", 0.0) as i64;
-                let old_h = number(&def, "pxHei", 0.0) as i64;
                 let old_padding = (number(&def, "padding", 0.0) as i64).min(max);
                 let grid = (number(&def, "tileGridSize", 16.0) as i64).min(max);
                 let spacing = (number(&def, "spacing", 0.0) as i64).min(max);
-                let trim = old_padding > 0
-                    && old_w > width
-                    && old_h > height
-                    && (old_w - width) <= old_padding * 2
-                    && (old_h - height) <= old_padding * 2
-                    && width % 2 == 0
-                    && height % 2 == 0;
-                let padding = if trim {
-                    old_padding - (old_w - width).min(old_h - height) / 2
-                } else {
-                    old_padding
-                };
+                let padding = trimmed_atlas_padding(&def, width, height, old_padding);
                 let pixels =
                     atlas_pixel_data(&mut self.assets, &path, size, grid, padding, spacing)
                         .unwrap_or(Value::Null);
@@ -423,6 +457,8 @@ impl EditorApp {
                         )
                     });
                 } else {
+                    let opacity_changed =
+                        def["cachedPixelData"]["opaqueTiles"] != pixels["opaqueTiles"];
                     self.edit("Atlas pixel data updated", |p| {
                         let def = p.json["defs"]["tilesets"]
                             .as_array_mut()
@@ -431,6 +467,9 @@ impl EditorApp {
                                 ldtk_core::Error::Invalid("tileset no longer exists".into())
                             })?;
                         def["cachedPixelData"] = pixels;
+                        if !opacity_changed {
+                            return Ok(());
+                        }
                         let levels = p
                             .level_keys()
                             .into_iter()
@@ -475,14 +514,15 @@ impl EditorApp {
         }
     }
     pub(super) fn resource_dialog(&mut self, ctx: &egui::Context) {
-        let Some((path, _, error)) = self.resource_missing.first().cloned() else {
+        let Some((path, _, _)) = self.resource_missing.first() else {
             return;
         };
+        let path = path.clone();
         let id = egui::Id::new(("resource-relocation", &path));
         if let Some(new) = ctx.data_mut(|data| data.get_temp::<PathBuf>(id)) {
             let mut apply = false;
             let mut cancel = false;
-            egui::Modal::new(id).show(ctx, |ui| {
+            let modal = egui::Modal::new(id).show(ctx, |ui| {
                 ui.set_width(560.0);
                 ui.heading("The selected file has a different name");
                 ui.label(
@@ -494,7 +534,7 @@ impl EditorApp {
                     cancel = ui.button("Cancel").clicked();
                 });
             });
-            if apply || cancel {
+            if apply || cancel || modal.should_close() {
                 ctx.data_mut(|data| data.remove::<PathBuf>(id));
             }
             if apply {
@@ -503,37 +543,97 @@ impl EditorApp {
             return;
         }
         let missing = !path.exists();
-        let mut locate = false;
-        let mut retry = false;
-        let mut ignore = false;
-        egui::Modal::new(egui::Id::new("resource-load-failure")).show(ctx, |ui| {
-            ui.set_width(560.0);
-            ui.heading(if missing {
-                "File not found!"
-            } else {
-                "Could not load resource"
+        let relative = self
+            .project
+            .as_ref()
+            .and_then(|project| project.make_relative_file_path(&path).ok())
+            .unwrap_or_else(|| path.display().to_string());
+        let title = if missing { "FILE NOT FOUND!" } else { "ERROR" };
+        let message = if missing {
+            "The following file cannot be found anymore:".to_owned()
+        } else {
+            let filename = path
+                .file_name()
+                .unwrap_or(path.as_os_str())
+                .to_string_lossy();
+            format!("Couldn't read file: {filename}")
+        };
+        let (action, dismiss) = if missing {
+            ("LOCATE THE FILE", "FIX THAT LATER")
+        } else {
+            ("RETRY", "IGNORE")
+        };
+        let modal = egui::Modal::new(egui::Id::new("resource-load-failure"))
+            .frame(project_dialogs::dialog_frame(0))
+            .backdrop_color(Color32::from_black_alpha(140))
+            .show(ctx, |ui| {
+                let body = |text| RichText::new(text).size(14.667).color(Color32::WHITE);
+                let measured = ui.fonts_mut(|fonts| {
+                    let mut measure = |text: &str| {
+                        fonts
+                            .layout_no_wrap(
+                                text.to_owned(),
+                                FontId::proportional(14.667),
+                                Color32::WHITE,
+                            )
+                            .size()
+                            .x
+                    };
+                    let width = measure(&message);
+                    if missing {
+                        width.max(measure(&relative) + 10.)
+                    } else {
+                        width
+                    }
+                });
+                let min_width = if missing { 324. } else { 216. };
+                let max_width = (ui.ctx().content_rect().width() * 0.5).max(min_width);
+                let width = measured.clamp(min_width, max_width);
+                ui.set_width(width + 40.);
+                ui.spacing_mut().item_spacing = egui::vec2(2., 0.);
+                project_dialogs::dialog_title(ui, title, width + 40., theme::LIGHT);
+                egui::Frame::new()
+                    .inner_margin(20)
+                    .show(ui, |ui| {
+                        ui.set_width(width);
+                        ui.label(body(message.as_str()));
+                        if missing {
+                            ui.add_space(14.);
+                            egui::Frame::new()
+                                .fill(theme::DARK)
+                                .stroke(Stroke::new(1., Color32::from_rgb(227, 77, 0)))
+                                .inner_margin(4)
+                                .show(ui, |ui| {
+                                    ui.set_width(width - 10.);
+                                    ui.label(body(relative.as_str()).strong());
+                                });
+                            ui.add_space(14.);
+                            ui.label(body("What do you want to do?"));
+                        }
+                        ui.add_space(16.);
+                        ui.horizontal(|ui| {
+                            let size = egui::vec2((width - 2.) * 0.5, 35.);
+                            let enabled =
+                                !missing || !self.project.as_ref().is_some_and(Project::is_backup);
+                            let primary = ui
+                                .add_enabled_ui(enabled, |ui| {
+                                    project_dialogs::button(ui, action, size, false, 14.667)
+                                })
+                                .inner;
+                            let secondary =
+                                project_dialogs::button(ui, dismiss, size, missing, 14.667);
+                            (primary.clicked(), secondary.clicked())
+                        })
+                        .inner
+                    })
+                    .inner
             });
-            ui.monospace(path.display().to_string());
-            ui.label(error);
-            ui.horizontal(|ui| {
-                locate = ui
-                    .add_enabled(
-                        !self.project.as_ref().is_some_and(Project::is_backup),
-                        egui::Button::new("Locate the file"),
-                    )
-                    .clicked();
-                retry = ui.button("Retry").clicked();
-                ignore = ui
-                    .button(if missing { "Fix that later" } else { "Ignore" })
-                    .clicked();
-            });
-        });
-        if ignore {
+        if modal.inner.1 || modal.should_close() {
             self.ignore_resource(&path);
-        } else if retry {
+        } else if modal.inner.0 && !missing {
             self.retry_resource(ctx, &path);
-        } else if locate {
-            let mut dialog = rfd::FileDialog::new().set_title("Locate the missing resource");
+        } else if modal.inner.0 {
+            let mut dialog = FileDialog::new().set_title("Locate the missing resource");
             if let Some(parent) = path
                 .parent()
                 .filter(|p| p.is_dir())
@@ -558,6 +658,54 @@ impl EditorApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn offline_enum_addition_waits_for_reload_when_opening_a_project() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("Values.json");
+        std::fs::write(&path, r#"{"State":["Idle"]}"#).unwrap();
+        let mut project = Project::new();
+        project.path = Some(dir.path().join("Map.ldtk"));
+        project.sync_external_enums(&path).unwrap();
+        let before = project.json.clone();
+        let mut app = EditorApp::empty();
+        app.set_project(project);
+        let ctx = egui::Context::default();
+        app.resource_scan(&ctx);
+        assert!(!app.enum_sync_is_open());
+        std::fs::write(&path, r#"{"State":["Idle","Run"]}"#).unwrap();
+        app.resource_scan(&ctx);
+        assert_eq!(app.project.as_ref().unwrap().json, before);
+        assert!(!app.dirty);
+        assert!(app.enum_sync_is_open());
+    }
+
+    #[test]
+    fn live_enum_rename_waits_for_confirmation_without_reporting_success() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("Values.json");
+        std::fs::write(&path, r#"{"State":["Idle"]}"#).unwrap();
+        let mut project = Project::new();
+        project.path = Some(dir.path().join("Map.ldtk"));
+        project.sync_external_enums(&path).unwrap();
+        let field = project
+            .add_field_definition(None, "Status", "ExternEnum.State", false)
+            .unwrap();
+        project
+            .set_field_editor_value(project.level_keys()[0], None, field, json!("Idle"))
+            .unwrap();
+        let before = project.json.clone();
+        let mut app = EditorApp::empty();
+        app.set_project(project);
+        let status = app.status.clone();
+        let ctx = egui::Context::default();
+        std::fs::write(&path, r#"{"State":["Run"]}"#).unwrap();
+        app.changed_resources(&ctx, vec![path]);
+        assert!(app.enum_sync_is_open());
+        assert_eq!(app.project.as_ref().unwrap().json, before);
+        assert!(!app.dirty);
+        assert_eq!(app.status, status);
+    }
+
     #[test]
     fn external_enum_json_updates_enums_without_a_project_conflict() {
         let dir = tempfile::tempdir().unwrap();
@@ -659,6 +807,162 @@ mod missing_tests {
         panic!("resource decode did not reach expected state");
     }
 
+    fn dialog_frame(
+        app: &mut EditorApp,
+        ctx: &egui::Context,
+        events: Vec<egui::Event>,
+    ) -> egui::FullOutput {
+        let mut input = egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1000., 700.),
+            )),
+            focused: true,
+            events,
+            ..Default::default()
+        };
+        eframe::App::raw_input_hook(app, ctx, &mut input);
+        ctx.run(input, |ctx| {
+            eframe::App::update(app, ctx, &mut eframe::Frame::_new_kittest());
+        })
+    }
+
+    fn visible_text(output: &egui::FullOutput, text: &str) -> bool {
+        output.shapes.iter().any(
+            |shape| matches!(&shape.shape, egui::Shape::Text(shape) if shape.galley.text() == text),
+        )
+    }
+
+    #[test]
+    fn resource_prompt_allows_normal_save_without_dismissing_the_error() {
+        for corrupt in [true, false] {
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("Map.ldtk");
+            let atlas = directory.path().join("Atlas.png");
+            if corrupt {
+                std::fs::write(&atlas, b"Invalid PNG bytes").unwrap();
+            }
+            let mut project = Project::new();
+            project.path = Some(path.clone());
+            let level = project.level_keys()[0];
+            project.resize_level(level, 32, 16, 0, 0).unwrap();
+            let uid = project.add_tileset(&atlas, 16, 32, 16).unwrap();
+            project.add_layer("Ground", "Tiles", 16).unwrap();
+            project
+                .set_layer_tileset_override(
+                    level,
+                    0,
+                    Some(uid),
+                    ldtk_core::TilesetRemap::TileIds,
+                    false,
+                )
+                .unwrap();
+            project
+                .paint_tile(level, 0, 1, 0, 1, [16, 0], 0, false)
+                .unwrap();
+            project.json["imageExportMode"] = json!("OneImagePerLayer");
+            project.json["exportLevelBg"] = json!(false);
+            project.save(&path).unwrap();
+            let mut app = EditorApp::empty();
+            app.set_project(project);
+            app.project.as_mut().unwrap().json["doc"] = json!("Saved while showing the error");
+            app.dirty = true;
+            let ctx = egui::Context::default();
+            theme::configure(&ctx);
+            app.repaint = Some(ctx.clone());
+            app.changed_resources(&ctx, vec![atlas.clone()]);
+            pump_until(&mut app, &ctx, |a| !a.resource_missing.is_empty());
+            dialog_frame(&mut app, &ctx, vec![]);
+
+            let save = |alt, pressed| egui::Event::Key {
+                key: Key::S,
+                physical_key: None,
+                pressed,
+                repeat: false,
+                modifiers: egui::Modifiers {
+                    alt,
+                    command: true,
+                    ctrl: !cfg!(target_os = "macos"),
+                    mac_cmd: cfg!(target_os = "macos"),
+                    ..Default::default()
+                },
+            };
+            dialog_frame(&mut app, &ctx, vec![save(true, true), save(true, false)]);
+            assert!(!app.is_busy());
+            dialog_frame(&mut app, &ctx, vec![save(false, true), save(false, false)]);
+            assert!(
+                app.is_busy(),
+                "Ctrl/Cmd+S should reach the normal save workflow"
+            );
+            let until = Instant::now() + std::time::Duration::from_secs(5);
+            while app.is_busy() && Instant::now() < until {
+                dialog_frame(&mut app, &ctx, vec![]);
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            assert!(!app.is_busy());
+            assert!(!app.dirty);
+            assert_eq!(app.resource_missing.len(), 1);
+            assert_eq!(app.resource_missing[0].0, atlas);
+            let saved = Project::load(&path).unwrap();
+            assert_eq!(saved.json["doc"], "Saved while showing the error");
+            assert_eq!(saved.tileset(uid).unwrap()["relPath"], "Atlas.png");
+            assert_eq!(saved.layer(level, 0).unwrap()["gridTiles"][0]["t"], 1);
+            let files = std::fs::read_dir(directory.path().join("Map/png")).unwrap();
+            assert!(files.filter_map(Result::ok).any(|file| {
+                let image = image::open(file.path()).unwrap().to_rgba8();
+                image.get_pixel(16, 0).0 == [136, 0, 0, 255]
+            }));
+        }
+    }
+
+    #[test]
+    fn resource_prompt_uses_source_actions_and_dismisses_without_an_edit() {
+        for corrupt in [true, false] {
+            let directory = tempfile::tempdir().unwrap();
+            let atlas = directory.path().join("Atlas.png");
+            if corrupt {
+                std::fs::write(&atlas, b"Invalid PNG bytes").unwrap();
+            }
+            let mut project = Project::new();
+            project.path = Some(directory.path().join("Map.ldtk"));
+            let uid = project.add_tileset(&atlas, 16, 32, 32).unwrap();
+            let mut app = EditorApp::empty();
+            app.set_project(project);
+            let before = app.project.as_ref().unwrap().json.clone();
+            let ctx = egui::Context::default();
+            theme::configure(&ctx);
+            app.repaint = Some(ctx.clone());
+            app.changed_resources(&ctx, vec![atlas]);
+            pump_until(&mut app, &ctx, |a| !a.resource_missing.is_empty());
+            dialog_frame(&mut app, &ctx, vec![]);
+            let output = dialog_frame(&mut app, &ctx, vec![]);
+            assert!(visible_text(
+                &output,
+                if corrupt { "ERROR" } else { "FILE NOT FOUND!" }
+            ));
+            assert_eq!(visible_text(&output, "RETRY"), corrupt);
+            assert_eq!(visible_text(&output, "IGNORE"), corrupt);
+            assert_eq!(visible_text(&output, "LOCATE THE FILE"), !corrupt);
+            assert_eq!(visible_text(&output, "FIX THAT LATER"), !corrupt);
+
+            let escape = egui::Event::Key {
+                key: Key::Escape,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: Default::default(),
+            };
+            dialog_frame(&mut app, &ctx, vec![escape]);
+            assert!(app.resource_missing.is_empty());
+            assert_eq!(app.project.as_ref().unwrap().json, before);
+            assert!(!app.dirty);
+            assert_eq!(
+                app.project.as_ref().unwrap().tileset(uid).unwrap()["relPath"],
+                "Atlas.png"
+            );
+        }
+    }
+
     #[test]
     fn missing_atlas_is_queued_once_and_retry_loads_repaired_image() {
         let dir = tempfile::tempdir().unwrap();
@@ -685,6 +989,29 @@ mod missing_tests {
             app.project.as_ref().unwrap().tileset(uid).unwrap()["pxWid"],
             64
         );
+    }
+
+    #[test]
+    fn a_decode_for_the_previous_atlas_image_cannot_modify_its_replacement() {
+        let dir = tempfile::tempdir().unwrap();
+        let old = dir.path().join("Old.png");
+        image::RgbaImage::new(32, 32).save(&old).unwrap();
+        let mut project = Project::new();
+        project.path = Some(dir.path().join("Map.ldtk"));
+        let uid = project.add_tileset(&old, 16, 32, 32).unwrap();
+        let mut app = EditorApp::empty();
+        app.set_project(project);
+        let ctx = egui::Context::default();
+        app.resource_checks.insert(old.clone(), vec![uid]);
+        app.assets.texture(&ctx, &old);
+        let p = app.project.as_mut().unwrap();
+        p.update_tileset_definition(uid, &json!({"relPath":"New.png","pxWid":64,"pxHei":64}))
+            .unwrap();
+        pump_until(&mut app, &ctx, |app| app.resource_checks.is_empty());
+        let def = app.project.as_ref().unwrap().tileset(uid).unwrap();
+        assert_eq!(def["relPath"], "New.png");
+        assert_eq!(def["pxWid"], 64);
+        assert!(def["cachedPixelData"].is_null());
     }
 
     #[test]
@@ -802,6 +1129,39 @@ mod missing_tests {
         assert_eq!(cache["opaqueTiles"], "10");
         assert_eq!(cache["averageColors"], "ff000000");
         assert!(app.dirty && app.history.can_undo());
+    }
+
+    #[test]
+    fn preview_154_color_only_tileset_reload_keeps_auto_layer_cache() {
+        let dir = tempfile::tempdir().unwrap();
+        let atlas = dir.path().join("Atlas.png");
+        image::RgbaImage::from_pixel(16, 16, image::Rgba([255, 0, 0, 255]))
+            .save(&atlas)
+            .unwrap();
+        let mut project = Project::new();
+        project.path = Some(dir.path().join("Map.ldtk"));
+        let uid = project.add_tileset(&atlas, 16, 16, 16).unwrap();
+        project.json["defs"]["tilesets"][0]["cachedPixelData"] =
+            json!({"opaqueTiles":"1","averageColors":"ffff"});
+        let layer = project.add_layer("Auto", "IntGrid", 16).unwrap();
+        project.assign_tileset(layer, uid).unwrap();
+        let key = project.level_keys()[0];
+        let saved_cache = json!([{"px":[0,0],"src":[0,0],"t":0,"f":0,"extension":"keep"}]);
+        project.layer_mut(key, 0).unwrap()["autoLayerTiles"] = saved_cache.clone();
+        let mut app = EditorApp::empty();
+        app.set_project(project);
+        let ctx = egui::Context::default();
+        app.changed_resources(&ctx, vec![atlas]);
+        pump_until(&mut app, &ctx, |a| a.resource_checks.is_empty());
+        let project = app.project.as_ref().unwrap();
+        assert_eq!(
+            project.tileset(uid).unwrap()["cachedPixelData"]["averageColors"],
+            "ff00"
+        );
+        assert_eq!(
+            project.layer(key, 0).unwrap()["autoLayerTiles"],
+            saved_cache
+        );
     }
 
     #[test]

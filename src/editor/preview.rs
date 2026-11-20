@@ -4,6 +4,8 @@ use serde_json::json;
 impl EditorApp {
     pub(super) fn draw_brush_preview(&mut self, ui: &egui::Ui, rect: Rect, hovered: bool) {
         if self.world
+            || self.brush_preview_waits_for_pointer
+            || self.panel == Some(Panel::Level)
             || self.gesture.is_some()
             || self.field_pick.is_some()
             || self.pending.is_some()
@@ -25,6 +27,25 @@ impl EditorApp {
         let world = self
             .viewport
             .to_world(pointer.into(), rect.min.into(), rect.size().into());
+        if layer["__type"] == "AutoLayer"
+            && self
+                .stamp
+                .as_ref()
+                .is_none_or(|stamp| stamp["type"] != "SelectionGroup")
+        {
+            let [x, y] = world.map(f32::round);
+            let [left, top, right, bottom] = canvas::bounds(project, key, false);
+            let ctx = ui.ctx();
+            if (left..right).contains(&x)
+                && (top..bottom).contains(&y)
+                && !ctx.input(|input| input.modifiers.alt || input.key_down(Key::Space))
+                && !self.selection_contains_world(world)
+                && ctx.output(|output| output.cursor_icon == egui::CursorIcon::Default)
+            {
+                ctx.set_cursor_icon(egui::CursorIcon::NotAllowed);
+            }
+            return;
+        }
         let local = canvas::world_to_layer(project, key, self.layer, &self.viewport, world);
         let grid = number(layer, "__gridSize", 16.0).max(1.0);
         let cell = local.map(|v| (v / grid).floor() as i32);

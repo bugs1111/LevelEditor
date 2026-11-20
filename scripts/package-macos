@@ -23,7 +23,7 @@ mkdir -p "$staged_bundle/Contents/MacOS" "$staged_bundle/Contents/Resources/exam
 cp target/release/ldtk-rs "$staged_bundle/Contents/MacOS/ldtk-rs"
 cp -R examples/original "$staged_bundle/Contents/Resources/examples/"
 cp -R assets "$staged_bundle/Contents/Resources/"
-cp assets/LDtk.icns "$staged_bundle/Contents/Resources/LDtk.icns"
+cp assets/LevelEditor.icns "$staged_bundle/Contents/Resources/LevelEditor.icns"
 cp assets/project.icns "$staged_bundle/Contents/Resources/project.icns"
 cp LICENSE THIRD_PARTY_NOTICES.md "$staged_bundle/Contents/Resources/"
 cp scripts/ldtk-rs-install.json "$staged_bundle/Contents/Resources/ldtk-rs-install.json"

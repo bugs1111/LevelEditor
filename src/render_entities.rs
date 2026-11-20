@@ -51,20 +51,27 @@ pub(crate) fn entity_smart_color(
     let c = theme::color(text(def, "color", text(entity, "__smartColor", "#ffcc00")));
     if bright { lighten(c, 0.5) } else { c }
 }
+pub(crate) fn entity_field_tile(project: &Project, entity: &Value, def: &Value) -> Option<Value> {
+    for fd in values(&def["fieldDefs"]) {
+        if fd["editorDisplayMode"] == "EntityTile" {
+            let value = super::fields::field_value(entity, fd);
+            let first = if fd["isArray"] == true {
+                &value[0]
+            } else {
+                &value
+            };
+            if let Some(tile) = super::fields::value_icon(project, fd, first) {
+                return Some(tile);
+            }
+        }
+    }
+    None
+}
+
 impl Scene<'_> {
     pub(super) fn smart_tile(&self, entity: &Value, def: &Value) -> Option<Value> {
-        for fd in values(&def["fieldDefs"]) {
-            if fd["editorDisplayMode"] == "EntityTile" {
-                let value = super::fields::field_value(entity, fd);
-                let first = if fd["isArray"] == true {
-                    &value[0]
-                } else {
-                    &value
-                };
-                if let Some(tile) = super::fields::value_icon(self.project, fd, first) {
-                    return Some(tile);
-                }
-            }
+        if let Some(tile) = entity_field_tile(self.project, entity, def) {
+            return Some(tile);
         }
         if !def["tileRect"].is_null() {
             Some(def["tileRect"].clone())
@@ -100,6 +107,12 @@ impl Scene<'_> {
         if !rect
             .expand(300. * self.options.ui_scale)
             .intersects(self.canvas)
+            && !(def["tileRenderMode"] == "FullSizeUncropped"
+                && values(&def["fieldDefs"]).iter().any(|field| {
+                    field["__type"] == "FilePath"
+                        && field["isArray"] != true
+                        && field["editorDisplayMode"] == "EntityTile"
+                }))
             && !values(&def["fieldDefs"]).iter().any(|f| {
                 matches!(
                     text(f, "editorDisplayMode", ""),
@@ -116,6 +129,25 @@ impl Scene<'_> {
         {
             return;
         }
+        let image_tile = values(&def["fieldDefs"]).iter().find_map(|field| {
+            if field["__type"] != "FilePath"
+                || field["isArray"] == true
+                || field["editorDisplayMode"] != "EntityTile"
+            {
+                return None;
+            }
+            let value = super::fields::field_value(entity, field);
+            let path = crate::canvas::asset_path(self.project, value.as_str()?);
+            let ext = path.extension()?.to_str()?.to_ascii_lowercase();
+            if !matches!(
+                ext.as_str(),
+                "png" | "jpg" | "jpeg" | "gif" | "ase" | "aseprite"
+            ) || !path.is_file()
+            {
+                return None;
+            }
+            self.assets.texture(self.ctx, &path)
+        });
         let color = self.smart_color(entity, def);
         // Entities can overhang their layer; only the viewport clips them.
         let core_alpha = layer_alpha
@@ -137,7 +169,7 @@ impl Scene<'_> {
         let visible = rect.intersects(self.canvas);
         let mode = text(def, "renderMode", "Rectangle");
         if visible {
-            if tile.is_some() || mode == "Rectangle" {
+            if tile.is_some() || image_tile.is_some() || mode == "Rectangle" {
                 painter.rect(rect, 0., fill, stroke, StrokeKind::Middle);
             } else if mode == "Ellipse" {
                 let segments = if bounds.width() <= 16. || bounds.height() <= 16. {
@@ -162,77 +194,77 @@ impl Scene<'_> {
                 painter.line_segment([rect.right_top(), rect.left_bottom()], stroke);
             }
         }
-        if let Some(tile) = tile {
-            if let Some(atlas) = tile["tilesetUid"]
-                .as_i64()
-                .and_then(|uid| self.project.tileset(uid))
-            {
-                if let Some(texture) = self.texture(atlas) {
-                    let source = Rect::from_min_size(
-                        [number(&tile, "x", 0.), number(&tile, "y", 0.)].into(),
-                        vec2(number(&tile, "w", 16.), number(&tile, "h", 16.)),
-                    );
-                    let pivot = pair(
-                        &entity["__pivot"],
-                        [number(def, "pivotX", 0.), number(def, "pivotY", 0.)],
-                    );
-                    let borders = [
-                        number_at(&def["nineSliceBorders"], 0),
-                        number_at(&def["nineSliceBorders"], 1),
-                        number_at(&def["nineSliceBorders"], 2),
-                        number_at(&def["nineSliceBorders"], 3),
-                    ];
-                    let a = self.view.to_world(
-                        self.canvas.min.into(),
-                        self.canvas.min.into(),
-                        self.canvas.size().into(),
-                    );
-                    let b = self.view.to_world(
-                        self.canvas.max.into(),
-                        self.canvas.min.into(),
-                        self.canvas.size().into(),
-                    );
-                    let clip = Rect::from_min_max(
-                        [
-                            (a[0] - transform.origin[0]) / transform.scale,
-                            (a[1] - transform.origin[1]) / transform.scale,
-                        ]
-                        .into(),
-                        [
-                            (b[0] - transform.origin[0]) / transform.scale,
-                            (b[1] - transform.origin[1]) / transform.scale,
-                        ]
-                        .into(),
-                    );
-                    let quads = geometry::entity_tiles_clipped(
-                        bounds,
-                        source,
-                        pivot,
-                        text(def, "tileRenderMode", "FitInside"),
-                        borders,
-                        clip,
-                    );
-                    let mut mesh = Mesh::with_texture(texture.id());
-                    let size = texture.size_vec2();
-                    for q in quads {
-                        mesh.add_rect_with_uv(
-                            self.screen(transform.rect(q.dst)),
-                            Rect::from_min_max(
-                                (q.src.min.to_vec2() / size).to_pos2(),
-                                (q.src.max.to_vec2() / size).to_pos2(),
-                            ),
-                            Color32::WHITE
-                                .gamma_multiply(core_alpha * number(def, "tileOpacity", 1.)),
-                        );
-                    }
-                    painter.add(egui::Shape::mesh(mesh));
-                } else if visible {
-                    missing_tile(painter, rect);
-                }
-            } else if visible {
-                missing_tile(painter, rect);
+        let tile_texture = if let Some(texture) = image_tile {
+            let source = Rect::from_min_size(Pos2::ZERO, texture.size_vec2());
+            Some((texture, source))
+        } else {
+            tile.as_ref().and_then(|tile| {
+                let atlas = tile["tilesetUid"]
+                    .as_i64()
+                    .and_then(|uid| self.project.tileset(uid))?;
+                let texture = self.texture(atlas)?;
+                let source = Rect::from_min_size(
+                    [number(tile, "x", 0.), number(tile, "y", 0.)].into(),
+                    vec2(number(tile, "w", 16.), number(tile, "h", 16.)),
+                );
+                Some((texture, source))
+            })
+        };
+        if let Some((texture, source)) = tile_texture {
+            let pivot = pair(
+                &entity["__pivot"],
+                [number(def, "pivotX", 0.), number(def, "pivotY", 0.)],
+            );
+            let borders = [
+                number_at(&def["nineSliceBorders"], 0),
+                number_at(&def["nineSliceBorders"], 1),
+                number_at(&def["nineSliceBorders"], 2),
+                number_at(&def["nineSliceBorders"], 3),
+            ];
+            let a = self.view.to_world(
+                self.canvas.min.into(),
+                self.canvas.min.into(),
+                self.canvas.size().into(),
+            );
+            let b = self.view.to_world(
+                self.canvas.max.into(),
+                self.canvas.min.into(),
+                self.canvas.size().into(),
+            );
+            let clip = Rect::from_min_max(
+                [
+                    (a[0] - transform.origin[0]) / transform.scale,
+                    (a[1] - transform.origin[1]) / transform.scale,
+                ]
+                .into(),
+                [
+                    (b[0] - transform.origin[0]) / transform.scale,
+                    (b[1] - transform.origin[1]) / transform.scale,
+                ]
+                .into(),
+            );
+            let quads = geometry::entity_tiles_clipped(
+                bounds,
+                source,
+                pivot,
+                text(def, "tileRenderMode", "FitInside"),
+                borders,
+                clip,
+            );
+            let mut mesh = Mesh::with_texture(texture.id());
+            let size = texture.size_vec2();
+            for q in quads {
+                mesh.add_rect_with_uv(
+                    self.screen(transform.rect(q.dst)),
+                    Rect::from_min_max(
+                        (q.src.min.to_vec2() / size).to_pos2(),
+                        (q.src.max.to_vec2() / size).to_pos2(),
+                    ),
+                    Color32::WHITE.gamma_multiply(core_alpha * number(def, "tileOpacity", 1.)),
+                );
             }
-        } else if mode == "Tile" && visible {
+            painter.add(egui::Shape::mesh(mesh));
+        } else if (tile.is_some() || mode == "Tile") && visible {
             missing_tile(painter, rect);
         }
         if visible {
@@ -380,9 +412,6 @@ impl Scene<'_> {
                     return;
                 }
                 let id = tile["t"].as_u64().unwrap_or(u64::MAX) as usize;
-                let Some(start) = id.checked_mul(4) else {
-                    return;
-                };
                 let color = if colors.is_empty() {
                     let src = pair(&tile["src"], [0.; 2]);
                     self.assets.average_tile_color(
@@ -391,7 +420,7 @@ impl Scene<'_> {
                         [atlas_grid; 2],
                     )
                 } else {
-                    colors.get(start..start + 4).and_then(average_color)
+                    super::cached_tile_average(atlas, id)
                 };
                 let Some(color) = color else {
                     return;
@@ -470,16 +499,6 @@ fn missing_tile(painter: &Painter, rect: Rect) {
     painter.line_segment([rect.left_top(), rect.right_bottom()], line);
     painter.line_segment([rect.right_top(), rect.left_bottom()], line);
 }
-fn average_color(s: &str) -> Option<[u8; 4]> {
-    let n = u16::from_str_radix(s, 16).ok()?;
-    Some([
-        ((n >> 8) & 15) as u8 * 17,
-        ((n >> 4) & 15) as u8 * 17,
-        (n & 15) as u8 * 17,
-        ((n >> 12) & 15) as u8 * 17,
-    ])
-}
-
 pub(super) fn preview(
     ctx: &egui::Context,
     painter: &Painter,
@@ -508,6 +527,7 @@ pub(super) fn preview(
         selected: key,
         active_layer: 0,
         world: false,
+        world_multi_selection: false,
         grid: false,
         details: false,
         single_layer: false,
@@ -522,6 +542,7 @@ pub(super) fn preview(
         parallax: false,
         rulers: false,
         guides: false,
+        async_paint: None,
     };
     let mut scene = Scene {
         ctx,
@@ -559,7 +580,11 @@ mod tests {
     }
     #[test]
     fn world_average_cache_is_argb4444() {
-        assert_eq!(average_color("f123"), Some([17, 34, 51, 255]));
-        assert_eq!(average_color("0000"), Some([0; 4]));
+        let tileset = json!({"cachedPixelData":{"averageColors":"f1230000"}});
+        assert_eq!(
+            super::super::cached_tile_average(&tileset, 0),
+            Some([17, 34, 51, 255])
+        );
+        assert_eq!(super::super::cached_tile_average(&tileset, 1), Some([0; 4]));
     }
 }

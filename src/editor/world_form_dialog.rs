@@ -102,21 +102,50 @@ impl EditorApp {
         }
         let prompt = match &pending.action {
             WorldFormAction::Settings { .. } => {
-                "Changing this will change ALL the level positions! Please make sure you know what you’re doing :)"
+                "Changing this will change ALL the level positions! Please make sure you know what you're doing :)"
             }
             WorldFormAction::DuplicateLevel(_) => "Create a copy of the current level?",
             WorldFormAction::DeleteLevel(_) => "Are you sure you want to delete this level?",
             WorldFormAction::DeleteWorld(_) => "Are you sure you want to delete this world?",
         };
-        let mut confirm = false;
-        let mut cancel = false;
-        let modal = egui::Modal::new(dialog_id()).show(ctx, |ui| {
-            ui.label(prompt);
-            ui.horizontal(|ui| {
-                confirm = ui.button("Confirm").clicked();
-                cancel = ui.button("Cancel").clicked();
-            });
-        });
+        let modal = if matches!(pending.action, WorldFormAction::Settings { .. }) {
+            project_dialogs::form_warning_dialog(dialog_id()).show(ctx, |ui| {
+                ui.set_width((ctx.content_rect().width() - 42.).clamp(0., 358.));
+                ui.spacing_mut().item_spacing = egui::vec2(2., 0.);
+                ui.label(
+                    RichText::new(locale::tr(ui, prompt))
+                        .size(14.667)
+                        .color(Color32::WHITE),
+                );
+                ui.add_space(16.);
+                let actions = egui::Frame::new()
+                    .inner_margin(1)
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            let size = egui::vec2((ui.available_width() - 2.) * 0.5, 35.);
+                            let confirm =
+                                project_dialogs::button(ui, "CONFIRM", size, false, 13.333);
+                            let cancel = project_dialogs::button(ui, "CANCEL", size, true, 13.333);
+                            (confirm.clicked(), cancel.clicked())
+                        })
+                        .inner
+                    })
+                    .inner;
+                ui.add_space(2.);
+                actions
+            })
+        } else {
+            egui::Modal::new(dialog_id()).show(ctx, |ui| {
+                ui.label(locale::tr(ui, prompt));
+                ui.horizontal(|ui| {
+                    let confirm = ui.button(locale::tr(ui, "Confirm")).clicked();
+                    let cancel = ui.button(locale::tr(ui, "Cancel")).clicked();
+                    (confirm, cancel)
+                })
+                .inner
+            })
+        };
+        let (mut confirm, mut cancel) = modal.inner;
         confirm |= ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter));
         cancel |= modal.should_close();
         if confirm || cancel {
@@ -282,7 +311,13 @@ mod tests {
     fn label(output: &egui::FullOutput, label: &str) -> egui::Pos2 {
         fn find(shape: &egui::epaint::Shape, label: &str) -> Option<egui::Pos2> {
             match shape {
-                egui::epaint::Shape::Text(t) if t.galley.job.text == label => {
+                egui::epaint::Shape::Text(t)
+                    if t.galley
+                        .job
+                        .text
+                        .split_whitespace()
+                        .eq(label.split_whitespace()) =>
+                {
                     Some(t.pos + t.galley.size() * 0.5)
                 }
                 egui::epaint::Shape::Vec(shapes) => shapes.iter().find_map(|s| find(s, label)),
@@ -443,11 +478,11 @@ mod tests {
         click(&mut app, &ctx, "Free");
         click(&mut app, &ctx, "LinearVertical");
         assert_eq!(app.project.as_ref().unwrap().json["worldLayout"], "Free");
-        click(&mut app, &ctx, "Cancel");
+        click(&mut app, &ctx, "CANCEL");
         assert_eq!(app.project.as_ref().unwrap().json["worldLayout"], "Free");
         click(&mut app, &ctx, "Free");
         click(&mut app, &ctx, "LinearVertical");
-        click(&mut app, &ctx, "Confirm");
+        click(&mut app, &ctx, "CONFIRM");
         assert_eq!(
             app.project.as_ref().unwrap().json["worldLayout"],
             "LinearVertical"

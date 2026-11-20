@@ -1,15 +1,44 @@
 use super::*;
 
+pub(super) enum ApplicationWrite {
+    Save(PathBuf),
+    SaveAs(PathBuf),
+    Create {
+        path: PathBuf,
+        browse_from: Option<PathBuf>,
+    },
+}
+
+impl ApplicationWrite {
+    fn path(&self) -> &Path {
+        match self {
+            Self::Save(path) | Self::SaveAs(path) | Self::Create { path, .. } => path,
+        }
+    }
+}
+
+fn in_application_directory(path: &Path) -> bool {
+    let Some(directory) = path.parent().and_then(|parent| parent.canonicalize().ok()) else {
+        return false;
+    };
+    let executable = std::env::current_exe().ok();
+    let examples = resource_path_in("examples/original", executable.as_deref());
+    executable
+        .as_deref()
+        .and_then(Path::parent)
+        .into_iter()
+        .chain(std::iter::once(examples.as_path()))
+        .any(|root| {
+            root.canonicalize()
+                .is_ok_and(|root| directory.starts_with(root))
+        })
+}
+
 pub(super) fn suggest_backups(project: &Project) -> bool {
     let Some(path) = &project.path else {
         return false;
     };
-    let examples = resource_path("examples/original");
-    let bundled = path
-        .canonicalize()
-        .unwrap_or_else(|_| path.clone())
-        .starts_with(examples.canonicalize().unwrap_or(examples));
-    !bundled
+    !in_application_directory(path)
         && project.json["backupOnSave"] != true
         && !project.is_backup()
         && project.level_keys().len() >= 8
@@ -18,7 +47,7 @@ pub(super) fn suggest_backups(project: &Project) -> bool {
             .is_some_and(|flags| flags.iter().any(|f| f == "IgnoreBackupSuggest"))
 }
 
-fn dialog_frame(padding: i8) -> egui::Frame {
+pub(super) fn dialog_frame(padding: i8) -> egui::Frame {
     egui::Frame::new()
         .fill(theme::MEDIUM)
         .corner_radius(3)
@@ -31,13 +60,26 @@ fn dialog_frame(padding: i8) -> egui::Frame {
         })
 }
 
-fn button(
+pub(super) fn form_warning_dialog(id: egui::Id) -> egui::Modal {
+    egui::Modal::new(id)
+        .area(egui::Modal::default_area(id).anchor(Align2::LEFT_TOP, [0., 16.]))
+        .frame(
+            dialog_frame(20)
+                .corner_radius(0.)
+                .fill(Color32::from_rgb(121, 17, 5))
+                .stroke(Stroke::new(1., Color32::from_rgb(227, 77, 0))),
+        )
+        .backdrop_color(Color32::from_black_alpha(140))
+}
+
+pub(super) fn button(
     ui: &mut egui::Ui,
     label: &str,
     size: Vec2,
     gray: bool,
     font_size: f32,
 ) -> egui::Response {
+    let label = locale::tr(ui, label);
     super::panels::source_controls::add_sized_button(
         ui,
         size,
@@ -51,14 +93,285 @@ fn button(
     )
 }
 
+pub(super) fn dialog_title(ui: &mut egui::Ui, title: &str, width: f32, fill: Color32) {
+    let (header, _) = ui.allocate_exact_size(egui::vec2(width, 36.), Sense::hover());
+    ui.painter().rect_filled(header, 0., fill);
+    ui.painter().text(
+        header.left_center() + egui::vec2(20., 0.),
+        Align2::LEFT_CENTER,
+        locale::tr(ui, title),
+        FontId::new(20., egui::FontFamily::Name("panel-title".into())),
+        Color32::WHITE,
+    );
+}
+
 impl EditorApp {
+    pub(super) fn check_application_write(&mut self, ctx: &egui::Context, write: ApplicationWrite) {
+        if in_application_directory(write.path()) {
+            self.application_write = Some(write);
+            ctx.request_repaint();
+        } else {
+            self.perform_project_write(ctx, write);
+        }
+    }
+
+    fn perform_project_write(&mut self, ctx: &egui::Context, write: ApplicationWrite) {
+        match write {
+            ApplicationWrite::Save(path)
+                if self
+                    .project
+                    .as_ref()
+                    .is_some_and(|project| !project.is_backup())
+                    && resources::is_missing_file(&path) =>
+            {
+                self.dirty = true;
+                self.save_failure = Some(services::SaveFailure::MissingTarget(path));
+                ctx.request_repaint();
+            }
+            ApplicationWrite::Save(path) | ApplicationWrite::SaveAs(path) => {
+                self.save_document(ctx, path);
+            }
+            ApplicationWrite::Create { path, .. } => self.create_project_async(ctx, path),
+        }
+    }
+
+    pub(super) fn show_application_directory_warning(&mut self, ctx: &egui::Context) {
+        let (message, alternative, here) = match &self.application_write {
+            Some(ApplicationWrite::Save(_) | ApplicationWrite::SaveAs(_)) => (
+                " you are trying to save a file in the application directory!",
+                "Save somewhere else",
+                "Save anyway (and lose my file during next update)",
+            ),
+            Some(ApplicationWrite::Create { .. }) => (
+                " you are trying to create a project in the application directory!",
+                "Create somewhere else",
+                "Ignore that (you will lose your project during next update)",
+            ),
+            None => return,
+        };
+        let modal = egui::Modal::new(egui::Id::new("application-directory-write"))
+            .frame(dialog_frame(20))
+            .backdrop_color(Color32::from_black_alpha(140))
+            .show(ctx, |ui| {
+                let width = (ctx.content_rect().width() - 56.).clamp(140., 360.);
+                ui.set_width(width);
+                ui.spacing_mut().item_spacing = egui::vec2(0., 2.);
+                let normal = FontId::proportional(14.667);
+                let bold = FontId::new(14.667, egui::FontFamily::Name("body-bold".into()));
+                let mut warning = egui::text::LayoutJob::default();
+                warning.append(
+                    locale::tr(ui, "WARNING:"),
+                    0.,
+                    egui::TextFormat::simple(bold.clone(), Color32::WHITE),
+                );
+                warning.append(
+                    locale::tr(ui, message),
+                    0.,
+                    egui::TextFormat::simple(normal, Color32::WHITE),
+                );
+                ui.add_space(14.);
+                ui.label(warning);
+                ui.add_space(11.);
+                ui.label(
+                    RichText::new(locale::tr(ui, "Any file saved here will be LOST during next app update."))
+                        .font(bold)
+                        .color(Color32::WHITE),
+                );
+                ui.add_space(13.);
+                let mut clicked = None;
+                ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
+                for (index, label) in [alternative, here, "Cancel"].into_iter().enumerate() {
+                    if button(ui, label, egui::vec2(width, 35.), index != 0, 13.333).clicked() {
+                        clicked = Some(index);
+                    }
+                }
+                clicked
+            });
+        let Some(choice) = modal.inner.or_else(|| modal.should_close().then_some(2)) else {
+            return;
+        };
+        let Some(write) = self.application_write.take() else {
+            return;
+        };
+        ctx.request_repaint();
+        match (choice, write) {
+            (0, ApplicationWrite::Save(path) | ApplicationWrite::SaveAs(path)) => {
+                if let Some(destination) = Self::pick_save_path(Some(&path)) {
+                    self.perform_project_write(ctx, ApplicationWrite::SaveAs(destination));
+                }
+            }
+            (0, ApplicationWrite::Create { browse_from, .. }) => {
+                self.new_project_dialog(ctx, browse_from);
+            }
+            (1, write) => self.perform_project_write(ctx, write),
+            _ => {}
+        }
+    }
+
+    pub(super) fn show_save_failure(&mut self, ctx: &egui::Context) {
+        #[derive(Clone, Copy)]
+        enum Choice {
+            Retry,
+            SaveAs,
+            OpenFolder,
+            Cancel,
+        }
+
+        let message = match &self.save_failure {
+            Some(services::SaveFailure::Write { message, .. }) => message,
+            Some(services::SaveFailure::MissingTarget(_)) => {
+                self.show_missing_save_target(ctx);
+                return;
+            }
+            None => return,
+        };
+        const ERROR_HEADER: Color32 = Color32::from_rgb(227, 77, 0);
+        const ERROR_BODY: Color32 = Color32::from_rgb(121, 17, 5);
+        let modal = egui::Modal::new(egui::Id::new("project-save-failure"))
+            .frame(dialog_frame(0).fill(ERROR_BODY))
+            .backdrop_color(Color32::from_black_alpha(140))
+            .show(ctx, |ui| {
+                let width = (ctx.content_rect().width() - 16.).clamp(180., 500.);
+                ui.set_width(width);
+                ui.spacing_mut().item_spacing = egui::vec2(2., 2.);
+                dialog_title(ui, "ERROR DURING PROJECT SAVING", width, ERROR_HEADER);
+                egui::Frame::new()
+                    .inner_margin(egui::Margin {
+                        left: 20,
+                        right: 20,
+                        top: 16,
+                        bottom: 23,
+                    })
+                    .show(ui, |ui| {
+                        let width = width - 40.;
+                        ui.set_width(width);
+                        let body =
+                            |text: &str| RichText::new(text).size(14.667).color(Color32::WHITE);
+                        egui::Frame::new()
+                            .fill(Color32::from_rgb(85, 3, 1))
+                            .stroke(Stroke::new(1., Color32::RED))
+                            .inner_margin(8)
+                            .show(ui, |ui| {
+                                ui.set_width(width - 18.);
+                                ui.label(body(message));
+                            });
+                        ui.add_space(12.);
+                        ui.label(body(locale::tr(ui, "The project was NOT saved properly!")));
+                        ui.add_space(16.);
+                        let size = egui::vec2(width, 35.);
+                        let mut choice = None;
+                        if button(ui, "RETRY", size, false, 13.333).clicked() {
+                            choice = Some(Choice::Retry);
+                        }
+                        if button(ui, "SAVE AS...", size, true, 13.333).clicked() {
+                            choice = Some(Choice::SaveAs);
+                        }
+                        ui.horizontal(|ui| {
+                            let open_width = 178_f32.min(width * 0.55);
+                            if button(
+                                ui,
+                                "OPEN PROJECT FOLDER",
+                                egui::vec2(open_width, 35.),
+                                true,
+                                13.333,
+                            )
+                            .clicked()
+                            {
+                                choice = Some(Choice::OpenFolder);
+                            }
+                            if button(
+                                ui,
+                                "CANCEL",
+                                egui::vec2(width - open_width - 2., 35.),
+                                true,
+                                13.333,
+                            )
+                            .clicked()
+                            {
+                                choice = Some(Choice::Cancel);
+                            }
+                        });
+                        choice
+                    })
+                    .inner
+            });
+        let Some(choice) = modal
+            .inner
+            .or_else(|| modal.should_close().then_some(Choice::Cancel))
+        else {
+            return;
+        };
+        let Some(services::SaveFailure::Write { path, .. }) = self.save_failure.take() else {
+            return;
+        };
+        ctx.request_repaint();
+        match choice {
+            Choice::Retry if !path.exists() => {
+                self.save_failure = Some(services::SaveFailure::MissingTarget(path));
+            }
+            Choice::Retry => self.save_to(ctx, path),
+            Choice::SaveAs => {
+                if let Some(path) = Self::pick_save_path(Some(&path)) {
+                    self.save_to(ctx, path);
+                }
+            }
+            Choice::OpenFolder => {
+                let parent = path.parent().unwrap_or(Path::new("."));
+                if let Err(error) = home_files::locate(parent, false) {
+                    self.status = error.to_string();
+                }
+            }
+            Choice::Cancel => {}
+        }
+    }
+
+    fn show_missing_save_target(&mut self, ctx: &egui::Context) {
+        let Some(services::SaveFailure::MissingTarget(path)) = &self.save_failure else {
+            return;
+        };
+        let modal = egui::Modal::new(egui::Id::new("missing-save-target"))
+            .frame(dialog_frame(20))
+            .backdrop_color(Color32::from_black_alpha(140))
+            .show(ctx, |ui| {
+                let width = (ctx.content_rect().width() - 56.).clamp(160., 360.);
+                ui.set_width(width);
+                ui.spacing_mut().item_spacing = egui::vec2(2., 0.);
+                ui.label(
+                    RichText::new(locale::format(
+                        ui,
+                        "The project file is no longer in {path}. Save to this path anyway?",
+                        &[("path", &path.display().to_string())],
+                    ))
+                    .size(14.667)
+                    .color(Color32::WHITE),
+                );
+                ui.add_space(16.);
+                ui.horizontal(|ui| {
+                    let size = egui::vec2((width - 2.) / 2., 35.);
+                    let confirm = button(ui, "CONFIRM", size, false, 13.333).clicked();
+                    let cancel = button(ui, "CANCEL", size, true, 13.333).clicked();
+                    (confirm, cancel)
+                })
+                .inner
+            });
+        let (confirm, cancel) = modal.inner;
+        if (confirm || cancel || modal.should_close())
+            && let Some(services::SaveFailure::MissingTarget(path)) = self.save_failure.take()
+        {
+            ctx.request_repaint();
+            if confirm && let Some(destination) = Self::pick_save_path(Some(&path)) {
+                self.save_to(ctx, destination);
+            }
+        }
+    }
+
     pub(super) fn show_unsaved_changes_dialog(&mut self, ctx: &egui::Context) {
         let mut choice = None;
         let modal = egui::Modal::new(egui::Id::new("unsaved-changes"))
             .frame(dialog_frame(20))
             .backdrop_color(Color32::from_black_alpha(140))
             .show(ctx, |ui| {
-                let message = "Do you want to save before leaving?";
+                let message = locale::tr(ui, "Do you want to save before leaving?");
                 let width = ui.fonts_mut(|fonts| {
                     fonts
                         .layout_no_wrap(
@@ -114,13 +427,10 @@ impl EditorApp {
             .show(ctx, |ui| {
                 ui.set_width(400.);
                 ui.spacing_mut().item_spacing = egui::vec2(0., 0.);
-                let (header, _) = ui.allocate_exact_size(egui::vec2(400., 36.), Sense::hover());
-                ui.painter().rect_filled(header, 0., theme::LIGHT);
-                ui.painter().text(header.left_center() + egui::vec2(20., 0.), Align2::LEFT_CENTER,
-                    "ENABLE BACKUPS", FontId::new(20., egui::FontFamily::Name("panel-title".into())), Color32::WHITE);
+                dialog_title(ui, "ENABLE BACKUPS", 400., theme::LIGHT);
                 egui::Frame::new().inner_margin(20).show(ui, |ui| {
                     ui.set_width(360.);
-                    ui.label(RichText::new("As your project is growing bigger, it is STRONGLY advised to enable BACKUPS, to secure your work.")
+                    ui.label(RichText::new(locale::tr(ui, "As your project is growing bigger, it is STRONGLY advised to enable BACKUPS, to secure your work."))
                         .size(14.667).color(Color32::WHITE));
                     ui.add_space(16.);
                     if button(ui, "Enable backups when saving", egui::vec2(360., 67.333), false, 17.333).clicked() {
@@ -204,6 +514,197 @@ mod tests {
                 ],
             );
         }
+    }
+
+    fn wait_for_save(app: &mut EditorApp, ctx: &egui::Context) -> egui::FullOutput {
+        let deadline = Instant::now() + std::time::Duration::from_secs(5);
+        while app.saving.is_some() && Instant::now() < deadline {
+            frame(app, ctx, vec![]);
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(app.saving.is_none());
+        frame(app, ctx, vec![])
+    }
+
+    #[test]
+    fn saving_in_application_directory_waits_for_the_users_choice() {
+        let executable = std::env::current_exe().unwrap();
+        let directory = tempfile::tempdir_in(executable.parent().unwrap()).unwrap();
+        let path = directory.path().join("Bundled.ldtk");
+        let mut project = Project::new();
+        project.save(&path).unwrap();
+        let before = std::fs::read(&path).unwrap();
+        let mut app = EditorApp::empty();
+        app.set_project(project);
+        app.project.as_mut().unwrap().json["defaultLevelBgColor"] = "#123456".into();
+        app.dirty = true;
+        let ctx = egui::Context::default();
+        theme::configure(&ctx);
+        frame(&mut app, &ctx, vec![]);
+
+        app.save(false);
+        frame(&mut app, &ctx, vec![]);
+        let warning = frame(&mut app, &ctx, vec![]);
+        label(&warning, "Save somewhere else");
+        assert!(app.saving.is_none());
+        click(&mut app, &ctx, label(&warning, "Cancel").center());
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        assert!(app.dirty && !app.is_busy());
+
+        app.save(false);
+        frame(&mut app, &ctx, vec![]);
+        let warning = frame(&mut app, &ctx, vec![]);
+        let save = label(
+            &warning,
+            "Save anyway (and lose my file during next update)",
+        );
+        click(&mut app, &ctx, save.center());
+        wait_for_save(&mut app, &ctx);
+        assert!(!app.dirty);
+        assert_eq!(
+            Project::load(&path).unwrap().json["defaultLevelBgColor"],
+            "#123456"
+        );
+    }
+
+    #[test]
+    fn moving_the_project_folder_preserves_unsaved_levels_for_save_as() {
+        let dir = tempfile::tempdir().unwrap();
+        let original = dir.path().join("Original");
+        let moved = dir.path().join("Moved");
+        std::fs::create_dir(&original).unwrap();
+        let path = original.join("Map.ldtk");
+        let mut project = Project::new();
+        project.add_layer("Ground", "IntGrid", 16).unwrap();
+        project.set_external_levels(true).unwrap();
+        project.save(&path).unwrap();
+        let key = project.level_keys()[0];
+        let relative = project.json["levels"][key.level]["externalRelPath"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let before = std::fs::read(original.join(&relative)).unwrap();
+        let mut app = EditorApp::empty();
+        app.set_project(project);
+        app.project
+            .as_mut()
+            .unwrap()
+            .paint_int_grid(key, 0, 1, 1, 1)
+            .unwrap();
+        app.dirty = true;
+        let ctx = egui::Context::default();
+        theme::configure(&ctx);
+        frame(&mut app, &ctx, vec![]);
+
+        std::fs::rename(&original, &moved).unwrap();
+        app.changed_resources(&ctx, vec![path.clone(), original.join(&relative)]);
+        assert!(app.external_changes.is_none());
+        app.save(false);
+        frame(&mut app, &ctx, vec![]);
+        let warning = frame(&mut app, &ctx, vec![]);
+        label(&warning, "CONFIRM");
+        click(&mut app, &ctx, label(&warning, "CANCEL").center());
+        assert!(app.dirty && !app.is_busy());
+        assert!(!original.exists());
+
+        let new_path = dir.path().join("Rescued.ldtk");
+        app.save_to(&ctx, new_path.clone());
+        wait_for_save(&mut app, &ctx);
+        let saved = Project::load(&new_path).unwrap();
+        assert_eq!(saved.level(key), app.project.as_ref().unwrap().level(key));
+        let layer = saved.layer(key, 0).unwrap();
+        let width = layer["__cWid"].as_u64().unwrap() as usize;
+        assert_eq!(layer["intGridCsv"][1 + width], 1);
+        assert_eq!(std::fs::read(moved.join(relative)).unwrap(), before);
+        assert!(!original.exists() && !app.dirty);
+    }
+
+    #[test]
+    fn failed_save_offers_recovery_and_retries_an_existing_destination() {
+        let directory = tempfile::tempdir().unwrap();
+        let original = directory.path().join("Original.ldtk");
+        let destination = directory.path().join("Copy.ldtk");
+        let blocker = destination.with_extension("");
+        std::fs::write(&blocker, "Existing file").unwrap();
+        let mut project = Project::new();
+        project.set_external_levels(true).unwrap();
+        project.save(&original).unwrap();
+        let original_root = std::fs::read(&original).unwrap();
+        std::fs::write(&destination, &original_root).unwrap();
+        let mut app = EditorApp::empty();
+        app.set_project(project);
+        app.dirty = true;
+        let ctx = egui::Context::default();
+        theme::configure(&ctx);
+        app.save_async_at(destination.clone());
+        let failed = wait_for_save(&mut app, &ctx);
+        label(&failed, "ERROR DURING PROJECT SAVING");
+        label(&failed, "SAVE AS...");
+        label(&failed, "OPEN PROJECT FOLDER");
+        label(&failed, "CANCEL");
+        let retry = label(&failed, "RETRY");
+        assert!(app.dirty && app.status_error);
+        assert_eq!(
+            app.project.as_ref().unwrap().path.as_deref(),
+            Some(original.as_path())
+        );
+        assert_eq!(std::fs::read(&destination).unwrap(), original_root);
+        assert_eq!(std::fs::read_to_string(&blocker).unwrap(), "Existing file");
+
+        std::fs::remove_file(blocker).unwrap();
+        click(&mut app, &ctx, retry.center());
+        wait_for_save(&mut app, &ctx);
+        let saved = Project::load(&destination).unwrap();
+        assert_eq!(saved.level_keys().len(), 1);
+        assert_eq!(std::fs::read(&original).unwrap(), original_root);
+        assert_eq!(
+            app.project.as_ref().unwrap().path.as_ref(),
+            Some(&destination)
+        );
+        assert!(!app.dirty && !app.status_error);
+    }
+
+    #[test]
+    fn retrying_a_missing_save_target_asks_before_reopening_save_as() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("Copy.ldtk");
+        let blocker = path.with_extension("");
+        std::fs::write(&blocker, "Existing file").unwrap();
+        let mut project = Project::new();
+        project.set_external_levels(true).unwrap();
+        let mut app = EditorApp::empty();
+        app.set_project(project);
+        app.dirty = true;
+        let ctx = egui::Context::default();
+        theme::configure(&ctx);
+        app.save_async_at(path.clone());
+        let retry = label(&wait_for_save(&mut app, &ctx), "RETRY");
+        std::fs::remove_file(blocker).unwrap();
+        click(&mut app, &ctx, retry.center());
+        assert!(matches!(
+            &app.save_failure,
+            Some(services::SaveFailure::MissingTarget(target)) if target == &path
+        ));
+        frame(&mut app, &ctx, vec![]);
+        let confirm = frame(&mut app, &ctx, vec![]);
+        label(&confirm, "CONFIRM");
+        let cancel = label(&confirm, "CANCEL");
+        assert!(app.saving.is_none());
+        click(&mut app, &ctx, cancel.center());
+        assert!(!app.is_busy() && app.dirty && !path.exists());
+    }
+
+    #[test]
+    fn extensionless_save_with_external_levels_keeps_destination_unused() {
+        let directory = tempfile::tempdir().unwrap();
+        let destination = directory.path().join("Copy");
+        let mut project = Project::new();
+        project.set_external_levels(true).unwrap();
+        assert!(project.save(&destination).is_err());
+        assert!(
+            !destination.exists(),
+            "A failed save created a directory at the project path"
+        );
     }
 
     #[test]
@@ -309,6 +810,62 @@ mod tests {
     }
 
     #[test]
+    fn search_layer_change_shows_the_standard_layer_notification() {
+        let mut project = Project::new();
+        project.add_layer("Actors", "Entities", 16).unwrap();
+        project.add_layer("Walls", "IntGrid", 16).unwrap();
+        let key = project.level_keys()[0];
+        let mut app = EditorApp::empty();
+        app.set_project(project);
+        let ctx = egui::Context::default();
+        theme::configure(&ctx);
+        frame(&mut app, &ctx, vec![]);
+
+        let target = 1 - app.layer;
+        let layer = app.project.as_ref().unwrap().layer(key, target).unwrap();
+        let name = layer["__identifier"].as_str().unwrap().to_owned();
+        let iid = layer["iid"].as_str().unwrap().to_owned();
+        app.search = iid;
+        app.command_palette = true;
+        frame(&mut app, &ctx, vec![]);
+        frame(
+            &mut app,
+            &ctx,
+            vec![egui::Event::Key {
+                key: Key::Enter,
+                physical_key: Some(Key::Enter),
+                pressed: true,
+                repeat: false,
+                modifiers: Default::default(),
+            }],
+        );
+        frame(&mut app, &ctx, vec![]);
+        let output = frame(&mut app, &ctx, vec![]);
+        assert_eq!(app.layer, target);
+        assert!(output.shapes.iter().any(|shape| matches!(&shape.shape, egui::Shape::Text(t)
+            if t.galley.text()==name && (t.galley.job.sections[0].format.font_id.size-40.).abs()<0.1
+        )));
+        assert!(!app.dirty);
+    }
+
+    #[test]
+    fn entering_world_view_shows_the_notification_without_editing() {
+        let mut app = EditorApp::empty();
+        app.set_project(Project::new());
+        let ctx = egui::Context::default();
+        theme::configure(&ctx);
+        frame(&mut app, &ctx, vec![]);
+
+        app.show_panel(Some(Panel::World));
+        frame(&mut app, &ctx, vec![]);
+        let output = frame(&mut app, &ctx, vec![]);
+        assert!(app.world);
+        let rect = label(&output, "World view");
+        assert!(rect.left() > 425. && rect.top() < 80.);
+        assert!(!app.dirty);
+    }
+
+    #[test]
     fn function_keys_show_the_changed_layer_name_and_type_without_editing() {
         let mut project = Project::new();
         for (name, kind) in [
@@ -368,13 +925,13 @@ mod tests {
             assert_eq!(app.project.as_ref().unwrap().json, original);
             assert!(!app.dirty);
         }
-        app.layer_notification.as_mut().unwrap().2 =
+        app.quick_notification.as_mut().unwrap().2 =
             Instant::now() - std::time::Duration::from_secs(2);
         frame(&mut app, &ctx, vec![]);
-        assert!(app.layer_notification.is_none());
+        assert!(app.quick_notification.is_none());
         app.switch_layer(app.layer);
         assert!(
-            app.layer_notification.is_none(),
+            app.quick_notification.is_none(),
             "selecting the current layer must not repeat the notification"
         );
     }

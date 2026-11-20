@@ -235,3 +235,139 @@ fn removing_external_source_drops_all_its_enums_and_dependent_fields_only() {
     );
     assert!(path.exists());
 }
+
+#[test]
+fn preview_154_castledb_extracts_unique_ids_from_first_level_lists() {
+    let source = json!({"sheets":[
+        {"name":"Actors","props":{},"columns":[{"name":"id","typeStr":"0"}],"lines":[
+            {"id":"A","items":[{"id":"Sword","tint":16711680},{"id":"Shield","tint":255}]},
+            {"id":"B","items":[{"id":"Sword","tint":1},{"id":"Bow","tint":2}]}]},
+        {"name":"Actors@items","props":{},"columns":[{"name":"id","typeStr":"0"},{"name":"tint","typeStr":"11"}],"lines":[]}
+    ]}).to_string();
+    let parsed = ldtk_core::enum_sync::parse_external_enums("cdb", &source).unwrap();
+    let list = parsed
+        .iter()
+        .find(|e| e.identifier == "Actors@items")
+        .unwrap();
+    assert_eq!(
+        list.values
+            .iter()
+            .map(|v| v["id"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        ["Sword", "Shield", "Bow"]
+    );
+    assert_eq!(list.values[0]["color"], 16711680);
+}
+
+#[test]
+fn preview_154_castledb_nested_list_sync_updates_and_rejects_missing_parent_atomically() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("data.cdb");
+    let make = |color| {
+        json!({"sheets":[
+        {"name":"Actors","props":{},"columns":[{"name":"id","typeStr":"0"}],"lines":[{"id":"A","items":[{"id":"Sword","tint":color}]}]},
+        {"name":"Actors@items","props":{},"columns":[{"name":"id","typeStr":"0"},{"name":"tint","typeStr":"11"}],"lines":[]}
+    ]}).to_string()
+    };
+    fs::write(&source, make(12)).unwrap();
+    let mut p = Project::new();
+    p.path = Some(dir.path().join("game.ldtk"));
+    p.sync_external_enums(&source).unwrap();
+    fs::write(&source, make(42)).unwrap();
+    p.sync_external_enums(&source).unwrap();
+    let defs = p.json["defs"]["externalEnums"].as_array().unwrap();
+    assert!(
+        defs.iter()
+            .any(|e| e["values"][0]["id"] == "Sword" && e["values"][0]["color"] == 42)
+    );
+    let before = p.json.clone();
+    fs::write(&source, json!({"sheets":[{"name":"Missing@items","columns":[{"name":"id","typeStr":"0"}],"props":{},"lines":[]}]}).to_string()).unwrap();
+    assert!(p.sync_external_enums(&source).is_err());
+    assert_eq!(p.json, before);
+}
+
+#[test]
+fn preview_154_castledb_level_only_values_require_rename_resolution() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("data.cdb");
+    let source = |id| {
+        json!({"sheets":[{"name":"Items","props":{},"columns":[{"name":"id","typeStr":"0"}],"lines":[{"id":id}]}]}).to_string()
+    };
+    fs::write(&path, source("Old")).unwrap();
+    let mut p = Project::new();
+    p.path = Some(dir.path().join("game.ldtk"));
+    p.sync_external_enums(&path).unwrap();
+    let uid = p
+        .add_field_definition(None, "Item", "ExternEnum.Items", false)
+        .unwrap();
+    let key = p.level_keys()[0];
+    p.set_field_editor_value(key, None, uid, json!("Old"))
+        .unwrap();
+    fs::write(&path, source("New")).unwrap();
+    let before = p.json.clone();
+    let report = p.sync_external_enums(&path).unwrap();
+    assert!(report.requires_confirmation && !report.applied);
+    assert_eq!(p.json, before);
+    p.apply_external_enum_sync(
+        &path,
+        &std::collections::BTreeMap::from([("Items.Old".into(), "New".into())]),
+        false,
+    )
+    .unwrap();
+    assert_eq!(p.level(key).unwrap()["fieldInstances"][0]["__value"], "New");
+}
+
+#[test]
+fn external_appearance_survives_sync_without_allowing_id_or_castledb_edits() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut project = Project::new();
+    project.path = Some(temp.path().join("game.ldtk"));
+    let source = temp.path().join("state.json");
+    fs::write(&source, r#"{"State":["Idle","Run"]}"#).unwrap();
+    project.sync_external_enums(&source).unwrap();
+    let atlas = project
+        .add_tileset(std::path::Path::new("icons.png"), 16, 32, 32)
+        .unwrap();
+    let uid = project.json["defs"]["externalEnums"][0]["uid"]
+        .as_i64()
+        .unwrap();
+    let icon = json!({"tilesetUid":atlas,"x":16,"y":0,"w":16,"h":16});
+    let mut values = project.json["defs"]["externalEnums"][0]["values"]
+        .as_array()
+        .unwrap()
+        .clone();
+    values[0]["tileRect"] = icon.clone();
+    values[0]["color"] = json!(0x44_88_aa);
+    project
+        .update_external_enum_appearance(uid, Some(atlas), &values)
+        .unwrap();
+
+    fs::write(&source, r#"{"State":["Run","Idle","Jump"]}"#).unwrap();
+    project.sync_external_enums(&source).unwrap();
+    let definition = &project.json["defs"]["externalEnums"][0];
+    assert_eq!(definition["iconTilesetUid"], atlas);
+    assert_eq!(definition["values"][1]["id"], "Idle");
+    assert_eq!(definition["values"][1]["tileRect"], icon);
+    assert_eq!(definition["values"][1]["color"], 0x44_88_aa);
+    let mut values = definition["values"].as_array().unwrap().clone();
+    values[0]["id"] = json!("Renamed");
+    let before = project.json.clone();
+    assert!(
+        project
+            .update_external_enum_appearance(uid, Some(atlas), &values)
+            .is_err()
+    );
+    assert_eq!(project.json, before);
+
+    project.json["defs"]["externalEnums"][0]["externalRelPath"] = json!("state.CDB");
+    let before = project.json.clone();
+    let values = before["defs"]["externalEnums"][0]["values"]
+        .as_array()
+        .unwrap();
+    assert!(
+        project
+            .update_external_enum_appearance(uid, None, values)
+            .is_err()
+    );
+    assert_eq!(project.json, before);
+}

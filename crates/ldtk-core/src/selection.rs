@@ -38,34 +38,38 @@ fn within(px: &Value, rect: [i32; 4], g: i64) -> bool {
         && y < i64::from(rect[1] + rect[3]) * g
 }
 fn erase_region(p: &mut Project, key: LevelKey, layer: usize, rect: [i32; 4]) -> Result<()> {
-    let layer = p
-        .layer_mut(key, layer)
+    let instance = p
+        .layer(key, layer)
         .ok_or_else(|| invalid("layer not found"))?;
-    let (w, h, g) = dims(layer)?;
-    match layer["__type"].as_str() {
+    let (w, h, g) = dims(instance)?;
+    match instance["__type"].as_str() {
         Some("IntGrid") => {
-            let csv = layer["intGridCsv"]
-                .as_array_mut()
-                .ok_or_else(|| invalid("IntGrid missing"))?;
-            if csv.len()
-                != usize::try_from(w * h).map_err(|_| invalid("invalid grid dimensions"))?
-            {
-                return Err(invalid("invalid IntGrid length"));
-            }
-            for y in i64::from(rect[1]).max(0)..i64::from(rect[1] + rect[3]).min(h) {
-                for x in i64::from(rect[0]).max(0)..i64::from(rect[0] + rect[2]).min(w) {
-                    csv[(y * w + x) as usize] = json!(0);
+            p.edit_layer_presence(key, layer, |layer, presence| {
+                let csv = layer["intGridCsv"]
+                    .as_array_mut()
+                    .ok_or_else(|| invalid("IntGrid missing"))?;
+                if csv.len()
+                    != usize::try_from(w * h).map_err(|_| invalid("invalid grid dimensions"))?
+                {
+                    return Err(invalid("invalid IntGrid length"));
                 }
-            }
+                for y in i64::from(rect[1]).max(0)..i64::from(rect[1] + rect[3]).min(h) {
+                    for x in i64::from(rect[0]).max(0)..i64::from(rect[0] + rect[2]).min(w) {
+                        let index = (y * w + x) as usize;
+                        presence.write(index, &mut csv[index], json!(0));
+                    }
+                }
+                Ok(())
+            })?;
         }
         Some("Tiles") => {
-            let ts = layer["gridTiles"]
+            let ts = p.layer_mut(key, layer).expect("validated layer")["gridTiles"]
                 .as_array_mut()
                 .ok_or_else(|| invalid("tiles missing"))?;
             ts.retain(|t| !within(&t["px"], rect, g));
         }
         Some("Entities") => {
-            let es = layer["entityInstances"]
+            let es = p.layer_mut(key, layer).expect("validated layer")["entityInstances"]
                 .as_array_mut()
                 .ok_or_else(|| invalid("entities missing"))?;
             es.retain(|e| !within(&e["px"], rect, g));
@@ -125,22 +129,30 @@ fn paste(
             }) {
                 return Err(invalid("clipboard IntGrid value is not defined"));
             }
-            let dst = p.layer_mut(key, index).expect("validated layer")["intGridCsv"]
-                .as_array_mut()
-                .ok_or_else(|| invalid("destination IntGrid missing"))?;
-            if dst.len() != w as usize * h as usize {
-                return Err(invalid("destination IntGrid size mismatch"));
-            }
-            for cy in 0..ch {
-                for cx in 0..cw {
-                    let dx = i64::from(x) + if flip_x { cw - 1 - cx } else { cx };
-                    let dy = i64::from(y) + if flip_y { ch - 1 - cy } else { cy };
-                    if dx >= 0 && dy >= 0 && dx < w && dy < h {
-                        dst[(dy * w + dx) as usize] = src[(cy * cw + cx) as usize].clone();
-                        count += 1;
+            p.edit_layer_presence(key, index, |layer, presence| {
+                let dst = layer["intGridCsv"]
+                    .as_array_mut()
+                    .ok_or_else(|| invalid("destination IntGrid missing"))?;
+                if dst.len() != w as usize * h as usize {
+                    return Err(invalid("destination IntGrid size mismatch"));
+                }
+                for cy in 0..ch {
+                    for cx in 0..cw {
+                        let dx = i64::from(x) + if flip_x { cw - 1 - cx } else { cx };
+                        let dy = i64::from(y) + if flip_y { ch - 1 - cy } else { cy };
+                        if dx >= 0 && dy >= 0 && dx < w && dy < h {
+                            let index = (dy * w + dx) as usize;
+                            presence.write(
+                                index,
+                                &mut dst[index],
+                                src[(cy * cw + cx) as usize].clone(),
+                            );
+                            count += 1;
+                        }
                     }
                 }
-            }
+                Ok(())
+            })?;
         }
         Some("Tiles") => {
             if !clip["tilesetUid"].is_null() && clip["tilesetUid"] != layer["__tilesetDefUid"] {

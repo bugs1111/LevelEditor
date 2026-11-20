@@ -281,7 +281,10 @@ mod native_tests {
         project.add_layer("Actors", "Entities", 16).unwrap();
         let uid = project.add_entity_def("Actor", 16, 16).unwrap();
         project
-            .update_entity_definition(uid, &json!({"resizableX":true,"resizableY":true}))
+            .update_entity_definition(
+                uid,
+                &json!({"resizableX":true,"resizableY":true,"pivotX":0.5,"pivotY":1}),
+            )
             .unwrap();
         let key = project.level_keys()[0];
         project.add_entity(key, 0, uid, 32, 32).unwrap();

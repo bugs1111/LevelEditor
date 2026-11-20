@@ -8,6 +8,7 @@ impl EditorApp {
         }
         self.crash = Some((message.clone(), None));
         let needs_recovery = self.dirty || self.stroke || self.gesture.is_some();
+        let auto_error = (!self.settle_deferred_auto_paint()).then(|| self.status.clone());
         self.gesture = None;
         self.level_resize = None;
         self.stroke = false;
@@ -29,14 +30,20 @@ impl EditorApp {
         // Ignore future completions: they must not replace the captured document
         // or resume a save-hook continuation after the crash.
         self.loading = None;
+        self.loading_progress = None;
         self.saving = None;
+        self.clear_save_progress();
         self.exporting = None;
+        self.exporting_progress = None;
         self.external_changes = None;
         // Discard potentially incomplete history without reverting current JSON.
         self.history = History::default();
         self.ui_commit = ui_commit::UiCommit::default();
         self.world_context = world_context::WorldContext::default();
         let mut report = message;
+        if let Some(error) = auto_error {
+            report.push_str(&format!("\n\nDeferred paint was rolled back: {error}"));
+        }
         let mut recovery = None;
         if needs_recovery && let Some(project) = &self.project {
             self.dirty = true;

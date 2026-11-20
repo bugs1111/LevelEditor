@@ -147,7 +147,23 @@ pub fn parse_external_enums(extension: &str, source: &str) -> Result<Vec<ParsedE
                 let tile = sheet["props"]["displayIcon"].as_str();
                 let mut values = Vec::new();
                 let mut seen = BTreeSet::new();
-                for line in arr(&sheet["lines"]) {
+                let name = s(sheet, "name");
+                let lines: Vec<&Value> = if let Some((parent, rest)) = name.split_once('@') {
+                    let list = rest.split('@').next().unwrap_or("");
+                    let parent = arr(&v["sheets"])
+                        .iter()
+                        .find(|candidate| s(candidate, "name") == parent)
+                        .ok_or_else(|| {
+                            Error::Invalid(format!("CastleDB parent sheet missing for {name}"))
+                        })?;
+                    arr(&parent["lines"])
+                        .iter()
+                        .flat_map(|line| arr(&line[list]))
+                        .collect()
+                } else {
+                    arr(&sheet["lines"]).iter().collect()
+                };
+                for line in lines {
                     let Some(value) = line[id].as_str() else {
                         continue;
                     };
@@ -318,6 +334,67 @@ fn rename_enum_types(v: &mut Value, from: &str, to: &str) {
 }
 
 impl Project {
+    /// Change only local presentation overrides for an imported enum.
+    pub fn update_external_enum_appearance(
+        &mut self,
+        uid: i64,
+        atlas: Option<i64>,
+        values: &[Value],
+    ) -> Result<()> {
+        self.edit_document(|p| {
+            let definition = p.json["defs"]["externalEnums"]
+                .as_array_mut()
+                .and_then(|defs| defs.iter_mut().find(|def| def["uid"] == uid))
+                .ok_or_else(|| Error::Invalid("external enum missing".into()))?;
+            if Path::new(s(definition, "externalRelPath"))
+                .extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("cdb"))
+            {
+                return Err(Error::Invalid("CastleDB controls enum appearance".into()));
+            }
+            let stored = definition["values"]
+                .as_array_mut()
+                .ok_or_else(|| Error::Invalid("external enum values missing".into()))?;
+            if stored.len() != values.len()
+                || stored
+                    .iter()
+                    .zip(values)
+                    .any(|(old, new)| old["id"] != new["id"])
+            {
+                return Err(Error::Invalid(
+                    "external enum value IDs and order are read-only".into(),
+                ));
+            }
+            for (old, value) in stored.iter_mut().zip(values) {
+                for key in ["color", "tileRect"] {
+                    if let Some(next) = value.get(key) {
+                        old[key] = next.clone();
+                    }
+                }
+            }
+            definition["iconTilesetUid"] = json!(atlas);
+            Ok(())
+        })
+    }
+
+    pub fn external_enum_source_changed(&self, path: &Path) -> Result<bool> {
+        let base = self
+            .path
+            .as_deref()
+            .and_then(Path::parent)
+            .unwrap_or(Path::new("."));
+        let absolute = self.make_absolute_file_path(path)?;
+        let relative = relative_to(&absolute, base)?;
+        let source = fs::read(&absolute).map_err(|source| Error::Io {
+            path: absolute,
+            source,
+        })?;
+        let checksum = md5_hex(&source);
+        Ok(arr(&self.json["defs"]["externalEnums"]).iter().any(|def| {
+            s(def, "externalRelPath") == relative && s(def, "externalFileChecksum") != checksum
+        }))
+    }
+
     pub fn sync_external_enums(&mut self, path: impl AsRef<Path>) -> Result<EnumSyncReport> {
         self.apply_external_enum_sync(path, &BTreeMap::new(), false)
     }

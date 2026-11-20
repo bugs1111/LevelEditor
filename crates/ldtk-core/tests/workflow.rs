@@ -48,6 +48,60 @@ fn entity_remove_repairs_reference_and_toc() {
     assert_eq!(p.json["toc"][0]["instancesData"], json!([]));
     assert_eq!(p.json["defs"]["entities"][0]["uid"], uid);
 }
+
+#[test]
+fn save_rebuilds_table_of_contents_after_flag_and_position_changes() {
+    let dir = tempfile::tempdir().unwrap();
+    for external in [false, true] {
+        let path = dir.path().join(if external {
+            "External.ldtk"
+        } else {
+            "Inline.ldtk"
+        });
+        let mut p = sample();
+        p.json["externalLevels"] = json!(external);
+        p.json["defs"]["entities"][0]["exportToToc"] = json!(true);
+        p.refresh_derived_data().unwrap();
+        p.save(&path).unwrap();
+        assert_eq!(p.json["toc"][0]["instances"], json!([]));
+
+        p.json["flags"] = json!(["ExportOldTableOfContentData"]);
+        p.layer_mut(K, 0).unwrap()["entityInstances"][0]["px"] = json!([32, 48]);
+        p.save(&path).unwrap();
+        let saved = Project::load(&path).unwrap();
+        let entry = &saved.json["toc"][0];
+        let entity = &saved.layer(K, 0).unwrap()["entityInstances"][0];
+        let iids = json!({
+            "worldIid": saved.json["dummyWorldIid"],
+            "levelIid": saved.level(K).unwrap()["iid"],
+            "layerIid": saved.layer(K, 0).unwrap()["iid"],
+            "entityIid": entity["iid"]
+        });
+        assert_eq!(entry["instances"], json!([iids]));
+        assert_eq!(
+            entry["instancesData"],
+            json!([{
+                "iids": iids,
+                "worldX": 32,
+                "worldY": 48,
+                "widPx": 16,
+                "heiPx": 16,
+                "fields": {}
+            }])
+        );
+        assert_eq!(p.json["toc"], saved.json["toc"]);
+
+        p.json["flags"] = json!([]);
+        p.save(&path).unwrap();
+        let saved = Project::load(&path).unwrap();
+        assert_eq!(saved.json["toc"][0]["instances"], json!([]));
+        assert_eq!(
+            saved.json["toc"][0]["instancesData"],
+            entry["instancesData"]
+        );
+    }
+}
+
 #[test]
 fn world_level_resize_reflows_intgrid_without_losing_cells() {
     let mut p = Project::new();
@@ -132,7 +186,7 @@ fn definition_properties_propagate_and_rollback_invalid_dimensions() {
     .unwrap();
     let e = &p.layer(K, 0).unwrap()["entityInstances"][0];
     assert_eq!(e["width"], 32);
-    assert_eq!(e["__pivot"], json!([1, 1]));
+    assert_eq!(e["__pivot"], json!([1, 0]));
     assert_eq!(e["__identifier"], "Player");
     assert_eq!(e["__smartColor"], "#123456");
     let old = p.json.clone();
@@ -491,6 +545,99 @@ fn adding_world_migrates_legacy_levels_to_source_canonical_multiworld_json() {
     assert_eq!(p.json["worlds"][0]["iid"], p.json["dummyWorldIid"]);
     assert_eq!(p.level_keys().len(), 1);
 }
+
+#[test]
+fn disabling_multiworlds_preserves_external_levels_and_entity_references() {
+    let mut p = sample();
+    let original_dummy_iid = p.json["dummyWorldIid"].clone();
+    let other_world = p.add_world("Remaining").unwrap();
+    let before = p.json.clone();
+    assert!(p.disable_multiworlds().is_err());
+    assert_eq!(p.json, before);
+    let target = LevelKey {
+        world: Some(0),
+        level: 0,
+    };
+    p.move_level_to_world(target, Some(other_world), 0).unwrap();
+    p.remove_world(0).unwrap();
+    let source = p.add_level(Some(0), "Other", 64, 64).unwrap();
+    let field = p
+        .add_field_definition(None, "Link", "EntityRef", false)
+        .unwrap();
+    let entity_iid = p.layer(target, 0).unwrap()["entityInstances"][0]["iid"].clone();
+    p.set_field_value(source, None, field, entity_iid.clone())
+        .unwrap();
+    p.json["defs"]["entities"][0]["exportToToc"] = json!(true);
+    p.json["worlds"][0]["worldLayout"] = json!("GridVania");
+    p.json["worlds"][0]["worldGridWidth"] = json!(128);
+    p.json["worlds"][0]["worldGridHeight"] = json!(96);
+    p.json["worlds"][0]["defaultLevelWidth"] = json!(384);
+    p.json["worlds"][0]["defaultLevelHeight"] = json!(192);
+    p.json["projectExtension"] = json!(true);
+    p.json["flags"] = json!(["MultiWorlds", "IgnoreBackupSuggest"]);
+    p.json["levelNamePattern"] = json!("Room_%world_%idx");
+    p.level_mut(target).unwrap()["useAutoIdentifier"] = json!(true);
+    p.level_mut(source).unwrap()["levelExtension"] = json!(42);
+    p.refresh_derived_data().unwrap();
+    p.set_external_levels(true).unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("World.ldtk");
+    p.save(&path).unwrap();
+    let mut p = Project::load(&path).unwrap();
+    let world_iid = p.json["worlds"][0]["iid"].clone();
+    let target_level_iid = p.level(target).unwrap()["iid"].clone();
+    let source_level_iid = p.level(source).unwrap()["iid"].clone();
+    let layer_iid = p.layer(target, 0).unwrap()["iid"].clone();
+    let source_path = p.json["worlds"][0]["levels"][1]["externalRelPath"].clone();
+    assert_ne!(world_iid, original_dummy_iid);
+    let mut history = History::default();
+    history.begin_project(&p);
+    assert!(p.disable_multiworlds().unwrap());
+    assert!(!p.disable_multiworlds().unwrap());
+    assert!(history.commit(&p));
+    assert!(history.undo(&mut p));
+    assert_eq!(p.level(source).unwrap()["iid"], source_level_iid);
+    assert_eq!(p.json["dummyWorldIid"], original_dummy_iid);
+    assert!(history.redo(&mut p));
+    p.save(&path).unwrap();
+    let p = Project::load(&path).unwrap();
+
+    let reference = json!({
+        "worldIid": world_iid,
+        "levelIid": target_level_iid,
+        "layerIid": layer_iid,
+        "entityIid": entity_iid,
+    });
+    assert_eq!(p.json["flags"], json!(["IgnoreBackupSuggest"]));
+    assert_eq!(p.json["worlds"], json!([]));
+    assert_eq!(p.json["dummyWorldIid"], world_iid);
+    assert_eq!(p.json["worldLayout"], "GridVania");
+    assert_eq!(p.json["worldGridWidth"], 128);
+    assert_eq!(p.json["worldGridHeight"], 96);
+    assert_eq!(p.json["defaultLevelWidth"], 384);
+    assert_eq!(p.json["defaultLevelHeight"], 192);
+    assert_eq!(p.json["projectExtension"], true);
+    assert_eq!(p.json["externalLevels"], true);
+    assert_eq!(p.json["levels"][1]["externalRelPath"], source_path);
+    assert_eq!(p.level(K).unwrap()["iid"], target_level_iid);
+    assert_eq!(p.level(K).unwrap()["identifier"], "Room_Remaining_0");
+    assert_eq!(p.layer(K, 0).unwrap()["iid"], layer_iid);
+    assert_eq!(
+        p.layer(K, 0).unwrap()["entityInstances"][0]["iid"],
+        entity_iid
+    );
+    let source = p
+        .level(LevelKey {
+            world: None,
+            level: 1,
+        })
+        .unwrap();
+    assert_eq!(source["iid"], source_level_iid);
+    assert_eq!(source["levelExtension"], 42);
+    assert_eq!(source["fieldInstances"][0]["__value"], reference);
+    assert_eq!(p.json["toc"][0]["instancesData"][0]["iids"], reference);
+}
+
 #[test]
 fn removing_palette_values_clears_cells_and_reparents_orphaned_groups() {
     let mut p = Project::new();
@@ -503,6 +650,19 @@ fn removing_palette_values_clears_cells_and_reparents_orphaned_groups() {
     assert_eq!(p.layer(K, 0).unwrap()["intGridCsv"][1], 2);
     assert_eq!(p.layer_def(uid).unwrap()["intGridValues"][0]["groupUid"], 0);
 }
+
+#[test]
+fn int_grid_palette_edits_preserve_unrelated_auto_layer_caches() {
+    let mut p = Project::new();
+    let cells = p.add_layer("Cells", "IntGrid", 16).unwrap();
+    p.paint_int_grid(K, 0, 0, 0, 1).unwrap();
+    p.add_layer("Decor", "AutoLayer", 16).unwrap();
+    let cache = json!([{"px":[16,0],"src":[0,0],"t":0,"f":0,"d":[3,1],"a":1}]);
+    p.layer_mut(K, 0).unwrap()["autoLayerTiles"] = cache.clone();
+    p.update_layer_properties(cells, &json!({"intGridValues":[]})).unwrap();
+    assert_eq!(p.layer(K, 1).unwrap()["intGridCsv"][0], 0);
+    assert_eq!(p.layer(K, 0).unwrap()["autoLayerTiles"], cache);
+}
 #[test]
 fn derived_external_summaries_keep_document_extensions_in_their_own_document() {
     let mut p = Project::new();
@@ -512,6 +672,7 @@ fn derived_external_summaries_keep_document_extensions_in_their_own_document() {
     p.json["levels"][0]["layerInstances"] = serde_json::Value::Null;
     p.json["levels"][0]["summaryFuture"] = json!(7);
     p.external_levels.insert("level.ldtkl".into(), full);
+    p.json["defaultLevelBgColor"] = json!("#654321");
     p.move_level(K, 10, 20, 0).unwrap();
     assert!(p.json["levels"][0].get("externalFuture").is_none());
     assert_eq!(p.json["levels"][0]["summaryFuture"], 7);
@@ -520,7 +681,34 @@ fn derived_external_summaries_keep_document_extensions_in_their_own_document() {
         json!({"keep":true})
     );
     assert_eq!(p.json["levels"][0]["worldX"], 10);
+    assert_eq!(p.json["levels"][0]["__bgColor"], "#654321");
+    assert_eq!(p.external_levels["level.ldtkl"]["__bgColor"], "#654321");
 }
+
+#[test]
+fn derived_background_preserves_explicit_color_and_falls_back_to_workspace_for_old_projects() {
+    let mut p = Project::new();
+    let custom = p.add_level(None, "Custom", 16, 16).unwrap();
+    p.level_mut(custom).unwrap()["bgColor"] = json!("#654321");
+    p.json["defaultLevelBgColor"] = json!("#123456");
+    p.refresh_derived_data().unwrap();
+    assert_eq!(p.level(K).unwrap()["__bgColor"], "#123456");
+    assert_eq!(p.level(custom).unwrap()["__bgColor"], "#654321");
+
+    p.json
+        .as_object_mut()
+        .unwrap()
+        .remove("defaultLevelBgColor");
+    p.json["bgColor"] = json!("#ABCDEF");
+    p.level_mut(custom).unwrap()["bgColor"] = serde_json::Value::Null;
+    p.refresh_derived_data().unwrap();
+    assert_eq!(p.level(K).unwrap()["__bgColor"], "#ABCDEF");
+    assert_eq!(p.level(custom).unwrap()["__bgColor"], "#ABCDEF");
+    p.migrate_to_current().unwrap();
+    assert_eq!(p.json["defaultLevelBgColor"], "#ABCDEF");
+    assert_eq!(p.level(K).unwrap()["__bgColor"], "#ABCDEF");
+}
+
 #[test]
 fn finishing_entity_transform_checks_only_the_touched_entity_and_repairs_refs_and_points() {
     let mut p = Project::new();
@@ -551,6 +739,8 @@ fn finishing_entity_transform_checks_only_the_touched_entity_and_repairs_refs_an
         json!([{"cx":0,"cy":0},{"cx":9999,"cy":0}]),
     )
     .unwrap();
+    p.layer_mut(K, 0).unwrap()["entityInstances"][1]["fieldInstances"][1]
+        ["realEditorValues"][0]["extension"] = json!({"keep":true});
     p.layer_mut(K, 0).unwrap()["entityInstances"][0]["px"] = json!([-1, 0]);
     assert!(!p.finish_entity_transform(K, 0, 1).unwrap());
     assert_eq!(
@@ -563,6 +753,10 @@ fn finishing_entity_transform_checks_only_the_touched_entity_and_repairs_refs_an
     assert_eq!(
         p.layer(K, 0).unwrap()["entityInstances"][1]["fieldInstances"][1]["__value"],
         json!([{"cx":0,"cy":0}])
+    );
+    assert_eq!(
+        p.layer(K, 0).unwrap()["entityInstances"][1]["fieldInstances"][1]["realEditorValues"],
+        json!([{"id":"V_String","params":["0,0"],"extension":{"keep":true}}])
     );
     assert!(p.finish_entity_transform(K, 0, 0).unwrap());
     assert!(p.layer(K, 0).unwrap()["entityInstances"][0]["fieldInstances"][0]["__value"].is_null());

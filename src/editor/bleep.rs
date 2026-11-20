@@ -741,6 +741,8 @@ mod tests {
         let mut p = Project::new();
         p.add_layer("Actors", "Entities", 16).unwrap();
         let uid = p.add_entity_def("Actor", 16, 16).unwrap();
+        p.update_entity_definition(uid, &json!({"pivotX":0.5,"pivotY":1}))
+            .unwrap();
         p.add_entity(KEY, 0, uid, 24, 32).unwrap();
         let mut app = EditorApp::empty();
         app.set_project(p);
@@ -907,7 +909,7 @@ mod tests {
             .unwrap()
             .to_owned();
         app.select_search_destination(search::Destination::Entity(iid));
-        assert!(app.fit);
+        assert!(!app.fit && app.camera_motion.is_active());
         assert_ne!(app.panel, Some(Panel::Entity));
         let first = draw(&app, &ctx, 0.1);
         assert_eq!(first.len(), 1, "search must not also invoke follow bleeps");

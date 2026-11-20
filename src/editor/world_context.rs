@@ -89,6 +89,7 @@ impl EditorApp {
         response: &egui::Response,
     ) -> bool {
         if self.project.as_ref().is_none_or(Project::is_backup)
+            || self.picking_entity_ref()
             || self
                 .panel
                 .is_some_and(|panel| !matches!(panel, Panel::Entity | Panel::World))
@@ -112,9 +113,13 @@ impl EditorApp {
                 return false;
             }
             if self.fit {
+                self.camera_motion.cancel();
                 if let (Some(p), Some(key)) = (&self.project, self.selected) {
-                    self.viewport
-                        .fit_world(canvas::bounds(p, key, true), rect.size().into());
+                    self.viewport.fit_world(
+                        canvas::bounds(p, key, true),
+                        rect.size().into(),
+                        ctx.pixels_per_point(),
+                    );
                 }
                 self.fit = false;
             }
@@ -125,22 +130,22 @@ impl EditorApp {
             if response.hovered()
                 && let Some(pointer) = ctx.pointer_hover_pos()
             {
-                let (pan, delta, scroll, primary, space) = ctx.input(|i| {
+                let (pan, delta, primary, space) = ctx.input(|i| {
                     (
                         i.pointer.button_down(egui::PointerButton::Middle),
                         i.pointer.delta(),
-                        i.raw_scroll_delta.y,
                         i.pointer.primary_pressed(),
                         i.key_down(egui::Key::Space),
                     )
                 });
                 if pan || (space && ctx.input(|i| i.pointer.primary_down())) {
+                    if delta.length_sq() > 0.0 {
+                        self.camera_motion.cancel_pan();
+                    }
                     self.viewport.center[0] -= delta.x / self.viewport.zoom;
                     self.viewport.center[1] -= delta.y / self.viewport.zoom;
                 }
-                if scroll != 0. {
-                    self.wheel_zoom(ctx, rect, pointer, scroll);
-                }
+                self.wheel_zoom(ctx, rect, pointer);
                 if !self.world_context.picking {
                     return true;
                 }
@@ -155,6 +160,7 @@ impl EditorApp {
         if response.hovered()
             && ctx.input(|i| {
                 i.pointer.secondary_pressed()
+                    && !tools::space_secondary_pressed(i)
                     && (i.modifiers.is_none()
                         || cfg!(target_os = "macos")
                             && i.modifiers.ctrl
@@ -181,10 +187,13 @@ impl EditorApp {
             let mut pick = false;
             let mut cancel = false;
             egui::Modal::new(egui::Id::new("world-no-room")).show(ctx, |ui| {
-                ui.label("No room for a level here! Do you want to pick another location?");
+                ui.label(locale::tr(
+                    ui,
+                    "No room for a level here! Do you want to pick another location?",
+                ));
                 ui.horizontal(|ui| {
-                    pick = ui.button("Pick another location").clicked();
-                    cancel = ui.button("Cancel").clicked();
+                    pick = ui.button(locale::tr(ui, "Pick another location")).clicked();
+                    cancel = ui.button(locale::tr(ui, "Cancel")).clicked();
                 });
             });
             if pick {
@@ -221,14 +230,14 @@ impl EditorApp {
             .open_bool(&mut open)
             .close_behavior(close)
             .show(|ui| {
-                if ui.button("New level").clicked() {
+                if ui.button(locale::tr(ui, "New level")).clicked() {
                     action = Some(Action::New);
                 }
                 if let Some(key) = menu.level {
-                    if ui.button("Duplicate").clicked() {
+                    if ui.button(locale::tr(ui, "Duplicate")).clicked() {
                         action = Some(Action::Duplicate(key));
                     }
-                    if ui.button("Delete").clicked() {
+                    if ui.button(locale::tr(ui, "Delete")).clicked() {
                         action = Some(Action::Delete(key));
                     }
                 }
@@ -239,16 +248,23 @@ impl EditorApp {
                     .filter(|w| w.len() > 1)
                 {
                     ui.separator();
-                    ui.label(if menu.level.is_some() {
-                        "Move this level to:"
-                    } else {
-                        "Go to world:"
-                    });
+                    ui.label(locale::tr(
+                        ui,
+                        if menu.level.is_some() {
+                            "Move this level to:"
+                        } else {
+                            "Go to world:"
+                        },
+                    ));
                     for (index, world) in worlds.iter().enumerate() {
-                        let label = format!(
-                            "{} ({} levels)",
-                            text(world, "identifier", "World"),
-                            world["levels"].as_array().map_or(0, Vec::len)
+                        let count = world["levels"].as_array().map_or(0, Vec::len);
+                        let label = locale::format(
+                            ui,
+                            "{world} ({count} levels)",
+                            &[
+                                ("world", text(world, "identifier", "World")),
+                                ("count", &count.to_string()),
+                            ],
                         );
                         if ui
                             .add_enabled(Some(index) != self.active_world, egui::Button::new(label))
@@ -324,8 +340,8 @@ impl EditorApp {
             .show(ui.ctx(), |ui| {
                 egui::Frame::popup(ui.style()).show(ui, |ui| {
                     ui.horizontal(|ui| {
-                        ui.label("Pick a location for the new level");
-                        cancel = ui.button("Cancel").clicked();
+                        ui.label(locale::tr(ui, "Pick a location for the new level"));
+                        cancel = ui.button(locale::tr(ui, "Cancel")).clicked();
                     });
                 });
             });
@@ -479,6 +495,7 @@ impl EditorApp {
             .into_iter()
             .find(|(k, _)| *k == key)
         {
+            self.camera_motion.cancel_pan();
             self.viewport.center = if self.world {
                 [(b[0] + b[2]) * 0.5, (b[1] + b[3]) * 0.5]
             } else {
@@ -796,6 +813,20 @@ mod tests {
         click(&mut a, &ctx, delete);
         assert_eq!(a.project.as_ref().unwrap().level_keys().len(), 1);
         assert!(a.last_chance.is_some());
+    }
+    #[test]
+    fn chinese_world_menu_keeps_level_actions_available() {
+        let mut a = editor();
+        a.viewport.center = [128., 128.];
+        let ctx = egui::Context::default();
+        theme::configure(&ctx);
+        locale::set(&ctx, locale::Language::SimplifiedChinese);
+        let output = right_click(&mut a, &ctx, egui::pos2(400., 300.));
+        label_center(&output, "新建关卡");
+        label_center(&output, "删除");
+        let duplicate = label_center(&output, "复制");
+        click(&mut a, &ctx, duplicate);
+        assert_eq!(a.project.as_ref().unwrap().level_keys().len(), 2);
     }
     #[test]
     fn actual_picker_rejects_occupied_click_then_creates_at_preview_in_all_layouts() {

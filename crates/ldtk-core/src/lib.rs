@@ -5,6 +5,7 @@ mod edit;
 pub mod enum_sync;
 pub mod exports;
 mod field_edit;
+mod grid_presence;
 mod history;
 pub mod imports;
 mod naming;
@@ -13,10 +14,14 @@ mod selection;
 mod selection_group;
 mod workflow;
 
-pub use definitions::TilesetRemap;
+pub use autotile::DeferredAutoLayers;
+pub use definitions::{BakeMode, TilesetRemap};
 pub use field_edit::FieldArrayEdit;
 pub use history::History;
-pub use project::{BackupInfo, FilesystemSnapshot, LevelKey, Project, SaveReport};
+pub use project::{
+    BackupInfo, ExternalLevels, FilesystemSnapshot, LevelKey, Project, SaveReport, SaveStage,
+};
+pub use selection_group::selection_group_is_entity_only;
 pub use workflow::{constrained_entity_size, snapped_entity_position};
 
 #[derive(Debug, thiserror::Error)]
