@@ -79,11 +79,7 @@ fn rule_icon_button(
 }
 
 fn rule_popup_frame(ui: &egui::Ui) -> egui::Frame {
-    egui::Frame::popup(ui.style())
-        .fill(theme::DARK)
-        .stroke(Stroke::new(1., theme::LIGHT))
-        .corner_radius(2.)
-        .inner_margin(0.)
+    source_controls::context_menu_frame(ui.style())
 }
 
 fn rule_menu_row(

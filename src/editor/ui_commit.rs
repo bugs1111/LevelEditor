@@ -9,7 +9,10 @@ pub(super) enum DeferredUiAction {
         key: LevelKey,
         fit: bool,
     },
-    World(Option<usize>),
+    World {
+        world: Option<usize>,
+        open_world_view: bool,
+    },
     FollowEntity(String),
     Search(search::Destination),
     Zoom {
@@ -153,7 +156,10 @@ impl EditorApp {
             DeferredUiAction::Request(action) => self.request(ctx, action),
             DeferredUiAction::Panel(panel) => self.show_panel(panel),
             DeferredUiAction::Navigate { key, fit } => self.navigate_level(key, fit),
-            DeferredUiAction::World(world) => self.navigate_world(world),
+            DeferredUiAction::World {
+                world,
+                open_world_view,
+            } => self.switch_world(world, open_world_view),
             DeferredUiAction::FollowEntity(iid) => {
                 self.follow_entity(&iid);
             }

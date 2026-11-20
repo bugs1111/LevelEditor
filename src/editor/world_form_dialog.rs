@@ -108,45 +108,57 @@ impl EditorApp {
             WorldFormAction::DeleteLevel(_) => "Are you sure you want to delete this level?",
             WorldFormAction::DeleteWorld(_) => "Are you sure you want to delete this world?",
         };
-        let modal = if matches!(pending.action, WorldFormAction::Settings { .. }) {
-            project_dialogs::form_warning_dialog(dialog_id()).show(ctx, |ui| {
-                ui.set_width((ctx.content_rect().width() - 42.).clamp(0., 358.));
-                ui.spacing_mut().item_spacing = egui::vec2(2., 0.);
-                ui.label(
-                    RichText::new(locale::tr(ui, prompt))
-                        .size(14.667)
-                        .color(Color32::WHITE),
-                );
-                ui.add_space(16.);
-                let actions = egui::Frame::new()
-                    .inner_margin(1)
-                    .show(ui, |ui| {
-                        ui.horizontal(|ui| {
-                            let size = egui::vec2((ui.available_width() - 2.) * 0.5, 35.);
-                            let confirm =
-                                project_dialogs::button(ui, "CONFIRM", size, false, 13.333);
-                            let cancel = project_dialogs::button(ui, "CANCEL", size, true, 13.333);
-                            (confirm.clicked(), cancel.clicked())
-                        })
-                        .inner
-                    })
-                    .inner;
-                ui.add_space(2.);
-                actions
-            })
+        let layout_change = matches!(pending.action, WorldFormAction::Settings { .. });
+        let modal = if layout_change {
+            project_dialogs::form_warning_dialog(dialog_id())
         } else {
-            egui::Modal::new(dialog_id()).show(ctx, |ui| {
-                ui.label(locale::tr(ui, prompt));
-                ui.horizontal(|ui| {
-                    let confirm = ui.button(locale::tr(ui, "Confirm")).clicked();
-                    let cancel = ui.button(locale::tr(ui, "Cancel")).clicked();
-                    (confirm, cancel)
-                })
-                .inner
-            })
+            let fill = if matches!(pending.action, WorldFormAction::DuplicateLevel(_)) {
+                theme::MEDIUM
+            } else {
+                Color32::from_rgb(121, 17, 5)
+            };
+            egui::Modal::new(dialog_id())
+                .frame(
+                    project_dialogs::dialog_frame(20)
+                        .corner_radius(4.)
+                        .fill(fill),
+                )
+                .backdrop_color(Color32::from_black_alpha(140))
         };
+        let modal = modal.show(ctx, |ui| {
+            let prompt = locale::tr(ui, prompt);
+            let font = FontId::proportional(14.667);
+            let width = if layout_change {
+                (ctx.content_rect().width() - 42.).clamp(0., 358.)
+            } else {
+                ui.painter()
+                    .layout_no_wrap(prompt.to_owned(), font.clone(), Color32::WHITE)
+                    .size()
+                    .x
+                    .clamp(160., 360.)
+            };
+            ui.set_width(width);
+            ui.spacing_mut().item_spacing = egui::vec2(2., 0.);
+            ui.add(egui::Label::new(RichText::new(prompt).font(font).color(Color32::WHITE)).wrap());
+            ui.add_space(16.);
+            let actions = egui::Frame::new()
+                .inner_margin(1)
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        let size = egui::vec2((ui.available_width() - 2.) * 0.5, 35.);
+                        let confirm = project_dialogs::button(ui, "CONFIRM", size, false, 13.333);
+                        let cancel = project_dialogs::button(ui, "CANCEL", size, true, 13.333);
+                        (confirm.clicked(), cancel.clicked())
+                    })
+                    .inner
+                })
+                .inner;
+            ui.add_space(2.);
+            actions
+        });
         let (mut confirm, mut cancel) = modal.inner;
-        confirm |= ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter));
+        confirm |= modal.is_top_modal
+            && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter));
         cancel |= modal.should_close();
         if confirm || cancel {
             ctx.data_mut(|data| data.remove::<Pending>(dialog_id()));
@@ -171,7 +183,7 @@ impl EditorApp {
                     {
                         // Source selects the first other world before deleting the current one.
                         // After removal that world's index is always zero.
-                        self.navigate_world(Some(0));
+                        self.switch_world(Some(0), false);
                     }
                 }
             }
@@ -271,7 +283,7 @@ impl EditorApp {
             p.refresh_derived_data()?;
             Ok(world)
         }) {
-            self.navigate_world(Some(world));
+            self.switch_world(Some(world), false);
         }
     }
 }
@@ -357,6 +369,69 @@ mod tests {
         )
     }
     #[test]
+    fn world_action_confirmations_share_the_source_dialog_geometry() {
+        let mut project = Project::new();
+        project.add_level(None, "Second", 256, 256).unwrap();
+        project.add_world("Away").unwrap();
+        let key = project.level_keys()[0];
+        let mut app = editor();
+        app.set_project(project);
+        let ctx = egui::Context::default();
+        theme::configure(&ctx);
+        let before = app.project.as_ref().unwrap().json.clone();
+        for (action, fill) in [
+            (WorldFormAction::DuplicateLevel(key), theme::MEDIUM),
+            (
+                WorldFormAction::DeleteLevel(key),
+                Color32::from_rgb(121, 17, 5),
+            ),
+            (
+                WorldFormAction::DeleteWorld(1),
+                Color32::from_rgb(121, 17, 5),
+            ),
+        ] {
+            app.queue_world_form_action(&ctx, action);
+            for _ in 0..12 {
+                frame(&mut app, &ctx, vec![]);
+            }
+            let output = frame(&mut app, &ctx, vec![]);
+            let confirm = label(&output, "CONFIRM");
+            let cancel = label(&output, "CANCEL");
+            let body = output
+                .shapes
+                .iter()
+                .find_map(|shape| {
+                    fn find(
+                        shape: &egui::Shape,
+                        fill: Color32,
+                        confirm: egui::Pos2,
+                    ) -> Option<Rect> {
+                        match shape {
+                            egui::Shape::Rect(r) if r.fill == fill && r.rect.contains(confirm) => {
+                                Some(r.rect)
+                            }
+                            egui::Shape::Vec(children) => {
+                                children.iter().find_map(|shape| find(shape, fill, confirm))
+                            }
+                            _ => None,
+                        }
+                    }
+                    find(&shape.shape, fill, confirm)
+                })
+                .expect("shared confirmation frame");
+            assert!(
+                (body.center() - egui::pos2(500., 450.)).abs().max_elem() <= 1.,
+                "{body:?}"
+            );
+            assert!((body.height() - 112.).abs() <= 2., "{body:?}");
+            assert!((confirm.y - cancel.y).abs() < 1.);
+            assert!(((confirm.x + cancel.x) * 0.5 - body.center().x).abs() <= 1.);
+            click(&mut app, &ctx, "CANCEL");
+            assert!(!is_open(&ctx));
+            assert_eq!(app.project.as_ref().unwrap().json, before);
+        }
+    }
+    #[test]
     fn actual_form_duplicate_requires_confirmation_cancel_is_unchanged_and_copy_uses_source_offset()
     {
         let mut app = editor();
@@ -369,10 +444,10 @@ mod tests {
             before,
             "opening confirmation cannot duplicate"
         );
-        click(&mut app, &ctx, "Cancel");
+        click(&mut app, &ctx, "CANCEL");
         assert_eq!(app.project.as_ref().unwrap().json, before);
         click(&mut app, &ctx, "Duplicate level");
-        click(&mut app, &ctx, "Confirm");
+        click(&mut app, &ctx, "CONFIRM");
         let p = app.project.as_ref().unwrap();
         assert_eq!(p.level_keys().len(), 2);
         let copy = p.level(app.selected.unwrap()).unwrap();
@@ -399,7 +474,7 @@ mod tests {
         let near_iid = p.level(near).unwrap()["iid"].clone();
         click(&mut app, &ctx, "Delete level");
         assert_eq!(app.project.as_ref().unwrap().level_keys().len(), 3);
-        click(&mut app, &ctx, "Confirm");
+        click(&mut app, &ctx, "CONFIRM");
         assert_eq!(
             app.project
                 .as_ref()
@@ -424,7 +499,9 @@ mod tests {
         let key = app.selected.unwrap();
         assert_eq!(p.json["worlds"][key.world.unwrap()]["identifier"], "World");
         assert_eq!(p.level(key).unwrap()["useAutoIdentifier"], true);
-        assert!(app.world);
+        assert!(!app.world);
+        assert_eq!(app.panel, None);
+        app.show_panel(Some(Panel::World));
         click(&mut app, &ctx, "+ World");
         let p = app.project.as_ref().unwrap();
         assert_eq!(
@@ -451,12 +528,15 @@ mod tests {
                 .len(),
             3
         );
-        click(&mut app, &ctx, "Confirm");
+        click(&mut app, &ctx, "CONFIRM");
         assert_eq!(app.active_world, Some(0));
-        assert!(app.world);
+        assert!(!app.world);
+        assert_eq!(app.panel, None);
         assert!(app.last_chance.is_some());
+        app.show_panel(Some(Panel::World));
         click(&mut app, &ctx, "Delete world and its levels");
-        click(&mut app, &ctx, "Confirm");
+        click(&mut app, &ctx, "CONFIRM");
+        app.show_panel(Some(Panel::World));
         click(&mut app, &ctx, "Delete world and its levels");
         assert_eq!(
             app.project.as_ref().unwrap().json["worlds"]

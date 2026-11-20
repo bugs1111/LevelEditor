@@ -9,6 +9,7 @@ const SMALL_INPUT_WIDTH: f32 = 60.;
 const LEVEL_ACTION_SIZE: f32 = 128. / 3.;
 const LEVEL_ACTION_ORANGE: Color32 = Color32::from_rgb(227, 77, 0);
 const LEVEL_ACTION_RED: Color32 = Color32::from_rgb(121, 17, 5);
+pub(super) const WORLD_OPTION_HIGHLIGHT: Color32 = Color32::from_rgb(30, 144, 255);
 
 const WORLD_LAYOUTS: [(&str, &str); 4] = [
     ("Free", "2D free map - Freely positioned in space"),
@@ -240,6 +241,146 @@ fn level_action_button(
     )
 }
 
+fn world_selector_id() -> egui::Id {
+    egui::Id::new("world-form-selector")
+}
+
+fn world_selector(
+    ui: &mut egui::Ui,
+    worlds: &[(usize, String)],
+    current_world: Option<usize>,
+    name: &str,
+) -> Option<usize> {
+    const COMBO: &str = "world-properties";
+    let mut selected = current_world;
+    let height = LEVEL_ACTION_SIZE + 2.;
+    let width = (ui.available_width() - 2. * LEVEL_ACTION_SIZE - 3.).max(40.);
+    ui.allocate_ui_with_layout(
+        egui::vec2(width, height),
+        egui::Layout::left_to_right(egui::Align::Center),
+        |ui| {
+            ui.set_max_width(width);
+            let id = ui.make_persistent_id(egui::Id::new(COMBO));
+            let highlighted_id = id.with("highlighted");
+            let open = egui::ComboBox::is_open(ui.ctx(), id);
+            ui.data_mut(|data| data.insert_temp(world_selector_id(), id));
+            let mut highlighted = current_world.unwrap_or(0);
+            let mut keyboard_moved = false;
+            if open {
+                highlighted = ui
+                    .data(|data| data.get_temp(highlighted_id))
+                    .unwrap_or(highlighted);
+                let last = worlds.len().saturating_sub(1);
+                let enter = ui.input_mut(|input| {
+                    for (key, next) in [
+                        (Key::ArrowUp, highlighted.saturating_sub(1)),
+                        (Key::ArrowDown, highlighted.saturating_add(1).min(last)),
+                        (Key::Home, 0),
+                        (Key::End, last),
+                    ] {
+                        if input.consume_key(egui::Modifiers::NONE, key) {
+                            highlighted = next;
+                            keyboard_moved = true;
+                            break;
+                        }
+                    }
+                    input.consume_key(egui::Modifiers::NONE, Key::Enter)
+                });
+                if enter {
+                    selected = worlds.get(highlighted).map(|(index, _)| *index);
+                    egui::Popup::close_all(ui.ctx());
+                }
+            }
+            let font = FontId::proportional(13.333);
+            let text_height = ui.fonts_mut(|fonts| fonts.row_height(&font));
+            let spacing = ui.spacing_mut();
+            spacing.interact_size.y = height;
+            spacing.button_padding =
+                egui::vec2(9., (height - text_height.max(spacing.icon_width)) * 0.5);
+            let widgets = &mut ui.visuals_mut().widgets;
+            for (style, border) in [
+                (&mut widgets.inactive, Color32::from_rgb(115, 127, 157)),
+                (&mut widgets.hovered, Color32::WHITE),
+                (&mut widgets.active, Color32::WHITE),
+                (&mut widgets.open, Color32::WHITE),
+            ] {
+                style.weak_bg_fill = theme::LIGHT;
+                style.bg_stroke = Stroke::new(1., border);
+                style.fg_stroke.color = Color32::WHITE;
+                style.expansion = 0.;
+                style.corner_radius = 3.into();
+            }
+            egui::ComboBox::from_id_salt(COMBO)
+                .width(width)
+                .truncate()
+                .selected_text(RichText::new(name).font(font.clone()))
+                .popup_style(egui::style::StyleModifier::new(|style| {
+                    style.spacing.menu_margin = egui::Margin::ZERO;
+                    style.visuals.window_fill = theme::LIGHT;
+                    style.visuals.window_stroke = Stroke::new(1., Color32::from_gray(118));
+                    style.visuals.menu_corner_radius = 2.into();
+                    style.visuals.popup_shadow = egui::epaint::Shadow::NONE;
+                }))
+                .show_ui(ui, |ui| {
+                    const ROW_HEIGHT: f32 = 17.;
+                    ui.spacing_mut().item_spacing.y = 0.;
+                    let start = ui.next_widget_position();
+                    if let Some(pointer) = ui.input(|input| {
+                        input
+                            .pointer
+                            .hover_pos()
+                            .filter(|_| input.pointer.is_moving())
+                    }) && ui.clip_rect().contains(pointer)
+                        && pointer.y >= start.y
+                    {
+                        let row = ((pointer.y - start.y) / ROW_HEIGHT) as usize;
+                        if let Some((index, _)) = worlds.get(row) {
+                            highlighted = *index;
+                        }
+                    }
+                    for (index, name) in worlds {
+                        let (rect, response) = ui.allocate_exact_size(
+                            egui::vec2(ui.available_width(), ROW_HEIGHT),
+                            Sense::click(),
+                        );
+                        let active = *index == highlighted;
+                        response.widget_info(|| {
+                            egui::WidgetInfo::selected(
+                                egui::WidgetType::SelectableLabel,
+                                ui.is_enabled(),
+                                active,
+                                name,
+                            )
+                        });
+                        let painter = ui.painter().with_clip_rect(rect.intersect(ui.clip_rect()));
+                        if active {
+                            painter.rect_filled(rect, 0., WORLD_OPTION_HIGHLIGHT);
+                            if keyboard_moved || !open {
+                                response.scroll_to_me(None);
+                            }
+                        }
+                        painter.text(
+                            rect.left_center() + egui::vec2(9., 0.),
+                            Align2::LEFT_CENTER,
+                            name,
+                            font.clone(),
+                            if active {
+                                Color32::WHITE
+                            } else {
+                                theme::ACCENT
+                            },
+                        );
+                        if response.clicked() {
+                            selected = Some(*index);
+                        }
+                    }
+                    ui.data_mut(|data| data.insert_temp(highlighted_id, highlighted));
+                });
+        },
+    );
+    selected
+}
+
 fn form_text_box(value: &mut String) -> egui::TextEdit<'_> {
     egui::TextEdit::singleline(value)
         .font(FontId::proportional(13.333))
@@ -389,6 +530,11 @@ fn depth_moves(depth: i64, other_depths: impl Iterator<Item = i64>) -> (bool, bo
 }
 
 impl EditorApp {
+    pub(in crate::app) fn world_selector_open(ctx: &egui::Context) -> bool {
+        ctx.data(|data| data.get_temp::<egui::Id>(world_selector_id()))
+            .is_some_and(|id| egui::ComboBox::is_open(ctx, id))
+    }
+
     pub(in crate::app) fn move_selected_level_world_depth(&mut self, delta: i64) {
         let (Some(project), Some(key)) = (&self.project, self.selected) else {
             return;
@@ -476,48 +622,9 @@ impl EditorApp {
             ui.add_space(2.);
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 1.;
-                let mut selected = current_world;
-                let height = LEVEL_ACTION_SIZE + 2.;
-                let width = (ui.available_width() - 2. * LEVEL_ACTION_SIZE - 3.).max(40.);
-                ui.allocate_ui_with_layout(
-                    egui::vec2(width, height),
-                    egui::Layout::left_to_right(egui::Align::Center),
-                    |ui| {
-                        ui.set_max_width(width);
-                        let font = FontId::proportional(13.333);
-                        let text_height = ui.fonts_mut(|fonts| fonts.row_height(&font));
-                        let popup_spacing = ui.spacing().clone();
-                        let spacing = ui.spacing_mut();
-                        spacing.interact_size.y = height;
-                        spacing.button_padding =
-                            egui::vec2(9., (height - text_height.max(spacing.icon_width)) * 0.5);
-                        let widgets = &mut ui.visuals_mut().widgets;
-                        for (style, border) in [
-                            (&mut widgets.inactive, Color32::from_rgb(115, 127, 157)),
-                            (&mut widgets.hovered, Color32::WHITE),
-                            (&mut widgets.active, Color32::WHITE),
-                            (&mut widgets.open, Color32::WHITE),
-                        ] {
-                            style.weak_bg_fill = theme::LIGHT;
-                            style.bg_stroke = Stroke::new(1., border);
-                            style.fg_stroke.color = Color32::WHITE;
-                            style.expansion = 0.;
-                            style.corner_radius = 3.into();
-                        }
-                        egui::ComboBox::from_id_salt("world-properties")
-                            .width(width)
-                            .truncate()
-                            .selected_text(RichText::new(&name).font(font))
-                            .show_ui(ui, |ui| {
-                                *ui.spacing_mut() = popup_spacing;
-                                for (index, name) in &worlds {
-                                    ui.selectable_value(&mut selected, Some(*index), name);
-                                }
-                            });
-                    },
-                );
-                if selected != current_world {
-                    self.navigate_world(selected);
+                let selected = world_selector(ui, &worlds, current_world, &name);
+                if selected != current_world && selected.is_some() {
+                    self.switch_world(selected, false);
                 }
                 if level_action_button(
                     ui,
@@ -1532,10 +1639,10 @@ mod tests {
         click_at(&mut app, &ctx, Panel::World, pos);
         assert!(world_form_dialog::is_open(&ctx));
         assert_eq!(app.project.as_ref().unwrap().json, before);
-        click(&mut app, &ctx, Panel::World, "Cancel");
+        click(&mut app, &ctx, Panel::World, "CANCEL");
         assert_eq!(app.project.as_ref().unwrap().json, before);
         click_at(&mut app, &ctx, Panel::World, pos);
-        click(&mut app, &ctx, Panel::World, "Confirm");
+        click(&mut app, &ctx, Panel::World, "CONFIRM");
         let project = app.project.as_ref().unwrap();
         assert_eq!(project.level_keys().len(), 2);
         let level = project.level(app.selected.unwrap()).unwrap();

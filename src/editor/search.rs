@@ -448,7 +448,7 @@ impl EditorApp {
             return;
         }
         match destination {
-            Destination::World(world) => self.navigate_world(world),
+            Destination::World(world) => self.switch_world(world, !self.world),
             Destination::Definition(panel, uid) => {
                 self.definition_uid = Some(uid);
                 self.show_panel(Some(panel));
@@ -502,6 +502,7 @@ impl EditorApp {
         if self.is_busy() {
             return;
         }
+        let opening = self.search_entries.is_none();
         let index = self
             .search_entries
             .get_or_insert_with(|| self.project.as_ref().map(search_index).unwrap_or_default());
@@ -572,12 +573,15 @@ impl EditorApp {
                     .corner_radius(3.)
                     .show(ui, |ui| {
                         ui.set_height(height);
-                        let mut scroll = egui::ScrollArea::vertical()
+                        let scroll_id = "search-results";
+                        if opening || input.changed() {
+                            egui::scroll_area::State::default()
+                                .store(ctx, ui.make_persistent_id(egui::Id::new(scroll_id)));
+                        }
+                        let scroll = egui::ScrollArea::vertical()
+                            .id_salt(scroll_id)
                             .max_height(height)
                             .auto_shrink([false, false]);
-                        if input.changed() {
-                            scroll = scroll.vertical_scroll_offset(0.);
-                        }
                         scroll.show(ui, |ui| {
                             ui.add_space(8.);
                             for (row, entry) in rows.iter().enumerate() {
@@ -631,6 +635,101 @@ impl EditorApp {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn selecting_a_world_result_uses_the_source_view_transition() {
+        let mut project = Project::new();
+        let world = Some(project.add_world("Away").unwrap());
+        let level = project.add_level(world, "Other", 256, 256).unwrap();
+        let original = project.json.clone();
+        for from_world_view in [false, true] {
+            let mut app = EditorApp::empty();
+            app.set_project(project.clone());
+            if from_world_view {
+                app.show_panel(Some(Panel::World));
+            }
+            let results = app.search_results("away");
+            assert!(matches!(results[0].destination, Destination::World(w) if w == world));
+            assert!(matches!(results[1].destination, Destination::Level(k) if k == level));
+            app.select_search_destination(results[0].destination.clone());
+            assert_eq!(app.selected, Some(level));
+            assert_eq!(app.world, !from_world_view);
+            assert_eq!(app.panel, (!from_world_view).then_some(Panel::World));
+            assert_eq!(app.project.as_ref().unwrap().json, original);
+        }
+    }
+
+    #[test]
+    fn reopening_search_resets_scroll_but_repeating_its_shortcut_preserves_it() {
+        let mut project = Project::new();
+        project.json["defs"]["entities"] = json!(
+            (0..25)
+                .map(|i| json!({"uid": 100 + i, "identifier": format!("Actor{i}")}))
+                .collect::<Vec<_>>()
+        );
+        let mut app = EditorApp::empty();
+        app.set_project(project);
+        app.search = "Actor".into();
+        let ctx = egui::Context::default();
+        theme::configure(&ctx);
+        let mut draw = |events| {
+            ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1000., 600.),
+                    )),
+                    events,
+                    ..Default::default()
+                },
+                |ctx| {
+                    app.shortcuts(ctx);
+                    app.palette_dialog(ctx);
+                },
+            )
+        };
+        let command = egui::Modifiers {
+            command: true,
+            ..Default::default()
+        };
+        let key_events = |key, modifiers| {
+            [true, false]
+                .into_iter()
+                .map(|pressed| egui::Event::Key {
+                    key,
+                    physical_key: None,
+                    pressed,
+                    repeat: false,
+                    modifiers,
+                })
+                .collect()
+        };
+        let first_row_visible = |output: &egui::FullOutput| {
+            output.shapes.iter().any(|shape| {
+                matches!(&shape.shape, egui::Shape::Text(t)
+                    if t.galley.text() == "Actor0" && shape.clip_rect.contains(t.pos))
+            })
+        };
+        draw(key_events(Key::K, command));
+        assert!(first_row_visible(&draw(vec![])));
+        draw(vec![egui::Event::PointerMoved(egui::pos2(650., 360.))]);
+        draw(vec![egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Point,
+            delta: egui::vec2(0., -1000.),
+            modifiers: egui::Modifiers::NONE,
+        }]);
+        // Finish processing the wheel event before closing and reopening the palette.
+        for _ in 0..30 {
+            draw(vec![]);
+        }
+        assert!(!first_row_visible(&draw(vec![])));
+        draw(key_events(Key::P, command));
+        assert!(!first_row_visible(&draw(vec![])));
+
+        draw(key_events(Key::Escape, egui::Modifiers::NONE));
+        draw(key_events(Key::K, command));
+        assert!(first_row_visible(&draw(vec![])));
+    }
 
     #[test]
     fn level_search_animates_from_current_camera_in_linear_world() {

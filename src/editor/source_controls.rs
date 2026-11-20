@@ -642,7 +642,15 @@ pub(super) fn field_instance_label(
     response.on_hover_text(name)
 }
 
-pub(super) fn disabled_hatch(ui: &egui::Ui, rect: Rect) {
+pub(in crate::app) fn context_menu_frame(style: &egui::Style) -> egui::Frame {
+    egui::Frame::popup(style)
+        .fill(theme::DARK)
+        .stroke(Stroke::new(1., theme::LIGHT))
+        .corner_radius(2.)
+        .inner_margin(0.)
+}
+
+pub(in crate::app) fn disabled_hatch(ui: &egui::Ui, rect: Rect) {
     egui::Image::new(egui::include_image!("../../assets/img/stripesLight.png"))
         .texture_options(egui::TextureOptions::NEAREST_REPEAT)
         .uv(Rect::from_min_size(egui::Pos2::ZERO, rect.size() / 8.))

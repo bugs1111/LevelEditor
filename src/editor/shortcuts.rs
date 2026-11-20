@@ -611,9 +611,11 @@ impl EditorApp {
     }
 
     pub(super) fn shortcuts(&mut self, ctx: &egui::Context) {
-        let enum_picker_open = ui_fields::enum_picker::is_open(ctx);
-        track_zoom_keys(ctx, self.command_palette || enum_picker_open);
-        if enum_picker_open {
+        let selector_open = ui_fields::enum_picker::is_open(ctx)
+            || self.panel == Some(Panel::World) && Self::world_selector_open(ctx)
+            || self.world_context.menu_open();
+        track_zoom_keys(ctx, self.command_palette || selector_open);
+        if selector_open {
             return;
         }
         if update_dialog::is_open(ctx) {

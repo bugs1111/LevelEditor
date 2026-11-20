@@ -851,7 +851,7 @@ impl EditorApp {
                     });
             });
         if let Some(index) = requested {
-            self.navigate_world(Some(index));
+            self.switch_world(Some(index), !self.world);
         }
     }
 
@@ -1612,6 +1612,8 @@ mod tests {
         app_frame(&mut app, &ctx, vec![]);
         app_click(&mut app, &ctx, egui::pos2(369., 19.));
         assert_eq!(app.selected, Some(first), "Clicking the active world selects its first level");
+        assert!(!app.world);
+        assert_eq!(app.panel, None);
         assert_eq!(app.project.as_ref().unwrap().json, original);
         assert!(!app.dirty);
     }

@@ -1,5 +1,5 @@
 //! World canvas context actions and the source level-location picker.
-use super::*;
+use super::{panels::source_controls, *};
 use serde_json::json;
 
 #[derive(Default)]
@@ -9,12 +9,40 @@ pub(super) struct WorldContext {
     pointer: Option<[f32; 2]>,
     no_room: bool,
 }
+impl WorldContext {
+    pub(super) fn menu_open(&self) -> bool {
+        self.menu.is_some()
+    }
+}
+
 #[derive(Clone, Copy)]
 struct WorldMenu {
     screen: egui::Pos2,
     position: [f32; 2],
     level: Option<LevelKey>,
 }
+#[derive(Clone, Copy)]
+enum MenuAction {
+    New,
+    Duplicate(LevelKey),
+    Delete(LevelKey),
+    World(usize),
+    Move(LevelKey, usize),
+}
+
+struct MenuRow {
+    action: MenuAction,
+    label: String,
+    detail: Option<String>,
+    enabled: bool,
+}
+
+impl MenuRow {
+    fn height(&self, separator: bool) -> f32 {
+        (if self.detail.is_some() { 47. } else { 31. }) + if separator { 1. } else { 0. }
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 struct Spot {
     rect: [f32; 4],
@@ -206,13 +234,100 @@ impl EditorApp {
         let Some(menu) = self.world_context.menu else {
             return false;
         };
-        enum Action {
-            New,
-            Duplicate(LevelKey),
-            Delete(LevelKey),
-            World(usize),
-            Move(LevelKey, usize),
+        let basic = |label, action| MenuRow {
+            action,
+            label: locale::tr_ctx(ctx, label).to_uppercase(),
+            detail: None,
+            enabled: true,
+        };
+        let mut rows = vec![basic("New level", MenuAction::New)];
+        if let Some(key) = menu.level {
+            rows.push(basic("Duplicate", MenuAction::Duplicate(key)));
+            rows.push(basic("Delete", MenuAction::Delete(key)));
         }
+        let world_rows_start = rows.len();
+        let heading = self
+            .project
+            .as_ref()
+            .and_then(|p| p.json["worlds"].as_array())
+            .filter(|worlds| worlds.len() > 1)
+            .map(|worlds| {
+                rows.extend(worlds.iter().enumerate().map(|(index, world)| {
+                    let name = text(world, "identifier", "World").to_uppercase();
+                    let count = world["levels"].as_array().map_or(0, Vec::len);
+                    MenuRow {
+                        action: menu
+                            .level
+                            .map_or(MenuAction::World(index), |key| MenuAction::Move(key, index)),
+                        label: if menu.level.is_some() {
+                            format!("➔ {name}")
+                        } else {
+                            name
+                        },
+                        detail: Some(locale::format_ctx(
+                            ctx,
+                            "{count} level(s)",
+                            &[("count", &count.to_string())],
+                        )),
+                        enabled: Some(index) != self.active_world,
+                    }
+                }));
+                locale::tr_ctx(
+                    ctx,
+                    if menu.level.is_some() {
+                        "Move this level to:"
+                    } else {
+                        "Go to world:"
+                    },
+                )
+            });
+        let title_font = FontId::new(14.667, egui::FontFamily::Name("body-bold".into()));
+        let label_font = FontId::proportional(13.333);
+        let detail_font = FontId::proportional(12.);
+        let screen = ctx.content_rect();
+        let width = ctx.fonts_mut(|fonts| {
+            let mut measure = |label: &str, font: &FontId| {
+                fonts
+                    .layout_no_wrap(label.to_owned(), font.clone(), Color32::WHITE)
+                    .size()
+                    .x
+            };
+            let mut width = heading.map_or(0., |title| measure(title, &title_font));
+            for row in &rows {
+                width = width.max(measure(&row.label, &label_font));
+                if let Some(detail) = &row.detail {
+                    width = width.max(measure(detail, &detail_font));
+                }
+            }
+            (width + 40.).min(screen.width() - 32.)
+        });
+        let natural_height = rows
+            .iter()
+            .enumerate()
+            .map(|(index, row)| row.height(index > 0 && index != world_rows_start))
+            .sum::<f32>()
+            + if heading.is_some() { 35. } else { 2. };
+        let height = natural_height.min((screen.height() - 32.).max(2.));
+        let x = if menu.screen.x >= screen.left() + screen.width() * 0.6 {
+            menu.screen.x - width
+        } else {
+            menu.screen.x
+        };
+        let y = if menu.screen.y >= screen.top() + screen.height() * 0.7 {
+            menu.screen.y - 10. - height
+        } else {
+            menu.screen.y + 10.
+        };
+        let position = egui::pos2(
+            x.clamp(
+                screen.left(),
+                (screen.right() - width - 2.).max(screen.left()),
+            ),
+            y.clamp(
+                screen.top() + 16.,
+                (screen.bottom() - height - 16.).max(screen.top() + 16.),
+            ),
+        );
         let mut action = None;
         let mut open = true;
         // Source opens on button-down; the corresponding right-button release must not close it.
@@ -226,71 +341,128 @@ impl EditorApp {
         };
         egui::Popup::menu(response)
             .id(egui::Id::new("world-context-menu"))
-            .at_position(menu.screen)
+            .at_position(position)
+            .align(egui::RectAlign::BOTTOM_START)
+            .align_alternatives(&[])
+            .gap(0.)
+            .width(width + 2.)
+            .frame(
+                source_controls::context_menu_frame(&ctx.style()).shadow(egui::epaint::Shadow {
+                    offset: [0, 4],
+                    blur: 16,
+                    spread: 0,
+                    color: Color32::BLACK,
+                }),
+            )
             .open_bool(&mut open)
             .close_behavior(close)
             .show(|ui| {
-                if ui.button(locale::tr(ui, "New level")).clicked() {
-                    action = Some(Action::New);
-                }
-                if let Some(key) = menu.level {
-                    if ui.button(locale::tr(ui, "Duplicate")).clicked() {
-                        action = Some(Action::Duplicate(key));
-                    }
-                    if ui.button(locale::tr(ui, "Delete")).clicked() {
-                        action = Some(Action::Delete(key));
-                    }
-                }
-                if let Some(worlds) = self
-                    .project
-                    .as_ref()
-                    .and_then(|p| p.json["worlds"].as_array())
-                    .filter(|w| w.len() > 1)
-                {
-                    ui.separator();
-                    ui.label(locale::tr(
-                        ui,
-                        if menu.level.is_some() {
-                            "Move this level to:"
-                        } else {
-                            "Go to world:"
-                        },
-                    ));
-                    for (index, world) in worlds.iter().enumerate() {
-                        let count = world["levels"].as_array().map_or(0, Vec::len);
-                        let label = locale::format(
-                            ui,
-                            "{world} ({count} levels)",
-                            &[
-                                ("world", text(world, "identifier", "World")),
-                                ("count", &count.to_string()),
-                            ],
-                        );
-                        if ui
-                            .add_enabled(Some(index) != self.active_world, egui::Button::new(label))
-                            .clicked()
+                ui.set_width(width);
+                let mut draw_rows = |ui: &mut egui::Ui| {
+                    ui.spacing_mut().item_spacing.y = 0.;
+                    for (index, row) in rows.iter().enumerate() {
+                        if index == world_rows_start
+                            && let Some(heading) = heading
                         {
-                            action = Some(
-                                menu.level
-                                    .map_or(Action::World(index), |key| Action::Move(key, index)),
+                            let (rect, _) =
+                                ui.allocate_exact_size(egui::vec2(width, 33.), Sense::hover());
+                            ui.painter().rect_filled(rect, 0., theme::MEDIUM);
+                            ui.painter().text(
+                                rect.left_center() + egui::vec2(20., 0.),
+                                Align2::LEFT_CENTER,
+                                heading,
+                                title_font.clone(),
+                                Color32::WHITE,
                             );
                         }
+                        let separator = index > 0 && index != world_rows_start;
+                        let (rect, response) = ui.allocate_exact_size(
+                            egui::vec2(width, row.height(separator)),
+                            if row.enabled {
+                                Sense::click()
+                            } else {
+                                Sense::hover()
+                            },
+                        );
+                        response.widget_info(|| {
+                            egui::WidgetInfo::labeled(
+                                egui::WidgetType::Button,
+                                row.enabled,
+                                &row.label,
+                            )
+                        });
+                        let painter = ui.painter_at(rect);
+                        let color = if !row.enabled {
+                            source_controls::disabled_hatch(ui, rect);
+                            theme::LIGHT
+                        } else if response.hovered() {
+                            painter.rect_filled(rect, 0., theme::ACCENT);
+                            Color32::BLACK
+                        } else {
+                            theme::ACCENT
+                        };
+                        if separator {
+                            painter.hline(
+                                rect.x_range(),
+                                rect.top() + 0.5,
+                                Stroke::new(1., theme::MEDIUM),
+                            );
+                        }
+                        let origin = rect.left_top() + egui::vec2(20., 15.5 + f32::from(separator));
+                        let paint_text = |text: &str, font: &FontId, origin, color| {
+                            let mut label = RichText::new(text).font(font.clone()).color(color);
+                            if !row.enabled {
+                                label = label.italics();
+                            }
+                            let galley = egui::WidgetText::from(label).into_galley(
+                                ui,
+                                Some(egui::TextWrapMode::Truncate),
+                                width - 40.,
+                                egui::TextStyle::Body,
+                            );
+                            painter.galley(
+                                origin - egui::vec2(0., galley.size().y / 2.),
+                                galley,
+                                color,
+                            );
+                        };
+                        paint_text(&row.label, &label_font, origin, color);
+                        if let Some(detail) = &row.detail {
+                            paint_text(
+                                detail,
+                                &detail_font,
+                                origin + egui::vec2(0., 16.5),
+                                Color32::from_rgb(115, 127, 157),
+                            );
+                        }
+                        if response.clicked() && row.enabled {
+                            action = Some(row.action);
+                        }
                     }
+                };
+                if height < natural_height {
+                    ui.set_height(height - 2.);
+                    egui::ScrollArea::vertical()
+                        .max_height(height - 2.)
+                        .auto_shrink([false, true])
+                        .show(ui, draw_rows);
+                } else {
+                    draw_rows(ui);
                 }
             });
         if !open || action.is_some() {
             self.world_context.menu = None;
         }
         match action {
-            Some(Action::New) => {
+            Some(MenuAction::New) => {
                 if !self.create_level_at(menu.position, false) {
                     self.world_context.no_room = true;
                 }
             }
-            Some(Action::Duplicate(key)) => self.duplicate_context_level(key),
-            Some(Action::Delete(key)) => self.delete_context_level(key),
-            Some(Action::World(world)) => self.navigate_world(Some(world)),
-            Some(Action::Move(key, world)) => self.move_context_level(key, world),
+            Some(MenuAction::Duplicate(key)) => self.duplicate_context_level(key),
+            Some(MenuAction::Delete(key)) => self.delete_context_level(key),
+            Some(MenuAction::World(world)) => self.switch_world(Some(world), !self.world),
+            Some(MenuAction::Move(key, world)) => self.move_context_level(key, world),
             None => {}
         }
         true
@@ -586,8 +758,9 @@ impl EditorApp {
             p.refresh_derived_data()?;
             Ok(target)
         }) {
-            self.world = true;
             self.navigate_level(target, true);
+            self.show_panel(None);
+            self.fit = true;
         }
     }
 }
@@ -693,6 +866,7 @@ mod tests {
                 ..Default::default()
             },
             |ctx| {
+                a.shortcuts(ctx);
                 egui::CentralPanel::default()
                     .frame(egui::Frame::NONE)
                     .show(ctx, |ui| {
@@ -800,16 +974,16 @@ mod tests {
         let ctx = egui::Context::default();
         let pos = egui::pos2(400., 300.);
         let output = right_click(&mut a, &ctx, pos);
-        let duplicate = label_center(&output, "Duplicate");
+        let duplicate = label_center(&output, "DUPLICATE");
         click(&mut a, &ctx, duplicate);
         assert_eq!(a.project.as_ref().unwrap().level_keys().len(), 2);
         let output = right_click(&mut a, &ctx, pos);
-        let delete = label_center(&output, "Delete");
+        let delete = label_center(&output, "DELETE");
         click(&mut a, &ctx, delete);
         assert_eq!(a.project.as_ref().unwrap().level_keys().len(), 1);
         assert!(a.last_chance.is_some());
         let output = right_click(&mut a, &ctx, pos);
-        let delete = label_center(&output, "Delete");
+        let delete = label_center(&output, "DELETE");
         click(&mut a, &ctx, delete);
         assert_eq!(a.project.as_ref().unwrap().level_keys().len(), 1);
         assert!(a.last_chance.is_some());
@@ -876,7 +1050,7 @@ mod tests {
         assert!(a.world_context.menu.is_none());
         let outside = egui::pos2(760., 560.);
         let output = right_click(&mut a, &ctx, outside);
-        label_center(&output, "New level");
+        label_center(&output, "NEW LEVEL");
         a.cancel_world_context();
         let modifiers = egui::Modifiers {
             alt: true,
@@ -923,10 +1097,12 @@ mod tests {
             .unwrap()["iid"]
             .clone();
         let ctx = egui::Context::default();
+        theme::configure(&ctx);
         let output = right_click(&mut a, &ctx, egui::pos2(400., 300.));
-        let target = label_center(&output, "Other (0 levels)");
+        let target = label_center(&output, "➔ OTHER");
         click(&mut a, &ctx, target);
         assert_eq!(a.active_world, Some(1));
+        assert!(!a.world);
         assert_eq!(
             a.project
                 .as_ref()
@@ -938,7 +1114,7 @@ mod tests {
         a.fit = false;
         a.viewport.center = [128., 128.];
         let output = right_click(&mut a, &ctx, egui::pos2(760., 560.));
-        let target = label_center(&output, "World_0 (0 levels)");
+        let target = label_center(&output, "WORLD_0");
         click(&mut a, &ctx, target);
         assert_eq!(a.active_world, Some(0));
         assert!(a.selected.is_none());
@@ -946,6 +1122,37 @@ mod tests {
         a.start_level_spot_picker();
         assert!(a.create_level_at([0., 0.], true));
         assert_eq!(a.selected.unwrap().world, Some(0));
+    }
+    #[test]
+    fn world_context_menu_uses_source_rows_and_escape_keeps_the_world_view() {
+        let mut app = editor();
+        app.project.as_mut().unwrap().add_world("Away").unwrap();
+        app.navigate_world(Some(0));
+        app.viewport.center = [128., 128.];
+        let ctx = egui::Context::default();
+        theme::configure(&ctx);
+        let anchor = egui::pos2(740., 550.);
+        let output = right_click(&mut app, &ctx, anchor);
+        let create = label_center(&output, "NEW LEVEL");
+        let title = label_center(&output, "Go to world:");
+        let destination = label_center(&output, "AWAY");
+        assert!(create.y < title.y && title.y < destination.y && destination.y < anchor.y - 10.);
+        label_center(&output, "0 level(s)");
+        frame(
+            &mut app,
+            &ctx,
+            vec![egui::Event::Key {
+                key: Key::Escape,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
+            egui::Modifiers::NONE,
+        );
+        assert!(app.world_context.menu.is_none());
+        assert!(app.world);
+        assert_eq!(app.panel, Some(Panel::World));
     }
     #[test]
     fn actual_empty_space_new_level_and_picker_cancel_preserve_source_mode() {
@@ -965,7 +1172,7 @@ mod tests {
         );
         let expected = a.level_insert_spot(position).unwrap().rect;
         let output = right_click(&mut a, &ctx, point);
-        click(&mut a, &ctx, label_center(&output, "New level"));
+        click(&mut a, &ctx, label_center(&output, "NEW LEVEL"));
         assert_eq!(a.project.as_ref().unwrap().level_keys().len(), 2);
         assert!(!a.world);
         let level = a

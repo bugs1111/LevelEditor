@@ -3096,6 +3096,111 @@ mod tests {
     }
 
     #[test]
+    fn world_selector_escape_keeps_the_panel_and_keyboard_selects_the_next_world() {
+        let ctx = egui::Context::default();
+        theme::configure(&ctx);
+        let mut app = EditorApp::empty();
+        let mut project = Project::new();
+        let away = project.add_world("Away").unwrap();
+        let target = project.add_level(Some(away), "Other", 256, 256).unwrap();
+        app.set_project(project);
+        app.repaint = Some(ctx.clone());
+        app.show_panel(Some(Panel::World));
+        let draw = |app: &mut EditorApp, events| {
+            ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1440., 900.),
+                    )),
+                    events,
+                    ..Default::default()
+                },
+                |ctx| {
+                    app.shortcuts(ctx);
+                    if app.panel == Some(Panel::World) {
+                        app.source_panel(ctx, Panel::World);
+                    }
+                },
+            )
+        };
+        let click = |app: &mut EditorApp, pos| {
+            draw(app, vec![egui::Event::PointerMoved(pos)]);
+            for pressed in [true, false] {
+                draw(
+                    app,
+                    vec![egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: egui::Modifiers::NONE,
+                    }],
+                );
+            }
+            draw(app, vec![])
+        };
+        let open = |app: &mut EditorApp| {
+            let output = click(app, egui::pos2(220., 125.));
+            assert!(egui::Popup::is_any_open(&ctx));
+            output
+        };
+        let press = |app: &mut EditorApp, key| {
+            for pressed in [true, false] {
+                draw(
+                    app,
+                    vec![egui::Event::Key {
+                        key,
+                        physical_key: None,
+                        pressed,
+                        repeat: false,
+                        modifiers: egui::Modifiers::NONE,
+                    }],
+                );
+            }
+        };
+        draw(&mut app, vec![]);
+        let original = app.selected;
+        open(&mut app);
+        for _ in 0..12 {
+            draw(&mut app, vec![]);
+        }
+        let opened = draw(&mut app, vec![]);
+        let active_row = opened
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Rect(row) if row.fill == world_level_panel::WORLD_OPTION_HIGHLIGHT => {
+                    Some(row.rect)
+                }
+                _ => None,
+            })
+            .expect("highlighted world option");
+        assert!((active_row.height() - 17.).abs() <= 1.);
+        assert!((active_row.width() - 267.).abs() <= 2., "{active_row:?}");
+        press(&mut app, Key::Escape);
+        assert_eq!(app.panel, Some(Panel::World));
+        assert!(app.world);
+        assert_eq!(app.selected, original);
+        assert!(!egui::Popup::is_any_open(&ctx));
+
+        open(&mut app);
+        press(&mut app, Key::ArrowDown);
+        assert_eq!(app.selected, original);
+        press(&mut app, Key::Enter);
+        assert_eq!(app.selected, Some(target));
+        assert_eq!(app.active_world, Some(away));
+        assert!(!app.world);
+        assert_eq!(app.panel, None);
+        assert!(!egui::Popup::is_any_open(&ctx));
+        app.show_panel(Some(Panel::World));
+        open(&mut app);
+        click(&mut app, active_row.center());
+        assert_eq!(app.selected, original);
+        assert_eq!(app.panel, None);
+        assert!(!app.world);
+    }
+
+    #[test]
     fn world_and_level_forms_anchor_controls_and_reserve_the_world_scrollbar() {
         for (panel, xs) in [
             (Panel::World, &[143., 135.][..]),

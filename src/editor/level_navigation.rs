@@ -55,8 +55,17 @@ impl EditorApp {
         self.remember_selected_level();
     }
     pub(super) fn navigate_world(&mut self, world: Option<usize>) {
+        self.switch_world(world, true);
+    }
+    pub(in crate::app) fn switch_world(&mut self, world: Option<usize>, open_world_view: bool) {
         let ctx = self.repaint.clone().unwrap_or_default();
-        if self.defer_ui_action(&ctx, ui_commit::DeferredUiAction::World(world)) {
+        if self.defer_ui_action(
+            &ctx,
+            ui_commit::DeferredUiAction::World {
+                world,
+                open_world_view,
+            },
+        ) {
             return;
         }
         self.finish_gesture();
@@ -81,7 +90,7 @@ impl EditorApp {
         if self.world {
             self.notify_world_view();
         }
-        self.show_panel(Some(Panel::World));
+        self.show_panel((open_world_view || self.selected.is_none()).then_some(Panel::World));
         self.reset_reference_world_preview();
         self.camera_motion.cancel();
         self.fit = true;
