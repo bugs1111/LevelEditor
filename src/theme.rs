@@ -23,6 +23,12 @@ pub fn configure(ctx: &egui::Context) {
             "../assets/fonts/RobotoCondensed-Bold.ttf"
         ))),
     );
+    fonts.font_data.insert(
+        "ldtk-regular".into(),
+        Arc::new(FontData::from_static(include_bytes!(
+            "../assets/fonts/RobotoCondensed-Regular.ttf"
+        ))),
+    );
     fonts
         .families
         .entry(FontFamily::Proportional)
@@ -34,6 +40,10 @@ pub fn configure(ctx: &egui::Context) {
     fonts.families.insert(
         FontFamily::Name("panel-title".into()),
         vec!["ldtk-light".into()],
+    );
+    fonts.families.insert(
+        FontFamily::Name("panel-header".into()),
+        vec!["ldtk-regular".into()],
     );
     for path in [
         "/System/Library/Fonts/Supplemental/Arial.ttf",
@@ -90,7 +100,7 @@ pub fn configure(ctx: &egui::Context) {
     fonts
         .families
         .insert(FontFamily::Name("body-bold".into()), bold);
-    for family in ["heading", "panel-title"] {
+    for family in ["heading", "panel-title", "panel-header"] {
         fonts
             .families
             .entry(FontFamily::Name(family.into()))

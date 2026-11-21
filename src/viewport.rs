@@ -32,6 +32,12 @@ impl Viewport {
             (screen[1] - origin[1] - size[1] * 0.5) / self.zoom + self.center[1],
         ]
     }
+    pub fn level_render_canvas_origin(&self, canvas: Rect, pixels_per_point: f32) -> [f32; 2] {
+        // LevelRender.hx snaps the local root before drawing the level and its filters.
+        let root: eframe::egui::Vec2 = self.to_screen([0.; 2], [0.; 2], canvas.size().into()).into();
+        let snapped = (root * pixels_per_point).round() / pixels_per_point;
+        (canvas.min + (snapped - root)).into()
+    }
     pub fn pointer_pixel(
         &self,
         page: [f32; 2],
@@ -143,6 +149,9 @@ pub struct CameraMotion {
     center: Option<([f32; 2], f32)>,
     last_frame: Option<u64>,
     last_tmod: Option<f32>,
+    last_window_frame: Option<f64>,
+    last_window_activity: Option<f64>,
+    world_entry_deadline: Option<f64>,
 }
 
 impl CameraMotion {
@@ -204,6 +213,36 @@ impl CameraMotion {
         } else {
             self.last_tmod.unwrap_or(1.0)
         })
+    }
+
+    pub fn window_dt(&mut self, ctx: &eframe::egui::Context) -> Option<f32> {
+        let (now, dt, input) = ctx.input(|i| (i.time, i.unstable_dt, !i.events.is_empty()));
+        let last_frame = self.last_window_frame.unwrap_or(now - f64::from(dt));
+        let idle_for = now - *self.last_window_activity.get_or_insert(now);
+        let entering_world = matches!(self.zoom_request, Some(ZoomRequest::WorldEntry { .. }))
+            && self.zoom.is_none()
+            && self.center.is_none();
+        if entering_world && idle_for > 2. {
+            // The original's pending browser timer survives a key press.
+            // Canvas input can wake egui early, but the first zoom uses the
+            // elapsed time of the previously scheduled canvas frame.
+            let interval = if idle_for > 6. { 1. / 12. } else { 1. / 30. };
+            let deadline = *self.world_entry_deadline.get_or_insert(last_frame + interval);
+            if now < deadline {
+                ctx.request_repaint_after(std::time::Duration::from_secs_f64(deadline - now));
+                return None;
+            }
+        }
+        let elapsed = if self.world_entry_deadline.take().is_some() && entering_world {
+            (now - last_frame) as f32
+        } else {
+            dt
+        };
+        self.last_window_frame = Some(now);
+        if input || self.is_active() {
+            self.last_window_activity = Some(now);
+        }
+        Some(elapsed)
     }
 
     pub fn tick(
@@ -406,6 +445,40 @@ mod tests {
         // The original projects the center at page pixel (869,449) before
         // zooming and at (870,450) afterward.
         near(view.center, [289.21667, 81.21667]);
+    }
+
+    #[test]
+    fn idle_world_entry_uses_the_pending_canvas_interval_after_an_early_key_frame() {
+        let ctx = eframe::egui::Context::default();
+        let mut motion = CameraMotion::default();
+        let mut view = Viewport {
+            center: [239.5, 15.5],
+            zoom: 900. / 207.,
+        };
+        let canvas = Rect::from_min_size(
+            eframe::egui::pos2(300., 0.),
+            eframe::egui::vec2(1140., 900.),
+        );
+        let run = |motion: &mut CameraMotion, now| {
+            let mut dt = None;
+            let _ = ctx.run(
+                eframe::egui::RawInput {
+                    time: Some(now),
+                    ..Default::default()
+                },
+                |ctx| dt = motion.window_dt(ctx),
+            );
+            dt
+        };
+        assert!(run(&mut motion, 0.).is_some());
+        assert!(run(&mut motion, 7.).is_some());
+        motion.enter_world([-281., -48., 319., 426.], false);
+        assert_eq!(run(&mut motion, 7.015), None);
+        let elapsed = run(&mut motion, 7.085).unwrap();
+        assert!((elapsed - 0.085).abs() < 0.0001);
+        assert!(!motion.tick(&mut view, canvas, [160., -48.], 1., 1, elapsed));
+        assert!((view.zoom - 0.95).abs() < 0.0001);
+        near(view.center, [239.5, 15.5]);
     }
 
     #[test]

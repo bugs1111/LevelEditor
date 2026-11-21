@@ -244,6 +244,7 @@ pub struct EditorApp {
     history: History,
     selected: Option<LevelKey>,
     world_selection: Vec<String>,
+    world_hover: Option<LevelKey>,
     active_world: Option<usize>,
     layer: usize,
     viewport: Viewport,
@@ -457,6 +458,7 @@ impl EditorApp {
             history: History::default(),
             selected: None,
             world_selection: Vec::new(),
+            world_hover: None,
             active_world: None,
             layer: 0,
             viewport: Viewport::default(),
@@ -597,11 +599,15 @@ impl EditorApp {
     }
 
     fn set_project(&mut self, project: Project) {
+        if let Some(ctx) = &self.repaint {
+            bleep::reset_error_scans(ctx);
+        }
         self.zen_sidebar = chrome::ZenSidebar::default();
         self.command_palette = false;
         self.search_focus = false;
         self.search_entries = None;
         self.world_selection.clear();
+        self.world_hover = None;
         let closing_settings = self.panel == Some(Panel::Settings);
         self.suggest_backups = project_dialogs::suggest_backups(&project);
         self.quick_notification = None;
@@ -640,6 +646,13 @@ impl EditorApp {
         self.project = Some(project);
         self.layer = 0;
         self.history = History::default();
+        if let Some(project) = self.project.as_ref().filter(|p| p.path.is_none()) {
+            for key in project.level_keys() {
+                if let Some(level) = project.level(key) {
+                    self.history.mark_level_modified(level);
+                }
+            }
+        }
         self.assets.clear();
         self.resource_checks.clear();
         self.external_enum_reloads.clear();
@@ -949,14 +962,16 @@ impl EditorApp {
         } else {
             [0.; 2]
         };
-        if self.camera_motion.tick(
-            &mut self.viewport,
-            rect,
-            level_origin,
-            ctx.pixels_per_point(),
-            ctx.cumulative_frame_nr(),
-            ctx.input(|i| i.unstable_dt),
-        ) {
+        if let Some(dt) = self.camera_motion.window_dt(ctx)
+            && self.camera_motion.tick(
+                &mut self.viewport,
+                rect,
+                level_origin,
+                ctx.pixels_per_point(),
+                ctx.cumulative_frame_nr(),
+                dt,
+            )
+        {
             ctx.request_repaint();
         }
     }
@@ -996,10 +1011,12 @@ impl EditorApp {
                 active_layer: self.layer,
                 world: self.world,
                 world_multi_selection: !self.world_selection.is_empty(),
+                world_hover: self.world_hover,
                 grid: self.grid,
                 details: self.details,
                 single_layer: self.single_layer,
                 hidden: &self.hidden,
+                modified_levels: Some(self.history.modified_levels()),
                 render_auto: self.render_auto,
                 tile_tags: self.tile_tags,
                 ui_scale: self.settings.float("editorUiScale", 1.0),
@@ -1343,6 +1360,7 @@ impl EditorApp {
                 entity_inspector::remember_canvas(ctx, rect);
                 if self.project.is_some() {
                     self.canvas_input(ctx, rect, &response);
+                    self.update_world_hover(ctx, rect, response.hovered());
                 }
                 let picker = canvas::begin_picker_filter(
                     ui.painter(),
@@ -1352,11 +1370,11 @@ impl EditorApp {
                     if let Some(key) = self.selected {
                         self.draw_project_canvas(ctx, ui.painter(), rect, key);
                         self.draw_rule_hover(ctx, ui.painter(), rect, key);
-                        self.draw_world_selection(ui, rect, response.hovered());
+                        self.draw_world_selection(ui, rect);
                         self.draw_brush_preview(ui, rect, response.hovered());
                         self.draw_tool_overlay(ui, rect);
                         self.draw_field_pick_targets(ui, rect);
-                        self.draw_level_resize_preview(ui, rect);
+                        self.draw_level_resize_preview(ui, rect, response.hovered());
                         self.draw_resize_handles(ui, rect);
                         self.draw_bleeps(ui, rect);
                         canvas::finish_picker_filter(ui.painter(), picker, rect);
@@ -1777,6 +1795,59 @@ mod tests {
             _ => None,
         });
         assert_eq!(status, None, "World panel must hide canvas status");
+    }
+
+    #[test]
+    fn panel_mask_dismisses_on_press_without_starting_canvas_input() {
+        for button in [
+            egui::PointerButton::Primary,
+            egui::PointerButton::Middle,
+            egui::PointerButton::Secondary,
+        ] {
+            let mut app = editor();
+            app.panel = Some(Panel::Level);
+            let key = app.selected.unwrap();
+            let project = app.project.as_mut().unwrap();
+            project.paint_int_grid(key, 0, 8, 8, 1).unwrap();
+            let original = project.json.clone();
+            let center = app.viewport.center;
+            let ctx = egui::Context::default();
+            theme::configure(&ctx);
+            let update = |app: &mut EditorApp, events| {
+                ctx.run(
+                    egui::RawInput {
+                        screen_rect: Some(Rect::from_min_size(
+                            egui::Pos2::ZERO,
+                            egui::vec2(1440., 900.),
+                        )),
+                        events,
+                        ..Default::default()
+                    },
+                    |ctx| app.update_frame(ctx, &mut eframe::Frame::_new_kittest()),
+                )
+            };
+            let start = egui::pos2(876., 456.);
+            let end = egui::pos2(912., 464.);
+            let press = |pos, button, pressed| egui::Event::PointerButton {
+                pos,
+                button,
+                pressed,
+                modifiers: egui::Modifiers::NONE,
+            };
+            update(&mut app, vec![]);
+            update(&mut app, vec![egui::Event::PointerMoved(start)]);
+            update(&mut app, vec![press(start, button, true)]);
+            assert!(app.panel.is_none(), "{button:?} must close on press");
+            update(&mut app, vec![egui::Event::PointerMoved(end)]);
+            update(&mut app, vec![press(end, button, false)]);
+            assert_eq!(app.project.as_ref().unwrap().json, original);
+            assert_eq!(app.viewport.center, center);
+            assert!(!app.stroke && app.gesture.is_none() && app.camera_drag.is_none());
+
+            update(&mut app, vec![press(end, egui::PointerButton::Primary, true)]);
+            update(&mut app, vec![press(end, egui::PointerButton::Primary, false)]);
+            assert_ne!(app.project.as_ref().unwrap().json, original);
+        }
     }
 
     #[test]

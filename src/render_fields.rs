@@ -106,6 +106,23 @@ fn displayed(owner: &Value, fd: &Value, world: bool) -> bool {
         field.is_some_and(|f| !f["realEditorValues"][0].is_null())
     }
 }
+
+pub(super) fn level_has_beneath_label(project: &Project, level: &Value) -> bool {
+    values(&level["fieldInstances"]).iter().any(|field| {
+        values(&project.json["defs"]["levelFields"])
+            .iter()
+            .find(|fd| fd["uid"] == field["defUid"])
+            .is_some_and(|fd| {
+                fd["editorDisplayPos"] == "Beneath"
+                    && matches!(
+                        fd["editorDisplayMode"].as_str(),
+                        Some("ValueOnly" | "NameAndValue" | "ArrayCountNoLabel" | "ArrayCountWithLabel")
+                    )
+                    && (fd["editorAlwaysShow"] == true || !field["realEditorValues"][0].is_null())
+            })
+    })
+}
+
 #[derive(Clone)]
 enum Part {
     Text(String),
@@ -527,22 +544,27 @@ impl Scene<'_> {
             }
         }
         let mut y = min.y;
+        let density = self.ctx.pixels_per_point();
         for (row, (label_size, value_size)) in rows.iter().zip(sizes) {
-            let h = (label_size.y.max(value_size.y) * row.scale * self.ctx.pixels_per_point())
-                .ceil()
-                / self.ctx.pixels_per_point();
+            let content_height = label_size.y.max(value_size.y);
+            let h = (content_height * row.scale * density).ceil() / density;
+            // Flow centers its children in local font pixels before the
+            // parent rounds the scaled row's occupied height.
+            let center_y = |height: f32| {
+                y + ((content_height - height) * 0.5 * density).trunc() * row.scale / density
+            };
             if !row.label.is_empty() {
                 let first = super::blur::begin(painter);
+                let label_origin = egui::pos2(
+                    min.x + (label_width - label_size.x) * row.scale,
+                    center_y(label_size.y),
+                );
                 bitmap_font::paint_field(
                     self.ctx,
                     painter,
                     self.assets,
-                    egui::pos2(
-                        min.x + (label_width - label_size.x) * row.scale,
-                        y + (h - label_size.y * row.scale) * 0.5
-                            - (2. * self.options.ui_scale).round() / self.ctx.pixels_per_point()
-                                * row.scale,
-                    ),
+                    label_origin
+                        - vec2(0., (2. * self.options.ui_scale).round() / self.ctx.pixels_per_point() * row.scale),
                     &row.label,
                     full_brightness(lighten(row.color, row.label_brighten)),
                     row.scale,
@@ -550,7 +572,7 @@ impl Scene<'_> {
                     (!self.options.fields_table && !gpu_outline).then_some(row.color),
                 );
                 if gpu_outline {
-                    super::outline::finish(painter, first, darken(row.color, 0.66), opacity);
+                    super::outline::finish(painter, first, darken(row.color, 0.66), opacity, label_origin, row.scale);
                 }
             }
             let first = super::blur::begin(painter);
@@ -571,7 +593,7 @@ impl Scene<'_> {
                             })
                             * row.scale
                 },
-                y + (h - value_size.y * row.scale) * 0.5,
+                center_y(value_size.y),
             );
             if let Some(error) = &row.error {
                 let text = format!("<{error}>");
@@ -649,7 +671,7 @@ impl Scene<'_> {
                 }
             }
             if gpu_outline {
-                super::outline::finish(painter, first, darken(row.color, 0.66), opacity);
+                super::outline::finish(painter, first, darken(row.color, 0.66), opacity, value_origin, row.scale);
             }
             y +=
                 h + if row.label.is_empty() {
@@ -695,11 +717,12 @@ impl Scene<'_> {
             }
             let first = super::blur::begin(&name_painter);
             let name_color = self.smart_color_bright(entity, def, true);
+            let name_origin = rect.center_top() - vec2(size.x * 0.5, size.y);
             bitmap_font::paint(
                 self.ctx,
                 &name_painter,
                 self.assets,
-                rect.center_top() - vec2(size.x * 0.5, size.y),
+                name_origin,
                 &name,
                 name_color,
                 1.,
@@ -712,6 +735,8 @@ impl Scene<'_> {
                     first,
                     darken(name_color, 0.66),
                     text_painter.opacity(),
+                    name_origin,
+                    1.,
                 );
             }
         }
@@ -847,7 +872,13 @@ impl Scene<'_> {
     pub(super) fn level_color(&self, level: &Value) -> Color32 {
         level_smart_color(self.project, level)
     }
-    pub(super) fn level_fields(&mut self, painter: &Painter, level: &Value, origin: [f32; 2]) {
+    pub(super) fn level_fields(
+        &mut self,
+        painter: &Painter,
+        level: &Value,
+        origin: [f32; 2],
+        title_height: f32,
+    ) {
         let bounds = self.screen([
             origin[0],
             origin[1],
@@ -864,7 +895,8 @@ impl Scene<'_> {
             .iter()
             .filter_map(|fd| self.row(level, fd, color))
             .collect::<Vec<_>>();
-        let size = self.rows_size(&rows, 800.).0;
+        let max_width = text_width(self.ctx, true);
+        let size = self.rows_size(&rows, max_width).0;
         if size.x <= 0. || size.y <= 0. {
             return;
         }
@@ -888,36 +920,37 @@ impl Scene<'_> {
         }
         let mut painter = painter.clone();
         if self.options.world {
-            painter.multiply_opacity(((self.view.zoom - 0.1) / 0.1).clamp(0., 1.));
+            let backing_zoom = self.view.zoom * self.ctx.pixels_per_point();
+            painter.multiply_opacity(((backing_zoom - 0.1) / 0.1).clamp(0., 1.));
         }
         let (anchor, align) = if self.options.world {
-            match layout {
-                "LinearHorizontal" => (bounds.center_bottom() + vec2(0., 32. * self.view.zoom), 0.),
-                "LinearVertical" => (
-                    egui::pos2(
-                        bounds.right() + 32. * self.view.zoom + size.x * fit * 0.5,
-                        bounds.center().y,
-                    ),
-                    0.5,
-                ),
-                _ => (bounds.center_bottom(), 1.),
-            }
-        } else {
+            let [x, y] = origin;
+            let width = number(level, "pxWid", 256.);
+            let height = number(level, "pxHei", 256.);
+            let display_size = size * fit;
+            let level_size = display_size / self.view.zoom;
+            let left = (x + width * 0.5).round() - level_size.x * 0.5;
+            let position = match layout {
+                "LinearHorizontal" => [left, y + height + 32.],
+                // WorldRender adds worldX twice in this layout.
+                "LinearVertical" => [2. * x + width + 32., (y + height * 0.5).round() - level_size.y * 0.5],
+                _ => [left, y + height - level_size.y],
+            };
             (
-                bounds.center_top()
-                    - vec2(
-                        0.,
-                        12. * self.view.zoom
-                            + bitmap_font::measure(
-                                self.ctx,
-                                text(level, "identifier", ""),
-                                1.,
-                                f32::INFINITY,
-                            )
-                            .y
-                            + 3. * self.options.ui_scale,
-                    ),
-                1.,
+                self.level_annotation_point(position.map(f32::trunc)) + vec2(display_size.x * 0.5, 0.),
+                0.,
+            )
+        } else {
+            let size = size * fit;
+            let zoom = self.view.zoom;
+            let center = (number(level, "worldX", 0.) + number(level, "pxWid", 256.) * 0.5).round();
+            let left = (center - size.x * 0.5 / zoom).trunc();
+            let top = (number(level, "worldY", 0.) - 12. - size.y / zoom).trunc()
+                - title_height / zoom
+                - 3. * self.options.ui_scale;
+            (
+                self.level_annotation_point([left, top]) + vec2(size.x * 0.5, 0.),
+                0.,
             )
         };
         self.paint_rows(
@@ -925,7 +958,7 @@ impl Scene<'_> {
             &rows,
             anchor,
             align,
-            text_width(self.ctx, true) * self.options.ui_scale,
+            max_width * self.options.ui_scale,
             color,
         );
     }
@@ -1388,6 +1421,7 @@ mod tests {
             project: &project,
             view: &view,
             canvas: Rect::EVERYTHING,
+            projection_origin: Rect::EVERYTHING.min.into(),
             options: &options,
             assets: &mut assets,
             entity_index: Default::default(),
@@ -1422,6 +1456,7 @@ mod tests {
             project: &project,
             view: &view,
             canvas: Rect::EVERYTHING,
+            projection_origin: Rect::EVERYTHING.min.into(),
             options: &options,
             assets: &mut assets,
             entity_index: Default::default(),

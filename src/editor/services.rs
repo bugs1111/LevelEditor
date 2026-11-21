@@ -110,6 +110,15 @@ impl EditorApp {
                     }
                     self.set_project(loaded.project);
                     self.dirty = loaded.migrated;
+                    if loaded.migrated
+                        && let Some(project) = &self.project
+                    {
+                        for key in project.level_keys() {
+                            if let Some(level) = project.level(key) {
+                                self.history.mark_level_modified(level);
+                            }
+                        }
+                    }
                     self.resource_scan(ctx);
                     self.queue_project_hooks(ctx, "AfterLoad", hooks::Continuation::None);
                     if !loaded.warnings.is_empty() {
@@ -135,6 +144,7 @@ impl EditorApp {
                     self.discard_unused_images(&saved.project);
                     self.project = Some(saved.project);
                     self.dirty = false;
+                    self.history.clear_modified_levels();
                     self.file_snapshot = self
                         .project
                         .as_ref()

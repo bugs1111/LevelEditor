@@ -29,6 +29,7 @@ impl EditorApp {
         self.async_paint = None;
         self.cancel_world_context();
         self.world_selection.clear();
+        self.world_hover = None;
         let layer_uid = self
             .selected
             .and_then(|key| self.project.as_ref()?.layer(key, self.layer))
@@ -73,6 +74,7 @@ impl EditorApp {
         self.async_paint = None;
         self.cancel_world_context();
         self.world_selection.clear();
+        self.world_hover = None;
         if let Some(key) = self
             .project
             .as_ref()
@@ -109,6 +111,7 @@ impl EditorApp {
             return;
         }
         self.world = world;
+        self.world_hover = None;
         self.reset_reference_world_preview();
         self.fit = false;
         self.world_selection.clear();
@@ -146,7 +149,10 @@ impl EditorApp {
         if self.defer_ui_action(&ctx, ui_commit::DeferredUiAction::Panel(panel)) {
             return;
         }
-        if panel != Some(Panel::Level) && self.picking_point_in_level_panel() {
+        // Opening a source modal stops the Point tool, while reference picking can span panels.
+        if self.picking_point_in_level_panel()
+            || self.picking_point() && panel.is_some_and(|panel| panel != Panel::Entity)
+        {
             self.cancel_field_pick();
         }
         if self.panel == Some(Panel::Settings) && panel != Some(Panel::Settings) {
@@ -160,6 +166,26 @@ impl EditorApp {
         self.finish_stroke();
         self.async_paint = None;
         self.cancel_world_context();
+        if matches!(
+            panel,
+            Some(
+                Panel::Project
+                    | Panel::Level
+                    | Panel::Layers
+                    | Panel::Entities
+                    | Panel::Enums
+                    | Panel::Tilesets
+                    | Panel::Help
+                    | Panel::World
+                    | Panel::Fields
+                    | Panel::Rules
+            )
+        ) {
+            // Source panels clear the level selection when they open.
+            self.selection = None;
+            self.selection_group = None;
+            self.entity_index = None;
+        }
         if panel == Some(Panel::World) {
             self.set_world_view(true);
         } else if self.panel == Some(Panel::World) || panel.is_none() && self.world {
@@ -620,6 +646,36 @@ mod tests {
         assert!(app.world);
         assert_eq!(app.panel, Some(Panel::World));
         assert_eq!(app.viewport.center, [1408., 2176.]);
+    }
+
+    #[test]
+    fn opening_a_definition_panel_clears_the_canvas_selection_but_keeps_the_clipboard() {
+        let mut project = Project::new();
+        project.add_layer("Entities", "Entities", 16).unwrap();
+        let uid = project.add_entity_def("Actor", 16, 16).unwrap();
+        let level = project.level_keys()[0];
+        project.add_entity(level, 0, uid, 64, 80).unwrap();
+        project.add_entity(level, 0, uid, 104, 104).unwrap();
+        let original = project.json.clone();
+        let ctx = egui::Context::default();
+        theme::configure(&ctx);
+        let mut app = EditorApp::empty();
+        app.set_project(project);
+        frame(&mut app, &ctx, vec![]);
+
+        press(&mut app, &ctx, Key::A, egui::Modifiers::COMMAND);
+        press(&mut app, &ctx, Key::C, egui::Modifiers::COMMAND);
+        assert_eq!(app.selection_group.as_ref().unwrap()["elementCount"], 2);
+        let clipboard = app.clipboard.clone().unwrap();
+        press(&mut app, &ctx, Key::L, egui::Modifiers::NONE);
+        assert_eq!(app.panel, Some(Panel::Layers));
+        assert!(app.selection.is_none() && app.selection_group.is_none());
+        press(&mut app, &ctx, Key::L, egui::Modifiers::NONE);
+        assert!(app.panel.is_none());
+        press(&mut app, &ctx, Key::Delete, egui::Modifiers::NONE);
+        assert_eq!(app.project.as_ref().unwrap().json, original);
+        assert_eq!(app.clipboard, Some(clipboard));
+        assert!(!app.dirty);
     }
 
     #[test]

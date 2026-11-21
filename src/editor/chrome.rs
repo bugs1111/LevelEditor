@@ -2223,6 +2223,7 @@ mod tests {
         app_frame(&mut app, &ctx, vec![]);
         app_click(&mut app, &ctx, egui::pos2(75., 18.));
         app_frame(&mut app, &ctx, vec![]);
+        assert_eq!(app.panel, Some(Panel::Level));
         for pressed in [true, false] {
             app_frame(
                 &mut app,
@@ -2237,9 +2238,9 @@ mod tests {
                     },
                 ],
             );
+            assert!(app.panel.is_none());
         }
         let output = app_frame(&mut app, &ctx, vec![]);
-        assert_eq!(app.panel, Some(Panel::Level));
         assert!(
             !output.shapes.iter().any(|shape| {
                 matches!(&shape.shape, egui::Shape::Text(text) if text.galley.text() == "New level")

@@ -30,6 +30,22 @@ fn handle_position(size: [i32; 2], handle: [i32; 2]) -> [f32; 2] {
         _ => (size[axis] / 2) as f32,
     })
 }
+fn handle_at(size: [i32; 2], local: [f32; 2], world: bool) -> Option<[i32; 2]> {
+    if !world
+        && local[0] >= 0.
+        && local[1] >= 0.
+        && local[0] < size[0] as f32
+        && local[1] < size[1] as f32
+    {
+        return None;
+    }
+    // Original loop deliberately uses the last matching handle.
+    HANDLES.into_iter().rfind(|handle| {
+        let point = handle_position(size, *handle);
+        (local[0] - point[0]).hypot(local[1] - point[1]) <= 15.
+    })
+}
+
 pub(super) fn cursor(handle: [i32; 2]) -> egui::CursorIcon {
     match handle {
         [0, _] => egui::CursorIcon::ResizeVertical,
@@ -71,26 +87,25 @@ impl EditorApp {
         response: &egui::Response,
         picker_press: Option<egui::Pos2>,
     ) -> bool {
-        if self.project.as_ref().is_some_and(Project::is_backup) {
+        let Some(project) = &self.project else {
+            return false;
+        };
+        if project.is_backup() {
             return false;
         }
         let pointer = ctx.input(|i| i.pointer.interact_pos());
         let Some(pointer) = pointer else {
             return self.level_resize.is_some();
         };
-        if let Some(drag) = &mut self.level_resize {
-            let world = self
-                .viewport
-                .to_world(pointer.into(), rect.min.into(), rect.size().into());
-            drag.end = std::array::from_fn(|axis| {
-                (world[axis] + 0.5).floor()
-                    - if self.world {
-                        drag.world_origin[axis] as f32
-                    } else {
-                        0.
-                    }
-            });
-            drag.moved |= pointer.distance(drag.screen_start) >= 4.;
+        if let Some(key) = self.level_resize.as_ref().map(|drag| drag.key) {
+            let end = self.resize_pointer(project, key, rect, pointer, ctx.pixels_per_point());
+            let drag = self.level_resize.as_mut().unwrap();
+            drag.end = end;
+            let delta = egui::vec2(
+                pointer.x.trunc() - drag.screen_start.x.trunc(),
+                pointer.y.trunc() - drag.screen_start.y.trunc(),
+            );
+            drag.moved |= delta.length_sq() >= 16.;
             ctx.set_cursor_icon(if drag.moved {
                 egui::CursorIcon::Grabbing
             } else {
@@ -106,9 +121,6 @@ impl EditorApp {
         {
             return false;
         }
-        let Some(project) = &self.project else {
-            return false;
-        };
         let Some(key) = self.selected else {
             return false;
         };
@@ -123,42 +135,13 @@ impl EditorApp {
             number(level, "pxWid", 256.) as i32,
             number(level, "pxHei", 256.) as i32,
         ];
-        let world_origin = canvas::placements(project, key)
-            .into_iter()
-            .find(|(candidate, _)| *candidate == key)
-            .map(|(_, bounds)| [bounds[0] as i32, bounds[1] as i32])
-            .unwrap_or([0, 0]);
-        let to_local = |screen: egui::Pos2| {
-            let world = self
-                .viewport
-                .to_world(screen.into(), rect.min.into(), rect.size().into());
-            std::array::from_fn(|axis| {
-                (world[axis] + 0.5).floor()
-                    - if self.world {
-                        world_origin[axis] as f32
-                    } else {
-                        0.
-                    }
-            })
-        };
         let screen_start = picker_press.unwrap_or(pointer);
-        let local = to_local(screen_start);
-        if !self.world
-            && local[0] >= 0.
-            && local[1] >= 0.
-            && local[0] < size[0] as f32
-            && local[1] < size[1] as f32
-        {
-            return false;
-        }
-        // Original loop deliberately uses the last matching handle.
-        let handle = HANDLES.into_iter().rfind(|handle| {
-            let point = handle_position(size, *handle);
-            (local[0] - point[0]).hypot(local[1] - point[1]) <= 15.
-        });
+        let local = self.resize_pointer(project, key, rect, screen_start, ctx.pixels_per_point());
+        let handle = handle_at(size, local, self.world);
         let Some(handle) = handle else { return false };
         ctx.set_cursor_icon(cursor(handle));
         if ctx.input(|i| i.pointer.primary_pressed()) {
+            let world_origin = navigation::level_world_origin(project, key).map(|n| n as i32);
             let grid = project
                 .layer(key, self.layer)
                 .map(|layer| number(layer, "__gridSize", 16.))
@@ -177,7 +160,7 @@ impl EditorApp {
             self.level_resize = Some(LevelResize {
                 key,
                 start: local,
-                end: to_local(pointer),
+                end: self.resize_pointer(project, key, rect, pointer, ctx.pixels_per_point()),
                 screen_start,
                 handle,
                 size,
@@ -225,46 +208,90 @@ impl EditorApp {
         self.level_resize = None;
     }
 
-    pub(super) fn draw_level_resize_preview(&self, ui: &egui::Ui, rect: Rect) {
+    fn resize_pointer(
+        &self,
+        project: &Project,
+        key: LevelKey,
+        rect: Rect,
+        pointer: egui::Pos2,
+        density: f32,
+    ) -> [f32; 2] {
+        let (pixel, _) = self.canvas_pointer_pixels(project, key, rect, pointer, density);
+        if self.world {
+            let origin = navigation::level_world_origin(project, key);
+            [pixel[0] - origin[0], pixel[1] - origin[1]]
+        } else {
+            pixel
+        }
+    }
+
+    pub(super) fn draw_level_resize_preview(&self, ui: &egui::Ui, rect: Rect, hovered: bool) {
         let Some(project) = &self.project else { return };
         let Some(key) = self.selected else { return };
         let Some(level) = project.level(key) else {
             return;
         };
         let origin = if self.world {
-            canvas::placements(project, key)
-                .into_iter()
-                .find(|(candidate, _)| *candidate == key)
-                .map(|(_, bounds)| [bounds[0], bounds[1]])
-                .unwrap_or([0., 0.])
+            navigation::level_world_origin(project, key)
         } else {
             [0., 0.]
         };
+        let mut view = self.viewport.clone();
+        for (center, origin) in view.center.iter_mut().zip(origin) {
+            *center -= origin;
+        }
+        let canvas_origin = view.level_render_canvas_origin(rect, ui.ctx().pixels_per_point());
         let point = |local: [f32; 2]| -> egui::Pos2 {
-            self.viewport
-                .to_screen(
-                    [origin[0] + local[0], origin[1] + local[1]],
-                    rect.min.into(),
-                    rect.size().into(),
-                )
-                .into()
+            view.to_screen(local, canvas_origin, rect.size().into()).into()
         };
         let painter = ui.painter().with_clip_rect(rect);
-        if (self.world || !self.details)
-            && number(level, "worldDepth", 0.) as i64 == self.world_depth
+        if number(level, "worldDepth", 0.) as i64 == self.world_depth
             && !ui.input(|i| i.modifiers.any() || i.key_down(Key::Space))
         {
             let size = [
                 number(level, "pxWid", 256.) as i32,
                 number(level, "pxHei", 256.) as i32,
             ];
+            let active = self.level_resize.is_some()
+                || hovered
+                    && self.gesture.is_none()
+                    && !self.stroke
+                    && self.field_pick.is_none()
+                    && ui.ctx().pointer_hover_pos().is_some_and(|pointer| {
+                        let local = self.resize_pointer(
+                            project,
+                            key,
+                            rect,
+                            pointer,
+                            ui.ctx().pixels_per_point(),
+                        );
+                        handle_at(size, local, self.world).is_some()
+                    });
+            let bg = theme::color(text(&project.json, "bgColor", "#40465B"));
+            let luminance = (0.299 * (bg.r() as f32 / 255.).powi(2)
+                + 0.587 * (bg.g() as f32 / 255.).powi(2)
+                + 0.114 * (bg.b() as f32 / 255.).powi(2))
+            .sqrt();
+            let color = if luminance >= 0.7 {
+                Color32::BLACK
+            } else {
+                Color32::WHITE
+            };
+            // Heaps rounds 30% white to 76 on its 8-bit canvas.
+            let color = color.gamma_multiply(if active { 1. } else { 76. / 255. });
+            let radius = 5. * self.viewport.zoom;
+            let mut mesh = egui::Mesh::default();
             for handle in HANDLES {
-                painter.circle_filled(
-                    point(handle_position(size, handle)),
-                    5. * self.viewport.zoom,
-                    Color32::WHITE,
-                );
+                let center = point(handle_position(size, handle));
+                let base = mesh.vertices.len() as u32;
+                mesh.colored_vertex(center, color);
+                for i in 0..24 {
+                    let angle = i as f32 * std::f32::consts::TAU / 24.;
+                    mesh.colored_vertex(center + Vec2::angled(angle) * radius, color);
+                    mesh.add_triangle(base, base + i + 1, base + (i + 1) % 24 + 1);
+                }
             }
+            painter.add(egui::Shape::mesh(mesh));
         }
         if let Some(drag) = &self.level_resize
             && drag.moved
@@ -318,6 +345,40 @@ mod tests {
             moved: true,
         }
     }
+
+    #[test]
+    fn resize_handles_use_the_level_root_and_brighten_only_when_available() {
+        let ctx = egui::Context::default();
+        let mut app = editor();
+        app.viewport.zoom = 0.4;
+        let rect = Rect::from_min_size(egui::pos2(300., 0.), egui::vec2(400., 300.));
+        let pointer = egui::pos2(447.4, 150.2);
+        let run = |hovered, modifiers| {
+            let output = ctx.run(
+                egui::RawInput {
+                    modifiers,
+                    events: vec![egui::Event::PointerMoved(pointer)],
+                    ..Default::default()
+                },
+                |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        app.draw_level_resize_preview(ui, rect, hovered)
+                    });
+                },
+            );
+            output.shapes.into_iter().find_map(|shape| match shape.shape {
+                egui::Shape::Mesh(mesh) if mesh.indices.len() == 8 * 24 * 3 => Some(mesh),
+                _ => None,
+            })
+        };
+        let idle = run(false, egui::Modifiers::NONE).unwrap();
+        assert_eq!(idle.vertices[7 * 25].pos, egui::pos2(553., 203.));
+        assert_eq!(idle.vertices[0].color.a(), 76);
+        let active = run(true, egui::Modifiers::NONE).unwrap();
+        assert_eq!(active.vertices[0].color.a(), 255);
+        assert!(run(true, egui::Modifiers::SHIFT).is_none());
+    }
+
     #[test]
     fn ruler_edges_floor_grid_delta_and_gridvania_rounds_bounds() {
         let app = editor();
@@ -412,7 +473,7 @@ mod tests {
                         let (rect, response) =
                             ui.allocate_exact_size(ui.available_size(), Sense::click_and_drag());
                         app.canvas_input(ctx, rect, &response);
-                        app.draw_level_resize_preview(ui, rect);
+                        app.draw_level_resize_preview(ui, rect, response.hovered());
                     });
                 },
             );

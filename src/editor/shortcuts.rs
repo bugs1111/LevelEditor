@@ -424,6 +424,7 @@ impl EditorApp {
             self.finish_gesture();
             self.finish_stroke();
             self.world_depth = depth;
+            self.world_hover = None;
         }
     }
 

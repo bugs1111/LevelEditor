@@ -580,8 +580,48 @@ pub struct History {
     pending: Option<Snapshot>,
     undo: Vec<Action>,
     redo: Vec<Action>,
+    modified_levels: BTreeSet<String>,
 }
 impl History {
+    /// Levels whose serialized content was invalidated since the last save.
+    pub fn modified_levels(&self) -> &BTreeSet<String> {
+        &self.modified_levels
+    }
+    pub fn mark_level_modified(&mut self, level: &Value) {
+        if let Some(iid) = level["iid"].as_str() {
+            self.modified_levels.insert(iid.into());
+        }
+    }
+    pub fn clear_modified_levels(&mut self) {
+        self.modified_levels.clear();
+    }
+    fn mark_action_levels_modified(&mut self, action: &Action) {
+        if let Some(iid) = &action.level_iid {
+            self.modified_levels.insert(iid.clone());
+        }
+        for change in &action.changes {
+            for pair in change.path.windows(2) {
+                if let [Segment::Key(array), Segment::Item(key, id)] = pair
+                    && array == "levels"
+                    && key == "iid"
+                    && let Some(iid) = id.as_str()
+                {
+                    self.modified_levels.insert(iid.into());
+                    break;
+                }
+            }
+            if let [Segment::Key(array), Segment::Item(_, _)] = &change.path[..]
+                && array == "worlds"
+            {
+                for world in change.before.iter().chain(&change.after) {
+                    for level in world["levels"].as_array().into_iter().flatten() {
+                        self.mark_level_modified(level);
+                    }
+                }
+            }
+        }
+    }
+
     /// Source LevelTimeline bounds use raw level pixels, not renderer parallax.
     pub fn mark_rect_change(&mut self, rect: [f32; 4]) {
         let Some(snapshot) = self.pending.as_mut() else {
@@ -695,6 +735,7 @@ impl History {
         if action.changes.is_empty() && action.grid_presence.is_empty() {
             return false;
         }
+        self.mark_action_levels_modified(&action);
         if action.level_iid.is_some() {
             self.redo
                 .retain(|previous| previous.level_iid != action.level_iid);
@@ -750,6 +791,7 @@ impl History {
         };
         a.restore(p, true, false);
         a.reload_level_grid_presence(p);
+        self.mark_action_levels_modified(&a);
         self.redo.push(a);
         true
     }
@@ -760,6 +802,7 @@ impl History {
         };
         a.restore(p, false, false);
         a.reload_level_grid_presence(p);
+        self.mark_action_levels_modified(&a);
         self.undo.push(a);
         true
     }
@@ -788,6 +831,7 @@ impl History {
             return false;
         }
         action.reload_level_grid_presence(p);
+        self.mark_action_levels_modified(&action);
         self.redo.push(action);
         true
     }
@@ -815,6 +859,7 @@ impl History {
             return false;
         }
         action.reload_level_grid_presence(p);
+        self.mark_action_levels_modified(&action);
         self.undo.push(action);
         true
     }

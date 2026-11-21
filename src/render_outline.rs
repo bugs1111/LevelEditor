@@ -3,7 +3,7 @@
 //! GPU result; only a cache miss renders the flow and runs the two passes.
 use eframe::{
     egui::{
-        self, Color32, Painter, Rect,
+        self, Color32, Painter, Pos2, Rect,
         epaint::{ClippedPrimitive, Primitive},
     },
     egui_wgpu::{
@@ -20,7 +20,14 @@ const BUDGET: u64 = 64 * 1024 * 1024;
 pub(super) fn available() -> bool {
     super::blur::available()
 }
-pub(super) fn finish(painter: &Painter, start: usize, color: Color32, opacity: f32) {
+pub(super) fn finish(
+    painter: &Painter,
+    start: usize,
+    color: Color32,
+    opacity: f32,
+    origin: Pos2,
+    scale: f32,
+) {
     let fallback = || {
         if opacity >= 1. {
             return;
@@ -42,6 +49,10 @@ pub(super) fn finish(painter: &Painter, start: usize, color: Color32, opacity: f
     let Some(state) = super::blur::gpu() else {
         return;
     };
+    if !scale.is_finite() || scale <= 0. {
+        fallback();
+        return;
+    }
     let shapes = painter.ctx().graphics(|g| {
         g.get(painter.layer_id())
             .map(|p| p.all_entries().skip(start).cloned().collect::<Vec<_>>())
@@ -55,13 +66,33 @@ pub(super) fn finish(painter: &Painter, start: usize, color: Color32, opacity: f
         .iter()
         .fold(Rect::NOTHING, |b, s| {
             b.union(s.shape.visual_bounding_rect())
-        })
-        .expand(2. / ppp)
-        .intersect(painter.clip_rect().expand(2. / ppp));
-    if !bounds.is_finite() || !bounds.intersects(painter.clip_rect()) {
+        });
+    let margin = 2. * scale / ppp;
+    let visible = bounds.expand(margin).intersect(painter.clip_rect().expand(margin));
+    if !visible.is_finite() || !visible.intersects(painter.clip_rect()) {
         return;
     }
-    let rect = Rect::from_min_size(bounds.min, (bounds.size() * ppp).ceil() / ppp);
+    let density = ppp / scale;
+    // Capture at the field flow's own texel density and phase, even if its
+    // projected position or display scale is fractional.
+    let rect = Rect::from_min_max(
+        origin + ((visible.min - origin) * density).floor() / density,
+        origin + ((visible.max - origin) * density).ceil() / density,
+    );
+    let viewport = rect.intersect(painter.ctx().viewport_rect());
+    let viewport = Rect::from_min_max(
+        ((viewport.min.to_vec2() * ppp).floor() / ppp).to_pos2(),
+        ((viewport.max.to_vec2() * ppp).ceil() / ppp).to_pos2(),
+    );
+    if !rect.is_positive() || !viewport.is_positive() {
+        return;
+    }
+    let mapping = [
+        viewport.width() / rect.width(),
+        viewport.height() / rect.height(),
+        (viewport.left() - rect.left()) / rect.width(),
+        (viewport.top() - rect.top()) / rect.height(),
+    ];
     let mut shapes = shapes;
     for shape in &mut shapes {
         shape.clip_rect = shape
@@ -70,7 +101,7 @@ pub(super) fn finish(painter: &Painter, start: usize, color: Color32, opacity: f
             .intersect(Rect::from_min_size(egui::Pos2::ZERO, rect.size()));
         shape.shape.translate(-rect.min.to_vec2());
     }
-    let primitives = painter.ctx().tessellate(shapes, ppp);
+    let primitives = painter.ctx().tessellate(shapes, density);
     let mut textures = HashMap::new();
     let renderer = state.renderer.read();
     for p in &primitives {
@@ -91,8 +122,8 @@ pub(super) fn finish(painter: &Painter, start: usize, color: Color32, opacity: f
     }
     drop(renderer);
     let size = [
-        (rect.width() * ppp).round().max(1.) as u32,
-        (rect.height() * ppp).round().max(1.) as u32,
+        (rect.width() * density).round().max(1.) as u32,
+        (rect.height() * density).round().max(1.) as u32,
     ];
     if size
         .iter()
@@ -101,7 +132,7 @@ pub(super) fn finish(painter: &Painter, start: usize, color: Color32, opacity: f
         fallback();
         return;
     }
-    let key = cache_key(&primitives, size, ppp, color, opacity);
+    let key = cache_key(&primitives, size, density, color, opacity, mapping);
     painter.ctx().graphics_mut(|g| {
         let list = g.entry(painter.layer_id());
         let end = list.all_entries().len();
@@ -110,14 +141,15 @@ pub(super) fn finish(painter: &Painter, start: usize, color: Color32, opacity: f
         }
     });
     painter.add(egui_wgpu::Callback::new_paint_callback(
-        rect,
+        viewport,
         OutlineCallback {
             primitives,
             textures,
             size,
-            ppp,
+            ppp: density,
             color,
             opacity,
+            mapping,
             key,
             format: state.target_format,
         },
@@ -129,12 +161,14 @@ fn cache_key(
     ppp: f32,
     color: Color32,
     opacity: f32,
+    mapping: [f32; 4],
 ) -> u64 {
     let mut hash = std::collections::hash_map::DefaultHasher::new();
     size.hash(&mut hash);
     ppp.to_bits().hash(&mut hash);
     color.hash(&mut hash);
     opacity.to_bits().hash(&mut hash);
+    mapping.map(f32::to_bits).hash(&mut hash);
     for p in primitives {
         for n in [
             p.clip_rect.min.x,
@@ -164,6 +198,7 @@ struct OutlineCallback {
     ppp: f32,
     color: Color32,
     opacity: f32,
+    mapping: [f32; 4],
     key: u64,
     format: wgpu::TextureFormat,
 }
@@ -187,7 +222,7 @@ struct Pipeline {
     sampler: wgpu::Sampler,
 }
 const SHADER: &str = r#"
-struct Params { size:vec2<f32>, opacity:f32, padding:f32, color:vec4<f32> };
+struct Params { size:vec2<f32>, opacity:f32, padding:f32, color:vec4<f32>, mapping:vec4<f32> };
 @group(0) @binding(0) var image:texture_2d<f32>;
 @group(0) @binding(1) var linear_sampler:sampler;
 @group(0) @binding(2) var<uniform> params:Params;
@@ -195,7 +230,11 @@ struct Out{@builtin(position) position:vec4<f32>,@location(0) uv:vec2<f32>};
 @vertex fn vs(@builtin(vertex_index) i:u32)->Out{let uv=vec2<f32>(f32((i<<1u)&2u),f32(i&2u));var out:Out;out.position=vec4<f32>(uv.x*2.-1.,1.-uv.y*2.,0.,1.);out.uv=uv;return out;}
 fn sample_color(uv:vec2<f32>)->vec4<f32>{if any(uv<vec2<f32>(0.))||any(uv>vec2<f32>(1.)){return vec4<f32>(0.);}return textureSampleLevel(image,linear_sampler,uv,0.);}
 @fragment fn fs(input:Out)->@location(0) vec4<f32>{let own=sample_color(input.uv);var maximum=0.;var angle=0.;for(var i=0u;i<60u;i++){angle+=6.283185307179586/60.;let a=sample_color(input.uv+vec2<f32>(cos(angle),sin(angle))/params.size).a;maximum=max(maximum,a);}let alpha=max(maximum,own.a);let rgb=(own.rgb+params.color.rgb*(1.-own.a))*alpha;return vec4<f32>(rgb,alpha);}
-@fragment fn copy(input:Out)->@location(0) vec4<f32>{return sample_color(input.uv)*params.opacity;}
+@fragment fn copy(input:Out)->@location(0) vec4<f32>{
+    let texel = vec2<i32>(floor((input.uv * params.mapping.xy + params.mapping.zw) * params.size));
+    if any(texel < vec2<i32>(0)) || any(texel >= vec2<i32>(params.size)) { return vec4<f32>(0.); }
+    return textureLoad(image, texel, 0) * params.opacity;
+}
 "#;
 impl Pipeline {
     fn new(device: &wgpu::Device, format: wgpu::TextureFormat) -> Self {
@@ -418,6 +457,7 @@ impl CallbackTrait for OutlineCallback {
             1.,
         ]
         .into_iter()
+        .chain(self.mapping)
         .flat_map(f32::to_ne_bytes)
         .collect::<Vec<_>>();
         let buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -584,6 +624,7 @@ mod tests {
             ppp: 1.,
             color: Color32::from_rgb(80, 20, 10),
             opacity: 1.,
+            mapping: [0.5, 0.5, 0.25, 0.25],
             key: 1,
             format: wgpu::TextureFormat::Bgra8Unorm,
         };
@@ -657,9 +698,12 @@ mod tests {
         let bytes = output.slice(..).get_mapped_range();
         let pixel = |x: usize, y: usize| &bytes[(y * 64 + x) * 4..(y * 64 + x) * 4 + 4];
         assert_eq!(pixel(32, 32), [255; 4]);
-        assert_eq!(pixel(22, 32), [80, 20, 10, 255]);
-        assert_eq!(pixel(21, 32), [0; 4]);
-        assert!(pixel(22, 22)[3] > 0 && pixel(22, 22)[3] < 255);
+        // The projected field is at 2×. A local outline texel occupies two
+        // identical destination pixels, and the adjacent texel stays clear.
+        assert_eq!(pixel(12, 32), [80, 20, 10, 255]);
+        assert_eq!(pixel(13, 32), pixel(12, 32));
+        assert_eq!(pixel(11, 32), [0; 4]);
+        assert!(pixel(12, 12)[3] > 0 && pixel(12, 12)[3] < 255);
         image::save_buffer(
             std::env::temp_dir().join("ldtk-outline-gpu.png"),
             &bytes,

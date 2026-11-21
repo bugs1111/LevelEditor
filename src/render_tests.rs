@@ -7,10 +7,12 @@ pub(super) fn options(hidden: &HashSet<i64>, selected: LevelKey) -> RenderOption
         active_layer: 0,
         world: false,
         world_multi_selection: false,
+        world_hover: None,
         grid: true,
         details: true,
         single_layer: false,
         hidden,
+        modified_levels: None,
         render_auto: true,
         tile_tags: false,
         ui_scale: 1.,
@@ -931,6 +933,153 @@ fn source_ruler_font_scales_with_level_root_not_screen_field_root() {
     let _ = ctx.run(egui::RawInput::default(), |_| {});
     assert_eq!(ruler_scale(&ctx, 1., 816.), 2.);
     assert_eq!(ruler_scale(&ctx, 0.5, 100.), 0.5);
+}
+
+#[test]
+fn source_ruler_hides_only_the_bottom_label_for_a_displayed_beneath_field() {
+    let mut project = Project::new();
+    let key = project.level_keys()[0];
+    let uid = project.add_field_definition(None, "Caption", "String", false).unwrap();
+    project
+        .update_field_definition(uid, &serde_json::json!({
+            "editorDisplayMode":"ValueOnly",
+            "editorDisplayPos":"Beneath"
+        }))
+        .unwrap();
+    let view = Viewport { center: [128.; 2], zoom: 1. };
+    let hidden = HashSet::new();
+    let opts = options(&hidden, key);
+    let ctx = egui::Context::default();
+    let mut assets = Assets::default();
+    let bottom_label = |out: egui::FullOutput| {
+        out.shapes.into_iter().any(|shape| {
+            matches!(shape.shape, egui::Shape::Mesh(mesh)
+                if mesh.texture_id != egui::TextureId::default() && mesh.calc_bounds().top() > 485.)
+        })
+    };
+    assert!(bottom_label(frame(&ctx, &project, &view, &opts, &mut assets).1));
+    project
+        .set_field_value(key, None, uid, serde_json::json!("Caption"))
+        .unwrap();
+    assert!(!bottom_label(frame(&ctx, &project, &view, &opts, &mut assets).1));
+    project
+        .update_field_definition(uid, &serde_json::json!({"editorDisplayPos":"Above"}))
+        .unwrap();
+    assert!(bottom_label(frame(&ctx, &project, &view, &opts, &mut assets).1));
+}
+
+#[test]
+fn source_level_annotation_position_uses_the_world_origin_at_fractional_zoom() {
+    let mut project = Project::new();
+    let key = project.level_keys()[0];
+    project.resize_level(key, 159, 127, 0, 0).unwrap();
+    let level = project.level_mut(key).unwrap();
+    level["worldX"] = 160.into();
+    level["worldY"] = (-48).into();
+    let uid = project.add_field_definition(None, "Caption", "String", false).unwrap();
+    project
+        .update_field_definition(uid, &serde_json::json!({"editorDisplayMode":"ValueOnly"}))
+        .unwrap();
+    project
+        .set_field_value(key, None, uid, serde_json::json!("A caption below"))
+        .unwrap();
+    let view = Viewport {
+        center: [79.5, 63.5],
+        zoom: 900. / 207.,
+    };
+    let hidden = HashSet::new();
+    let mut opts = options(&hidden, key);
+    opts.grid = false;
+    let ctx = egui::Context::default();
+    let mut assets = Assets::default();
+    let rect = Rect::from_min_size(Pos2::ZERO, egui::vec2(1140., 900.));
+    let out = ctx.run(
+        egui::RawInput {
+            screen_rect: Some(rect),
+            ..Default::default()
+        },
+        |ctx| {
+            draw(
+                ctx, &ctx.layer_painter(egui::LayerId::background()), rect,
+                &project, &view, &opts, None, &mut assets,
+            );
+        },
+    );
+    let mut annotation_y = out
+        .shapes
+        .iter()
+        .filter_map(|shape| {
+            let egui::Shape::Mesh(mesh) = &shape.shape else {
+                return None;
+            };
+            let bounds = mesh.calc_bounds();
+            (mesh.texture_id != egui::TextureId::default()
+                && (500. ..650.).contains(&bounds.center().x)
+                && (70. ..135.).contains(&bounds.top()))
+                .then_some(bounds.top())
+        })
+        .collect::<Vec<_>>();
+    annotation_y.sort_by(f32::total_cmp);
+    // Runtime oracle at this camera position: the field flow starts at 86.39
+    // and the name plate at 113.43. The bitmap glyphs add their own offsets.
+    assert_eq!(annotation_y.len(), 2, "{annotation_y:?}");
+    assert!((86. ..91.).contains(&annotation_y[0]), "{annotation_y:?}");
+    assert!((114. ..117.).contains(&annotation_y[1]), "{annotation_y:?}");
+}
+
+#[test]
+fn source_world_fields_use_truncated_world_positions_in_each_layout() {
+    let mut project = Project::new();
+    let key = project.level_keys()[0];
+    project.resize_level(key, 159, 127, 0, 0).unwrap();
+    let uid = project.add_field_definition(None, "Caption", "String", false).unwrap();
+    project
+        .update_field_definition(uid, &serde_json::json!({"editorDisplayMode":"ValueOnly"}))
+        .unwrap();
+    project
+        .set_field_value(key, None, uid, serde_json::json!("A caption below"))
+        .unwrap();
+    let level = project.level_mut(key).unwrap();
+    level["worldX"] = 160.into();
+    level["worldY"] = (-48).into();
+    let hidden = HashSet::new();
+    let mut opts = options(&hidden, key);
+    opts.world = true;
+    opts.grid = false;
+    let ctx = egui::Context::default();
+    let mut assets = Assets::default();
+    let rect = Rect::from_min_size(Pos2::ZERO, egui::vec2(1140., 900.));
+    // Original WorldRender's visible field container positions at these camera poses.
+    for (layout, center, zoom, scale, field_origin) in [
+        ("Free", [239.5, 15.5], 0.95, 1., egui::pos2(522.5, 496.75)),
+        ("LinearHorizontal", [80.301_76, 63.5], 1.247_264_7, 1., egui::pos2(522.385_1, 569.315_1)),
+        ("LinearHorizontal", [80.301_76, 63.5], 1.247_264_7, 0.5, egui::pos2(546.083_1, 569.315_1)),
+        ("LinearVertical", [80.052_08, 63.5], 1.811_320_8, 1., egui::pos2(770.962_3, 443.679_3)),
+    ] {
+        project.json["worldLayout"] = layout.into();
+        project.update_field_definition(uid, &serde_json::json!({"editorDisplayScale":scale})).unwrap();
+        let view = Viewport { center, zoom };
+        let out = ctx.run(
+            egui::RawInput { screen_rect: Some(rect), ..Default::default() },
+            |ctx| {
+                draw(ctx, &ctx.layer_painter(egui::LayerId::background()), rect,
+                    &project, &view, &opts, None, &mut assets);
+            },
+        );
+        let (field_index, glyph) = out.shapes.iter().enumerate().find_map(|(index, shape)| {
+            let egui::Shape::Mesh(mesh) = &shape.shape else { return None };
+            let glyph_vertices = 15 * 4; // Visible glyphs, including quotes.
+            (mesh.texture_id != egui::TextureId::default()
+                && matches!(mesh.vertices.len(), 60 | 540)
+                && mesh.calc_bounds().min.distance(field_origin) < 10.)
+                .then(|| (index, mesh.vertices[mesh.vertices.len() - glyph_vertices].pos))
+        }).expect(layout);
+        assert!(glyph.distance(field_origin + egui::vec2(0., 2. * scale)) < 0.01, "{layout} at {scale}×: {glyph:?}");
+        let highlight = out.shapes.iter().position(|shape| {
+            matches!(&shape.shape, egui::Shape::Rect(rect) if rect.stroke.color == theme::ACCENT)
+        }).unwrap();
+        assert!(highlight > field_index, "{layout}: selected outline must cover the fields");
+    }
 }
 
 #[test]

@@ -1058,6 +1058,40 @@ fn point_picker_releases_at_final_cell_with_the_last_held_move_deadline() {
 }
 
 #[test]
+fn opening_a_panel_stops_point_picking_and_preserves_reference_picking() {
+    for kind in ["Point", "EntityRef"] {
+        let mut f = fixture(false);
+        let ctx = egui::Context::default();
+        theme::configure(&ctx);
+        if kind == "Point" {
+            let project = f.app.project.as_mut().unwrap();
+            let actor = project.json["defs"]["entities"][0]["uid"].as_i64().unwrap();
+            project.remove_field_definition(f.uid).unwrap();
+            f.uid = project
+                .add_field_definition(Some(actor), "Target", kind, false)
+                .unwrap();
+            project
+                .set_field_editor_value(f.source, Some(&f.owner), f.uid, json!({"cx":4,"cy":6}))
+                .unwrap();
+        }
+        let original = value(&f);
+        let (_, labels) = frame(&mut f, &ctx, vec![], true);
+        let pick = labels.iter().find(|(label, _)| label == "Canvas pick").unwrap().1;
+        click(&mut f, &ctx, pick, true);
+        assert!(f.app.field_pick.is_some(), "{kind} must start picking");
+
+        f.app.show_panel(Some(Panel::Layers));
+        assert_eq!(f.app.panel, Some(Panel::Layers));
+        assert!(!f.app.picking_point());
+        assert_eq!(f.app.picking_entity_ref(), kind == "EntityRef");
+        f.app.show_panel(None);
+        assert_eq!(f.app.picking_entity_ref(), kind == "EntityRef");
+        assert_eq!(value(&f), original);
+        assert!(!f.app.history.can_undo());
+    }
+}
+
+#[test]
 fn single_point_picker_can_be_cancelled_in_the_entity_inspector() {
     let mut f = fixture(false);
     let ctx = egui::Context::default();

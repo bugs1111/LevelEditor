@@ -4,6 +4,33 @@ const K: LevelKey = LevelKey {
     world: None,
     level: 0,
 };
+
+#[test]
+fn level_markers_follow_changed_levels_until_save_even_when_undo_restores_their_values() {
+    let mut project = Project::new();
+    project.json["worldLayout"] = json!("Free");
+    let second = project.add_level(None, "Second", 256, 256).unwrap();
+    let id = project.level(K).unwrap()["iid"].as_str().unwrap().to_owned();
+    let second_id = project.level(second).unwrap()["iid"].as_str().unwrap().to_owned();
+    let mut history = History::default();
+    history.begin(&project, K);
+    project.move_level(K, 32, 0, 0).unwrap();
+    assert!(history.commit(&project));
+    assert_eq!(history.modified_levels(), &[id.clone()].into_iter().collect());
+    assert!(history.undo_level(&mut project, K));
+    assert!(history.modified_levels().contains(&id));
+    history.clear_modified_levels();
+    assert!(history.modified_levels().is_empty());
+    assert!(history.redo_level(&mut project, K));
+    assert!(history.modified_levels().contains(&id));
+    history.clear_modified_levels();
+
+    history.begin_project(&project);
+    project.level_mut(second).unwrap()["identifier"] = json!("Renamed");
+    assert!(history.commit(&project));
+    assert_eq!(history.modified_levels(), &[second_id].into_iter().collect());
+}
+
 #[test]
 fn feedback_bounds_follow_source_expansion_and_do_not_leak_between_transactions() {
     let mut p = Project::new();

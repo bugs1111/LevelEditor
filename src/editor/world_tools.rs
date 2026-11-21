@@ -514,7 +514,47 @@ impl EditorApp {
         Some(())
     }
 
-    pub(super) fn draw_world_selection(&self, ui: &mut egui::Ui, rect: Rect, hovered: bool) {
+    pub(super) fn update_world_hover(&mut self, ctx: &egui::Context, rect: Rect, hovered: bool) {
+        let pointer = ctx.pointer_hover_pos().filter(|pointer| rect.contains(*pointer));
+        let resize_cursor = ctx.output(|output| {
+            matches!(
+                output.cursor_icon,
+                egui::CursorIcon::ResizeHorizontal
+                    | egui::CursorIcon::ResizeVertical
+                    | egui::CursorIcon::ResizeNwSe
+                    | egui::CursorIcon::ResizeNeSw
+            )
+        });
+        if !self.world
+            || !hovered
+            || pointer.is_none()
+            || !self.world_selection.is_empty()
+            || self.gesture.is_some()
+            || self.camera_drag.is_some()
+            || self.level_resize.is_some()
+            || self.field_pick.is_some()
+            || self.canvas_input_blocked(ctx)
+            || resize_cursor
+        {
+            self.world_hover = None;
+            return;
+        }
+        if ctx.input(|input| {
+            input.events.iter().any(|event| matches!(event, egui::Event::PointerMoved(_)))
+        }) {
+            self.world_hover = self.project.as_ref().zip(self.selected).and_then(|(project, key)| {
+                let (_, world) = self.canvas_pointer_pixels(
+                    project, key, rect, pointer?, ctx.pixels_per_point(),
+                );
+                self.level_at_world(world)
+            });
+        }
+        if self.world_hover.is_some() {
+            ctx.set_cursor_icon(egui::CursorIcon::PointingHand);
+        }
+    }
+
+    pub(super) fn draw_world_selection(&self, ui: &mut egui::Ui, rect: Rect) {
         if !self.world {
             return;
         }
@@ -557,41 +597,6 @@ impl EditorApp {
                     Color32::from_rgba_unmultiplied(0x72, 0xfe, 0xff, 128),
                 ),
             );
-        }
-        if hovered
-            && self.world_selection.is_empty()
-            && self.gesture.is_none()
-            && !self.is_busy()
-            && let Some(pointer) = ui
-                .ctx()
-                .pointer_hover_pos()
-                .filter(|pointer| rect.contains(*pointer))
-        {
-            let position =
-                self.viewport
-                    .to_world(pointer.into(), rect.min.into(), rect.size().into());
-            if let Some(key) = self.level_at_world(position)
-                && let Some((_, bounds)) = canvas::placements(project, selected)
-                    .into_iter()
-                    .find(|(candidate, _)| *candidate == key)
-            {
-                let area = Rect::from_two_pos(
-                    screen([bounds[0], bounds[1]]),
-                    screen([bounds[2], bounds[3]]),
-                );
-                painter.rect_filled(
-                    area,
-                    0.,
-                    egui::Color32::from_rgba_unmultiplied(255, 204, 0, 38),
-                );
-                painter.rect_stroke(
-                    area,
-                    0.,
-                    egui::Stroke::new(2., egui::Color32::WHITE),
-                    egui::StrokeKind::Middle,
-                );
-                ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-            }
         }
         let delta = match &self.gesture {
             Some(tools::Gesture::WorldGroupMove {
@@ -889,7 +894,7 @@ mod tests {
                         let (canvas, response) =
                             ui.allocate_exact_size(rect.size(), Sense::click_and_drag());
                         app.canvas_controls(ctx, canvas, &response);
-                        app.draw_world_selection(ui, rect, response.hovered());
+                        app.draw_world_selection(ui, rect);
                     });
             },
         )
@@ -1522,31 +1527,41 @@ mod tests {
             rect.min.into(),
             rect.size().into(),
         ));
-        let frame = |app: &EditorApp| {
+        let frame = |app: &mut EditorApp, events| {
             ctx.run(
                 egui::RawInput {
                     screen_rect: Some(rect),
-                    events: vec![egui::Event::PointerMoved(pos)],
+                    events,
                     ..Default::default()
                 },
                 |ctx| {
                     egui::CentralPanel::default()
                         .frame(egui::Frame::NONE)
-                        .show(ctx, |ui| app.draw_world_selection(ui, rect, true));
+                        .show(ctx, |ui| {
+                            app.update_world_hover(ctx, rect, true);
+                            app.draw_project_canvas(ctx, ui.painter(), rect, key);
+                        });
                 },
             )
         };
         let has_hover = |out: &egui::FullOutput| {
-            out.shapes.iter().any(|shape| matches!(&shape.shape,egui::Shape::Rect(r) if r.fill == egui::Color32::from_rgba_unmultiplied(255,204,0,38)))
+            out.shapes.iter().any(|shape| matches!(&shape.shape,egui::Shape::Rect(r) if r.fill == egui::Color32::from_rgba_premultiplied(38,31,0,38)))
         };
-        let normal = frame(&app);
+        app.world = false;
+        let _ = frame(&mut app, vec![egui::Event::PointerMoved(pos)]);
+        app.set_world_view(true);
+        assert!(!has_hover(&frame(&mut app, vec![])), "entry keeps the stationary pointer inactive");
+        let normal = frame(&mut app, vec![egui::Event::PointerMoved(pos + egui::vec2(1., 0.))]);
         assert!(has_hover(&normal));
         assert_eq!(
             normal.platform_output.cursor_icon,
             egui::CursorIcon::PointingHand
         );
+        assert!(has_hover(&frame(&mut app, vec![])), "hover remains with the pointer still");
+        let outside = frame(&mut app, vec![egui::Event::PointerMoved(pos - egui::vec2(40., 40.))]);
+        assert!(!has_hover(&outside));
         app.world_toggle_selection(key);
-        let selected = frame(&app);
+        let selected = frame(&mut app, vec![egui::Event::PointerMoved(pos)]);
         assert!(!has_hover(&selected));
     }
 

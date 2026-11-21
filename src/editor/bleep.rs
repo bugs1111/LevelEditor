@@ -159,31 +159,42 @@ fn enqueue(ctx: &egui::Context, project: &Project, key: LevelKey, mut bleep: Ble
 }
 #[derive(Clone, Default)]
 struct ErrorScan {
-    project: String,
-    level: String,
     layer: usize,
     entity: usize,
-    candidate: Option<(i64, String)>,
+    candidate: Option<EntityError>,
+    result: Option<EntityError>,
     running: bool,
     next_scan: f64,
+    completed_frame: Option<u64>,
+    last_bleep_frame: Option<u64>,
 }
-fn entity_invalid(project: &Project, key: LevelKey, layer: &Value, entity: &Value) -> bool {
-    let Some(def) = project.json["defs"]["entities"]
-        .as_array()
-        .and_then(|defs| defs.iter().find(|d| d["uid"] == entity["defUid"]))
-    else {
-        return false;
-    };
+#[derive(Clone)]
+struct EntityError {
+    layer_uid: i64,
+    iid: String,
+    name: String,
+    kind: EntityErrorKind,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum EntityErrorKind {
+    Tag,
+    Field,
+}
+fn entity_error_kind(
+    project: &Project,
+    key: LevelKey,
+    layer: &Value,
+    entity: &Value,
+    def: &Value,
+) -> Option<EntityErrorKind> {
     if layer["layerDefUid"]
         .as_i64()
         .and_then(|uid| project.layer_def(uid))
         .is_some_and(|layer_def| !library::entity_allowed(def, layer_def))
     {
-        return true;
+        return Some(EntityErrorKind::Tag);
     }
-    let Some(iid) = entity["iid"].as_str() else {
-        return false;
-    };
+    let iid = entity["iid"].as_str()?;
     entity["fieldInstances"]
         .as_array()
         .into_iter()
@@ -194,6 +205,19 @@ fn entity_invalid(project: &Project, key: LevelKey, layer: &Value, entity: &Valu
                 .field_value_errors(key, Some(iid), uid)
                 .is_ok_and(|errors| !errors.is_empty())
         })
+        .then_some(EntityErrorKind::Field)
+}
+fn entity_error(project: &Project, key: LevelKey, layer: &Value, entity: &Value) -> Option<EntityError> {
+    let def = project.json["defs"]["entities"]
+        .as_array()?
+        .iter()
+        .find(|def| def["uid"] == entity["defUid"])?;
+    Some(EntityError {
+        kind: entity_error_kind(project, key, layer, entity, def)?,
+        layer_uid: layer["layerDefUid"].as_i64()?,
+        iid: entity["iid"].as_str()?.into(),
+        name: def["identifier"].as_str()?.into(),
+    })
 }
 // The source's cached first error checks all layers, including hidden/offscreen ones.
 // Yield after each entity when the soft 1 ms budget is exhausted. A single diagnostic
@@ -222,10 +246,8 @@ fn advance_error_scan(
             scan.entity = 0;
             continue;
         };
-        if entity_invalid(project, key, layer, entity) {
-            scan.candidate = layer["layerDefUid"]
-                .as_i64()
-                .zip(entity["iid"].as_str().map(str::to_owned));
+        if let Some(error) = entity_error(project, key, layer, entity) {
+            scan.candidate = Some(error);
             // Level.getFirstError breaks only the inner loop: each later error layer
             // replaces the previous candidate, with its first erroneous entity.
             scan.layer += 1;
@@ -238,6 +260,64 @@ fn advance_error_scan(
         }
     }
     true
+}
+
+fn error_scan_id(project: &Project, key: LevelKey) -> Option<egui::Id> {
+    Some(id().with("errors").with(identity(project, key)?))
+}
+
+pub(super) fn reset_error_scans(ctx: &egui::Context) {
+    ctx.data_mut(|data| data.remove_by_type::<ErrorScan>());
+}
+
+fn update_level_errors(ctx: &egui::Context, project: &Project, key: LevelKey) -> Option<egui::Id> {
+    let state_id = error_scan_id(project, key)?;
+    let mut scan = ctx.data(|data| data.get_temp::<ErrorScan>(state_id)).unwrap_or_default();
+    let now = ctx.input(|input| input.time);
+    if !scan.running && now < scan.next_scan {
+        ctx.request_repaint_after(std::time::Duration::from_secs_f64(scan.next_scan - now));
+        return Some(state_id);
+    }
+    let frame = ctx.cumulative_frame_nr();
+    let budget_id = id().with("error-scan-budget");
+    let spent = ctx.data(|data| data.get_temp::<(u64, std::time::Duration)>(budget_id))
+        .filter(|(from, _)| *from == frame)
+        .map_or(std::time::Duration::ZERO, |(_, spent)| spent);
+    let remaining = std::time::Duration::from_millis(1).saturating_sub(spent);
+    if remaining.is_zero() {
+        ctx.request_repaint();
+        return Some(state_id);
+    }
+    if !scan.running {
+        scan.layer = 0;
+        scan.entity = 0;
+        scan.candidate = None;
+        scan.running = true;
+    }
+    let started = Instant::now();
+    if advance_error_scan(project, key, &mut scan, remaining) {
+        scan.running = false;
+        scan.completed_frame = Some(frame);
+        scan.result = scan.candidate.take();
+        scan.next_scan = now + 0.7;
+        ctx.request_repaint_after(std::time::Duration::from_secs_f64(0.7));
+    } else {
+        ctx.request_repaint();
+    }
+    ctx.data_mut(|data| {
+        data.insert_temp(state_id, scan);
+        data.insert_temp(budget_id, (frame, spent + started.elapsed()));
+    });
+    Some(state_id)
+}
+
+pub(crate) fn level_entity_error(ctx: &egui::Context, project: &Project, key: LevelKey) -> Option<String> {
+    let state_id = update_level_errors(ctx, project, key)?;
+    let error = ctx.data(|data| data.get_temp::<ErrorScan>(state_id))?.result?;
+    Some(match error.kind {
+        EntityErrorKind::Tag => format!("Incorrect tag: {}", error.name),
+        EntityErrorKind::Field => format!("Invalid field value: {}", error.name),
+    })
 }
 // Source group moves mark source grid cells and resulting elements; Points have no bounds.
 pub(super) fn mark_group(
@@ -362,71 +442,46 @@ impl EditorApp {
         let (Some(project), Some(key)) = (&self.project, self.selected) else {
             return;
         };
-        let Some((project_iid, level_iid)) = identity(project, key) else {
+        let Some(state_id) = update_level_errors(ctx, project, key) else {
             return;
         };
-        let state_id = id().with("errors");
-        let mut scan = ctx
-            .data(|data| data.get_temp::<ErrorScan>(state_id))
-            .unwrap_or_default();
-        if scan.project != project_iid || scan.level != level_iid {
-            scan = ErrorScan {
-                project: project_iid,
-                level: level_iid,
-                ..Default::default()
-            };
-        }
-        let now = ctx.input(|i| i.time);
-        if !scan.running && now < scan.next_scan {
-            ctx.request_repaint_after(std::time::Duration::from_secs_f64(scan.next_scan - now));
-            return;
-        }
-        if !scan.running {
-            scan.layer = 0;
-            scan.entity = 0;
-            scan.candidate = None;
-            scan.running = true;
-        }
-        if advance_error_scan(project, key, &mut scan, std::time::Duration::from_millis(1)) {
-            scan.running = false;
-            scan.next_scan = now + 0.7;
-            if let Some((layer_uid, iid)) = &scan.candidate {
-                let owner = project
-                    .level(key)
-                    .and_then(|level| level["layerInstances"].as_array())
-                    .and_then(|layers| {
-                        layers
-                            .iter()
-                            .enumerate()
-                            .find(|(_, li)| li["layerDefUid"] == *layer_uid)
-                    });
-                if let Some((layer_index, layer)) = owner
-                    && let Some(entity) = layer["entityInstances"]
-                        .as_array()
-                        .and_then(|entities| entities.iter().find(|e| e["iid"] == *iid))
-                    && entity_invalid(project, key, layer, entity)
-                {
-                    let inspected = self.panel == Some(Panel::Entity)
-                        && self.layer == layer_index
-                        && self
-                            .entity_index
-                            .is_some_and(|index| layer["entityInstances"][index]["iid"] == *iid);
-                    if !inspected
-                        && let Some(mut bleep) =
-                            entity_bleep(project, key, layer_index, &self.viewport, entity)
-                    {
-                        bleep.color = Color32::RED;
-                        bleep.speed = 0.4;
-                        bleep.extra_scale = 1.;
-                        enqueue(ctx, project, key, bleep);
-                    }
-                }
+        let frame = ctx.cumulative_frame_nr();
+        let Some(error) = ctx.data_mut(|data| {
+            let mut scan = data.get_temp::<ErrorScan>(state_id)?;
+            if scan.completed_frame != Some(frame) || scan.last_bleep_frame == Some(frame) {
+                return None;
             }
-            ctx.request_repaint_after(std::time::Duration::from_secs_f64(0.7));
-        } else {
-            ctx.request_repaint();
+            let error = scan.result.clone()?;
+            scan.last_bleep_frame = Some(frame);
+            data.insert_temp(state_id, scan);
+            Some(error)
+        }) else {
+            return;
+        };
+        let owner = project
+            .level(key)
+            .and_then(|level| level["layerInstances"].as_array())
+            .and_then(|layers| {
+                layers.iter().enumerate().find(|(_, li)| li["layerDefUid"] == error.layer_uid)
+            });
+        if let Some((layer_index, layer)) = owner
+            && let Some(entity) = layer["entityInstances"]
+                .as_array()
+                .and_then(|entities| entities.iter().find(|e| e["iid"] == error.iid))
+            && entity_error(project, key, layer, entity).is_some()
+        {
+            let inspected = self.panel == Some(Panel::Entity)
+                && self.layer == layer_index
+                && self.entity_index.is_some_and(|index| layer["entityInstances"][index]["iid"] == error.iid);
+            if !inspected
+                && let Some(mut bleep) = entity_bleep(project, key, layer_index, &self.viewport, entity)
+            {
+                bleep.color = Color32::RED;
+                bleep.speed = 0.4;
+                bleep.extra_scale = 1.;
+                enqueue(ctx, project, key, bleep);
+            }
         }
-        ctx.data_mut(|data| data.insert_temp(state_id, scan));
     }
     pub(super) fn bleep_history(&self, key: LevelKey, bounds: [f32; 4], redo: bool) {
         let (Some(ctx), Some(project)) = (&self.repaint, &self.project) else {
@@ -1105,6 +1160,35 @@ mod tests {
         assert!(draw(&app, &ctx, 1.4).is_empty());
     }
     #[test]
+    fn shared_level_error_changes_from_tag_to_field_and_clears_after_repair() {
+        let (mut app, ctx) = fixture();
+        let project = app.project.as_mut().unwrap();
+        let layer = project.layer(KEY, 0).unwrap();
+        let layer_uid = layer["layerDefUid"].as_i64().unwrap();
+        let entity = &layer["entityInstances"][0];
+        let iid = entity["iid"].as_str().unwrap().to_owned();
+        let def = entity["defUid"].as_i64().unwrap();
+        let name = entity["__identifier"].as_str().unwrap().to_owned();
+        let field = project
+            .add_field_definition(Some(def), "RequiredPoint", "Point", false)
+            .unwrap();
+        project.update_field_definition(field, &json!({"canBeNull":false})).unwrap();
+        project.update_layer_properties(layer_uid, &json!({"requiredTags":["Required"]})).unwrap();
+        let check = |project: &Project, time| {
+            let mut issue = None;
+            let _ = ctx.run(egui::RawInput {time: Some(time), ..Default::default()}, |ctx| {
+                issue = level_entity_error(ctx, project, KEY);
+            });
+            issue
+        };
+        assert_eq!(check(project, 0.), Some(format!("Incorrect tag: {name}")));
+        project.update_entity_definition(def, &json!({"tags":["Required"]})).unwrap();
+        assert_eq!(check(project, 1.), Some(format!("Invalid field value: {name}")));
+        project.set_field_value(KEY, Some(&iid), field, json!({"cx":4,"cy":2})).unwrap();
+        assert_eq!(check(project, 2.), None);
+    }
+
+    #[test]
     fn error_scan_uses_last_error_layer_first_entity_even_when_offscreen() {
         let (mut app, ctx) = fixture();
         let p = app.project.as_mut().unwrap();
@@ -1127,10 +1211,8 @@ mod tests {
         assert!(p.add_entity(KEY, index, uid, 1000, 1000).unwrap());
         assert!(p.add_entity(KEY, index, uid, 2000, 2000).unwrap());
         p.reorder_layer(layer, 1).unwrap();
-        let (project, level) = identity(p, KEY).unwrap();
+        let state_id = error_scan_id(p, KEY).unwrap();
         let mut scan = ErrorScan {
-            project,
-            level,
             running: true,
             ..Default::default()
         };
@@ -1144,18 +1226,18 @@ mod tests {
         ));
         assert_eq!(scan.layer, 1);
         assert_eq!(
-            scan.candidate.as_ref().unwrap().0,
+            scan.candidate.as_ref().unwrap().layer_uid,
             p.layer(KEY, 0).unwrap()["layerDefUid"]
         );
         assert!(ctx.data(|d| d.get_temp::<Queue>(id())).is_none());
-        ctx.data_mut(|d| d.insert_temp(id().with("errors"), scan));
+        ctx.data_mut(|d| d.insert_temp(state_id, scan));
         // Only the last layer's first entity remains. One frame examines it;
         // a second completes the scan if the soft budget caused another yield.
         for _ in 0..2 {
             draw(&app, &ctx, 0.);
         }
         assert!(ctx.data(|d| {
-            !d.get_temp::<ErrorScan>(id().with("errors"))
+            !d.get_temp::<ErrorScan>(state_id)
                 .unwrap()
                 .running
         }));

@@ -350,6 +350,9 @@ impl EditorApp {
         match project.copy_selection_group_from_regions(key, &regions, bounds) {
             Ok(mut group) => {
                 group["emptySpace"] = self.settings.bool("emptySpaceSelection").into();
+                if group["emptySpace"] == false {
+                    group["originalRects"] = json!([]);
+                }
                 if group["elementCount"].as_u64().is_some_and(|n| n > 1) {
                     self.entity_index = None;
                     if self.panel == Some(Panel::Entity) {
@@ -373,23 +376,22 @@ impl EditorApp {
         let Some(project) = &self.project else {
             return;
         };
+        let level = project.level(key).unwrap();
+        let width = number(level, "pxWid", 1.0) as i32;
+        let height = number(level, "pxHei", 1.0) as i32;
         let geometries = self.selection_geometries(key);
         let regions=json!(self.selectable_layers().into_iter().map(|index|{
             let layer=project.layer(key,index).unwrap();
             json!({"layerIndex":index,"rect":[0,0,layer["__cWid"],layer["__cHei"]],"geometry":geometries[index],"all":true})
         }).collect::<Vec<_>>());
-        match project.copy_selection_group_from_regions(
-            key,
-            &regions,
-            [
-                0,
-                0,
-                number(project.level(key).unwrap(), "pxWid", 1.0) as i32,
-                number(project.level(key).unwrap(), "pxHei", 1.0) as i32,
-            ],
-        ) {
+        match project.copy_selection_group_from_regions(key, &regions, [0, 0, width, height]) {
             Ok(mut group) => {
                 group["emptySpace"] = self.settings.bool("emptySpaceSelection").into();
+                group["originalRects"] = if group["emptySpace"] == true {
+                    json!([{"leftPx":0,"topPx":0,"rightPx":width,"bottomPx":height}])
+                } else {
+                    json!([])
+                };
                 self.set_selection_group(group);
             }
             Err(e) => {
@@ -538,6 +540,33 @@ impl EditorApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn select_all_uses_full_level_extent_and_respects_empty_space_selection() {
+        let mut project = Project::new();
+        project.add_layer("Actors", "Entities", 16).unwrap();
+        let uid = project.add_entity_def("Actor", 16, 16).unwrap();
+        let key = project.level_keys()[0];
+        project.add_entity(key, 0, uid, 32, 32).unwrap();
+        let level = project.level(key).unwrap();
+        let expected = json!([{
+            "leftPx":0,"topPx":0,"rightPx":level["pxWid"],"bottomPx":level["pxHei"]
+        }]);
+        let mut app = EditorApp::empty();
+        app.set_project(project);
+        app.settings.value["emptySpaceSelection"] = true.into();
+        app.select_all();
+        assert_eq!(app.selection_group.as_ref().unwrap()["originalRects"], expected);
+
+        app.settings.value["emptySpaceSelection"] = false.into();
+        app.select_all();
+        let group = app.selection_group.as_ref().unwrap();
+        assert_eq!(group["originalRects"], json!([]));
+        assert_eq!(group["elementCount"], 1);
+        app.capture_selection([0, 0, 6, 6]);
+        assert_eq!(app.selection_group.as_ref().unwrap()["originalRects"], json!([]));
+    }
+
     #[test]
     fn preview_154_entity_only_selection_moves_freely_when_grid_is_hidden() {
         let mut p = Project::new();

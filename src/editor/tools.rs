@@ -246,6 +246,11 @@ impl EditorApp {
                 }
                 let changed = history == EditHistory::Unrecorded || self.history.commit(project);
                 self.dirty |= changed;
+                if history == EditHistory::Unrecorded
+                    && let Some(level) = key.and_then(|key| project.level(key))
+                {
+                    self.history.mark_level_modified(level);
+                }
                 if changed {
                     if definitions.as_ref().is_some_and(|before| {
                         before["entities"] != project.json["defs"]["entities"]
@@ -1812,6 +1817,7 @@ impl EditorApp {
         let grid = number(layer, "__gridSize", 16.0);
         let project = self.project.as_ref().unwrap();
         let key = self.selected.unwrap();
+        let origin = self.viewport.level_render_canvas_origin(rect, ui.ctx().pixels_per_point());
         let draw = |r: [i32; 4], color: Color32| {
             let min = self.viewport.to_screen(
                 canvas::layer_to_world(
@@ -1821,7 +1827,7 @@ impl EditorApp {
                     &self.viewport,
                     [r[0] as f32 * grid, r[1] as f32 * grid],
                 ),
-                rect.min.into(),
+                origin,
                 rect.size().into(),
             );
             let max = self.viewport.to_screen(
@@ -1832,7 +1838,7 @@ impl EditorApp {
                     &self.viewport,
                     [(r[0] + r[2]) as f32 * grid, (r[1] + r[3]) as f32 * grid],
                 ),
-                rect.min.into(),
+                origin,
                 rect.size().into(),
             );
             let screen = Rect::from_two_pos(min.into(), max.into());

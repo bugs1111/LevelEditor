@@ -161,20 +161,6 @@ pub fn asset_path(project: &Project, relative: &str) -> PathBuf {
         .join(relative)
 }
 
-fn screen_rect(view: &Viewport, canvas: Rect, bounds: [f32; 4]) -> Rect {
-    let a = view.to_screen(
-        [bounds[0], bounds[1]],
-        canvas.min.into(),
-        canvas.size().into(),
-    );
-    let b = view.to_screen(
-        [bounds[2], bounds[3]],
-        canvas.min.into(),
-        canvas.size().into(),
-    );
-    Rect::from_min_max(a.into(), b.into())
-}
-
 pub(crate) struct AsyncPaintPreview {
     pub level: LevelKey,
     pub deadline: f64,
@@ -215,10 +201,12 @@ pub struct RenderOptions<'a> {
     pub active_layer: usize,
     pub world: bool,
     pub world_multi_selection: bool,
+    pub world_hover: Option<LevelKey>,
     pub grid: bool,
     pub details: bool,
     pub single_layer: bool,
     pub hidden: &'a HashSet<i64>,
+    pub modified_levels: Option<&'a std::collections::BTreeSet<String>>,
     pub render_auto: bool,
     pub tile_tags: bool,
     pub ui_scale: f32,
@@ -404,6 +392,7 @@ pub(super) struct Scene<'a> {
     pub project: &'a Project,
     pub view: &'a Viewport,
     pub canvas: Rect,
+    projection_origin: [f32; 2],
     pub options: &'a RenderOptions<'a>,
     pub assets: &'a mut Assets,
     entity_index: std::cell::OnceCell<fields::EntityIndex<'a>>,
@@ -578,8 +567,49 @@ impl Scene<'_> {
             );
         }
     }
-    fn level_identifier(&mut self, painter: &Painter, level: &Value, rect: Rect) {
-        let label = text(level, "identifier", "Level");
+    fn level_annotation_point(&self, world: [f32; 2]) -> Pos2 {
+        // The identifier and field flow are children of WorldRender, whose
+        // backing-pixel origin is rounded independently from LevelRender.
+        if self.options.world {
+            return self.point(world);
+        }
+        let mut view = self.view.clone();
+        if let Some(level) = self.project.level(self.options.selected) {
+            view.center[0] += number(level, "worldX", 0.);
+            view.center[1] += number(level, "worldY", 0.);
+        }
+        let origin = view.level_render_canvas_origin(self.canvas, self.ctx.pixels_per_point());
+        view.to_screen(world, origin, self.canvas.size().into()).into()
+    }
+
+    fn level_identifier(
+        &mut self,
+        painter: &Painter,
+        key: LevelKey,
+        level: &Value,
+        rect: Rect,
+        origin: [f32; 2],
+    ) -> f32 {
+        let backing_zoom = self.view.zoom * self.ctx.pixels_per_point();
+        if self.options.world && backing_zoom < 0.03 {
+            return 0.;
+        }
+        let name = text(level, "identifier", "Level");
+        let modified = level["iid"].as_str().is_some_and(|iid| {
+            self.options.modified_levels.is_some_and(|levels| levels.contains(iid))
+        });
+        let error = crate::app::bleep::level_entity_error(self.ctx, self.project, key)
+            .or_else(|| {
+                let background = level["bgRelPath"].as_str()?;
+                self.assets.errors.contains_key(&asset_path(self.project, background))
+                    .then(|| "Bg image".to_owned())
+            });
+        let marker = if modified { "*" } else { "" };
+        let label = match &error {
+            Some(error) => std::borrow::Cow::Owned(format!("{name}{marker} <ERR: {error}>")),
+            None if modified => std::borrow::Cow::Owned(format!("{name}*")),
+            None => std::borrow::Cow::Borrowed(name),
+        };
         let color = self.level_color(level);
         let world = self
             .options
@@ -588,7 +618,7 @@ impl Scene<'_> {
             .and_then(|i| self.project.json["worlds"].get(i))
             .unwrap_or(&self.project.json);
         let layout = text(world, "worldLayout", "Free");
-        let text_size = bitmap_font::measure(self.ctx, label, 1., f32::INFINITY);
+        let text_size = bitmap_font::measure(self.ctx, &label, 1., f32::INFINITY);
         let scale = if matches!(layout, "Free" | "GridVania") {
             (rect.width() / (text_size.x + 12.)).min(1.)
         } else {
@@ -596,20 +626,28 @@ impl Scene<'_> {
         };
         let size = (text_size + egui::vec2(12., 0.)) * scale;
         let min = if self.options.world {
-            match layout {
-                "LinearHorizontal" => rect.min + egui::vec2(rect.width() * 0.3, -size.y),
-                "LinearVertical" => egui::pos2(
-                    rect.left() - size.x - 30. * self.view.zoom,
-                    rect.center().y - size.y * 0.5,
-                ),
-                _ => rect.min + egui::Vec2::splat(2. * self.view.zoom),
-            }
+            let [x, y] = origin;
+            let width = number(level, "pxWid", 256.);
+            let height = number(level, "pxHei", 256.);
+            let size = size / self.view.zoom;
+            let position = match layout {
+                "LinearHorizontal" => [x + width * 0.3, y - size.y],
+                "LinearVertical" => [x - size.x - 30., y + (height - size.y) * 0.5],
+                _ => [x + 2., y + 2.],
+            };
+            self.level_annotation_point(position.map(f32::trunc))
         } else {
-            rect.center_top() - egui::vec2(size.x * 0.5, size.y + 12. * self.view.zoom)
+            let x = number(level, "worldX", 0.) + number(level, "pxWid", 256.) * 0.5;
+            let y = number(level, "worldY", 0.);
+            self.level_annotation_point([
+                (x - size.x * 0.5 / self.view.zoom).trunc(),
+                (y - size.y / self.view.zoom - 12.).trunc(),
+            ])
         };
         let mut painter = painter.clone();
         if self.options.world {
-            painter.multiply_opacity(((self.view.zoom - 0.02) / 0.02).clamp(0., 1.));
+            let fade_start = 0.03 * 0.8;
+            painter.multiply_opacity(((backing_zoom - fade_start) / fade_start).clamp(0., 1.));
         }
         let angle: f32 = if self.options.world && layout == "LinearHorizontal" {
             -0.4
@@ -639,20 +677,21 @@ impl Scene<'_> {
             &painter,
             self.assets,
             min + rotate(egui::vec2(6., -2.) * scale),
-            label,
-            lighten(color, 0.5),
+            &label,
+            if error.is_some() { Color32::RED } else { lighten(color, 0.5) },
             scale,
             f32::INFINITY,
             false,
             angle,
         );
+        size.y
     }
     pub fn screen(&self, r: [f32; 4]) -> Rect {
-        screen_rect(self.view, self.canvas, r)
+        Rect::from_min_max(self.point([r[0], r[1]]), self.point([r[2], r[3]]))
     }
     pub fn point(&self, p: [f32; 2]) -> Pos2 {
         self.view
-            .to_screen(p, self.canvas.min.into(), self.canvas.size().into())
+            .to_screen(p, self.projection_origin, self.canvas.size().into())
             .into()
     }
     pub fn texture(&mut self, tileset: &Value) -> Option<egui::TextureHandle> {
@@ -789,12 +828,12 @@ impl Scene<'_> {
         let height = cells.len().div_ceil(width);
         let min = self.view.to_world(
             painter.clip_rect().min.into(),
-            self.canvas.min.into(),
+            self.projection_origin,
             self.canvas.size().into(),
         );
         let max = self.view.to_world(
             painter.clip_rect().max.into(),
-            self.canvas.min.into(),
+            self.projection_origin,
             self.canvas.size().into(),
         );
         let x0 = (((min[0] - transform.origin[0]) / transform.scale / grid)
@@ -1064,12 +1103,12 @@ impl Scene<'_> {
         let grid = number(layer, "__gridSize", 16.).max(1.);
         let viewport_min = self.view.to_world(
             painter.clip_rect().min.into(),
-            self.canvas.min.into(),
+            self.projection_origin,
             self.canvas.size().into(),
         );
         let viewport_max = self.view.to_world(
             painter.clip_rect().max.into(),
-            self.canvas.min.into(),
+            self.projection_origin,
             self.canvas.size().into(),
         );
         let bg = theme::color(text(&self.project.json, "bgColor", "#40465B"));
@@ -1139,31 +1178,9 @@ impl Scene<'_> {
     ) {
         let w = number(level, "pxWid", 256.);
         let h = number(level, "pxHei", 256.);
-        let b = self.screen([origin[0], origin[1], origin[0] + w, origin[1] + h]);
-        let pad = 4. * self.view.zoom;
         let bg = theme::color(text(&self.project.json, "bgColor", "#40465B"));
-        let luminance = (0.299 * (bg.r() as f32 / 255.).powi(2)
-            + 0.587 * (bg.g() as f32 / 255.).powi(2)
-            + 0.114 * (bg.b() as f32 / 255.).powi(2))
-        .sqrt();
-        let handle = if luminance >= 0.7 {
-            Color32::BLACK
-        } else {
-            Color32::WHITE
-        };
-        let label_color = lighten(bg, 0.5);
-        for pos in [
-            b.left_top() + egui::vec2(-pad, -pad),
-            b.center_top() + egui::vec2(0., -pad),
-            b.right_top() + egui::vec2(pad, -pad),
-            b.right_center() + egui::vec2(pad, 0.),
-            b.right_bottom() + egui::vec2(pad, pad),
-            b.center_bottom() + egui::vec2(0., pad),
-            b.left_bottom() + egui::vec2(-pad, pad),
-            b.left_center() + egui::vec2(-pad, 0.),
-        ] {
-            painter.circle_filled(pos, 5. * self.view.zoom, handle.gamma_multiply(0.3));
-        }
+        let [r, g, b] = [bg.r(), bg.g(), bg.b()].map(|v| (u16::from(v) + 255).div_ceil(2) as u8);
+        let label_color = Color32::from_rgb(r, g, b);
         let horizontal = layer.map_or_else(
             || format!("{w}px"),
             |l| format!("{} cells / {w}px", number(l, "__cWid", 0.)),
@@ -1172,36 +1189,34 @@ impl Scene<'_> {
             || format!("{h}px"),
             |l| format!("{} cells / {h}px", number(l, "__cHei", 0.)),
         );
-        let scale = ruler_scale(self.ctx, self.view.zoom, w);
-        let size = bitmap_font::measure(self.ctx, &horizontal, scale, f32::INFINITY);
-        bitmap_font::paint(
-            self.ctx,
-            painter,
-            self.assets,
-            b.center_bottom() + egui::vec2(-size.x * 0.5, 20. * self.view.zoom - size.y * 0.5),
-            &horizontal,
-            label_color,
-            scale,
-            f32::INFINITY,
-            false,
-        );
-        let scale = ruler_scale(self.ctx, self.view.zoom, h);
-        let size = bitmap_font::measure(self.ctx, &vertical, scale, f32::INFINITY);
-        for x in [
-            b.left() - 20. * self.view.zoom,
-            b.right() + 20. * self.view.zoom,
+        for (label, anchor, extent, vertical) in [
+            (&horizontal, [(w * 0.5).trunc(), h + 20.], w, false),
+            (&vertical, [-20., (h * 0.5).trunc()], h, true),
+            (&vertical, [w + 20., (h * 0.5).trunc()], h, true),
         ] {
+            if !vertical && fields::level_has_beneath_label(self.project, level) {
+                continue;
+            }
+            let local_scale = ruler_scale(self.ctx, 1., extent);
+            let size = bitmap_font::measure(self.ctx, label, local_scale, f32::INFINITY);
+            // Heaps truncates the text's offset before applying the level zoom.
+            let offset = egui::vec2((-size.x * 0.5).trunc(), (-size.y * 0.5).trunc());
+            let (offset, angle) = if vertical {
+                (egui::vec2(offset.y, -offset.x), -std::f32::consts::FRAC_PI_2)
+            } else {
+                (offset, 0.)
+            };
             bitmap_font::paint_rotated(
                 self.ctx,
                 painter,
                 self.assets,
-                egui::pos2(x - size.y * 0.5, b.center().y + size.x * 0.5),
-                &vertical,
+                self.point([origin[0] + anchor[0] + offset.x, origin[1] + anchor[1] + offset.y]),
+                label,
                 label_color,
-                scale,
+                local_scale * self.view.zoom,
                 f32::INFINITY,
                 false,
-                -std::f32::consts::FRAC_PI_2,
+                angle,
             );
         }
     }
@@ -1232,11 +1247,13 @@ pub fn draw(
         theme::color(text(&project.json, "bgColor", "#292c39")),
     );
     blur::next_frame(options.single_layer);
+    let projection_origin = view.level_render_canvas_origin(canvas, ctx.pixels_per_point());
     let mut scene = Scene {
         ctx,
         project,
         view,
         canvas,
+        projection_origin,
         options,
         assets,
         entity_index: std::cell::OnceCell::new(),
@@ -1287,6 +1304,9 @@ pub fn draw(
         });
     }
     let mut count = 0;
+    let mut current_highlight = None;
+    let mut hover_rect = None;
+    let mut world_level_fields = Vec::new();
     for (key, mut bounds) in levels {
         let Some(level) = project.level(key) else {
             continue;
@@ -1344,6 +1364,7 @@ pub fn draw(
                 project,
                 view,
                 canvas,
+                projection_origin,
                 options: &neighbor_options,
                 assets: scene.assets,
                 entity_index: std::cell::OnceCell::new(),
@@ -1444,7 +1465,7 @@ pub fn draw(
                     let mut label_painter = painter.clone();
                     label_painter
                         .multiply_opacity(((view.zoom - min_zoom) / min_zoom).clamp(0., 1.));
-                    neighbor.level_identifier(&label_painter, level, rect);
+                    neighbor.level_identifier(&label_painter, key, level, rect, origin);
                 }
             }
             continue;
@@ -1571,12 +1592,20 @@ pub fn draw(
                 ]);
                 scene.grid(&clipped, level, layer, def, transform);
             }
-            painter.rect_stroke(
-                rect,
-                0.,
-                Stroke::new(view.zoom, Color32::WHITE.gamma_multiply(0.7)),
-                StrokeKind::Middle,
-            );
+            // Heaps draws a one-level-pixel rectangle without a screen-space fringe.
+            let outer = rect.expand(view.zoom * 0.5);
+            let inner = rect.shrink(view.zoom * 0.5);
+            let color = Color32::WHITE.gamma_multiply(0.7);
+            let mut edges = egui::Mesh::default();
+            for edge in [
+                Rect::from_min_max(outer.min, egui::pos2(outer.right(), inner.top())),
+                Rect::from_min_max(egui::pos2(outer.left(), inner.bottom()), outer.max),
+                Rect::from_min_max(egui::pos2(outer.left(), inner.top()), inner.left_bottom()),
+                Rect::from_min_max(inner.right_top(), egui::pos2(outer.right(), inner.bottom())),
+            ] {
+                edges.add_colored_rect(edge, color);
+            }
+            painter.add(egui::Shape::mesh(edges));
             // Original boundsGlow is added after bounds in DP_UI: its
             // knockout shadow also darkens the outer half of the white edge.
             shadow::paint(painter, rect, view.zoom);
@@ -1602,24 +1631,45 @@ pub fn draw(
                     );
                 }
                 if key == options.selected && depth_delta == 0 && !options.world_multi_selection {
-                    painter.rect_stroke(
-                        rect.expand(if options.details { 2. } else { 0.5 }),
-                        0.,
-                        Stroke::new(
-                            if options.details { 4.0_f32 } else { 1.0_f32 },
-                            theme::ACCENT,
-                        ),
-                        StrokeKind::Middle,
-                    );
+                    current_highlight = Some(rect);
+                }
+                if options.world_hover == Some(key) && depth_delta == 0 {
+                    hover_rect = Some(rect);
                 }
             }
             if options.details && (!options.world || depth_delta == 0) {
-                scene.level_identifier(painter, level, rect);
-                scene.level_fields(painter, level, origin);
+                let title_height = scene.level_identifier(painter, key, level, rect, origin);
+                if options.world {
+                    world_level_fields.push((level, origin));
+                } else {
+                    scene.level_fields(painter, level, origin, title_height);
+                }
             }
         }
     }
     if options.world {
+        if let Some(rect) = hover_rect {
+            painter.rect_filled(rect, 0., Color32::from_rgba_premultiplied(38, 31, 0, 38));
+            painter.rect_stroke(
+                rect,
+                0.,
+                Stroke::new(2. / ctx.pixels_per_point(), Color32::WHITE),
+                StrokeKind::Middle,
+            );
+        }
+        for (level, origin) in world_level_fields {
+            scene.level_fields(painter, level, origin, 0.);
+        }
+        if let Some(rect) = current_highlight {
+            // WorldRender puts the current-level outline above the field flows.
+            let width = if options.details { 4. } else { 1. };
+            painter.rect_stroke(
+                rect.expand(width * 0.5),
+                0.,
+                Stroke::new(width, theme::ACCENT),
+                StrokeKind::Middle,
+            );
+        }
         scene.world_title(painter);
     }
     count
@@ -1669,10 +1719,12 @@ pub fn draw_group_ghost(
         active_layer: 0,
         world: false,
         world_multi_selection: false,
+        world_hover: None,
         grid: false,
         details: false,
         single_layer: false,
         hidden: &hidden,
+        modified_levels: None,
         render_auto: true,
         tile_tags: false,
         ui_scale: 1.,
@@ -1690,6 +1742,7 @@ pub fn draw_group_ghost(
         project,
         view,
         canvas,
+        projection_origin: view.level_render_canvas_origin(canvas, ctx.pixels_per_point()),
         options: &options,
         assets,
         entity_index: Default::default(),

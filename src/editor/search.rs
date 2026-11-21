@@ -647,18 +647,31 @@ impl EditorApp {
                 };
                 let rows_height = last.top + last.height;
 
-                let down = ctx.input(|i| i.key_pressed(Key::ArrowDown));
-                let up = ctx.input(|i| i.key_pressed(Key::ArrowUp));
-                self.search_index = (self.search_index + usize::from(down))
-                    .saturating_sub(usize::from(up))
-                    .min(rows.len() - 1);
+                self.search_index = self.search_index.min(rows.len() - 1);
+                let mut navigated = false;
+                let mut selected = ctx.input(|input| {
+                    for event in &input.events {
+                        let egui::Event::Key { key, pressed: true, .. } = event else {
+                            continue;
+                        };
+                        match key {
+                            Key::ArrowDown => {
+                                self.search_index = (self.search_index + 1).min(rows.len() - 1);
+                            }
+                            Key::ArrowUp => {
+                                self.search_index = self.search_index.saturating_sub(1);
+                            }
+                            Key::Enter => return Some(self.search_index),
+                            _ => continue,
+                        }
+                        navigated = true;
+                    }
+                    None
+                });
                 let more = !self.search_show_all && rows.len() == PREVIEW_ROWS;
                 let content_height =
                     rows_height + 2. * RESULTS_PADDING + if more { 37. } else { 0. };
                 let height = content_height.min(ctx.content_rect().height() * 0.85);
-                let mut selected = ctx
-                    .input(|i| i.key_pressed(Key::Enter))
-                    .then_some(self.search_index);
                 ui.add_space(8.);
                 egui::Frame::new()
                     .fill(theme::DARK)
@@ -678,7 +691,7 @@ impl EditorApp {
                             // Keep the entire list scrollable while only building visible rows.
                             ui.set_min_height(content_height);
                             ui.add_space(RESULTS_PADDING);
-                            if up || down {
+                            if navigated {
                                 let current = &rows[self.search_index];
                                 let y = ui.next_widget_position().y + current.top;
                                 let row = Rect::from_min_size(
@@ -1127,6 +1140,51 @@ mod tests {
             .unwrap();
         app.select_search_destination(destination);
         assert_eq!(app.layer, 0);
+    }
+
+    #[test]
+    fn search_handles_each_navigation_key_before_enter_in_the_same_frame() {
+        let mut project = Project::new();
+        let levels = ["Marker_A", "Marker_B", "Marker_C"]
+            .map(|name| project.add_level(None, name, 256, 256).unwrap());
+        let mut app = EditorApp::empty();
+        app.set_project(project);
+        app.search = "Marker".into();
+        let ctx = egui::Context::default();
+        theme::configure(&ctx);
+        let draw = |app: &mut EditorApp, events| {
+            ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1000., 700.),
+                    )),
+                    events,
+                    ..Default::default()
+                },
+                |ctx| app.palette_dialog(ctx),
+            )
+        };
+        for (keys, expected) in [
+            ([Key::ArrowDown, Key::ArrowDown, Key::Enter], levels[2]),
+            ([Key::Enter, Key::ArrowDown, Key::ArrowDown], levels[0]),
+        ] {
+            app.command_palette = true;
+            app.search_index = 0;
+            draw(&mut app, vec![]);
+            let events = keys.into_iter().flat_map(|key| {
+                [true, false].map(|pressed| egui::Event::Key {
+                    key,
+                    physical_key: None,
+                    pressed,
+                    repeat: false,
+                    modifiers: egui::Modifiers::NONE,
+                })
+            });
+            draw(&mut app, events.collect());
+            assert!(!app.command_palette);
+            assert_eq!(app.selected, Some(expected), "{keys:?}");
+        }
     }
 
     #[test]

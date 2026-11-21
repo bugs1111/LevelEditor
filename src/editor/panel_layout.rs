@@ -78,17 +78,19 @@ fn source_panel_header(
     heading: &str,
 ) -> bool {
     let rules = panel == Panel::Rules;
-    let (rect, _) = ui.allocate_exact_size(egui::vec2(width, header_height), Sense::hover());
-    ui.painter().rect_filled(
-        rect,
-        egui::CornerRadius {
-            nw: 4,
-            ne: 4,
-            sw: 0,
-            se: 0,
-        },
-        theme::LIGHT,
-    );
+    let (rect, header) = ui.allocate_exact_size(egui::vec2(width, header_height), Sense::hover());
+    let corners = egui::CornerRadius {
+        ne: 4,
+        ..egui::CornerRadius::ZERO
+    };
+    let painter = ui.painter();
+    painter.rect_filled(rect, corners, theme::LIGHT);
+    painter
+        .with_clip_rect(Rect::from_min_max(
+            rect.min,
+            egui::pos2(rect.right(), rect.top() + 1.),
+        ))
+        .rect_filled(rect, corners, Color32::from_rgb(115, 127, 157));
     let icon_size = if rules { 22. } else { 40. };
     let icon = egui::Image::new(image(panel)).fit_to_exact_size(Vec2::splat(icon_size));
     let icon = if panel == Panel::Fields {
@@ -96,7 +98,8 @@ fn source_panel_header(
     } else {
         icon
     };
-    ui.put(
+    // The header owns the layout height. Its controls do not advance the body cursor.
+    ui.place(
         Rect::from_min_size(
             rect.min + egui::vec2(20., (header_height - icon_size) / 2.),
             Vec2::splat(icon_size),
@@ -107,30 +110,45 @@ fn source_panel_header(
         rect.min + egui::vec2(if rules { 54. } else { 72. }, header_height / 2.),
         Align2::LEFT_CENTER,
         heading,
-        FontId::new(20., egui::FontFamily::Name("panel-title".into())),
+        FontId::new(20., egui::FontFamily::Name("panel-header".into())),
         Color32::WHITE,
     );
-    ui.put(
-        Rect::from_min_size(
-            egui::pos2(
-                rect.right() - if rules { 52. } else { 57. },
-                rect.top() + 8.,
-            ),
-            Vec2::splat(if rules { 31. } else { 36. }),
-        ),
-        egui::Button::new(
-            RichText::new("×")
-                .size(if rules || panel == Panel::Help {
-                    24.
-                } else {
-                    28.
-                })
-                .color(Color32::WHITE),
+    let close_icon_size = 22.667;
+    let close_width = close_icon_size + if rules { 8. } else { 14. };
+    let close_rect = Rect::from_min_size(
+        rect.right_top() + egui::vec2(-21. - close_width, 8.),
+        egui::vec2(close_width, if rules { close_width } else { 38. }),
+    );
+    let close = ui
+        .interact(close_rect, header.id.with("close"), Sense::click())
+        .on_hover_cursor(egui::CursorIcon::PointingHand);
+    close.widget_info(|| {
+        egui::WidgetInfo::labeled(
+            egui::WidgetType::Button,
+            close.enabled(),
+            locale::tr(ui, "Close"),
         )
-        .fill(theme::LIGHT)
-        .stroke(Stroke::new(1_f32, theme::DARK)),
-    )
-    .clicked()
+    });
+    let hovered = close.hovered();
+    ui.painter().rect_filled(
+        close_rect.translate(egui::vec2(0., 1.)),
+        3.,
+        Color32::from_black_alpha(51),
+    );
+    ui.painter().rect(
+        close_rect,
+        3.,
+        if hovered { Color32::WHITE } else { theme::LIGHT },
+        Stroke::new(1., if hovered { Color32::WHITE } else { theme::MEDIUM }),
+        StrokeKind::Inside,
+    );
+    egui::Image::new(egui::include_image!("../../assets/icons/close.png"))
+        .tint(if hovered { Color32::BLACK } else { Color32::WHITE })
+        .paint_at(
+            ui,
+            Rect::from_center_size(close_rect.center(), Vec2::splat(close_icon_size)),
+        );
+    close.clicked()
 }
 
 fn orange(ui: &mut egui::Ui, label: &str, size: Vec2) -> egui::Response {
@@ -447,13 +465,6 @@ impl EditorApp {
         let bottom_margin = if scroll_panel || panel == Panel::Enums { 20 } else { 0 };
         let body_height =
             (height - header_height - f32::from(body_top) - f32::from(bottom_margin)).max(40.);
-        let outside_click = ctx.input(|input| {
-            input
-                .pointer
-                .primary_clicked()
-                .then(|| input.pointer.interact_pos())
-                .flatten()
-        });
         let mut close = false;
         let panel_id = egui::Id::new("source-definition-panel");
         let dimmer = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, panel_id));
@@ -736,21 +747,23 @@ impl EditorApp {
             width
         };
         if let Some(shade) = shade {
+            let mask = Rect::from_min_max(egui::pos2(right, 34.), screen.max);
             dimmer.set(
                 shade,
-                egui::Shape::rect_filled(
-                    Rect::from_min_max(egui::pos2(right, 34.), screen.max),
-                    0.,
-                    Color32::from_black_alpha(100),
-                ),
+                egui::Shape::rect_filled(mask, 0., Color32::from_black_alpha(100)),
             );
+            let mask_press = ctx.input(|input| {
+                input.events.iter().find_map(|event| match event {
+                    egui::Event::PointerButton { pos, pressed: true, .. } if mask.contains(*pos) => {
+                        Some(*pos)
+                    }
+                    _ => None,
+                })
+            });
             close |= !(panel == Panel::Level && level_point_picker_was_open)
-                && outside_click.is_some_and(|pos| {
-                    pos.x > right
-                        && pos.y >= 34.
-                        && ctx
-                            .layer_id_at(pos)
-                            .is_none_or(|layer| layer.order == egui::Order::Background)
+                && mask_press.is_some_and(|pos| {
+                    ctx.layer_id_at(pos)
+                        .is_none_or(|layer| layer.order == egui::Order::Background)
                 });
         }
         self.rule_wizard(ctx);
@@ -764,6 +777,7 @@ impl EditorApp {
         self.source_layer_type_picker(ctx);
         if close {
             self.dismiss_panel();
+            ctx.request_repaint();
         }
         true
     }
@@ -3177,6 +3191,27 @@ mod tests {
     use super::*;
 
     #[test]
+    fn header_controls_do_not_change_the_panel_body_position() {
+        let ctx = egui::Context::default();
+        theme::configure(&ctx);
+        let _ = ctx.run(egui::RawInput::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                ui.spacing_mut().item_spacing.y = 0.;
+                for (panel, height) in
+                    [(Panel::Layers, 53.), (Panel::Rules, 46.), (Panel::Help, 53.)]
+                {
+                    for padding in [0., 6.] {
+                        ui.spacing_mut().button_padding.y = padding;
+                        let top = ui.next_widget_position().y;
+                        assert!(!source_panel_header(ui, panel, 400., height, title(panel)));
+                        assert_eq!(ui.next_widget_position().y, top + height, "{panel:?}");
+                    }
+                }
+            });
+        });
+    }
+
+    #[test]
     fn tileset_sidebar_uses_compact_rows_and_orders_untagged_before_named_groups() {
         let ctx = egui::Context::default();
         theme::configure(&ctx);
@@ -3974,8 +4009,7 @@ mod tests {
         assert_eq!(app.panel, Some(Panel::Level));
         let updated = control(&draw(&mut app, vec![]), "6,7");
         click(&mut app, updated);
-        let close = control(&draw(&mut app, vec![]), "×");
-        click(&mut app, close);
+        click(&mut app, egui::pos2(450., 78.));
         assert!(!app.picking_point());
         assert!(app.panel.is_none());
     }
@@ -4006,12 +4040,7 @@ mod tests {
         };
         app.show_panel(Some(Panel::Fields));
         draw(&mut app, Vec::new());
-        let output = draw(&mut app, Vec::new());
-        let close = output
-            .shapes
-            .iter()
-            .find_map(|shape| text_center(&shape.shape, "×"))
-            .unwrap();
+        let close = egui::pos2(750., 78.);
         draw(&mut app, vec![egui::Event::PointerMoved(close)]);
         for pressed in [true, false] {
             draw(
@@ -4372,6 +4401,14 @@ mod tests {
             header,
             Rect::from_min_size(egui::pos2(0., 34.), egui::vec2(1000., 53.))
         );
+        let top_border = Rect::from_min_max(header.min, egui::pos2(header.right(), 35.));
+        assert!(output.shapes.iter().any(|shape| {
+            shape.clip_rect == top_border
+                && matches!(&shape.shape, egui::Shape::Rect(rect)
+                    if rect.fill == Color32::from_rgb(115, 127, 157)
+                        && rect.rect == header
+                        && rect.corner_radius.nw == 0)
+        }));
         let body = output
             .shapes
             .iter()
