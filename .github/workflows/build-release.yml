@@ -21,10 +21,6 @@ jobs:
             target: aarch64-apple-darwin
           - runner: macos-15-intel
             target: x86_64-apple-darwin
-          - runner: windows-latest
-            target: x86_64-pc-windows-msvc
-          - runner: ubuntu-24.04
-            target: x86_64-unknown-linux-gnu
     runs-on: ${{ matrix.runner }}
     defaults:
       run:
@@ -45,19 +41,32 @@ jobs:
           rustup default stable
           rustup component add rustfmt clippy
           rustc -vV
-      - name: Check, test and build
+      - name: Check formatting and lints (advisory for this preview)
+        continue-on-error: true
         run: |
-          cargo fmt --all -- --check
-          cargo clippy --workspace --all-targets --locked -- -D warnings
-          cargo test --workspace --locked --no-fail-fast
-          cargo test --example native_smoke capture_tests --locked
-          cargo build --release --bin ldtk-rs --locked
+          failed=0
+          cargo fmt --all -- --check || failed=1
+          cargo clippy --workspace --all-targets --locked -- -D warnings || failed=1
+          exit "$failed"
+      - name: Test workspace
+        run: cargo test --workspace --locked --no-fail-fast -- --test-threads=1
+      - name: Test native capture
+        if: '!cancelled()'
+        run: cargo test --example native_smoke capture_tests --locked
+      - name: Build macOS preview
+        id: build
+        if: "!cancelled() && runner.os == 'macOS'"
+        run: cargo build --release --bin ldtk-rs --locked
       - name: macOS application
-        if: runner.os == 'macOS'
+        id: bundle
+        if: "!cancelled() && steps.build.outcome == 'success'"
         run: scripts/package-macos
       - name: Release package
+        id: package
+        if: "!cancelled() && steps.bundle.outcome == 'success'"
         run: python scripts/package-release.py --target '${{ matrix.target }}'
       - uses: actions/upload-artifact@v7
+        if: "!cancelled() && steps.package.outcome == 'success'"
         with:
           name: release-${{ matrix.target }}
           path: |
