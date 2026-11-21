@@ -57,7 +57,7 @@ fn container(p: &Project, world: Option<usize>) -> &Value {
         .unwrap_or(&p.json)
 }
 fn round(value: f32) -> f32 {
-    (value + 0.5).floor()
+    value.round()
 }
 fn overlaps(a: [f32; 4], b: [f32; 4]) -> bool {
     a[0] < b[2] && a[0] + a[2] > b[0] && a[1] < b[3] && a[1] + a[3] > b[1]
@@ -95,20 +95,20 @@ impl EditorApp {
             })
             .unwrap_or_default()
     }
-    fn context_pointer(&self, rect: Rect, pointer: egui::Pos2) -> [f32; 2] {
-        let mut point = self
-            .viewport
-            .to_world(pointer.into(), rect.min.into(), rect.size().into());
-        if !self.world
-            && let Some((_, b)) = self
-                .context_placements()
-                .into_iter()
-                .find(|(k, _)| Some(*k) == self.selected)
-        {
-            point[0] += b[0];
-            point[1] += b[1];
+    fn context_pointer(&self, ctx: &egui::Context, rect: Rect, pointer: egui::Pos2) -> [f32; 2] {
+        if let (Some(project), Some(key)) = (&self.project, self.selected) {
+            self.canvas_pointer_pixels(project, key, rect, pointer, ctx.pixels_per_point())
+                .1
+        } else {
+            // An empty world has no level to use as the coordinate origin.
+            self.viewport.pointer_pixel(
+                pointer.into(),
+                rect.min.into(),
+                rect.size().into(),
+                [0.; 2],
+                ctx.pixels_per_point(),
+            )
         }
-        point.map(round)
     }
     pub(super) fn world_context_menu(
         &mut self,
@@ -177,8 +177,9 @@ impl EditorApp {
                 if !self.world_context.picking {
                     return true;
                 }
-                let position = self.context_pointer(rect, pointer);
+                let position = self.context_pointer(ctx, rect, pointer);
                 self.world_context.pointer = Some(position);
+                ctx.set_cursor_icon(egui::CursorIcon::Cell);
                 if primary && !space {
                     self.create_level_at(position, true);
                 }
@@ -198,7 +199,7 @@ impl EditorApp {
             })
             && let Some(pointer) = ctx.pointer_hover_pos()
         {
-            let position = self.context_pointer(rect, pointer);
+            let position = self.context_pointer(ctx, rect, pointer);
             let hit = self.level_at_world(position);
             if self.world || hit.is_none() {
                 if let Some(key) = hit {
@@ -471,53 +472,52 @@ impl EditorApp {
         if !self.world_context.picking {
             return;
         }
+        let painter = ui.painter().with_clip_rect(rect);
+        field_tools::picker_outline(
+            &painter,
+            rect.shrink(14.),
+            Stroke::new(4., theme::ACCENT),
+            8.,
+            4.,
+        );
         if let Some(spot) = self
             .world_context
             .pointer
             .and_then(|p| self.level_insert_spot(p))
         {
             let [x, y, w, h] = spot.rect;
-            let a = self
-                .viewport
-                .to_screen([x, y], rect.min.into(), rect.size().into());
-            let b = self
-                .viewport
-                .to_screen([x + w, y + h], rect.min.into(), rect.size().into());
+            let density = ui.ctx().pixels_per_point();
+            let origin = self.viewport.level_render_canvas_origin(rect, density);
+            let size = rect.size().into();
+            let a = self.viewport.to_screen([x, y], origin, size);
+            let b = self.viewport.to_screen([x + w, y + h], origin, size);
             let preview = Rect::from_min_max(a.into(), b.into());
             let color = if spot.overlaps {
-                Color32::from_rgb(255, 90, 90)
+                Color32::from_rgb(255, 68, 0)
             } else {
-                Color32::from_rgb(100, 180, 255)
+                Color32::from_rgb(141, 203, 251)
             };
-            let painter = ui.painter().with_clip_rect(rect);
-            painter.rect_filled(preview, 0., color.gamma_multiply(0.15));
+            let scale = self.viewport.zoom * density;
+            painter.rect_filled(preview, 0., color.gamma_multiply(0.3));
             painter.rect_stroke(
                 preview,
                 0.,
-                Stroke::new(2_f32, color),
-                egui::StrokeKind::Inside,
+                Stroke::new(2. * scale, color.gamma_multiply(0.7)),
+                egui::StrokeKind::Middle,
             );
-            painter.text(
-                preview.center(),
-                egui::Align2::CENTER_CENTER,
-                "+",
-                egui::FontId::proportional(36.),
-                color,
-            );
+            let radius = preview.size().min_elem() * 0.2;
+            let center = preview.center();
+            for axis in [egui::vec2(radius, 0.), egui::vec2(0., radius)] {
+                painter.line_segment([center - axis, center + axis], Stroke::new(10. * scale, color));
+            }
         }
-        let mut cancel = false;
-        egui::Area::new(egui::Id::new("level-spot-picker-instructions"))
-            .order(egui::Order::Foreground)
-            .fixed_pos(rect.center_top() + egui::vec2(-150., 12.))
-            .show(ui.ctx(), |ui| {
-                egui::Frame::popup(ui.style()).show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.label(locale::tr(ui, "Pick a location for the new level"));
-                        cancel = ui.button(locale::tr(ui, "Cancel")).clicked();
-                    });
-                });
-            });
-        if cancel {
+        if field_tools::picker_banner(
+            ui.ctx(),
+            "level-spot-picker-instructions",
+            locale::tr(ui, "Pick a spot for a new level"),
+            174.,
+            false,
+        ) {
             self.cancel_world_context();
         }
     }
@@ -635,6 +635,7 @@ impl EditorApp {
         }
         let world = self.active_world;
         let depth = self.world_depth as i32;
+        let previous_origin = self.context_level_origin();
         let key = self.edit("Create level", |p| {
             let name = level_name(p, "Level1");
             let mut key = p.add_level(world, &name, spot.size[0], spot.size[1])?;
@@ -654,25 +655,49 @@ impl EditorApp {
             Ok(key)
         });
         if let Some(key) = key {
-            self.navigate_level(key, false);
-            self.center_context_level(key);
+            self.scroll_to_context_level(key, previous_origin);
             true
         } else {
             false
         }
     }
-    fn center_context_level(&mut self, key: LevelKey) {
+    fn context_level_origin(&self) -> [f32; 2] {
+        if self.world {
+            [0.; 2]
+        } else {
+            self.project
+                .as_ref()
+                .zip(self.selected)
+                .map_or([0.; 2], |(project, key)| {
+                    navigation::level_world_origin(project, key)
+                })
+        }
+    }
+    pub(super) fn scroll_to_context_level(&mut self, key: LevelKey, previous_origin: [f32; 2]) {
+        let ctx = self.repaint.clone().unwrap_or_default();
+        if self.defer_ui_action(
+            &ctx,
+            ui_commit::DeferredUiAction::ScrollToLevel {
+                key,
+                previous_origin,
+            },
+        ) {
+            return;
+        }
+        self.navigate_level(key, false);
         if let Some((_, b)) = self
             .context_placements()
             .into_iter()
             .find(|(k, _)| *k == key)
         {
-            self.camera_motion.cancel_pan();
-            self.viewport.center = if self.world {
-                [(b[0] + b[2]) * 0.5, (b[1] + b[3]) * 0.5]
-            } else {
-                [(b[2] - b[0]) * 0.5, (b[3] - b[1]) * 0.5]
-            };
+            let origin = if self.world { [0.; 2] } else { [b[0], b[1]] };
+            // The source keeps the camera in world coordinates when the level changes.
+            for axis in 0..2 {
+                self.viewport.center[axis] += previous_origin[axis] - origin[axis];
+            }
+            self.camera_motion.scroll_to(std::array::from_fn(|axis| {
+                ((b[axis] + b[axis + 2]) * 0.5).round() - origin[axis]
+            }));
         }
     }
     pub(super) fn duplicate_context_level(&mut self, key: LevelKey) {
@@ -725,12 +750,12 @@ impl EditorApp {
             level: closest.level - usize::from(closest.level > key.level),
             ..closest
         };
+        let previous_origin = self.context_level_origin();
         if self
             .edit_recoverable("Delete level", |p| p.remove_level(key))
             .is_some()
         {
-            self.navigate_level(next, false);
-            self.center_context_level(next);
+            self.scroll_to_context_level(next, previous_origin);
         }
     }
     fn move_context_level(&mut self, key: LevelKey, world: usize) {
@@ -796,6 +821,14 @@ mod tests {
             a.level_insert_spot([330., 300.]).unwrap().rect,
             [256., 256., 128., 64.]
         );
+        assert_eq!(
+            a.level_insert_spot([-128., -64.]).unwrap().rect,
+            [-256., -128., 128., 64.]
+        );
+        assert!(a.create_level_at([-128., -64.], true));
+        let created = a.project.as_ref().unwrap().level(a.selected.unwrap()).unwrap();
+        assert_eq!(created["worldX"], -256);
+        assert_eq!(created["worldY"], -128);
     }
     #[test]
     fn linear_picker_inserts_at_nearest_boundary_and_reorganizes_both_axes() {
@@ -833,6 +866,52 @@ mod tests {
         assert!(a.create_level_at([128., 128.], false));
         assert_eq!(a.project.as_ref().unwrap().level_keys().len(), 2);
     }
+    #[test]
+    fn context_level_changes_scroll_from_the_previous_world_camera_position() {
+        let canvas = Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800., 600.));
+        for world in [false, true] {
+            let mut app = editor();
+            app.world = world;
+            app.grid = false;
+            app.viewport.zoom = 1.5;
+            let project = app.project.as_mut().unwrap();
+            project.move_level(K, 512, -256, 0).unwrap();
+            app.viewport.center = if world { [587., -166.] } else { [75., 90.] };
+
+            assert!(app.create_level_at([900., 360.], true));
+            let created = app.selected.unwrap();
+            let start = if world { [587., -166.] } else { [-185., -398.] };
+            let end = if world { [900., 360.] } else { [128., 128.] };
+            assert_eq!(app.viewport.center, start);
+            assert!(
+                app.camera_motion
+                    .tick(&mut app.viewport, canvas, [0.; 2], 1., 1, 1. / 60.)
+            );
+            let moved = std::array::from_fn(|i| start[i] + (end[i] - start[i]) * 0.15);
+            assert_eq!(app.viewport.center, moved);
+            assert_eq!(app.viewport.zoom, 1.5);
+
+            app.delete_context_level(created);
+            assert_eq!(app.selected, Some(K));
+            let start = if world {
+                moved
+            } else {
+                [moved[0] + 260., moved[1] + 488.]
+            };
+            let end = if world { [640., -128.] } else { [128., 128.] };
+            assert_eq!(app.viewport.center, start);
+            assert!(
+                app.camera_motion
+                    .tick(&mut app.viewport, canvas, [0.; 2], 1., 2, 1. / 60.)
+            );
+            assert_eq!(
+                app.viewport.center,
+                std::array::from_fn(|i| start[i] + (end[i] - start[i]) * 0.15)
+            );
+            assert_eq!(app.viewport.zoom, 1.5);
+        }
+    }
+
     #[test]
     fn duplicate_offset_and_delete_closest_last_chance_match_source() {
         let mut a = editor();
@@ -873,6 +952,7 @@ mod tests {
                         let (rect, response) =
                             ui.allocate_exact_size(egui::vec2(800., 600.), Sense::click_and_drag());
                         a.canvas_input(ctx, rect, &response);
+                        a.update_world_hover(ctx, rect, response.hovered());
                         a.world_context_overlay(ui, rect);
                     });
             },
@@ -968,6 +1048,70 @@ mod tests {
         );
     }
     #[test]
+    fn preview_154_fractional_world_edges_agree_for_context_click_and_marquee() {
+        let mut app = editor();
+        app.viewport.zoom = 1.5;
+        app.viewport.center = [253.6, 128.];
+        let project = app.project.as_mut().unwrap();
+        let neighbor = project.add_level(None, "Neighbor", 128, 128).unwrap();
+        project.move_level(neighbor, 320, 64, 0).unwrap();
+        let ctx = egui::Context::default();
+        let outside = egui::pos2(499., 300.);
+        let inside = egui::pos2(500., 300.);
+
+        // At 1.5x the rendered camera origin is x=20, before snapping it is x=19.6.
+        let output = right_click(&mut app, &ctx, outside);
+        label_center(&output, "NEW LEVEL");
+        assert!(app.world_context.menu.unwrap().level.is_none());
+        assert_eq!(app.selected, Some(K));
+        app.cancel_world_context();
+
+        let primary = egui::PointerButton::Primary;
+        let none = egui::Modifiers::NONE;
+        frame(&mut app, &ctx, vec![egui::Event::PointerMoved(outside)], none);
+        frame(
+            &mut app,
+            &ctx,
+            vec![button(outside, primary, true, none)],
+            none,
+        );
+        assert!(matches!(
+            app.gesture,
+            Some(tools::Gesture::WorldRectangle { .. })
+        ));
+        let end = egui::pos2(501., 303.);
+        frame(&mut app, &ctx, vec![egui::Event::PointerMoved(end)], none);
+        assert!(matches!(
+            app.gesture,
+            Some(tools::Gesture::WorldRectangle {
+                corners: Some([[319., 128.], [321., 130.]]),
+                ..
+            })
+        ));
+        frame(
+            &mut app,
+            &ctx,
+            vec![button(end, primary, false, none)],
+            none,
+        );
+        app.world_selection.clear();
+        click(&mut app, &ctx, inside);
+        assert_eq!(app.selected, Some(neighbor));
+        assert!(app.world);
+
+        // With x=20.4 before snapping, x=501 hits the level only through the rendered origin.
+        app.navigate_level(K, false);
+        app.viewport.center[0] = 253.06667;
+        app.project
+            .as_mut()
+            .unwrap()
+            .move_level(neighbor, 321, 64, 0)
+            .unwrap();
+        click(&mut app, &ctx, egui::pos2(501., 300.));
+        assert_eq!(app.selected, Some(neighbor));
+    }
+
+    #[test]
     fn actual_world_right_click_menu_duplicates_and_deletes_with_last_chance() {
         let mut a = editor();
         a.viewport.center = [128., 128.];
@@ -1003,12 +1147,58 @@ mod tests {
         assert_eq!(a.project.as_ref().unwrap().level_keys().len(), 2);
     }
     #[test]
+    fn level_spot_picker_draws_source_preview_and_has_priority_over_world_hover() {
+        let mut app = editor();
+        app.grid = false;
+        app.viewport.center = [128., 128.];
+        app.viewport.zoom = 0.75;
+        let ctx = egui::Context::default();
+        theme::configure(&ctx);
+        app.start_level_spot_picker();
+        let _ = frame(&mut app, &ctx, vec![], egui::Modifiers::NONE);
+        for (pos, color) in [
+            (egui::pos2(400., 300.), Color32::from_rgb(255, 68, 0)),
+            (egui::pos2(740., 150.), Color32::from_rgb(141, 203, 251)),
+        ] {
+            let output = frame(
+                &mut app,
+                &ctx,
+                vec![egui::Event::PointerMoved(pos)],
+                egui::Modifiers::NONE,
+            );
+            assert!(app.world_hover.is_none());
+            assert_eq!(output.platform_output.cursor_icon, egui::CursorIcon::Cell);
+            assert!(output.shapes.iter().any(|shape| {
+                matches!(&shape.shape, egui::Shape::Rect(r) if
+                    r.fill == color.gamma_multiply(0.3))
+            }));
+            assert!(output.shapes.iter().any(|shape| {
+                matches!(&shape.shape, egui::Shape::Rect(r) if
+                    r.stroke == Stroke::new(1.5, color.gamma_multiply(0.7)))
+            }));
+            let cross = output.shapes.iter().filter(|shape| {
+                matches!(&shape.shape, egui::Shape::LineSegment { points, stroke } if
+                    *stroke == Stroke::new(7.5, color) &&
+                    ((points[0].distance(points[1])) - 76.8).abs() < 0.01)
+            });
+            assert_eq!(cross.count(), 2);
+            let text = label_center(&output, "Pick a spot for a new level");
+            assert!(text.y > 600. * 0.85);
+            assert!(output.shapes.iter().any(|shape| {
+                matches!(&shape.shape, egui::Shape::Text(t) if
+                    t.galley.job.text == "Pick a spot for a new level" && t.galley.rows.len() == 2)
+            }));
+        }
+    }
+
+    #[test]
     fn actual_picker_rejects_occupied_click_then_creates_at_preview_in_all_layouts() {
         for layout in ["Free", "GridVania", "LinearHorizontal", "LinearVertical"] {
             let mut a = editor();
             a.project.as_mut().unwrap().json["worldLayout"] = json!(layout);
             a.viewport.center = [128., 128.];
             let ctx = egui::Context::default();
+            theme::configure(&ctx);
             a.start_level_spot_picker();
             if matches!(layout, "Free" | "GridVania") {
                 click(&mut a, &ctx, egui::pos2(400., 300.));
@@ -1017,6 +1207,7 @@ mod tests {
             }
             let pos = egui::pos2(720., 560.);
             let world = a.context_pointer(
+                &ctx,
                 Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800., 600.)),
                 pos,
             );
@@ -1165,8 +1356,10 @@ mod tests {
             .move_level(K, 512, 256, 0)
             .unwrap();
         let ctx = egui::Context::default();
+        theme::configure(&ctx);
         let point = egui::pos2(760., 560.);
         let position = a.context_pointer(
+            &ctx,
             Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800., 600.)),
             point,
         );
@@ -1189,7 +1382,7 @@ mod tests {
         // Area does one sizing pass before its interactive position stabilizes.
         let _ = output;
         let output = frame(&mut a, &ctx, vec![], egui::Modifiers::NONE);
-        click(&mut a, &ctx, label_center(&output, "Cancel"));
+        click(&mut a, &ctx, label_center(&output, "CANCEL"));
         assert!(!a.world_context.picking);
         assert!(a.world);
         assert_eq!(a.project.as_ref().unwrap().level_keys().len(), 2);

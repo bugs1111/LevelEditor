@@ -125,6 +125,7 @@ fn fit_zoom(bounds: [f32; 4], size: [f32; 2], pixels_per_point: f32, world: bool
 
 const CAMERA_FPS: f32 = 60.0;
 const CAMERA_MOTION_FRAMES: f32 = 1.8 * CAMERA_FPS;
+const MAX_CAMERA_FRAME_GAP: f32 = 0.5;
 
 enum ZoomRequest {
     Fit {
@@ -208,15 +209,24 @@ impl CameraMotion {
             return None;
         }
         // The source Heaps timer retains the prior step after a long pause.
-        Some(if dt < 0.5 {
+        Some(if dt < MAX_CAMERA_FRAME_GAP {
             dt * CAMERA_FPS
         } else {
             self.last_tmod.unwrap_or(1.0)
         })
     }
 
-    pub fn window_dt(&mut self, ctx: &eframe::egui::Context) -> Option<f32> {
-        let (now, dt, input) = ctx.input(|i| (i.time, i.unstable_dt, !i.events.is_empty()));
+    pub fn window_dt(&mut self, ctx: &eframe::egui::Context, pointer_activity: bool) -> Option<f32> {
+        let (now, dt, input) = ctx.input(|i| {
+            let input = pointer_activity
+                || i.events.iter().any(|event| {
+                    !matches!(
+                        event,
+                        eframe::egui::Event::PointerMoved(_) | eframe::egui::Event::MouseMoved(_)
+                    )
+                });
+            (i.time, i.unstable_dt, input)
+        });
         let last_frame = self.last_window_frame.unwrap_or(now - f64::from(dt));
         let idle_for = now - *self.last_window_activity.get_or_insert(now);
         let entering_world = matches!(self.zoom_request, Some(ZoomRequest::WorldEntry { .. }))
@@ -233,8 +243,18 @@ impl CameraMotion {
                 return None;
             }
         }
-        let elapsed = if self.world_entry_deadline.take().is_some() && entering_world {
-            (now - last_frame) as f32
+        let elapsed = if let Some(deadline) = self.world_entry_deadline.take()
+            && entering_world
+        {
+            let elapsed = (now - last_frame) as f32;
+            if elapsed < MAX_CAMERA_FRAME_GAP {
+                elapsed
+            } else {
+                // A stalled native repaint can miss the idle canvas frame.
+                // Preserve its interval when the measured gap would reuse
+                // the previous, unrelated camera step.
+                (deadline - last_frame) as f32
+            }
         } else {
             dt
         };
@@ -466,7 +486,7 @@ mod tests {
                     time: Some(now),
                     ..Default::default()
                 },
-                |ctx| dt = motion.window_dt(ctx),
+                |ctx| dt = motion.window_dt(ctx, false),
             );
             dt
         };

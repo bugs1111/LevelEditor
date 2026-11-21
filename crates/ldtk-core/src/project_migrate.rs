@@ -1,6 +1,6 @@
 //! Explicit editor migration; raw project loading deliberately remains lossless.
 use crate::grid_presence::GridPresence;
-use crate::workflow::layer_cell_extent;
+use crate::workflow::{layer_cell_extent, tidy_gridvania_defaults};
 use crate::{Error, Project, Result};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
@@ -34,6 +34,7 @@ fn default_world_dimensions(world: &mut Value, template: &Value) {
             world[grid_step] = world[default_size].clone();
         }
     }
+    tidy_gridvania_defaults(world);
 }
 fn alias(v: &mut Value, old: &str, new: &str) {
     if let Some(v) = v.as_object_mut()

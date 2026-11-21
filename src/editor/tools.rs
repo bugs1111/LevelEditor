@@ -848,8 +848,10 @@ impl EditorApp {
         response: &egui::Response,
     ) {
         if self.pointer_lifecycle(ctx) {
+            self.neighbor_level_press = false;
             return;
         }
+        self.neighbor_level_press &= ctx.input(|input| input.pointer.primary_down());
         let released = ctx.input(|i| i.pointer.any_released());
         if !self.stroke
             && response.hovered()
@@ -1044,12 +1046,13 @@ impl EditorApp {
         &mut self,
         ctx: &egui::Context,
         rect: Rect,
-        local_world: [f32; 2],
+        pointer: egui::Pos2,
         modifiers: egui::Modifiers,
     ) -> bool {
         let Some(Gesture::WorldGroupMove {
             anchor,
             press,
+            start,
             end,
             origins,
             moved,
@@ -1062,12 +1065,13 @@ impl EditorApp {
             return false;
         };
         let release = world_tools::world_pointer_release(ctx);
-        *end = release.map_or(local_world, |(pos, _)| {
-            self.viewport
-                .to_world(pos.into(), rect.min.into(), rect.size().into())
-        });
+        let density = ctx.pixels_per_point();
+        let to_world = |pos| world_tools::world_pointer_pixel(&self.viewport, rect, pos, density);
+        // Coords retains the original page position through camera changes.
+        *start = to_world(*press);
+        *end = to_world(release.map_or(pointer, |(pos, _)| pos));
         *disable_snap = release.map_or(modifiers.alt, |(_, modifiers)| modifiers.alt);
-        *backing_zoom = self.viewport.zoom * ctx.pixels_per_point();
+        *backing_zoom = self.viewport.zoom * density;
         let started = !*moved && world_tools::world_drag_started(ctx, *press);
         if started
             && *deselected_on_press
@@ -1110,14 +1114,13 @@ impl EditorApp {
         else {
             return false;
         };
-        let to_world = |pos: egui::Pos2| {
-            self.viewport
-                .to_world(pos.into(), rect.min.into(), rect.size().into())
-        };
+        let density = ctx.pixels_per_point();
+        let to_world = |pos| world_tools::world_pointer_pixel(&self.viewport, rect, pos, density);
         let (position, crossed) = world_tools::world_drag_motion(ctx, *press);
         let position = position.map(to_world);
         let release = world_tools::world_pointer_release(ctx).map(|(pos, _)| to_world(pos));
         if let Some(position) = release.or(position) {
+            *start = to_world(*press);
             *end = position;
         }
         let (Some(position), Some(project)) = (position, self.project.as_mut()) else {
@@ -1174,7 +1177,7 @@ impl EditorApp {
             position,
             origin,
             modifiers.alt,
-            self.viewport.zoom * ctx.pixels_per_point(),
+            self.viewport.zoom * density,
         );
         if let Some(level) = self.project.as_mut().and_then(|p| p.level_mut(key)) {
             level["worldX"] = json!(x);
@@ -1285,9 +1288,6 @@ impl EditorApp {
         let Some(pointer) = pointer else {
             return;
         };
-        let local_world =
-            self.viewport
-                .to_world(pointer.into(), rect.min.into(), rect.size().into());
         if self.gesture.is_none()
             && (self.world || !self.picking_point())
             && (!rect.contains(pointer) || !response.hovered())
@@ -1320,7 +1320,7 @@ impl EditorApp {
             if self.world_marquee_input(ctx, rect, response) {
                 return;
             }
-            if self.update_world_group_move(ctx, rect, local_world, modifiers) {
+            if self.update_world_group_move(ctx, rect, pointer, modifiers) {
                 return;
             }
             if self.update_world_level_move(ctx, rect, modifiers) {
@@ -1343,9 +1343,12 @@ impl EditorApp {
                 && !press_modifiers.shift
                 && let (Some(project), Some(key)) = (&self.project, self.selected)
             {
-                let start =
-                    self.viewport
-                        .to_world(press.into(), rect.min.into(), rect.size().into());
+                let start = world_tools::world_pointer_pixel(
+                    &self.viewport,
+                    rect,
+                    press,
+                    ctx.pixels_per_point(),
+                );
                 let hit = self.level_at_world(start).and_then(|candidate| {
                     canvas::placements(project, key)
                         .into_iter()
@@ -1377,7 +1380,7 @@ impl EditorApp {
                             backing_zoom: self.viewport.zoom * ctx.pixels_per_point(),
                             deselected_on_press,
                         });
-                        self.update_world_group_move(ctx, rect, local_world, modifiers);
+                        self.update_world_group_move(ctx, rect, pointer, modifiers);
                         return;
                     }
                     self.navigate_level(candidate, false);
@@ -1400,6 +1403,29 @@ impl EditorApp {
                     self.update_world_level_move(ctx, rect, modifiers);
                 }
             }
+            return;
+        }
+        if self.gesture.is_none()
+            && !self.stroke
+            && let Some(press) = ctx.input(|input| {
+                input.events.iter().find_map(|event| match event {
+                    egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed: true,
+                        modifiers,
+                    } if !(cfg!(target_os = "macos") && modifiers.ctrl) => Some(*pos),
+                    _ => None,
+                })
+            })
+            && response.interact_rect.contains(press)
+            && ctx
+                .layer_id_at(press)
+                .is_none_or(|layer| layer == response.layer_id)
+            && let Some(neighbor) = self.level_under_pointer(ctx, rect, press)
+        {
+            self.neighbor_level_press = primary;
+            self.navigate_neighbor_level(ctx, neighbor);
             return;
         }
         let Some(key) = self.selected else {

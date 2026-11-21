@@ -9,6 +9,11 @@ pub(super) enum DeferredUiAction {
         key: LevelKey,
         fit: bool,
     },
+    NeighborLevel(LevelKey),
+    ScrollToLevel {
+        key: LevelKey,
+        previous_origin: [f32; 2],
+    },
     World {
         world: Option<usize>,
         open_world_view: bool,
@@ -156,6 +161,10 @@ impl EditorApp {
             DeferredUiAction::Request(action) => self.request(ctx, action),
             DeferredUiAction::Panel(panel) => self.show_panel(panel),
             DeferredUiAction::Navigate { key, fit } => self.navigate_level(key, fit),
+            DeferredUiAction::NeighborLevel(key) => self.navigate_neighbor_level(ctx, key),
+            DeferredUiAction::ScrollToLevel { key, previous_origin } => {
+                self.scroll_to_context_level(key, previous_origin);
+            }
             DeferredUiAction::World {
                 world,
                 open_world_view,

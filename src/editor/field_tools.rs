@@ -345,7 +345,7 @@ fn paint_array_field_drag(
     ));
 }
 
-fn picker_outline(painter: &egui::Painter, rect: Rect, stroke: Stroke, dash: f32, gap: f32) {
+pub(super) fn picker_outline(painter: &egui::Painter, rect: Rect, stroke: Stroke, dash: f32, gap: f32) {
     painter.extend(egui::Shape::dashed_line(
         &[rect.left_top(), rect.right_top(), rect.right_bottom(), rect.left_bottom(), rect.left_top()],
         stroke,
@@ -354,11 +354,18 @@ fn picker_outline(painter: &egui::Painter, rect: Rect, stroke: Stroke, dash: f32
     ));
 }
 
-fn reference_picker_banner(ctx: &egui::Context, message: &str, error: bool) -> bool {
+pub(super) fn picker_banner(
+    ctx: &egui::Context,
+    id: &'static str,
+    message: &str,
+    wrap_width: f32,
+    error: bool,
+) -> bool {
     let screen = ctx.content_rect();
     let error_fill = Color32::from_rgb(227, 77, 0);
-    egui::Area::new(egui::Id::new("entity-reference-picker"))
+    egui::Area::new(egui::Id::new(id))
         .fixed_pos(egui::pos2(screen.center().x - 200., screen.top() + screen.height() * 0.85))
+        .default_size(egui::vec2(434., 82.))
         .order(egui::Order::Foreground)
         .constrain(false)
         .show(ctx, |ui| {
@@ -379,7 +386,7 @@ fn reference_picker_banner(ctx: &egui::Context, message: &str, error: bool) -> b
                 } else {
                     FontId::new(14.667, egui::FontFamily::Name("body-bold".into()))
                 };
-                let mut job = egui::text::LayoutJob::simple(message.into(), font, color, 204.);
+                let mut job = egui::text::LayoutJob::simple(message.into(), font, color, wrap_width);
                 if !error {
                     job.halign = egui::Align::Center;
                 }
@@ -713,7 +720,13 @@ impl EditorApp {
             || pick.reference_instruction(ui, project),
             |message| locale::tr(ui, message).to_owned(),
         );
-        if reference_picker_banner(ui.ctx(), &message, error.is_some()) {
+        if picker_banner(
+            ui.ctx(),
+            "entity-reference-picker",
+            &message,
+            204.,
+            error.is_some(),
+        ) {
             self.cancel_field_pick();
         }
         ui.ctx()

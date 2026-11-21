@@ -3045,7 +3045,7 @@ fn snap_level_form_patch(p: &Project, key: LevelKey, patch: &mut Value) -> ldtk_
                     .as_i64()
                     .filter(|n| *n > 0)
                     .ok_or_else(|| ldtk_core::Error::Invalid("invalid world grid".into()))?;
-                let snapped = (n as f64 / grid as f64 + 0.5).floor() as i64;
+                let snapped = (n as f64 / grid as f64).round() as i64;
                 patch[property] = json!(if positive {
                     snapped.max(1) * grid
                 } else {
@@ -4357,8 +4357,13 @@ mod tests {
         snap_level_form_patch(&p, p.level_keys()[0], &mut patch).unwrap();
         assert_eq!(
             patch,
-            json!({"worldX":0,"worldY":0,"pxWid":256,"pxHei":128})
+            json!({"worldX":0,"worldY":-128,"pxWid":256,"pxHei":128})
         );
+        for sign in [-1, 1] {
+            let mut patch = json!({"worldX":sign * 128,"worldY":sign * 192});
+            snap_level_form_patch(&p, p.level_keys()[0], &mut patch).unwrap();
+            assert_eq!(patch, json!({"worldX":sign * 256,"worldY":sign * 256}));
+        }
         p.json["worldLayout"] = json!("Free");
         let mut patch = json!({"worldX":100,"pxWid":300});
         snap_level_form_patch(&p, p.level_keys()[0], &mut patch).unwrap();

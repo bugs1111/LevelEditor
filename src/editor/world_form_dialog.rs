@@ -251,12 +251,14 @@ impl EditorApp {
             ui_fields::apply_patch(target, &patch);
             p.refresh_derived_data()
         };
-        if layout_changed {
-            self.edit_recoverable("World layout changed", operation);
+        let applied = if layout_changed {
+            self.edit_recoverable("World layout changed", operation)
         } else {
-            self.edit("World settings changed", operation);
+            self.edit("World settings changed", operation)
+        };
+        if applied.is_some() {
+            self.animate_camera_fit();
         }
-        self.fit = true;
     }
     pub(super) fn create_form_world(&mut self) {
         if self.project.as_ref().is_none_or(Project::is_backup) {
@@ -653,6 +655,8 @@ mod tests {
         click(&mut app, &ctx, "151");
         replace_text(&mut app, &ctx, "1");
         assert_eq!(app.project.as_ref().unwrap().json["defaultLevelWidth"], 16);
+        assert!(!app.fit, "world form commits must not immediately fit the camera");
+        assert!(app.camera_motion.is_active(), "the fit should be animated");
         app.project
             .as_mut()
             .unwrap()

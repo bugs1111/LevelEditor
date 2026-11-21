@@ -2,6 +2,24 @@ use super::*;
 use serde_json::json;
 
 impl EditorApp {
+    pub(super) fn navigate_neighbor_level(&mut self, ctx: &egui::Context, key: LevelKey) {
+        if self.defer_ui_action(ctx, ui_commit::DeferredUiAction::NeighborLevel(key)) {
+            return;
+        }
+        let (Some(project), Some(previous)) = (&self.project, self.selected) else {
+            return;
+        };
+        let old_origin = navigation::level_world_origin(project, previous);
+        let new_origin = navigation::level_world_origin(project, key);
+        self.navigate_level(key, false);
+        if self.selected == Some(key) {
+            self.camera_motion.cancel();
+            for axis in 0..2 {
+                self.viewport.center[axis] += old_origin[axis] - new_origin[axis];
+            }
+        }
+    }
+
     fn clear_level_selection(&mut self) {
         self.finish_rule_edit();
         self.entity_index = None;

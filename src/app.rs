@@ -268,6 +268,7 @@ pub struct EditorApp {
     stroke_erase: bool,
     last_cell: Option<[i32; 2]>,
     brush_preview_waits_for_pointer: bool,
+    neighbor_level_press: bool,
     async_paint: Option<canvas::AsyncPaintPreview>,
     deferred_auto_paint: Option<DeferredAutoPaint>,
     stroke_was_dirty: bool,
@@ -482,6 +483,7 @@ impl EditorApp {
             stroke_erase: false,
             last_cell: None,
             brush_preview_waits_for_pointer: false,
+            neighbor_level_press: false,
             async_paint: None,
             deferred_auto_paint: None,
             stroke_was_dirty: false,
@@ -669,6 +671,7 @@ impl EditorApp {
         self.stroke = false;
         self.last_cell = None;
         self.brush_preview_waits_for_pointer = false;
+        self.neighbor_level_press = false;
         self.async_paint = None;
         self.deferred_auto_paint = None;
         self.stroke_was_dirty = false;
@@ -962,7 +965,8 @@ impl EditorApp {
         } else {
             [0.; 2]
         };
-        if let Some(dt) = self.camera_motion.window_dt(ctx)
+        let pointer_activity = self.camera_pointer_activity(ctx, rect, response);
+        if let Some(dt) = self.camera_motion.window_dt(ctx, pointer_activity)
             && self.camera_motion.tick(
                 &mut self.viewport,
                 rect,
@@ -974,6 +978,35 @@ impl EditorApp {
         {
             ctx.request_repaint();
         }
+    }
+
+    fn camera_pointer_activity(
+        &self,
+        ctx: &egui::Context,
+        rect: Rect,
+        response: &egui::Response,
+    ) -> bool {
+        let (Some(project), Some(key)) = (&self.project, self.selected) else {
+            return false;
+        };
+        let density = ctx.pixels_per_point();
+        // LDtk wakes the canvas for movement over a level or during a drag.
+        ctx.input(|input| {
+            input.events.iter().any(|event| {
+                let egui::Event::PointerMoved(pos) = event else {
+                    return false;
+                };
+                if self.camera_drag.is_some() || self.stroke || self.gesture.is_some() {
+                    return true;
+                }
+                if !response.hovered() || !response.interact_rect.contains(*pos) {
+                    return false;
+                }
+                let (local, world) = self.canvas_pointer_pixels(project, key, rect, *pos, density);
+                !self.world && entity_tools::placement_in_level(project, key, local)
+                    || self.level_at_world(world).is_some()
+            })
+        })
     }
 
     fn draw_project_canvas(
@@ -1364,7 +1397,8 @@ impl EditorApp {
                 }
                 let picker = canvas::begin_picker_filter(
                     ui.painter(),
-                    self.selected.is_some() && self.picking_entity_ref(),
+                    self.world_context.picking
+                        || self.selected.is_some() && self.picking_entity_ref(),
                 );
                 if self.project.is_some() {
                     if let Some(key) = self.selected {
@@ -1377,13 +1411,15 @@ impl EditorApp {
                         self.draw_level_resize_preview(ui, rect, response.hovered());
                         self.draw_resize_handles(ui, rect);
                         self.draw_bleeps(ui, rect);
-                        canvas::finish_picker_filter(ui.painter(), picker, rect);
+                    }
+                    self.world_context_overlay(ui, rect);
+                    canvas::finish_picker_filter(ui.painter(), picker, rect);
+                    if let Some(key) = self.selected {
                         if self.panel != Some(Panel::Rules) {
                             self.canvas_toolbar(ctx, self.uncovered_canvas_rect(rect));
                         }
                         self.draw_canvas_status(ui, rect, &response, key);
                     }
-                    self.world_context_overlay(ui, rect);
                 } else {
                     self.library_home(ctx, ui, rect);
                 }
@@ -1657,6 +1693,58 @@ mod tests {
             zoom: 1.0,
         };
         app
+    }
+
+    #[test]
+    fn passive_mouse_motion_keeps_the_idle_world_zoom_interval() {
+        for (inside, resume) in [(false, 7.11), (false, 7.71), (true, 7.11)] {
+            let mut app = editor();
+            app.viewport.zoom = 900. / 336.;
+            let project = app.project.as_mut().unwrap();
+            let other = project.add_level(None, "Other", 128, 128).unwrap();
+            project.move_level(other, 368, 320, 0).unwrap();
+            let ctx = egui::Context::default();
+            let rect = Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1140., 900.));
+            let frame = |app: &mut EditorApp, time, events| {
+                let _ = ctx.run(
+                    egui::RawInput {
+                        time: Some(time),
+                        screen_rect: Some(rect),
+                        events,
+                        ..Default::default()
+                    },
+                    |ctx| {
+                        egui::CentralPanel::default()
+                            .frame(egui::Frame::NONE)
+                            .show(ctx, |ui| {
+                                let (rect, response) =
+                                    ui.allocate_exact_size(rect.size(), Sense::click_and_drag());
+                                app.canvas_input(ctx, rect, &response);
+                            });
+                    },
+                );
+            };
+            frame(&mut app, 0., vec![]);
+            frame(&mut app, 7., vec![]);
+            let pointer = if inside { rect.center() } else { egui::pos2(68., 840.) };
+            frame(
+                &mut app,
+                7.015,
+                vec![
+                    egui::Event::MouseMoved(egui::vec2(1., 1.)),
+                    egui::Event::PointerMoved(pointer),
+                ],
+            );
+            let original_zoom = app.viewport.zoom;
+            app.set_world_view(true);
+            frame(&mut app, 7.03, vec![]);
+            assert_eq!(app.viewport.zoom == original_zoom, !inside);
+            if !inside {
+                frame(&mut app, resume, vec![]);
+                let target = 0.8 * 1140. / (496. * 1.1 + 300.);
+                assert!((app.viewport.zoom - target).abs() < 0.0001);
+            }
+        }
     }
 
     fn press_canvas(app: &mut EditorApp) {

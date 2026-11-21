@@ -284,6 +284,33 @@ fn layer_conversion_requires_explicit_data_loss_and_can_bake_auto_tiles() {
     assert_eq!(p.layer(K, 0).unwrap()["intGridCsv"], json!([]));
 }
 #[test]
+fn gridvania_grid_resize_preserves_defaults_until_world_tidy() {
+    let mut p = Project::new();
+    p.json["defaultLevelWidth"] = json!(512);
+    p.set_world_layout(None, "GridVania", 256, 128).unwrap();
+    p.move_level(K, -256, 128, 0).unwrap();
+
+    p.set_world_layout(None, "GridVania", 300, 128).unwrap();
+    assert_eq!(p.level(K).unwrap()["worldX"], -300);
+    assert_eq!(p.level(K).unwrap()["worldY"], 128);
+    assert_eq!(p.json["defaultLevelWidth"], 512);
+    assert_eq!(p.json["defaultLevelHeight"], 256);
+
+    let mut reopened = p.clone();
+    reopened.migrate_to_current().unwrap();
+    assert_eq!(reopened.json["defaultLevelWidth"], 600);
+
+    let mut duplicated = p.clone();
+    duplicated.duplicate_level(K, "Copy").unwrap();
+    assert_eq!(duplicated.json["defaultLevelWidth"], 600);
+
+    let width = p.json["defaultLevelWidth"].as_i64().unwrap() as i32;
+    let created = p.add_level(None, "Another", width, 256).unwrap();
+    assert_eq!(p.level(created).unwrap()["pxWid"], 512);
+    assert_eq!(p.json["defaultLevelWidth"], 600);
+}
+
+#[test]
 fn linear_world_layout_serializes_original_world_coordinates() {
     let mut p = sample();
     p.set_world_layout(None, "LinearHorizontal", 128, 128)

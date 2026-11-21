@@ -257,6 +257,7 @@ impl EditorApp {
                     && self.gesture.is_none()
                     && !self.stroke
                     && self.field_pick.is_none()
+                    && !self.world_context.picking
                     && ui.ctx().pointer_hover_pos().is_some_and(|pointer| {
                         let local = self.resize_pointer(
                             project,

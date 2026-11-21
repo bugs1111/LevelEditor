@@ -1231,6 +1231,16 @@ fn level_bounds_distance(a: [f32; 4], b: [f32; 4]) -> f32 {
         .max((a[1] - b[3]).max(0.) + (b[1] - a[3]).max(0.))
 }
 
+fn paint_level_hover(ctx: &egui::Context, painter: &Painter, rect: Rect) {
+    painter.rect_filled(rect, 0., Color32::from_rgba_premultiplied(38, 31, 0, 38));
+    painter.rect_stroke(
+        rect,
+        0.,
+        Stroke::new(2. / ctx.pixels_per_point(), Color32::WHITE),
+        StrokeKind::Middle,
+    );
+}
+
 pub fn draw(
     ctx: &egui::Context,
     painter: &Painter,
@@ -1308,6 +1318,9 @@ pub fn draw(
     let mut hover_rect = None;
     let mut world_level_fields = Vec::new();
     for (key, mut bounds) in levels {
+        if !options.world && key == options.selected && let Some(rect) = hover_rect.take() {
+            paint_level_hover(ctx, painter, rect);
+        }
         let Some(level) = project.level(key) else {
             continue;
         };
@@ -1467,6 +1480,9 @@ pub fn draw(
                         .multiply_opacity(((view.zoom - min_zoom) / min_zoom).clamp(0., 1.));
                     neighbor.level_identifier(&label_painter, key, level, rect, origin);
                 }
+            }
+            if options.world_hover == Some(key) && depth_delta == 0 {
+                hover_rect = Some(rect);
             }
             continue;
         }
@@ -1649,13 +1665,7 @@ pub fn draw(
     }
     if options.world {
         if let Some(rect) = hover_rect {
-            painter.rect_filled(rect, 0., Color32::from_rgba_premultiplied(38, 31, 0, 38));
-            painter.rect_stroke(
-                rect,
-                0.,
-                Stroke::new(2. / ctx.pixels_per_point(), Color32::WHITE),
-                StrokeKind::Middle,
-            );
+            paint_level_hover(ctx, painter, rect);
         }
         for (level, origin) in world_level_fields {
             scene.level_fields(painter, level, origin, 0.);

@@ -19,6 +19,21 @@ pub(super) fn world_drag_threshold(ctx: &egui::Context) -> f32 {
     8.0 * ctx.pixels_per_point()
 }
 
+pub(super) fn world_pointer_pixel(
+    viewport: &Viewport,
+    rect: Rect,
+    pos: egui::Pos2,
+    density: f32,
+) -> [f32; 2] {
+    viewport.pointer_pixel(
+        pos.into(),
+        rect.min.into(),
+        rect.size().into(),
+        [0.; 2],
+        density,
+    )
+}
+
 pub(super) fn world_pointer_release(ctx: &egui::Context) -> Option<(egui::Pos2, egui::Modifiers)> {
     ctx.input(|input| {
         input.events.iter().find_map(|event| match event {
@@ -525,14 +540,14 @@ impl EditorApp {
                     | egui::CursorIcon::ResizeNeSw
             )
         });
-        if !self.world
-            || !hovered
+        if !hovered
             || pointer.is_none()
             || !self.world_selection.is_empty()
             || self.gesture.is_some()
             || self.camera_drag.is_some()
             || self.level_resize.is_some()
             || self.field_pick.is_some()
+            || self.world_context.picking
             || self.canvas_input_blocked(ctx)
             || resize_cursor
         {
@@ -542,12 +557,7 @@ impl EditorApp {
         if ctx.input(|input| {
             input.events.iter().any(|event| matches!(event, egui::Event::PointerMoved(_)))
         }) {
-            self.world_hover = self.project.as_ref().zip(self.selected).and_then(|(project, key)| {
-                let (_, world) = self.canvas_pointer_pixels(
-                    project, key, rect, pointer?, ctx.pixels_per_point(),
-                );
-                self.level_at_world(world)
-            });
+            self.world_hover = pointer.and_then(|pos| self.level_under_pointer(ctx, rect, pos));
         }
         if self.world_hover.is_some() {
             ctx.set_cursor_icon(egui::CursorIcon::PointingHand);
@@ -667,11 +677,8 @@ impl EditorApp {
         {
             return false;
         }
-        let point = |viewport: &Viewport, pos: egui::Pos2| {
-            viewport
-                .to_world(pos.into(), rect.min.into(), rect.size().into())
-                .map(f32::round)
-        };
+        let density = ctx.pixels_per_point();
+        let point = |viewport: &Viewport, pos| world_pointer_pixel(viewport, rect, pos, density);
         let (events, modifiers) = ctx.input(|input| (input.events.clone(), input.modifiers));
         let mut handled = active;
         for event in events {
@@ -761,6 +768,21 @@ impl EditorApp {
             }
         }
         self.world_selection = selection;
+    }
+
+    pub(super) fn level_under_pointer(
+        &self,
+        ctx: &egui::Context,
+        rect: Rect,
+        pointer: egui::Pos2,
+    ) -> Option<LevelKey> {
+        let (project, key) = (self.project.as_ref()?, self.selected?);
+        let (local, world) =
+            self.canvas_pointer_pixels(project, key, rect, pointer, ctx.pixels_per_point());
+        if !self.world && entity_tools::placement_in_level(project, key, local) {
+            return None;
+        }
+        self.level_at_world(world)
     }
 
     pub(super) fn level_at_world(&self, position: [f32; 2]) -> Option<LevelKey> {
@@ -1277,6 +1299,7 @@ mod tests {
         let mut app = editor();
         app.fit = false;
         app.viewport.center = [256., 128.];
+        app.viewport.zoom = 2.;
         let second = app
             .project
             .as_mut()
@@ -1307,11 +1330,11 @@ mod tests {
                     .to_screen([x, 64.], rect.min.into(), rect.size().into()),
             )
         };
-        let mut start = screen(280.2);
+        let mut start = screen(280.);
         start.y -= 40.;
-        let edge = screen(320.25);
-        let inside = screen(320.55);
-        let release = screen(510.);
+        let edge = screen(320.);
+        let inside = screen(320.5);
+        let release = screen(490.);
         let shift = egui::Modifiers::SHIFT;
         marquee_frame(
             &mut app,
@@ -1358,6 +1381,7 @@ mod tests {
     fn marquee_rounds_negative_half_pixels_away_from_zero() {
         let mut app = editor();
         app.fit = false;
+        app.viewport.zoom = 2.;
         let project = app.project.as_mut().unwrap();
         let level = project.add_level(None, "Negative", 16, 16).unwrap();
         project.move_level(level, -64, 32, 0).unwrap();
@@ -1563,6 +1587,97 @@ mod tests {
         app.world_toggle_selection(key);
         let selected = frame(&mut app, vec![egui::Event::PointerMoved(pos)]);
         assert!(!has_hover(&selected));
+    }
+
+    #[test]
+    fn preview_154_neighbor_hover_and_press_work_in_level_view() {
+        let mut app = editor();
+        app.world = false;
+        app.fit = false;
+        app.viewport.center = [220., 64.];
+        let first = app.selected.unwrap();
+        let project = app.project.as_mut().unwrap();
+        project.add_layer("Entities", "Entities", 16).unwrap();
+        app.entity_uid = Some(project.add_entity_def("Actor", 16, 16).unwrap());
+        project.move_level(first, 160, -48, 0).unwrap();
+        let neighbor = project.add_level(None, "Neighbor", 128, 128).unwrap();
+        project.move_level(neighbor, 430, -48, 0).unwrap();
+        let other_depth = project.add_level(None, "OtherDepth", 128, 128).unwrap();
+        project.move_level(other_depth, 590, -48, 1).unwrap();
+        let project_json = project.json.clone();
+
+        let ctx = egui::Context::default();
+        let rect = Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1000., 700.));
+        let pos = |x| {
+            egui::Pos2::from(app.viewport.to_screen([x, 32.], rect.min.into(), rect.size().into()))
+        };
+        let (current_pos, neighbor_pos, other_pos) = (pos(40.), pos(290.), pos(450.));
+        let frame = |app: &mut EditorApp, events| {
+            ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(rect),
+                    events,
+                    ..Default::default()
+                },
+                |ctx| {
+                    egui::CentralPanel::default()
+                        .frame(egui::Frame::NONE)
+                        .show(ctx, |ui| {
+                            let (rect, response) =
+                                ui.allocate_exact_size(rect.size(), Sense::click_and_drag());
+                            app.canvas_input(ctx, rect, &response);
+                            app.update_world_hover(ctx, rect, response.hovered());
+                            app.draw_project_canvas(ctx, ui.painter(), rect, app.selected.unwrap());
+                            app.draw_brush_preview(ui, rect, response.hovered());
+                        });
+                },
+            )
+        };
+        let has_hover = |out: &egui::FullOutput| {
+            out.shapes.iter().any(|shape| matches!(&shape.shape, egui::Shape::Rect(r) if r.fill == egui::Color32::from_rgba_premultiplied(38, 31, 0, 38)))
+        };
+        let _ = frame(&mut app, vec![]);
+        let current = frame(&mut app, vec![egui::Event::PointerMoved(current_pos)]);
+        assert!(!has_hover(&current));
+        assert_eq!(current.platform_output.cursor_icon, egui::CursorIcon::Cell);
+        let other = frame(&mut app, vec![egui::Event::PointerMoved(other_pos)]);
+        assert!(!has_hover(&other));
+        let over = frame(&mut app, vec![egui::Event::PointerMoved(neighbor_pos)]);
+        assert_eq!(app.world_hover, Some(neighbor));
+        assert!(has_hover(&over));
+        assert_eq!(
+            over.platform_output.cursor_icon,
+            egui::CursorIcon::PointingHand
+        );
+        assert!(has_hover(&frame(&mut app, vec![])));
+
+        let press = frame(
+            &mut app,
+            vec![egui::Event::PointerButton {
+                pos: neighbor_pos,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: egui::Modifiers::NONE,
+            }],
+        );
+        assert_eq!(app.selected, Some(neighbor));
+        assert_eq!(app.viewport.center, [-50., 64.]);
+        assert!(!app.world);
+        assert!(!app.dirty);
+        assert!(!has_hover(&press));
+        assert_ne!(press.platform_output.cursor_icon, egui::CursorIcon::Cell);
+        let release = frame(
+            &mut app,
+            vec![egui::Event::PointerButton {
+                pos: neighbor_pos,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
+        );
+        assert!(!has_hover(&release));
+        assert_eq!(release.platform_output.cursor_icon, egui::CursorIcon::Cell);
+        assert_eq!(app.project.as_ref().unwrap().json, project_json);
     }
 
     #[test]
@@ -2210,10 +2325,65 @@ mod tests {
     }
 
     #[test]
+    fn fractional_world_drag_uses_render_pixels_for_preview_and_drop() {
+        for grouped in [false, true] {
+            let mut app = editor();
+            app.fit = false;
+            app.grid = false;
+            app.viewport.zoom = 1.5;
+            app.viewport.center = [320.26666, 128.];
+            let anchor = app.selected.unwrap();
+            let project = app.project.as_mut().unwrap();
+            project.move_level(anchor, 320, 0, 0).unwrap();
+            let other = project.add_level(None, "Second", 128, 128).unwrap();
+            project.move_level(other, 650, 0, 0).unwrap();
+            if grouped {
+                app.world_toggle_selection(anchor);
+                app.world_toggle_selection(other);
+            }
+            let ctx = egui::Context::default();
+            let rect = Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1000., 700.));
+            let press = egui::pos2(500., 350.);
+            let held = egui::pos2(526., 350.);
+            let release = egui::pos2(529., 350.);
+            let alt = egui::Modifiers::ALT;
+            let level_x = |app: &EditorApp, level| {
+                app.project.as_ref().unwrap().level(level).unwrap()["worldX"]
+                    .as_i64()
+                    .unwrap()
+            };
+            for event in [
+                egui::Event::PointerMoved(press),
+                marquee_button(press, true, alt),
+                egui::Event::PointerMoved(held),
+            ] {
+                marquee_frame(&mut app, &ctx, rect, alt, vec![event]);
+            }
+            assert_eq!(level_x(&app, anchor), if grouped { 320 } else { 337 });
+            if grouped {
+                let Some(tools::Gesture::WorldGroupMove { start, end, .. }) = app.gesture else {
+                    panic!("expected a group preview");
+                };
+                assert_eq!(app.world_group_delta(anchor, start, end), [17, 0]);
+            }
+            marquee_frame(
+                &mut app,
+                &ctx,
+                rect,
+                alt,
+                vec![marquee_button(release, false, alt)],
+            );
+            assert_eq!(level_x(&app, anchor), if grouped { 339 } else { 337 });
+            assert_eq!(level_x(&app, other), if grouped { 669 } else { 650 });
+        }
+    }
+
+    #[test]
     fn grouped_drag_rounds_the_negative_half_world_press_before_placing_levels() {
         let mut app = editor();
         app.fit = false;
         app.grid = false;
+        app.viewport.zoom = 2.;
         let anchor = app.selected.unwrap();
         let project = app.project.as_mut().unwrap();
         project.move_level(anchor, -64, 0, 0).unwrap();
@@ -2228,7 +2398,7 @@ mod tests {
             [0., 0.],
             rect.size().into(),
         ));
-        let end = start + egui::vec2(40., 0.);
+        let end = start + egui::vec2(80., 0.);
         let alt = egui::Modifiers::ALT;
         marquee_frame(
             &mut app,

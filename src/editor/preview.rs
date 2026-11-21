@@ -5,6 +5,7 @@ impl EditorApp {
     pub(super) fn draw_brush_preview(&mut self, ui: &egui::Ui, rect: Rect, hovered: bool) {
         if self.world
             || self.brush_preview_waits_for_pointer
+            || self.neighbor_level_press
             || self.panel == Some(Panel::Level)
             || self.gesture.is_some()
             || self.field_pick.is_some()

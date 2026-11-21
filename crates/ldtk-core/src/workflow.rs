@@ -51,16 +51,32 @@ fn container(p: &Project, world: Option<usize>) -> Result<&Value> {
         None => Ok(&p.json),
     }
 }
-fn levels_mut(p: &mut Project, world: Option<usize>) -> Result<&mut Vec<Value>> {
-    let v = match world {
+fn world_mut(p: &mut Project, world: Option<usize>) -> Result<&mut Value> {
+    match world {
         Some(w) => p.json["worlds"]
             .get_mut(w)
-            .ok_or_else(|| invalid("world not found"))?,
-        None => &mut p.json,
-    };
-    v["levels"]
+            .ok_or_else(|| invalid("world not found")),
+        None => Ok(&mut p.json),
+    }
+}
+fn levels_mut(p: &mut Project, world: Option<usize>) -> Result<&mut Vec<Value>> {
+    world_mut(p, world)?["levels"]
         .as_array_mut()
         .ok_or_else(|| invalid("levels must be an array"))
+}
+pub(crate) fn tidy_gridvania_defaults(world: &mut Value) {
+    if world["worldLayout"] != "GridVania" {
+        return;
+    }
+    for (dimension, grid) in [
+        ("defaultLevelWidth", "worldGridWidth"),
+        ("defaultLevelHeight", "worldGridHeight"),
+    ] {
+        if let Some(grid) = world[grid].as_f64().filter(|value| *value > 0.) {
+            let size = world[dimension].as_f64().unwrap_or(256.);
+            world[dimension] = json!(((size / grid).round().max(1.) * grid) as i64);
+        }
+    }
 }
 fn unique_level(p: &Project, name: &str) -> Result<()> {
     if !valid_identifier(name) {
@@ -264,7 +280,9 @@ impl Project {
  let defs=p.json["defs"]["layers"].as_array().cloned().unwrap_or_default();let mut layers=vec![];for d in defs{let g=d["gridSize"].as_i64().filter(|v|*v>0).ok_or_else(||invalid("invalid layer grid"))?;let cw=(i64::from(width)+g-1)/g;let ch=(i64::from(height)+g-1)/g;let count=cw.checked_mul(ch).filter(|n|*n<=16_777_216).ok_or_else(||invalid("level IntGrid allocation too large"))?;let ts=p.tileset(d["tilesetDefUid"].as_i64().unwrap_or(-1));layers.push(json!({"__identifier":d["identifier"],"__type":d["type"],"__gridSize":g,"__cWid":cw,"__cHei":ch,"__opacity":d["displayOpacity"],"__pxTotalOffsetX":d["pxOffsetX"].as_i64().unwrap_or(0),"__pxTotalOffsetY":d["pxOffsetY"].as_i64().unwrap_or(0),"__tilesetDefUid":d["tilesetDefUid"],"__tilesetRelPath":ts.map(|v|v["relPath"].clone()),"iid":iid(),"levelId":uid,"layerDefUid":d["uid"],"pxOffsetX":0,"pxOffsetY":0,"visible":true,"optionalRules":[],"intGridCsv":if d["type"]=="IntGrid"{vec![json!(0);count as usize]}else{vec![]},"autoLayerTiles":[],"seed":0,"overrideTilesetUid":null,"gridTiles":[],"entityInstances":[]}));}
  for layer in &layers { if layer["__type"] == "IntGrid" { let iid = layer["iid"].as_str().expect("new layer IID"); p.grid_presence.insert(iid.into(), GridPresence::empty()); } }
  level["layerInstances"]=json!(layers);let fields=p.json["defs"]["levelFields"].as_array().cloned().unwrap_or_default();level["fieldInstances"]=json!(fields.iter().map(|d|p.make_field_instance(d)).collect::<Result<Vec<_>>>()?);
- let levels=levels_mut(p,world)?;let key=LevelKey{world,level:levels.len()};levels.push(level);p.refresh_auto_and_derived()?;Ok(key)
+ let levels=levels_mut(p,world)?;let key=LevelKey{world,level:levels.len()};levels.push(level);
+ tidy_gridvania_defaults(world_mut(p, world)?);
+ p.refresh_auto_and_derived()?;Ok(key)
  })
     }
     pub fn duplicate_level(&mut self, key: LevelKey, name: &str) -> Result<LevelKey> {
@@ -304,6 +322,7 @@ impl Project {
                 level: key.level + 1,
             };
             levels_mut(p, key.world)?.insert(new.level, copy);
+            tidy_gridvania_defaults(world_mut(p, key.world)?);
             p.refresh_derived_data()?;
             Ok(new)
         })
@@ -1473,21 +1492,12 @@ impl Project {
                     }
                 }
             }
-            let w = match world {
-                Some(i) => &mut p.json["worlds"][i],
-                None => &mut p.json,
-            };
+            let w = world_mut(p, world)?;
             w["worldLayout"] = json!(layout);
             w["worldGridWidth"] = json!(grid_w);
             w["worldGridHeight"] = json!(grid_h);
-            if layout == "GridVania" {
-                for (dim, g) in [
-                    ("defaultLevelWidth", grid_w),
-                    ("defaultLevelHeight", grid_h),
-                ] {
-                    let n = w[dim].as_f64().unwrap_or(256.);
-                    w[dim] = json!(((n / f64::from(g) + 0.5).floor() as i64).max(1) * i64::from(g));
-                }
+            if old != layout {
+                tidy_gridvania_defaults(w);
             }
             p.refresh_derived_data()
         })
