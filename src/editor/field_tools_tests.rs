@@ -367,38 +367,349 @@ fn world_reference_picker_reports_an_empty_destination_after_selecting_it() {
     assert!(value(&f).is_null());
 }
 #[test]
-fn clearing_a_nullable_reference_preserves_the_slot_and_removes_its_reciprocal() {
-    let mut f = fixture(true);
+fn clearing_or_removing_a_reference_cancels_the_picker_and_tidies_the_reciprocal() {
+    for remove_slot in [false, true] {
+        let mut f = fixture(true);
+        let ctx = egui::Context::default();
+        let project = f.app.project.as_mut().unwrap();
+        let actor = project.json["defs"]["entities"][0]["uid"].as_i64().unwrap();
+        project
+            .update_field_definition(
+                f.uid,
+                &json!({"canBeNull":true,"symmetricalRef":true,"arrayMaxLength":2}),
+            )
+            .unwrap();
+        project.add_entity(f.target, 0, actor, 128, 128).unwrap();
+        let last = project.layer(f.target, 0).unwrap()["entityInstances"][1]["iid"].clone();
+        project
+            .set_field_editor_value(f.source, Some(&f.owner), f.uid, json!([f.target_iid, last]))
+            .unwrap();
+        let before = value(&f);
+        let reciprocal = |f: &Fixture| {
+            f.app.project.as_ref().unwrap().layer(f.target, 0).unwrap()["entityInstances"][1]
+                ["fieldInstances"][0]["__value"]
+                .clone()
+        };
+        assert_eq!(reciprocal(&f)[0]["entityIid"], f.owner);
+        start(&mut f, &ctx);
+        let (_, labels) = frame(&mut f, &ctx, vec![], true);
+        let pick = labels.iter().find(|(label, _)| label == "Canvas pick").unwrap().1;
+        let (offset, expected) = if remove_slot {
+            (46., json!([before[0]]))
+        } else {
+            (23., json!([before[0], null]))
+        };
+        click(&mut f, &ctx, pick + egui::vec2(offset, 0.), true);
+        assert_eq!(value(&f), expected);
+        assert!(!f.app.picking_entity_ref(), "remove_slot={remove_slot}");
+        assert_eq!(reciprocal(&f), json!([]));
+
+        f.app.undo_action(false);
+        assert_eq!(value(&f), before);
+        assert_eq!(reciprocal(&f)[0]["entityIid"], f.owner);
+    }
+}
+
+#[test]
+fn adding_or_removing_an_ordinary_array_item_cancels_an_active_reference_picker() {
+    for (remove, expected) in [(true, json!([])), (false, json!([true, false]))] {
+        let mut f = fixture(false);
+        let ctx = egui::Context::default();
+        egui_extras::install_image_loaders(&ctx);
+        let project = f.app.project.as_mut().unwrap();
+        let actor = project.json["defs"]["entities"][0]["uid"].as_i64().unwrap();
+        let flags = project
+            .add_field_definition(Some(actor), "Flags", "Bool", true)
+            .unwrap();
+        project
+            .set_field_editor_value(f.source, Some(&f.owner), flags, json!([true]))
+            .unwrap();
+        start(&mut f, &ctx);
+        instance_fields_frame(&mut f, &ctx, vec![]);
+        let output = instance_fields_frame(&mut f, &ctx, vec![]);
+        let pos = output
+            .shapes
+            .iter()
+            .filter_map(|shape| match &shape.shape {
+                egui::Shape::Rect(image)
+                    if remove && image.brush.is_some() && image.rect.size() == Vec2::splat(20.) =>
+                {
+                    Some(image.rect.center())
+                }
+                egui::Shape::Rect(button)
+                    if !remove && button.fill == Color32::from_rgb(49, 55, 66) =>
+                {
+                    Some(button.rect.center())
+                }
+                _ => None,
+            })
+            .max_by(|a, b| a.x.total_cmp(&b.x))
+            .expect("array action icon");
+        click_instance_fields(&mut f, &ctx, pos);
+        let values = |f: &Fixture| fixture_entity(f)["fieldInstances"][1]["__value"].clone();
+        assert_eq!(values(&f), expected);
+        assert!(!f.app.picking_entity_ref());
+        assert!(value(&f).is_null());
+        f.app.undo_action(false);
+        assert_eq!(values(&f), json!([true]));
+    }
+}
+
+fn fixture_entity(f: &Fixture) -> &Value {
+    &f.app.project.as_ref().unwrap().layer(f.source, 0).unwrap()["entityInstances"][0]
+}
+
+fn instance_fields_frame(
+    f: &mut Fixture,
+    ctx: &egui::Context,
+    events: Vec<egui::Event>,
+) -> egui::FullOutput {
+    let entity = fixture_entity(f).clone();
+    ctx.run(
+        egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(400., 400.),
+            )),
+            events,
+            ..Default::default()
+        },
+        |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                f.app.instance_fields(ui, f.source, Some(&f.owner), &entity);
+            });
+        },
+    )
+}
+
+fn click_instance_fields(f: &mut Fixture, ctx: &egui::Context, pos: egui::Pos2) {
+    for pressed in [true, false] {
+        instance_fields_frame(
+            f,
+            ctx,
+            vec![
+                egui::Event::PointerMoved(pos),
+                button(pos, pressed, egui::PointerButton::Primary),
+            ],
+        );
+    }
+}
+
+fn point_and_reference_fixture() -> Fixture {
+    let mut f = fixture(false);
+    let project = f.app.project.as_mut().unwrap();
+    let actor = project.json["defs"]["entities"][0]["uid"].as_i64().unwrap();
+    let point = project
+        .add_field_definition(Some(actor), "Marker", "Point", false)
+        .unwrap();
+    project
+        .set_field_editor_value(f.source, Some(&f.owner), point, json!({"cx":10,"cy":8}))
+        .unwrap();
+    f
+}
+
+fn field_label(output: &egui::FullOutput, label: &str) -> Option<egui::Pos2> {
+    output.shapes.iter().find_map(|shape| match &shape.shape {
+        egui::Shape::Text(text) if text.galley.text() == label => {
+            Some(text.pos + text.galley.size() * 0.5)
+        }
+        _ => None,
+    })
+}
+
+fn start_marker_pick(f: &mut Fixture, ctx: &egui::Context) {
+    theme::configure(ctx);
+    instance_fields_frame(f, ctx, vec![]);
+    let output = instance_fields_frame(f, ctx, vec![]);
+    let pos = field_label(&output, "10,8").expect("point picker button");
+    click_instance_fields(f, ctx, pos);
+    assert!(f.app.picking_point());
+}
+
+#[test]
+fn changing_a_boolean_stops_point_picking_and_keeps_reference_picking() {
+    for point in [true, false] {
+        let mut f = fixture(false);
+        let ctx = egui::Context::default();
+        theme::configure(&ctx);
+        let project = f.app.project.as_mut().unwrap();
+        let actor = project.json["defs"]["entities"][0]["uid"].as_i64().unwrap();
+        if point {
+            project.remove_field_definition(f.uid).unwrap();
+            f.uid = project
+                .add_field_definition(Some(actor), "Target", "Point", false)
+                .unwrap();
+            project
+                .set_field_editor_value(f.source, Some(&f.owner), f.uid, json!({"cx":10,"cy":8}))
+                .unwrap();
+        }
+        let flag = project
+            .add_field_definition(Some(actor), "Flag", "Bool", false)
+            .unwrap();
+        project
+            .set_field_editor_value(f.source, Some(&f.owner), flag, json!(true))
+            .unwrap();
+        let picked_before = value(&f);
+        let (_, labels) = frame(&mut f, &ctx, vec![], true);
+        let pick = labels.iter().find(|(label, _)| label == "Canvas pick").unwrap().1;
+        click(&mut f, &ctx, pick, true);
+        assert_eq!(f.app.picking_point(), point);
+        assert_eq!(f.app.picking_entity_ref(), !point);
+
+        instance_fields_frame(&mut f, &ctx, vec![]);
+        let output = instance_fields_frame(&mut f, &ctx, vec![]);
+        let checkbox = output
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Rect(rect) if rect.fill == Color32::from_rgb(0, 117, 255) => {
+                    Some(rect.rect.center())
+                }
+                _ => None,
+            })
+            .expect("checked flag");
+        click_instance_fields(&mut f, &ctx, checkbox);
+        assert_eq!(fixture_entity(&f)["fieldInstances"][1]["__value"], false);
+        assert!(!f.app.picking_point());
+        assert_eq!(f.app.picking_entity_ref(), !point);
+        assert_eq!(value(&f), picked_before);
+        f.app.undo_action(false);
+        assert_eq!(fixture_entity(&f)["fieldInstances"][1]["__value"], true);
+        assert_eq!(value(&f), picked_before);
+    }
+}
+
+#[test]
+fn clearing_a_single_point_keeps_an_active_reference_picker() {
+    let mut f = fixture(false);
     let ctx = egui::Context::default();
     let project = f.app.project.as_mut().unwrap();
     let actor = project.json["defs"]["entities"][0]["uid"].as_i64().unwrap();
-    project
-        .update_field_definition(
-            f.uid,
-            &json!({"canBeNull":true,"symmetricalRef":true,"arrayMaxLength":2}),
-        )
+    let point = project
+        .add_field_definition(Some(actor), "Target", "Point", false)
         .unwrap();
-    project.add_entity(f.target, 0, actor, 128, 128).unwrap();
-    let last = project.layer(f.target, 0).unwrap()["entityInstances"][1]["iid"].clone();
+    let original = json!({"cx":10,"cy":8});
     project
-        .set_field_editor_value(f.source, Some(&f.owner), f.uid, json!([f.target_iid, last]))
+        .set_field_editor_value(f.source, Some(&f.owner), point, original.clone())
         .unwrap();
-    let before = value(&f);
-    let reciprocal = |f: &Fixture| {
-        f.app.project.as_ref().unwrap().layer(f.target, 0).unwrap()["entityInstances"][1]
-            ["fieldInstances"][0]["__value"]
-            .clone()
-    };
-    assert_eq!(reciprocal(&f)[0]["entityIid"], f.owner);
-    let (_, labels) = frame(&mut f, &ctx, vec![], true);
-    let pick = labels.iter().find(|(label, _)| label == "Canvas pick").unwrap().1;
-    click(&mut f, &ctx, pick + egui::vec2(23., 0.), true);
-    assert_eq!(value(&f), json!([before[0], null]));
-    assert_eq!(reciprocal(&f), json!([]));
-
+    start(&mut f, &ctx);
+    instance_fields_frame(&mut f, &ctx, vec![]);
+    let output = instance_fields_frame(&mut f, &ctx, vec![]);
+    let clear = output
+        .shapes
+        .iter()
+        .find_map(|shape| match &shape.shape {
+            egui::Shape::Text(text) if text.galley.text() == "X" => {
+                Some(text.pos + text.galley.size() * 0.5)
+            }
+            _ => None,
+        })
+        .expect("clear point");
+    click_instance_fields(&mut f, &ctx, clear);
+    assert!(fixture_entity(&f)["fieldInstances"][1]["__value"].is_null());
+    assert!(f.app.picking_entity_ref());
     f.app.undo_action(false);
-    assert_eq!(value(&f), before);
-    assert_eq!(reciprocal(&f)[0]["entityIid"], f.owner);
+    assert_eq!(fixture_entity(&f)["fieldInstances"][1]["__value"], original);
+}
+
+#[test]
+fn reference_picker_takes_canvas_input_until_cancelled_then_point_picking_resumes() {
+    for reference_first in [false, true] {
+        let mut f = point_and_reference_fixture();
+        let ctx = egui::Context::default();
+        let original = json!({"cx":10,"cy":8});
+        if reference_first {
+            start(&mut f, &ctx);
+            start_marker_pick(&mut f, &ctx);
+        } else {
+            start_marker_pick(&mut f, &ctx);
+            start(&mut f, &ctx);
+        }
+        assert!(f.app.picking_point() && f.app.picking_entity_ref());
+        click_entity(&mut f, &ctx, [120., 104.]);
+        assert_eq!(fixture_entity(&f)["fieldInstances"][1]["__value"], original);
+        assert!(f.app.picking_point() && f.app.picking_entity_ref());
+
+        frame(
+            &mut f,
+            &ctx,
+            vec![egui::Event::Key {
+                key: Key::Escape,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
+            false,
+        );
+        assert!(!f.app.picking_entity_ref());
+        assert!(f.app.picking_point(), "Escape only dismisses the reference picker");
+        click_entity(&mut f, &ctx, [120., 104.]);
+        assert_eq!(fixture_entity(&f)["fieldInstances"][1]["__value"], json!({"cx":7,"cy":6}));
+        assert!(value(&f).is_null());
+        f.app.undo_action(false);
+        assert_eq!(fixture_entity(&f)["fieldInstances"][1]["__value"], original);
+
+        f.app.entity_index = Some(0);
+        start_marker_pick(&mut f, &ctx);
+        start(&mut f, &ctx);
+        f.app.navigate_level(f.target, false);
+        assert!(!f.app.picking_point());
+        assert!(f.app.picking_entity_ref());
+    }
+}
+
+#[test]
+fn completing_a_reference_shows_the_point_coordinates_while_picking_stays_active() {
+    let mut f = point_and_reference_fixture();
+    let ctx = egui::Context::default();
+    let project = f.app.project.as_mut().unwrap();
+    let actor = project.json["defs"]["entities"][0]["uid"].as_i64().unwrap();
+    project.add_entity(f.source, 0, actor, 96, 96).unwrap();
+    let target = project.layer(f.source, 0).unwrap()["entityInstances"][1]["iid"].clone();
+    start_marker_pick(&mut f, &ctx);
+    start(&mut f, &ctx);
+    let before = instance_fields_frame(&mut f, &ctx, vec![]);
+    assert!(field_label(&before, "CANCEL").is_some());
+
+    click_entity(&mut f, &ctx, [96., 96.]);
+    assert_eq!(value(&f)["entityIid"], target);
+    assert!(!f.app.picking_entity_ref());
+    assert!(f.app.picking_point());
+    instance_fields_frame(&mut f, &ctx, vec![]);
+    let after = instance_fields_frame(&mut f, &ctx, vec![]);
+    assert!(field_label(&after, "CANCEL").is_none());
+    let coordinates = field_label(&after, "10,8").expect("restored coordinate label");
+    click_instance_fields(&mut f, &ctx, coordinates);
+    assert!(!f.app.picking_point());
+    assert_eq!(fixture_entity(&f)["fieldInstances"][1]["__value"], json!({"cx":10,"cy":8}));
+}
+
+#[test]
+fn restoring_level_history_cancels_point_picking_but_keeps_the_reference_picker() {
+    let mut f = point_and_reference_fixture();
+    let ctx = egui::Context::default();
+    let original = json!({"cx":10,"cy":8});
+    let changed = json!({"cx":7,"cy":6});
+    start_marker_pick(&mut f, &ctx);
+    click_entity(&mut f, &ctx, [120., 104.]);
+    assert_eq!(fixture_entity(&f)["fieldInstances"][1]["__value"], changed);
+    f.app.undo_action(false);
+
+    for (redo, expected) in [(true, changed), (false, original)] {
+        f.app.entity_index = Some(0);
+        let label = if redo { "10,8" } else { "7,6" };
+        let output = instance_fields_frame(&mut f, &ctx, vec![]);
+        let point = field_label(&output, label).expect("point picker button");
+        click_instance_fields(&mut f, &ctx, point);
+        assert!(f.app.picking_point());
+        start(&mut f, &ctx);
+        f.app.undo_action(redo);
+        assert_eq!(fixture_entity(&f)["fieldInstances"][1]["__value"], expected);
+        assert!(!f.app.picking_point());
+        assert!(f.app.picking_entity_ref());
+        f.app.cancel_reference_pick();
+    }
 }
 
 #[test]
@@ -526,7 +837,7 @@ fn canvas_picker_rejects_self_and_duplicate_array_references() {
     assert_eq!(value(&f).as_array().unwrap().len(), 2);
     assert!(value(&f)[1].is_null(), "Already-referenced targets are excluded");
     f.app.cancel_field_pick();
-    assert!(f.app.field_pick.is_none());
+    assert!(!f.app.picking_field());
     assert_eq!(f.app.selected, Some(f.source));
     assert_eq!(value(&f).as_array().unwrap().len(), 2, "Cancel retains the new slot");
 }
@@ -784,9 +1095,9 @@ fn point_path_cursor_draws_the_source_line_from_the_last_accepted_point() {
         ["entityInstances"][0]["fieldInstances"][0];
     assert_eq!(field["__value"], json!([{"cx":4,"cy":4},{"cx":8,"cy":9}]));
     assert_eq!(field["realEditorValues"][0], first_wrapper);
-    assert!(f.app.field_pick.as_ref().unwrap().point_target.is_none());
+    assert!(f.app.point_pick.as_ref().unwrap().point_target.is_none());
     frame(&mut f, &ctx, vec![], false);
-    assert!(f.app.field_pick.as_ref().unwrap().point_target.is_none());
+    assert!(f.app.point_pick.as_ref().unwrap().point_target.is_none());
     let next = draw(&mut f, screen([178., 146.]));
     assert!(line_at(&next, screen([136., 152.]), screen([184., 152.])));
     assert!(!line_at(
@@ -1052,7 +1363,7 @@ fn point_picker_preview_and_release_use_the_rounded_cell_at_a_boundary() {
     let (rect, _) = frame(&mut f, &ctx, vec![], false);
     let edge = egui::pos2(rect.center().x - 97., rect.center().y - 112.);
     frame(&mut f, &ctx, vec![egui::Event::PointerMoved(edge)], false);
-    let target = f.app.field_pick.as_ref().unwrap().point_target;
+    let target = f.app.point_pick.as_ref().unwrap().point_target;
     assert_eq!(target, Some([5, 4]));
     click(&mut f, &ctx, edge, false);
     assert_eq!(value(&f), json!({"cx":5,"cy":4}));
@@ -1090,7 +1401,7 @@ fn point_picker_releases_at_final_cell_with_the_last_held_move_deadline() {
             labels.iter().find(|(s, _)| s == "Canvas pick").unwrap().1,
             true,
         );
-        assert!(f.app.field_pick.is_some());
+        assert!(f.app.picking_field());
     };
     open_picker(&mut f);
     let key = f.source;
@@ -1155,7 +1466,7 @@ fn point_picker_releases_at_final_cell_with_the_last_held_move_deadline() {
     let pending = draw(&mut f, 1.29, vec![button(target, false, primary)]);
     assert_eq!(value(&f), json!({"cx":6,"cy":4}));
     assert_eq!(f.app.panel, Some(Panel::Entity));
-    assert!(f.app.field_pick.is_none());
+    assert!(!f.app.picking_field());
     assert!(point_at(&pending, old_point));
     assert!(!point_at(&pending, target));
     assert!(point_at(&draw(&mut f, 1.399, vec![]), old_point));
@@ -1201,7 +1512,7 @@ fn opening_a_panel_stops_point_picking_and_preserves_reference_picking() {
         let (_, labels) = frame(&mut f, &ctx, vec![], true);
         let pick = labels.iter().find(|(label, _)| label == "Canvas pick").unwrap().1;
         click(&mut f, &ctx, pick, true);
-        assert!(f.app.field_pick.is_some(), "{kind} must start picking");
+        assert!(f.app.picking_field(), "{kind} must start picking");
 
         f.app.show_panel(Some(Panel::Layers));
         assert_eq!(f.app.panel, Some(Panel::Layers));
@@ -1356,23 +1667,23 @@ fn point_array_coordinates_are_read_only_and_required_slots_can_be_filled() {
     let (_, labels) = frame(&mut f, &ctx, vec![], true);
     let coordinates = labels.iter().find(|(label, _)| label == "8,8").unwrap().1;
     click(&mut f, &ctx, coordinates, true);
-    assert!(f.app.field_pick.is_none(), "existing coordinates are explanatory text");
+    assert!(!f.app.picking_field(), "existing coordinates are explanatory text");
 
     let required = labels.iter().find(|(label, _)| label == "POINT REQUIRED!").unwrap().1;
     click(&mut f, &ctx, required, true);
-    assert_eq!(f.app.field_pick.as_ref().unwrap().index, Some(0));
+    assert_eq!(f.app.point_pick.as_ref().unwrap().index, Some(0));
     assert_eq!(f.app.panel, Some(Panel::Entity));
     let (_, controls) = frame(&mut f, &ctx, vec![], true);
     let cancel = controls.iter().find(|(label, _)| label == "CANCEL").unwrap().1;
     click(&mut f, &ctx, cancel, true);
-    assert!(f.app.field_pick.is_none());
+    assert!(!f.app.picking_field());
     click(&mut f, &ctx, required, true);
     let (rect, _) = frame(&mut f, &ctx, vec![], false);
     let target =
         f.app.viewport.to_screen([104., 120.], rect.min.into(), rect.size().into());
     click(&mut f, &ctx, target.into(), false);
     assert_eq!(value(&f), json!([{"cx":6,"cy":7},{"cx":8,"cy":8}]));
-    assert!(f.app.field_pick.is_none());
+    assert!(!f.app.picking_field());
 }
 
 #[test]
@@ -1396,7 +1707,7 @@ fn point_array_canvas_pick_retains_offset_parallax_geometry_and_editor_length_di
     let (_, labels) = frame(&mut f, &ctx, vec![], true);
     let pos = labels.iter().find(|(s, _)| s == "Canvas pick").unwrap().1;
     click(&mut f, &ctx, pos, true);
-    assert!(f.app.field_pick.is_some());
+    assert!(f.app.picking_field());
     let (rect, _) = frame(&mut f, &ctx, vec![], false);
     // Coords uses [64 + 24, 64 - 8] as the layer input origin.
     let world = [108., 92.];
@@ -1408,7 +1719,7 @@ fn point_array_canvas_pick_retains_offset_parallax_geometry_and_editor_length_di
     click(&mut f, &ctx, pointer, false);
     assert_eq!(value(&f), json!([{"cx":2,"cy":4}]));
     assert!(
-        f.app.field_pick.is_some(),
+        f.app.picking_field(),
         "Point arrays continue collecting a path"
     );
     assert_eq!(
@@ -1433,7 +1744,7 @@ fn point_array_canvas_pick_retains_offset_parallax_geometry_and_editor_length_di
         json!([{"cx":2,"cy":4}]),
         "duplicate points are rejected"
     );
-    assert!(f.app.field_pick.is_some());
+    assert!(f.app.picking_field());
 
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("PointPath.ldtk");
@@ -1451,7 +1762,7 @@ fn point_array_canvas_pick_retains_offset_parallax_geometry_and_editor_length_di
         value(&f)
     );
     assert!(
-        f.app.field_pick.is_some(),
+        f.app.picking_field(),
         "saving does not close the point picker"
     );
 
@@ -1462,7 +1773,7 @@ fn point_array_canvas_pick_retains_offset_parallax_geometry_and_editor_length_di
         false,
     );
     assert!(
-        f.app.field_pick.is_none(),
+        !f.app.picking_field(),
         "right press cancels before release"
     );
     assert!(f.app.panel == Some(Panel::Entity));

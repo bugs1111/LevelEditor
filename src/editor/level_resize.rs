@@ -115,7 +115,7 @@ impl EditorApp {
         }
         if self.gesture.is_some()
             || self.stroke
-            || self.field_pick.is_some() && !self.picking_point()
+            || self.picking_entity_ref()
             || !response.hovered()
             || ctx.input(|i| i.modifiers.any() || i.key_down(Key::Space))
         {
@@ -256,7 +256,7 @@ impl EditorApp {
                 || hovered
                     && self.gesture.is_none()
                     && !self.stroke
-                    && self.field_pick.is_none()
+                    && !self.picking_field()
                     && !self.world_context.picking
                     && ui.ctx().pointer_hover_pos().is_some_and(|pointer| {
                         let local = self.resize_pointer(

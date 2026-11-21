@@ -546,7 +546,7 @@ impl EditorApp {
             || self.gesture.is_some()
             || self.camera_drag.is_some()
             || self.level_resize.is_some()
-            || self.field_pick.is_some()
+            || self.picking_field()
             || self.world_context.picking
             || self.canvas_input_blocked(ctx)
             || resize_cursor

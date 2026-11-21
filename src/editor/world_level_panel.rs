@@ -394,20 +394,46 @@ pub(super) fn form_text_input(
     current: &str,
     width: f32,
 ) -> Option<String> {
+    edit_text(ui, key, current, |ui, draft, id| {
+        add_form_text_box(ui, draft, id, key, width)
+    })
+}
+
+fn add_form_text_box(
+    ui: &mut egui::Ui,
+    draft: &mut String,
+    id: egui::Id,
+    key: &str,
+    width: f32,
+) -> egui::Response {
     let (height, align) = if key == "worldDepth" {
         (40., egui::Align::Center)
     } else {
         (33., egui::Align::Min)
     };
-    edit_text(ui, key, current, |ui, draft, id| {
-        ui.add_sized(
-            [width.max(20.), height],
-            form_text_box(draft)
-                .horizontal_align(align)
-                .text_color(Color32::WHITE)
-                .id(id),
-        )
-    })
+    ui.add_sized(
+        [width.max(20.), height],
+        form_text_box(draft)
+            .horizontal_align(align)
+            .text_color(Color32::WHITE)
+            .id(id),
+    )
+}
+
+fn parse_form_int(draft: &str) -> i64 {
+    let text = draft.trim_start();
+    let negative = text.starts_with('-');
+    let digits = text.strip_prefix(['-', '+']).unwrap_or(text);
+    let (radix, digits) = digits
+        .strip_prefix("0x")
+        .or_else(|| digits.strip_prefix("0X"))
+        .map_or((10, digits), |digits| (16, digits));
+    let end = digits.find(|c: char| !c.is_digit(radix)).unwrap_or(digits.len());
+    if end == 0 {
+        return 0;
+    }
+    let value = i64::from_str_radix(&digits[..end], radix).unwrap_or(i64::MAX);
+    if negative { -value } else { value }
 }
 
 fn int_input(
@@ -418,14 +444,24 @@ fn int_input(
     maximum: i64,
     patch: &mut Value,
 ) {
-    if let Some(draft) = form_text_input(
-        ui,
-        key,
-        &current.as_i64().unwrap_or(0).to_string(),
-        SMALL_INPUT_WIDTH,
-    ) && let Ok(number) = draft.trim().parse::<i64>()
-    {
-        patch[key] = json!(number.clamp(minimum, maximum));
+    let current = current.as_i64().unwrap_or(0).to_string();
+    let mut immediate = None;
+    let typed = edit_text(ui, key, &current, |ui, draft, id| {
+        if source_controls::step_number(ui, id, draft) {
+            immediate = Some(draft.clone());
+        }
+        let response = add_form_text_box(ui, draft, id, key, SMALL_INPUT_WIDTH);
+        if response.gained_focus() {
+            source_controls::select_text_input(ui.ctx(), id, draft);
+        }
+        response
+    });
+    if immediate.is_some() {
+        let id = ui.make_persistent_id(key);
+        ui.data_mut(|data| data.remove::<(String, String)>(id));
+    }
+    if let Some(draft) = immediate.or(typed) {
+        patch[key] = json!(parse_form_int(&draft).clamp(minimum, maximum));
     }
 }
 
@@ -555,7 +591,6 @@ impl EditorApp {
             return;
         };
         let current = depths[selected].1;
-        self.world_depth = current;
         let (further, closer) = depth_moves(
             current,
             depths
@@ -563,6 +598,7 @@ impl EditorApp {
                 .filter_map(|&(other, depth)| (other != key).then_some(depth)),
         );
         if (delta > 0 && !further) || (delta < 0 && !closer) {
+            self.select_world_depth(current);
             return;
         }
         let target = current + delta;
@@ -590,7 +626,7 @@ impl EditorApp {
             })
             .is_some()
         {
-            self.world_depth = target - shift;
+            self.select_world_depth(target - shift);
         }
     }
 
@@ -755,7 +791,7 @@ impl EditorApp {
                             "worldGridWidth",
                             &world["worldGridWidth"],
                             1,
-                            65536,
+                            i16::MAX.into(),
                             &mut patch,
                         );
                         dimension_separator(ui, "x");
@@ -764,7 +800,7 @@ impl EditorApp {
                             "worldGridHeight",
                             &world["worldGridHeight"],
                             1,
-                            65536,
+                            i16::MAX.into(),
                             &mut patch,
                         );
                         ui.label("px");
@@ -809,13 +845,14 @@ impl EditorApp {
     }
 
     pub(super) fn source_level_form(&mut self, ui: &mut egui::Ui) {
-        let Some(level) = self
-            .selected
-            .and_then(|key| self.project.as_ref()?.level(key))
-        else {
+        let Some(key) = self.selected else {
             return;
         };
-        let enabled = level["worldDepth"].as_i64().unwrap_or(0) == self.world_depth;
+        let Some(level) = self.project.as_ref().and_then(|p| p.level(key)) else {
+            return;
+        };
+        let enabled = level["worldDepth"].as_i64().unwrap_or(0) == self.world_depth
+            || self.level_form_depth_override == Some(key);
         let backdrop = (!enabled).then(|| ui.painter().add(egui::Shape::Noop));
         let form = ui.scope(|ui| self.source_level_form_contents(ui, enabled));
         if let Some(backdrop) = backdrop
@@ -903,8 +940,8 @@ impl EditorApp {
                         ui,
                         "worldDepth",
                         &level["worldDepth"],
-                        i32::MIN.into(),
-                        i32::MAX.into(),
+                        i16::MIN.into(),
+                        i16::MAX.into(),
                         &mut patch,
                     );
                     let project = self.project.as_ref().unwrap();
@@ -948,8 +985,8 @@ impl EditorApp {
                         ui,
                         "worldX",
                         &level["worldX"],
-                        i32::MIN.into(),
-                        i32::MAX.into(),
+                        i16::MIN.into(),
+                        i16::MAX.into(),
                         &mut patch,
                     );
                     dimension_separator(ui, ",");
@@ -957,8 +994,8 @@ impl EditorApp {
                         ui,
                         "worldY",
                         &level["worldY"],
-                        i32::MIN.into(),
-                        i32::MAX.into(),
+                        i16::MIN.into(),
+                        i16::MAX.into(),
                         &mut patch,
                     );
                     ui.label("px");
@@ -1092,10 +1129,14 @@ impl EditorApp {
                 p.refresh_derived_data()?;
                 p.rebuild_auto_layers(key)
             };
-            if resizing {
-                self.edit_level_recoverable("Level resized", key, operation);
+            let applied = if resizing {
+                self.edit_level_recoverable("Level resized", key, operation)
             } else {
-                self.edit("Level properties changed", operation);
+                self.edit("Level properties changed", operation)
+            };
+            if applied.is_some() && patch.get("worldDepth").is_some() {
+                // A typed depth refreshes the original form without rechecking its active state.
+                self.level_form_depth_override = Some(key);
             }
         }
         if depth_move != 0 {
@@ -1305,7 +1346,12 @@ mod tests {
                 },
             )],
         );
-        frame(app, ctx, panel, vec![egui::Event::Text(value.into())]);
+        let edit = if value.is_empty() {
+            key(Key::Backspace, egui::Modifiers::NONE)
+        } else {
+            egui::Event::Text(value.into())
+        };
+        frame(app, ctx, panel, vec![edit]);
         frame(
             app,
             ctx,
@@ -1624,6 +1670,51 @@ mod tests {
     }
 
     #[test]
+    fn manually_changing_depth_keeps_the_level_form_editable_until_the_active_depth_changes() {
+        let (mut app, ctx) = editor();
+        app.show_panel(Some(Panel::Level));
+        let key = app.selected.unwrap();
+        app.project.as_mut().unwrap().json["worldLayout"] = json!("Free");
+        let edit_depth = |app: &mut EditorApp, value: &str| {
+            let output = frame(app, &ctx, Panel::Level, vec![]);
+            let [further, _] = depth_arrow_centers(&output);
+            click_at(app, &ctx, Panel::Level, egui::pos2(156., further.y + 10.));
+            replace_text(app, &ctx, Panel::Level, value);
+        };
+        let edit_x = |app: &mut EditorApp, value: &str| {
+            let panel = app.panel.unwrap();
+            let output = frame(app, &ctx, panel, vec![]);
+            let pos = egui::pos2(156., label(&output, "World coords").y);
+            click_at(app, &ctx, panel, pos);
+            replace_text(app, &ctx, panel, value);
+        };
+
+        edit_depth(&mut app, "2");
+        assert_eq!(app.world_depth, 0);
+        assert_eq!(app.project.as_ref().unwrap().level(key).unwrap()["worldDepth"], 2);
+        edit_x(&mut app, "160");
+        assert_eq!(app.project.as_ref().unwrap().level(key).unwrap()["worldX"], 160);
+
+        app.select_world_depth(1);
+        edit_x(&mut app, "32");
+        assert_eq!(app.project.as_ref().unwrap().level(key).unwrap()["worldX"], 160);
+        app.select_world_depth(2);
+        edit_x(&mut app, "32");
+        assert_eq!(app.project.as_ref().unwrap().level(key).unwrap()["worldX"], 32);
+
+        edit_depth(&mut app, "3");
+        app.dismiss_panel();
+        app.show_panel(Some(Panel::Level));
+        edit_x(&mut app, "48");
+        assert_eq!(app.project.as_ref().unwrap().level(key).unwrap()["worldX"], 48);
+
+        app.show_panel(Some(Panel::World));
+        app.select_world_depth(2);
+        edit_x(&mut app, "64");
+        assert_eq!(app.project.as_ref().unwrap().level(key).unwrap()["worldX"], 48);
+    }
+
+    #[test]
     fn off_depth_level_form_locks_values_and_keeps_group_actions() {
         let (mut app, ctx) = editor();
         app.panel = Some(Panel::Level);
@@ -1882,6 +1973,55 @@ mod tests {
         label(&output, "Gridvania grid size");
         assert!(app.last_chance.is_some());
     }
+    #[test]
+    fn focused_numeric_inputs_commit_arrow_steps_in_level_and_world_forms() {
+        let (mut app, ctx) = editor();
+        app.project.as_mut().unwrap().json["defaultLevelWidth"] = json!(320);
+        let level = app.selected.unwrap();
+        let view = frame(&mut app, &ctx, Panel::Level, vec![]);
+        click_at(
+            &mut app,
+            &ctx,
+            Panel::Level,
+            egui::pos2(156., label(&view, "World coords").y),
+        );
+        for (arrow, expected) in [(Key::ArrowUp, 1), (Key::ArrowDown, 0)] {
+            frame(&mut app, &ctx, Panel::Level, vec![key(arrow, egui::Modifiers::NONE)]);
+            assert_eq!(app.project.as_ref().unwrap().level(level).unwrap()["worldX"], expected);
+        }
+        let view = frame(&mut app, &ctx, Panel::Level, vec![]);
+        click_at(
+            &mut app,
+            &ctx,
+            Panel::Level,
+            egui::pos2(156., label(&view, "Size").y),
+        );
+        frame(&mut app, &ctx, Panel::Level, vec![key(Key::ArrowUp, egui::Modifiers::NONE)]);
+        assert_eq!(app.project.as_ref().unwrap().level(level).unwrap()["pxWid"], 257);
+
+        app.show_panel(Some(Panel::World));
+        click(&mut app, &ctx, Panel::World, "320");
+        frame(&mut app, &ctx, Panel::World, vec![key(Key::ArrowDown, egui::Modifiers::NONE)]);
+        assert_eq!(app.project.as_ref().unwrap().json["defaultLevelWidth"], 319);
+    }
+
+    #[test]
+    fn typed_world_coordinates_use_source_integer_parsing_and_bounds() {
+        let (mut app, ctx) = editor();
+        let level = app.selected.unwrap();
+        for (typed, expected) in [("40000", 32767), ("-40000", -32768), ("-37.8", -37), ("", 0)] {
+            let view = frame(&mut app, &ctx, Panel::Level, vec![]);
+            click_at(
+                &mut app,
+                &ctx,
+                Panel::Level,
+                egui::pos2(156., label(&view, "World coords").y),
+            );
+            replace_text(&mut app, &ctx, Panel::Level, typed);
+            assert_eq!(app.project.as_ref().unwrap().level(level).unwrap()["worldX"], expected);
+        }
+    }
+
     #[test]
     fn source_level_size_entry_clamps_minimum_and_preserves_recovery() {
         let (mut app, ctx) = editor();

@@ -532,7 +532,7 @@ impl EditorApp {
     pub(super) fn hover_entity_reference(&self, response: &egui::Response, iid: &str) {
         let ctx = response.ctx.clone();
         let state_id = response.id.with("reference-hover");
-        let hovered = response.hovered() && self.field_pick.is_none();
+        let hovered = response.hovered() && !self.picking_field();
         let previous = ctx.data(|d| d.get_temp::<bool>(state_id)).unwrap_or(false);
         ctx.data_mut(|d| d.insert_temp(state_id, hovered));
         let (Some(project), Some(key)) = (&self.project, self.selected) else {
@@ -582,7 +582,7 @@ impl EditorApp {
             return;
         };
         if self.world
-            || self.field_pick.is_some()
+            || self.picking_field()
             || self.selected != Some(hover.key)
             || ui.ctx().cumulative_frame_nr() > hover.frame + 1
         {

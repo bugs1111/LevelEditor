@@ -22,14 +22,13 @@ impl EditorApp {
 
     fn clear_level_selection(&mut self) {
         self.finish_rule_edit();
+        self.level_form_depth_override = None;
         self.entity_index = None;
         self.selection = None;
         self.selection_group = None;
         self.stamp = None;
         self.hidden.clear();
-        if !self.picking_entity_ref() {
-            self.field_pick = None;
-        }
+        self.point_pick = None;
         if matches!(self.panel, Some(Panel::Entity | Panel::Rules)) {
             self.panel = None;
         }
@@ -52,6 +51,9 @@ impl EditorApp {
             .selected
             .and_then(|key| self.project.as_ref()?.layer(key, self.layer))
             .map(|l| l["layerDefUid"].clone());
+        if self.selected != Some(key) && self.panel == Some(Panel::Level) {
+            self.panel = None;
+        }
         self.clear_level_selection();
         self.selected = Some(key);
         self.active_world = key.world;
@@ -129,6 +131,7 @@ impl EditorApp {
             return;
         }
         self.world = world;
+        self.level_form_depth_override = None;
         self.world_hover = None;
         self.reset_reference_world_preview();
         self.fit = false;
@@ -171,7 +174,7 @@ impl EditorApp {
         if self.picking_point_in_level_panel()
             || self.picking_point() && panel.is_some_and(|panel| panel != Panel::Entity)
         {
-            self.cancel_field_pick();
+            self.cancel_point_pick();
         }
         if self.panel == Some(Panel::Settings) && panel != Some(Panel::Settings) {
             self.finish_settings_dialog(&ctx);
@@ -208,6 +211,11 @@ impl EditorApp {
             self.set_world_view(true);
         } else if self.panel == Some(Panel::World) || panel.is_none() && self.world {
             self.set_world_view(false);
+        }
+        if self.panel != panel {
+            // The standalone form opens directly on the current level.
+            // The embedded World form checks the active depth on opening.
+            self.level_form_depth_override = self.selected.filter(|_| panel == Some(Panel::Level));
         }
         self.panel = panel;
     }
@@ -634,6 +642,60 @@ mod tests {
         assert!(!app.world);
         assert_eq!(app.world_depth, 0);
         assert!(app.world_selection.is_empty());
+    }
+
+    #[test]
+    fn returning_to_the_level_view_restores_the_selected_levels_depth() {
+        let mut p = Project::new();
+        let anchor = p.level_keys()[0];
+        let neighbor = p.add_level(anchor.world, "Neighbor", 256, 256).unwrap();
+        p.move_level(anchor, 0, 0, 1).unwrap();
+        p.move_level(neighbor, 512, 0, 0).unwrap();
+        let original = p.json.clone();
+        let mut app = EditorApp::empty();
+        let ctx = egui::Context::default();
+        theme::configure(&ctx);
+        app.repaint = Some(ctx.clone());
+        app.set_project(p);
+        frame(&mut app, &ctx, vec![]);
+
+        press(&mut app, &ctx, Key::Backtick, egui::Modifiers::NONE);
+        press(&mut app, &ctx, Key::PageDown, egui::Modifiers::NONE);
+        assert_eq!(app.world_depth, 0);
+        press(&mut app, &ctx, Key::Backtick, egui::Modifiers::NONE);
+        assert!(!app.world);
+        assert_eq!(app.world_depth, 1);
+        assert_eq!(app.selected, Some(anchor));
+
+        press(&mut app, &ctx, Key::C, egui::Modifiers::NONE);
+        assert_eq!(app.panel, Some(Panel::Level));
+        press(&mut app, &ctx, Key::C, egui::Modifiers::NONE);
+        press(&mut app, &ctx, Key::Backtick, egui::Modifiers::NONE);
+        assert!(app.world);
+        assert_eq!(app.panel, Some(Panel::World));
+        assert_eq!(app.world_depth, 1);
+        assert_eq!(app.selected, Some(anchor));
+        assert_eq!(app.project.as_ref().unwrap().json, original);
+        assert!(!app.dirty);
+    }
+
+    #[test]
+    fn selecting_a_different_level_closes_its_standalone_properties() {
+        let mut project = Project::new();
+        let first = project.level_keys()[0];
+        let second = project.add_level(first.world, "Second", 256, 256).unwrap();
+        let mut app = EditorApp::empty();
+        app.set_project(project);
+        app.show_panel(Some(Panel::Level));
+        app.navigate_level(first, false);
+        assert_eq!(app.panel, Some(Panel::Level));
+        app.navigate_level(second, false);
+        assert_eq!(app.selected, Some(second));
+        assert_eq!(app.panel, None);
+        app.show_panel(Some(Panel::World));
+        app.navigate_level(first, false);
+        assert_eq!(app.panel, Some(Panel::World));
+        assert!(!app.dirty);
     }
 
     #[test]

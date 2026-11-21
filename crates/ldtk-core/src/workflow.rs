@@ -435,10 +435,15 @@ impl Project {
                                 let x = tile["px"][0].as_i64().unwrap_or(0) + cell_dx * g;
                                 let y = tile["px"][1].as_i64().unwrap_or(0) + cell_dy * g;
                                 tile["px"] = json!([x, y]);
-                                if name == "gridTiles" {
-                                    tile["d"] = json!([y / g * nw + x / g]);
-                                }
-                                x >= 0 && y >= 0 && x < i64::from(width) && y < i64::from(height)
+                                let in_bounds = if name == "gridTiles" {
+                                    // Cropping follows the layer's grid, which includes its remainder offset.
+                                    let (cx, cy) = (x / g, y / g);
+                                    tile["d"] = json!([cy * nw + cx]);
+                                    cx < nw && cy < nh
+                                } else {
+                                    x < i64::from(width) && y < i64::from(height)
+                                };
+                                x >= 0 && y >= 0 && in_bounds
                             });
                         }
                     }

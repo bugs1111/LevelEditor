@@ -457,6 +457,7 @@ pub(super) struct FieldPick {
     panel: Option<Panel>,
     layer: usize,
     empty_world_preview: bool,
+    show_point_cancel: bool,
     point_held: bool,
     point_waits_for_move: bool,
     point_origin: Option<([i32; 2], Color32)>,
@@ -641,7 +642,7 @@ fn reference_level_bounds(project: &Project, key: LevelKey) -> [f32; 4] {
 
 impl EditorApp {
     pub(super) fn draw_field_pick_targets(&mut self, ui: &egui::Ui, rect: Rect) {
-        let Some(pick) = self.field_pick.as_ref() else {
+        let Some(pick) = self.reference_pick.as_ref().or(self.point_pick.as_ref()) else {
             return;
         };
         let Some(project) = &self.project else { return };
@@ -749,22 +750,24 @@ impl EditorApp {
             204.,
             error.is_some(),
         ) {
-            self.cancel_field_pick();
+            self.cancel_reference_pick();
         }
         ui.ctx()
             .request_repaint_after(std::time::Duration::from_millis(33));
     }
+    pub(super) fn picking_field(&self) -> bool {
+        self.picking_point() || self.picking_entity_ref()
+    }
+
     pub(super) fn picking_entity_ref(&self) -> bool {
-        self.field_pick
-            .as_ref()
-            .is_some_and(|p| p.kind == "EntityRef")
+        self.reference_pick.is_some()
     }
 
     pub(super) fn update_reference_world_preview(&mut self, key: LevelKey) {
         if self.world
             && let Some(project) = &self.project
             && let Some(level) = project.level(key)
-            && let Some(pick) = self.field_pick.as_mut().filter(|p| p.kind == "EntityRef")
+            && let Some(pick) = self.reference_pick.as_mut()
         {
             let has_target = canvas::values(&level["layerInstances"])
                 .iter()
@@ -775,20 +778,20 @@ impl EditorApp {
     }
 
     pub(super) fn reset_reference_world_preview(&mut self) {
-        if let Some(pick) = &mut self.field_pick {
+        if let Some(pick) = &mut self.reference_pick {
             pick.empty_world_preview = false;
         }
     }
 
     pub(super) fn picking_point(&self) -> bool {
-        self.field_pick.as_ref().is_some_and(|p| p.kind == "Point")
+        self.point_pick.is_some()
     }
 
     pub(super) fn picking_point_in_level_panel(&self) -> bool {
         !self.world
             && self.panel == Some(Panel::Level)
-            && self.field_pick.as_ref().is_some_and(|pick| {
-                pick.kind == "Point" && pick.owner.is_none() && pick.panel == self.panel
+            && self.point_pick.as_ref().is_some_and(|pick| {
+                pick.owner.is_none() && pick.panel == self.panel
             })
     }
 
@@ -812,7 +815,7 @@ impl EditorApp {
     }
 
     pub(super) fn update_point_picker_context(&mut self, ctx: &egui::Context) {
-        let Some(pick) = self.field_pick.as_mut().filter(|p| p.kind == "Point") else {
+        let Some(pick) = self.point_pick.as_mut() else {
             return;
         };
         pick.point_target = None;
@@ -823,7 +826,7 @@ impl EditorApp {
             || self.layer != pick.layer
             || self.world && self.panel == Some(Panel::Level) && pick.owner.is_none()
         {
-            self.field_pick = None;
+            self.point_pick = None;
         } else if self.world
             || ctx.input(|i| {
                 !i.pointer.primary_down() && !i.pointer.primary_released()
@@ -978,8 +981,8 @@ impl EditorApp {
                                     let required = value.is_null() && definition["canBeNull"] != true;
                                     ui.set_height(if required { 39. } else { 28. });
                                     if required {
-                                        let picking = self.field_pick.as_ref().is_some_and(|pick| {
-                                            pick.kind == "Point"
+                                        let show_cancel = self.point_pick.as_ref().is_some_and(|pick| {
+                                            pick.show_point_cancel
                                                 && pick.key == key
                                                 && pick.owner.as_deref() == owner
                                                 && definition["uid"] == pick.uid
@@ -987,7 +990,7 @@ impl EditorApp {
                                         });
                                         let label = locale::tr(
                                             ui,
-                                            if picking { "Cancel" } else { "Point required!" },
+                                            if show_cancel { "Cancel" } else { "Point required!" },
                                         )
                                         .to_uppercase();
                                         ui.add_space(1.);
@@ -1024,8 +1027,8 @@ impl EditorApp {
                                         }).inner;
                                         pick_rect = Some(response.rect);
                                         if response.clicked() {
-                                            if picking {
-                                                self.cancel_field_pick();
+                                            if self.picking_point() {
+                                                self.cancel_point_pick();
                                             } else {
                                                 requested = Some(Some(index));
                                             }
@@ -1071,8 +1074,8 @@ impl EditorApp {
         } else if inner == "Point" {
             let value = &field["__value"];
             let required = value.is_null() && definition["canBeNull"] != true;
-            let picking = self.field_pick.as_ref().is_some_and(|pick| {
-                pick.kind == "Point"
+            let show_cancel = self.point_pick.as_ref().is_some_and(|pick| {
+                pick.show_point_cancel
                     && pick.key == key
                     && pick.owner.as_deref() == owner
                     && definition["uid"] == pick.uid
@@ -1093,7 +1096,7 @@ impl EditorApp {
                 }
                 let clear_width = (width * 0.23).max(18.);
                 let pick_width = if clear { width - clear_width - 2. } else { width };
-                let label = if picking {
+                let label = if show_cancel {
                     locale::tr(ui, "Cancel").to_uppercase()
                 } else if required {
                     locale::tr(ui, "Point required!").to_uppercase()
@@ -1119,7 +1122,7 @@ impl EditorApp {
                 pick_rect = Some(response.rect);
                 if response.clicked() {
                     if self.picking_point() {
-                        self.cancel_field_pick();
+                        self.cancel_point_pick();
                     } else {
                         requested = Some(None);
                     }
@@ -1279,9 +1282,14 @@ impl EditorApp {
             }
         }
         if let Some(value) = edit {
-            if inner == "Point" {
-                self.cancel_field_pick();
-            }
+            let cancel_reference = match &value {
+                ui_fields::FieldEdit::Array(ldtk_core::FieldArrayEdit::Remove { .. }) => true,
+                ui_fields::FieldEdit::Value(Value::Null)
+                | ui_fields::FieldEdit::Array(
+                    ldtk_core::FieldArrayEdit::Reset { .. } | ldtk_core::FieldArrayEdit::Insert { .. },
+                ) => inner == "EntityRef",
+                _ => false,
+            };
             let uid = definition["uid"].as_i64().unwrap_or(-1);
             let status = if inner == "EntityRef" { "" } else { "Field changed" };
             let applied = if owner.is_some() {
@@ -1300,6 +1308,11 @@ impl EditorApp {
             };
             if !applied {
                 requested = None;
+            } else {
+                if cancel_reference {
+                    self.cancel_reference_pick();
+                }
+                self.cancel_point_pick();
             }
         }
         if let Some(iid) = follow {
@@ -1318,6 +1331,7 @@ impl EditorApp {
                 panel: self.panel,
                 layer: self.layer,
                 empty_world_preview: false,
+                show_point_cancel: inner == "Point",
                 point_held: false,
                 point_waits_for_move: false,
                 point_origin: None,
@@ -1328,7 +1342,15 @@ impl EditorApp {
             {
                 pick.point_origin = pick.point_link_origin(project);
             }
-            self.field_pick = Some(pick);
+            if inner == "Point" {
+                self.point_pick = Some(pick);
+            } else {
+                if let Some(point) = &mut self.point_pick {
+                    point.point_held = false;
+                    point.point_target = None;
+                }
+                self.reference_pick = Some(pick);
+            }
             let keep_inspector = owner.is_some() && self.panel == Some(Panel::Entity);
             if !keep_inspector && !self.picking_point_in_level_panel() {
                 self.panel = None;
@@ -1343,13 +1365,23 @@ impl EditorApp {
     }
 
     pub(super) fn cancel_field_pick(&mut self) {
-        let Some(pick) = self.field_pick.take() else {
+        if self.picking_entity_ref() {
+            self.cancel_reference_pick();
+        } else {
+            self.cancel_point_pick();
+        }
+    }
+
+    pub(super) fn cancel_point_pick(&mut self) {
+        if let Some(pick) = self.point_pick.take() {
+            self.panel = pick.panel;
+        }
+    }
+
+    pub(super) fn cancel_reference_pick(&mut self) {
+        let Some(pick) = self.reference_pick.take() else {
             return;
         };
-        if pick.kind != "EntityRef" {
-            self.panel = pick.panel;
-            return;
-        }
         let Some(project) = self.project.as_ref().filter(|project| project.level(pick.key).is_some()) else {
             return;
         };
@@ -1406,7 +1438,7 @@ impl EditorApp {
         rect: Rect,
         response: &egui::Response,
     ) -> Option<egui::Pos2> {
-        let pick = self.field_pick.as_ref()?;
+        let pick = self.point_pick.as_ref()?;
         let key = pick.key;
         let project = self.project.as_ref()?;
         let density = ctx.pixels_per_point();
@@ -1453,12 +1485,12 @@ impl EditorApp {
             }
             (release, moved, false)
         });
-        self.field_pick.as_mut().unwrap().point_held = held;
+        self.point_pick.as_mut().unwrap().point_held = held;
         if moved {
             self.async_preview(key, ctx.input(|i| i.time));
         }
         if cancel {
-            self.cancel_field_pick();
+            self.cancel_point_pick();
         }
         release
     }
@@ -1502,10 +1534,10 @@ impl EditorApp {
         rect: Rect,
         response: &egui::Response,
     ) -> bool {
-        if self.field_pick.is_none() {
+        if !self.picking_field() {
             return false;
         }
-        let point = self.picking_point();
+        let point = !self.picking_entity_ref();
         if point && self.world {
             return false;
         }
@@ -1523,16 +1555,12 @@ impl EditorApp {
             } else if (in_level_panel
                 || !self.point_selection_has_priority(world, ctx.input(|i| i.modifiers.alt)))
                 && self.layer_visible(key, self.layer)
-                && let Some(pick) = &mut self.field_pick
+                && let Some(pick) = &mut self.point_pick
                 && !pick.point_waits_for_move
             {
                 pick.point_target = Some(pick.point_cell(project, &self.viewport, world));
                 ctx.set_cursor_icon(egui::CursorIcon::Default);
             }
-        }
-        if ctx.input(|i| i.key_pressed(Key::Escape)) {
-            self.cancel_field_pick();
-            return true;
         }
         let pointer = if point {
             self.point_pick_release(ctx, rect, response)
@@ -1542,7 +1570,7 @@ impl EditorApp {
         let Some(pointer) = pointer else {
             return true;
         };
-        let pick = self.field_pick.as_ref().unwrap();
+        let pick = self.reference_pick.as_ref().or(self.point_pick.as_ref()).unwrap();
         let Some(project) = &self.project else {
             return true;
         };
@@ -1680,6 +1708,13 @@ impl EditorApp {
         }
         if result.is_some() && !point {
             self.chain_entity = None;
+            if let Some(pick) = &mut self.point_pick
+                && pick.key == key
+                && pick.owner == owner
+            {
+                // The reference edit refreshes the form while the Point tool stays active.
+                pick.show_point_cancel = false;
+            }
         }
         if result.is_some()
             && let Some(cell) = point_cell
@@ -1690,7 +1725,7 @@ impl EditorApp {
             self.cancel_field_pick();
         } else if result.is_some()
             && point
-            && let Some(pick) = &mut self.field_pick
+            && let Some(pick) = &mut self.point_pick
         {
             pick.index = None;
             pick.point_target = None;

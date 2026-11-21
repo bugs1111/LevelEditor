@@ -35,6 +35,34 @@ pub(in crate::app) enum NumberStyle {
     PercentSlider { min: f64, max: f64 },
 }
 
+pub(in crate::app) fn step_number(ui: &mut egui::Ui, id: egui::Id, draft: &mut String) -> bool {
+    if !ui.is_enabled() || !ui.memory(|memory| memory.has_focus(id)) {
+        return false;
+    }
+    let step = ui.input_mut(|input| {
+        let up = input.count_and_consume_key(egui::Modifiers::NONE, Key::ArrowUp);
+        let down = input.count_and_consume_key(egui::Modifiers::NONE, Key::ArrowDown);
+        up as f64 - down as f64
+    });
+    if step == 0. {
+        return false;
+    }
+    let value = draft.trim().parse::<f64>().ok().filter(|value| value.is_finite());
+    *draft = (value.unwrap_or(0.) + step).to_string();
+    true
+}
+
+pub(in crate::app) fn select_text_input(ctx: &egui::Context, id: egui::Id, text: &str) {
+    use egui::text::{CCursor, CCursorRange};
+    if let Some(mut state) = egui::TextEdit::load_state(ctx, id) {
+        state.cursor.set_char_range(Some(CCursorRange::two(
+            CCursor::new(0),
+            CCursor::new(text.chars().count()),
+        )));
+        state.store(ctx, id);
+    }
+}
+
 pub(in crate::app) fn number_input(
     ui: &mut egui::Ui,
     key: &str,
@@ -76,21 +104,8 @@ pub(in crate::app) fn number_input(
             _ => None,
         };
         previewing = preview.is_some();
-        if ui.is_enabled() && !previewing && ui.memory(|memory| memory.has_focus(id)) {
-            let step = ui.input_mut(|input| {
-                let up = input.count_and_consume_key(egui::Modifiers::NONE, Key::ArrowUp);
-                let down = input.count_and_consume_key(egui::Modifiers::NONE, Key::ArrowDown);
-                up as f64 - down as f64
-            });
-            if step != 0. {
-                let current = draft
-                    .trim()
-                    .parse::<f64>()
-                    .ok()
-                    .filter(|value| value.is_finite());
-                *draft = (current.unwrap_or(0.) + step).to_string();
-                immediate = Some(draft.clone());
-            }
+        if !previewing && step_number(ui, id, draft) {
+            immediate = Some(draft.clone());
         }
         let text = preview.as_mut().unwrap_or(draft);
         let mut edit = egui::TextEdit::singleline(text)
@@ -178,14 +193,7 @@ pub(in crate::app) fn number_input(
             immediate = preview;
             ui.memory_mut(|memory| memory.surrender_focus(id));
         } else if !previewing && (response.gained_focus() || slider && response.clicked()) {
-            use egui::text::{CCursor, CCursorRange};
-            if let Some(mut state) = egui::TextEdit::load_state(ui.ctx(), id) {
-                state.cursor.set_char_range(Some(CCursorRange::two(
-                    CCursor::new(0),
-                    CCursor::new(draft.chars().count()),
-                )));
-                state.store(ui.ctx(), id);
-            }
+            select_text_input(ui.ctx(), id, draft);
         }
         if slider {
             response.on_hover_cursor(egui::CursorIcon::ResizeHorizontal)

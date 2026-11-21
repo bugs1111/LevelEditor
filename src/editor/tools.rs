@@ -964,7 +964,7 @@ impl EditorApp {
         rect: Rect,
         response: &egui::Response,
     ) -> bool {
-        if self.world || !self.picking_point() || !response.contains_pointer() {
+        if self.world || self.picking_entity_ref() || !self.picking_point() || !response.contains_pointer() {
             return false;
         }
         let press = ctx.input(|input| {
@@ -1007,7 +1007,7 @@ impl EditorApp {
         {
             return false;
         }
-        self.cancel_field_pick();
+        self.cancel_point_pick();
         if button != egui::PointerButton::Primary {
             return true;
         }

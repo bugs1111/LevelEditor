@@ -17,7 +17,8 @@ impl EditorApp {
         self.pending = None;
         self.panel = None;
         self.command_palette = false;
-        self.field_pick = None;
+        self.point_pick = None;
+        self.reference_pick = None;
         self.chain_entity = None;
         self.hook_flow = None;
         self.last_chance = None;

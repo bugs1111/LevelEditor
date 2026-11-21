@@ -8,7 +8,7 @@ impl EditorApp {
             || self.neighbor_level_press
             || self.panel == Some(Panel::Level)
             || self.gesture.is_some()
-            || self.field_pick.is_some()
+            || self.picking_field()
             || self.pending.is_some()
             || self.is_busy()
             || self.command_open

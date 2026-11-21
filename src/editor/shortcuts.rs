@@ -345,6 +345,7 @@ impl EditorApp {
             )
             .ok()
         });
+        self.point_pick = None;
         self.layer = index;
         self.entity_index = None;
         if self.panel == Some(Panel::Entity) {
@@ -381,6 +382,7 @@ impl EditorApp {
             };
             self.dirty |= changed;
             if changed {
+                self.point_pick = None;
                 self.async_paint = None;
                 feedback = bounds.map(|bounds| (key, bounds));
             }
@@ -424,6 +426,7 @@ impl EditorApp {
             self.finish_gesture();
             self.finish_stroke();
             self.world_depth = depth;
+            self.level_form_depth_override = None;
             self.world_hover = None;
         }
     }
@@ -797,7 +800,7 @@ impl EditorApp {
                     self.cancel_world_context();
                     continue;
                 }
-                if self.field_pick.is_some() {
+                if self.picking_field() {
                     self.cancel_field_pick();
                     continue;
                 }

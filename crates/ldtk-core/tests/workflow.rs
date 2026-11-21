@@ -494,6 +494,40 @@ fn removing_source_layer_clears_dependent_rules() {
     assert_eq!(p.layer_def(target).unwrap()["autoRuleGroups"], json!([]));
 }
 #[test]
+fn level_resize_crops_manual_tiles_by_the_offset_layer_grid() {
+    let mut p = Project::new();
+    let layer = p.add_layer("Ground", "Tiles", 16).unwrap();
+    let atlas = p
+        .add_tileset(std::path::Path::new("atlas.png"), 16, 32, 32)
+        .unwrap();
+    p.assign_tileset(layer, atlas).unwrap();
+    let layer = p.layer_mut(K, 0).unwrap();
+    layer["pxOffsetX"] = json!(-4);
+    layer["pxOffsetY"] = json!(4);
+    layer["__cWid"] = json!(17);
+    layer["gridTiles"] = json!([
+        {"px":[32,16],"src":[0,0],"f":0,"t":0,"d":[19],"a":1},
+        {"px":[32,16],"src":[16,0],"f":1,"t":1,"d":[19],"a":1,"extension":true},
+        {"px":[16,32],"src":[0,16],"f":0,"t":2,"d":[35],"a":1},
+        {"px":[48,16],"src":[16,16],"f":0,"t":3,"d":[20],"a":1}
+    ]);
+
+    p.resize_level(K, 32, 35, 0, 0).unwrap();
+    let layer = p.layer(K, 0).unwrap();
+    assert_eq!(layer["__cWid"], 3);
+    assert_eq!(layer["__cHei"], 2);
+    assert_eq!(layer["pxOffsetX"], -4);
+    assert_eq!(layer["pxOffsetY"], 4);
+    assert_eq!(
+        layer["gridTiles"],
+        json!([
+            {"px":[32,16],"src":[0,0],"f":0,"t":0,"d":[5],"a":1},
+            {"px":[32,16],"src":[16,0],"f":1,"t":1,"d":[5],"a":1,"extension":true}
+        ])
+    );
+}
+
+#[test]
 fn resize_keeps_subgrid_offsets_and_moves_point_fields_in_cell_units() {
     let mut p = sample();
     let e = p.json["defs"]["entities"][0]["uid"].as_i64().unwrap();

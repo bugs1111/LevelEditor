@@ -1319,7 +1319,6 @@ impl EditorApp {
                                             });
                                         }
                                         let value = if empty_array {
-                                            self.cancel_field_pick();
                                             Some(FieldEdit::Value(json!([])))
                                         } else if matches!(kind, "Point" | "EntityRef" | "Array<Point>" | "Array<EntityRef>") {
                                             let _ = self.field_pick_controls(
@@ -1334,17 +1333,31 @@ impl EditorApp {
                                             field_value_editor(ui, self.project.as_ref().unwrap(), &field, &definition)
                                         };
                                         if let Some(value) = value {
-                                            if entity.is_some() {
+                                            let cancel_picker = empty_array || matches!(
+                                                &value,
+                                                FieldEdit::Array(
+                                                    ldtk_core::FieldArrayEdit::Insert { .. }
+                                                        | ldtk_core::FieldArrayEdit::Remove { .. }
+                                                )
+                                            );
+                                            let applied = if entity.is_some() {
                                                 self.edit_level("Field changed", key, |p| {
                                                     value.apply(p, key, entity, uid)
-                                                });
-                                            } else if self
-                                                .edit("Field changed", |p| {
-                                                    value.apply(p, key, entity, uid)
                                                 })
-                                                .is_some()
-                                            {
-                                                self.history.clear_level_timelines();
+                                            } else {
+                                                let applied = self.edit("Field changed", |p| {
+                                                    value.apply(p, key, entity, uid)
+                                                });
+                                                if applied.is_some() {
+                                                    self.history.clear_level_timelines();
+                                                }
+                                                applied
+                                            };
+                                            if applied.is_some() {
+                                                if cancel_picker {
+                                                    self.cancel_reference_pick();
+                                                }
+                                                self.cancel_point_pick();
                                             }
                                         }
                                         if !point_required

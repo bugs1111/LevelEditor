@@ -345,7 +345,9 @@ pub struct EditorApp {
     painted_cells: HashSet<[i32; 2]>,
     random_state: u64,
     world_depth: i64,
-    field_pick: Option<field_tools::FieldPick>,
+    level_form_depth_override: Option<LevelKey>,
+    point_pick: Option<field_tools::FieldPick>,
+    reference_pick: Option<field_tools::FieldPick>,
     chain_entity: Option<String>,
     selection_group: Option<Value>,
     crash: Option<(String, Option<PathBuf>)>,
@@ -560,7 +562,9 @@ impl EditorApp {
             painted_cells: HashSet::new(),
             random_state: 0x6a09e667f3bcc909,
             world_depth: 0,
-            field_pick: None,
+            level_form_depth_override: None,
+            point_pick: None,
+            reference_pick: None,
             chain_entity: None,
             selection_group: None,
             crash: None,
@@ -678,6 +682,7 @@ impl EditorApp {
         self.fit = true;
         self.camera_motion.cancel();
         self.panel = None;
+        self.level_form_depth_override = None;
         self.entity_index = None;
         self.selection = None;
         self.stamp = None;
@@ -688,7 +693,8 @@ impl EditorApp {
         self.rule_draft = None;
         self.rule_hover = None;
         self.field_uid = None;
-        self.field_pick = None;
+        self.point_pick = None;
+        self.reference_pick = None;
         self.chain_entity = None;
         self.selection_group = None;
         self.last_chance = None;
