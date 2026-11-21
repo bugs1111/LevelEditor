@@ -125,6 +125,129 @@ fn start(f: &mut Fixture, ctx: &egui::Context) {
     click(f, ctx, pos, true);
     assert!(f.app.picking_entity_ref());
 }
+
+#[test]
+fn missing_reference_buttons_use_source_size_and_colors_and_open_the_picker() {
+    for (array, height) in [(false, 23.), (true, 22.)] {
+        let mut f = fixture(array);
+        let ctx = egui::Context::default();
+        theme::configure(&ctx);
+        if array {
+            let project = f.app.project.as_mut().unwrap();
+            project
+                .update_field_definition(f.uid, &json!({"arrayMaxLength":1}))
+                .unwrap();
+            project
+                .edit_field_array(
+                    f.source,
+                    Some(&f.owner),
+                    f.uid,
+                    ldtk_core::FieldArrayEdit::Insert { index: 0 },
+                )
+                .unwrap();
+        }
+        let draw = |f: &mut Fixture, events| {
+            let mut pick_rect = None;
+            let output = ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, Vec2::splat(400.))),
+                    events,
+                    ..Default::default()
+                },
+                |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        let project = f.app.project.as_ref().unwrap();
+                        let def = project.json["defs"]["entities"][0]["fieldDefs"][0].clone();
+                        let field = project.layer(f.source, 0).unwrap()["entityInstances"][0]
+                            ["fieldInstances"][0]
+                            .clone();
+                        pick_rect =
+                            f.app.field_pick_controls(ui, f.source, Some(&f.owner), &field, &def);
+                    });
+                },
+            );
+            (pick_rect.unwrap(), output)
+        };
+        let (rect, output) = draw(&mut f, vec![]);
+        let has_fill = |output: &egui::FullOutput, fill| {
+            output.shapes.iter().any(|shape| {
+                matches!(&shape.shape, egui::Shape::Rect(r) if r.rect == rect && r.fill == fill)
+            })
+        };
+        assert_eq!(rect.height(), height);
+        assert_eq!(rect.width() < 200., array);
+        assert!(has_fill(&output, Color32::from_rgb(121, 17, 5)));
+        assert!(output.shapes.iter().any(|shape| {
+            matches!(&shape.shape, egui::Shape::Text(t) if t.galley.text() == "MISSING REFERENCE")
+        }));
+        let pos = rect.center();
+        let (_, output) = draw(&mut f, vec![egui::Event::PointerMoved(pos)]);
+        assert!(has_fill(&output, Color32::from_rgb(157, 18, 2)));
+        draw(&mut f, vec![button(pos, true, egui::PointerButton::Primary)]);
+        draw(&mut f, vec![button(pos, false, egui::PointerButton::Primary)]);
+        assert!(f.app.picking_entity_ref());
+    }
+}
+
+#[test]
+fn level_reference_with_the_default_filter_can_pick_an_entity() {
+    let mut f = fixture(false);
+    let ctx = egui::Context::default();
+    theme::configure(&ctx);
+    let uid = f
+        .app
+        .project
+        .as_mut()
+        .unwrap()
+        .add_field_definition(None, "LevelTarget", "EntityRef", false)
+        .unwrap();
+    f.app.panel = Some(Panel::Level);
+    let draw = |f: &mut Fixture, events| {
+        let mut pick = None;
+        let output = ctx.run(
+            egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, Vec2::splat(400.))),
+                events,
+                ..Default::default()
+            },
+            |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    let project = f.app.project.as_ref().unwrap();
+                    let field = project.level(f.source).unwrap()["fieldInstances"][0].clone();
+                    let def = project.json["defs"]["levelFields"][0].clone();
+                    pick = f.app.field_pick_controls(ui, f.source, None, &field, &def);
+                });
+            },
+        );
+        (pick.unwrap(), output)
+    };
+    let (rect, _) = draw(&mut f, vec![]);
+    for pressed in [true, false] {
+        draw(
+            &mut f,
+            vec![
+                egui::Event::PointerMoved(rect.center()),
+                button(rect.center(), pressed, egui::PointerButton::Primary),
+            ],
+        );
+    }
+    assert!(f.app.picking_entity_ref());
+    f.app.navigate_level(f.target, false);
+    frame(&mut f, &ctx, vec![], false);
+    let (_, labels) = frame(&mut f, &ctx, vec![], false);
+    assert!(
+        labels.iter().any(|(text, _)| text == "Pick any entity in any level"),
+        "{labels:?}"
+    );
+    click_entity(&mut f, &ctx, [96., 96.]);
+
+    assert!(!f.app.picking_entity_ref());
+    assert_eq!(f.app.selected, Some(f.source));
+    let project = f.app.project.as_ref().unwrap();
+    let field = &project.level(f.source).unwrap()["fieldInstances"][0];
+    assert_eq!(field["defUid"], uid);
+    assert_eq!(field["__value"]["entityIid"], f.target_iid);
+}
 fn click_entity(f: &mut Fixture, ctx: &egui::Context, local: [f32; 2]) {
     let (rect, _) = frame(f, ctx, vec![], false);
     let pos = f

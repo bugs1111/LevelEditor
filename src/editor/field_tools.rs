@@ -84,6 +84,24 @@ pub(super) fn array_field_remove(ui: &mut egui::Ui) -> egui::Response {
     .on_hover_text(locale::tr(ui, "Remove array value"))
 }
 
+fn reference_alert_button(
+    ui: &mut egui::Ui,
+    size: Vec2,
+    button: egui::Button<'_>,
+) -> egui::Response {
+    ui.scope(|ui| {
+        ui.spacing_mut().interact_size.y = size.y;
+        let widgets = &mut ui.visuals_mut().widgets;
+        widgets.inactive.weak_bg_fill = Color32::from_rgb(121, 17, 5);
+        for style in [&mut widgets.hovered, &mut widgets.active] {
+            style.weak_bg_fill = Color32::from_rgb(157, 18, 2);
+            style.expansion = 0.;
+        }
+        panels::source_controls::add_sized_button(ui, size, button)
+    })
+    .inner
+}
+
 #[derive(Clone, Default)]
 struct ArrayFieldDrag {
     from: usize,
@@ -561,7 +579,7 @@ impl FieldPick {
             return false;
         }
         match definition["allowedRefs"].as_str().unwrap_or("Any") {
-            "OnlySame" => owner["defUid"] == target["defUid"],
+            "OnlySame" => self.owner.is_none() || owner["defUid"] == target["defUid"],
             "OnlySpecificEntity" => target["defUid"] == definition["allowedRefsEntityUid"],
             "OnlyTags" => project.json["defs"]["entities"]
                 .as_array()
@@ -589,9 +607,13 @@ impl FieldPick {
                 .and_then(|def| def["identifier"].as_str())
         };
         let target = match definition.and_then(|def| def["allowedRefs"].as_str()) {
-            Some("OnlySame") => locale::format(ui, "another {entity}", &[(
-                "entity", entity_name(self.owner(project).and_then(|e| e["defUid"].as_i64())).unwrap_or(""),
-            )]),
+            Some("OnlySame") => {
+                let name = entity_name(self.owner(project).and_then(|e| e["defUid"].as_i64()));
+                name.map_or_else(
+                    || locale::tr(ui, "any entity").into(),
+                    |name| locale::format(ui, "another {entity}", &[("entity", name)]),
+                )
+            }
             Some("OnlySpecificEntity") => {
                 match entity_name(definition.and_then(|def| def["allowedRefsEntityUid"].as_i64())) {
                     Some(name) => locale::format(ui, "any {entity} entity", &[("entity", name)]),
@@ -1128,8 +1150,10 @@ impl EditorApp {
                     ui.spacing_mut().item_spacing.x = 1.;
                     ui.spacing_mut().button_padding = egui::vec2(1., 2.);
                     ui.spacing_mut().interact_size = egui::vec2(22., 28.);
-                    ui.set_min_height(33.);
                     let iid = value["entityIid"].as_str();
+                    if array || iid.is_some() {
+                        ui.set_min_height(33.);
+                    }
                     let can_clear = definition["canBeNull"] == true && iid.is_some();
                     let action_count =
                         u8::from(iid.is_some()) + u8::from(can_clear) + u8::from(array);
@@ -1146,12 +1170,31 @@ impl EditorApp {
                             follow = Some(iid.to_owned());
                         }
                     } else {
-                        let response = panels::source_controls::add_sized_button(
+                        let label = locale::tr(ui, "Missing reference").to_uppercase();
+                        let font_size = if array { 12. } else { 13.333 };
+                        let width = width - 2.;
+                        let width = if array {
+                            let label_width = ui
+                                .painter()
+                                .layout_no_wrap(
+                                    label.clone(),
+                                    FontId::proportional(font_size),
+                                    Color32::WHITE,
+                                )
+                                .size()
+                                .x;
+                            width.min(label_width + 8.)
+                        } else {
+                            width
+                        };
+                        ui.add_space(1.);
+                        let response = reference_alert_button(
                             ui,
-                            [width, 28.],
-                            egui::Button::new(locale::tr(ui, "Missing reference"))
-                                .fill(Color32::from_rgb(227, 77, 0))
-                                .truncate(),
+                            egui::vec2(width, if array { 22. } else { 23. }),
+                            egui::Button::new(
+                                RichText::new(label).size(font_size).color(Color32::WHITE),
+                            )
+                            .truncate(),
                         );
                         pick_rect = Some(response.rect);
                         if response.clicked() {
@@ -1177,16 +1220,15 @@ impl EditorApp {
                         }
                     }
                     if can_clear {
-                        let response = panels::source_controls::add_sized_button(
+                        let response = reference_alert_button(
                             ui,
-                            [22., 28.],
+                            egui::vec2(22., 28.),
                             egui::Button::image(
                                 egui::Image::new(egui::include_image!(
                                     "../../assets/icons/clear.svg"
                                 ))
                                 .fit_to_exact_size(Vec2::splat(16.)),
-                            )
-                            .fill(Color32::from_rgb(227, 77, 0)),
+                            ),
                         )
                         .on_hover_text(locale::tr(ui, "Clear field value"));
                         if response.clicked() {

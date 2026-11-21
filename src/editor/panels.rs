@@ -1291,7 +1291,7 @@ impl EditorApp {
                                 egui::Layout::top_down(egui::Align::Min),
                                 |ui| {
                                     ui.set_width(value_width);
-                                    if array && using_default && !row_error
+                                    if (array || kind == "EntityRef") && using_default && !row_error
                                         && !ui.rect_contains_pointer(ui.response().rect)
                                     {
                                         ui.multiply_opacity(0.35);

@@ -435,7 +435,7 @@ fn property_row(
     label_width: f32,
     body: impl FnOnce(&mut egui::Ui),
 ) {
-    source_controls::form_row_wrapped(ui, label, label, label_width, |ui| {
+    source_controls::form_grid_row(ui, label, label, egui::vec2(label_width, 33.), |ui| {
         ui.spacing_mut().item_spacing.x = 3.;
         body(ui);
     });
@@ -448,8 +448,8 @@ fn dimension_separator(ui: &mut egui::Ui, label: &str) {
     );
 }
 
-fn iid_row(ui: &mut egui::Ui, iid: &str, width: f32, help: &str) {
-    property_row(ui, "IID", width, |ui| {
+fn iid_row(ui: &mut egui::Ui, iid: &str, width: f32, key: &str, help: &str) {
+    source_controls::form_grid_row(ui, "IID", key, egui::vec2(width, 33.), |ui| {
         ui.spacing_mut().item_spacing.x = 1.;
         let mut value = iid.to_owned();
         ui.add_sized(
@@ -486,7 +486,7 @@ fn group(
     key: &'static str,
     title: impl Into<egui::WidgetText>,
     body: impl FnOnce(&mut egui::Ui),
-) {
+) -> bool {
     let id = ui.make_persistent_id(key);
     let open = ui.data_mut(|d| d.get_temp::<bool>(id)).unwrap_or(true);
     let open = section(ui, title, open, |ui| {
@@ -498,6 +498,7 @@ fn group(
             });
     });
     ui.data_mut(|d| d.insert_temp(id, open));
+    open
 }
 
 fn properties_title(ui: &egui::Ui, template: &str, name: &str) -> egui::text::LayoutJob {
@@ -718,12 +719,12 @@ impl EditorApp {
             });
         ui.add_space(16.);
         let mut patch = json!({});
-        group(
+        let world_open = group(
             ui,
             "worldPanel_world",
             properties_title(ui, "WORLD SETTINGS: \"{name}\"", &name),
             |ui| {
-                iid_row(ui, &iid, WORLD_LABEL_WIDTH, "Copy world IID");
+                iid_row(ui, &iid, WORLD_LABEL_WIDTH, "worldIid", "Copy world IID");
                 property_row(ui, "World identifier", WORLD_LABEL_WIDTH, |ui| {
                     ui.add_enabled_ui(multi, |ui| {
                         if let Some(next) =
@@ -733,11 +734,11 @@ impl EditorApp {
                         }
                     });
                 });
-                source_controls::form_row_wrapped_sized(
+                source_controls::form_grid_row(
                     ui,
                     "World layout",
                     "World layout",
-                    egui::vec2(WORLD_LABEL_WIDTH, 36.),
+                    egui::vec2(WORLD_LABEL_WIDTH, 34.),
                     |ui| {
                         let current = text(&world, "worldLayout", "Free");
                         if let Some(layout) =
@@ -789,6 +790,9 @@ impl EditorApp {
                     );
                     ui.label("px");
                 });
+                let mut bounds = ui.min_rect();
+                bounds.max.y += 2.;
+                ui.expand_to_include_rect(bounds);
             },
         );
         if changed(&patch) {
@@ -800,7 +804,7 @@ impl EditorApp {
                 },
             );
         }
-        ui.add_space(16.);
+        ui.add_space(if world_open { 8. } else { 2. });
         self.source_level_form(ui);
     }
 
@@ -865,7 +869,7 @@ impl EditorApp {
         let name = text(&level, "identifier", "Level");
         let mut patch = json!({});
         let mut depth_move = 0;
-        group(
+        let level_open = group(
             ui,
             "levelPanel_level",
             properties_title(ui, "LEVEL PROPERTIES: \"{name}\"", name),
@@ -877,10 +881,10 @@ impl EditorApp {
                     ui,
                     text(&level, "iid", ""),
                     LEVEL_LABEL_WIDTH,
+                    "levelIid",
                     "Copy level IID",
                 );
                 property_row(ui, "Level identifier", LEVEL_LABEL_WIDTH, |ui| {
-                    ui.set_min_height(34.);
                     let mut auto = level["useAutoIdentifier"].as_bool().unwrap_or(false);
                     ui.spacing_mut().item_spacing.x = 16.;
                     let width = (ui.available_width() - 99.).max(20.);
@@ -940,7 +944,6 @@ impl EditorApp {
                     });
                 });
                 property_row(ui, "World coords", LEVEL_LABEL_WIDTH, |ui| {
-                    ui.set_min_height(34.);
                     int_input(
                         ui,
                         "worldX",
@@ -966,48 +969,55 @@ impl EditorApp {
                     int_input(ui, "pxHei", &level["pxHei"], default_grid, 4096, &mut patch);
                     ui.label("px");
                 });
-                property_row(ui, "Bg color", LEVEL_LABEL_WIDTH, |ui| {
-                    let col = theme::color(text(&level, "bgColor", &default_background));
-                    let mut rgb = [col.r(), col.g(), col.b()];
-                    let is_default = level["bgColor"].is_null();
-                    ui.spacing_mut().item_spacing.x = if is_default { 4. } else { 8. };
-                    if source_colors::color_editor_sized(
-                        ui,
-                        &mut rgb,
-                        Some("bg"),
-                        egui::vec2(64., 32.),
-                    )
-                    .changed()
-                    {
-                        let color = format!("#{:02X}{:02X}{:02X}", rgb[0], rgb[1], rgb[2]);
-                        patch["bgColor"] = if color.eq_ignore_ascii_case(&default_background) {
-                            Value::Null
-                        } else {
-                            json!(color)
-                        };
-                    }
-                    if is_default {
-                        ui.label(
-                            RichText::new(locale::tr(ui, "(default)")).color(Color32::from_gray(153)),
-                        );
-                    } else {
-                        let reset = ui
-                            .scope(|ui| {
-                                ui.visuals_mut().hyperlink_color = theme::ACCENT;
-                                ui.link(
-                                    RichText::new(locale::tr(ui, "Use default"))
-                                        .size(13.333)
-                                        .color(theme::ACCENT)
-                                        .underline(),
-                                )
-                            })
-                            .inner;
-                        if reset.clicked() {
-                            patch["bgColor"] = Value::Null;
+                source_controls::form_grid_row(
+                    ui,
+                    "Bg color",
+                    "Bg color",
+                    egui::vec2(LEVEL_LABEL_WIDTH, 32.),
+                    |ui| {
+                        let col = theme::color(text(&level, "bgColor", &default_background));
+                        let mut rgb = [col.r(), col.g(), col.b()];
+                        let is_default = level["bgColor"].is_null();
+                        ui.spacing_mut().item_spacing.x = if is_default { 4. } else { 8. };
+                        if source_colors::color_editor_sized(
+                            ui,
+                            &mut rgb,
+                            Some("bg"),
+                            egui::vec2(64., 32.),
+                        )
+                        .changed()
+                        {
+                            let color = format!("#{:02X}{:02X}{:02X}", rgb[0], rgb[1], rgb[2]);
+                            patch["bgColor"] = if color.eq_ignore_ascii_case(&default_background) {
+                                Value::Null
+                            } else {
+                                json!(color)
+                            };
                         }
-                    }
-                });
-                source_controls::form_row_wrapped_sized(
+                        if is_default {
+                            ui.label(
+                                RichText::new(locale::tr(ui, "(default)"))
+                                    .color(Color32::from_gray(153)),
+                            );
+                        } else {
+                            let reset = ui
+                                .scope(|ui| {
+                                    ui.visuals_mut().hyperlink_color = theme::ACCENT;
+                                    ui.link(
+                                        RichText::new(locale::tr(ui, "Use default"))
+                                            .size(13.333)
+                                            .color(theme::ACCENT)
+                                            .underline(),
+                                    )
+                                })
+                                .inner;
+                            if reset.clicked() {
+                                patch["bgColor"] = Value::Null;
+                            }
+                        }
+                    },
+                );
+                source_controls::form_grid_row(
                     ui,
                     "Bg image",
                     "Bg image",
@@ -1092,7 +1102,7 @@ impl EditorApp {
             self.move_selected_level_world_depth(depth_move);
             self.world_selection.clear();
         }
-        ui.add_space(8.);
+        ui.add_space(if level_open { 8. } else { 2. });
         group(ui, "levelPanel_fields", "CUSTOM FIELDS", |ui| {
             ui.spacing_mut().item_spacing.y = 0.;
             if level["fieldInstances"].as_array().is_none_or(Vec::is_empty) {
@@ -1110,13 +1120,34 @@ impl EditorApp {
                     Color32::from_rgb(115, 127, 157),
                 );
             } else {
-                ui.scope(|ui| {
-                    ui.spacing_mut().item_spacing.y = FORM_ROW_GAP;
-                    if !enabled {
-                        lock_level_inputs(ui);
+                ui.add_space(1.);
+                let outer_shadow = ui.painter().add(egui::Shape::Noop);
+                let fields = egui::Frame::new()
+                    .fill(theme::MEDIUM)
+                    .shadow(egui::Shadow {
+                        offset: [0, 0],
+                        blur: 24,
+                        spread: 0,
+                        color: Color32::from_black_alpha(230),
+                    })
+                    .show(ui, |ui| {
+                        ui.spacing_mut().item_spacing.y = FORM_ROW_GAP;
+                        if !enabled {
+                            lock_level_inputs(ui);
+                        }
+                        self.instance_fields(ui, key, None, &level);
+                    });
+                // The wider, lighter shadow reproduces the soft edge beyond the main blur.
+                ui.painter().set(
+                    outer_shadow,
+                    egui::Shadow {
+                        offset: [0, 0],
+                        blur: 48,
+                        spread: 0,
+                        color: Color32::from_black_alpha(43),
                     }
-                    self.instance_fields(ui, key, None, &level);
-                });
+                    .as_shape(fields.response.rect, 0.),
+                );
             }
             if source_controls::add_sized_button(
                 ui,
@@ -1201,6 +1232,23 @@ mod tests {
     fn label(output: &egui::FullOutput, expected: &str) -> egui::Pos2 {
         find_label(output, expected)
             .unwrap_or_else(|| panic!("missing source form label {expected}"))
+    }
+    fn depth_arrow_centers(output: &egui::FullOutput) -> [egui::Pos2; 2] {
+        let mut centers = output
+            .shapes
+            .iter()
+            .filter_map(|shape| match &shape.shape {
+                egui::Shape::Rect(shape)
+                    if shape.rect.size() == egui::vec2(45., 20.) && shape.blur_width == 0. =>
+                {
+                    Some(shape.rect.center())
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        centers.sort_by(|a, b| a.y.total_cmp(&b.y));
+        centers.dedup();
+        centers.try_into().expect("two depth arrow buttons")
     }
     fn click_at(
         app: &mut EditorApp,
@@ -1339,6 +1387,48 @@ mod tests {
         label(&output, "Default \"new level\" size");
         label(&output, "World coords");
     }
+
+    #[test]
+    fn world_and_level_forms_top_align_wrapped_labels_and_controls() {
+        let (mut app, ctx) = editor();
+        ctx.style_mut(|style| style.spacing.item_spacing.y = 0.);
+        let key = app.selected.unwrap();
+        let project = app.project.as_mut().unwrap();
+        project.json["defaultLevelWidth"] = json!(337);
+        project.level_mut(key).unwrap()["worldX"] = json!(752);
+
+        let output = frame(&mut app, &ctx, Panel::World, vec![]);
+        let text = |expected: &str| {
+            output
+                .shapes
+                .iter()
+                .find_map(|shape| match &shape.shape {
+                    egui::Shape::Text(text)
+                        if text.galley.text().replace('\n', " ") == expected =>
+                    {
+                        Some(text)
+                    }
+                    _ => None,
+                })
+                .unwrap_or_else(|| panic!("missing form text {expected}"))
+        };
+        for (caption, input) in [
+            ("Default \"new level\" size", "337"),
+            ("World coords", "752"),
+        ] {
+            let caption = text(caption);
+            assert_eq!(caption.galley.job.halign, egui::Align::RIGHT);
+            for rows in caption.galley.rows.windows(2) {
+                assert_eq!(rows[1].pos.y - rows[0].pos.y, 15.);
+            }
+            assert!((4. ..=8.).contains(&(text(input).pos.y - caption.pos.y)));
+        }
+        let collapsed = click(&mut app, &ctx, Panel::World, "WORLD SETTINGS: \"World\"");
+        let world = label(&collapsed, "WORLD SETTINGS: \"World\"");
+        let level = label(&collapsed, "LEVEL PROPERTIES: \"Level_0\"");
+        assert_eq!(level.y - world.y, 32.);
+    }
+
     #[test]
     fn source_world_language_switch_preserves_project_identifiers() {
         let (mut app, ctx) = editor();
@@ -1362,6 +1452,27 @@ mod tests {
         let english = frame(&mut app, &ctx, Panel::World, vec![]);
         label(&english, "CREATE A NEW LEVEL");
         assert_eq!(app.project.as_ref().unwrap().json, before);
+    }
+
+    #[test]
+    fn only_populated_level_field_forms_have_the_source_backdrop_and_shadow() {
+        let (mut app, ctx) = editor();
+        let has_shadow = |output: egui::FullOutput| {
+            output.shapes.iter().any(|shape| {
+                matches!(&shape.shape, egui::Shape::Vec(shapes)
+                    if matches!(shapes.as_slice(), [egui::Shape::Rect(shadow), egui::Shape::Rect(backdrop)]
+                        if shadow.blur_width == 24. && shadow.fill == Color32::from_black_alpha(230)
+                            && shadow.rect.width() > 300.
+                            && shadow.rect == backdrop.rect && backdrop.fill == theme::MEDIUM))
+            })
+        };
+        assert!(!has_shadow(frame(&mut app, &ctx, Panel::World, vec![])));
+        app.project
+            .as_mut()
+            .unwrap()
+            .add_field_definition(None, "Status", "String", false)
+            .unwrap();
+        assert!(has_shadow(frame(&mut app, &ctx, Panel::World, vec![])));
     }
     #[test]
     fn source_level_uses_paired_coords_size_and_default_background() {
@@ -1590,7 +1701,7 @@ mod tests {
         level["worldX"] = json!(-1);
         level["worldY"] = json!(-1);
         let output = frame(&mut app, &ctx, Panel::Level, vec![]);
-        let pos = egui::pos2(201., label(&output, "World depth").y - 12.);
+        let [pos, _] = depth_arrow_centers(&output);
         click_at(&mut app, &ctx, Panel::Level, pos);
         let level = app.project.as_ref().unwrap().level(key).unwrap();
         assert_eq!(level["worldDepth"], 1, "the arrow must change depth");
@@ -1610,9 +1721,7 @@ mod tests {
             app.world_depth = initial;
 
             let output = frame(&mut app, &ctx, Panel::Level, vec![]);
-            let y = label(&output, "World depth").y;
-            let further = egui::pos2(222., y - 8.);
-            let closer = egui::pos2(222., y + 12.);
+            let [further, closer] = depth_arrow_centers(&output);
             let (away, toward) = if initial < 0 {
                 (closer, further)
             } else {

@@ -19,7 +19,7 @@ const FIELD_LIST_WIDTH: f32 = 200.;
 const FIELD_LIST_GAP: f32 = 8.;
 const FIELD_LABEL_WIDTH: f32 = 130.;
 const SOURCE_ORANGE: Color32 = Color32::from_rgb(235, 78, 0);
-const GROUP_BAR: Color32 = Color32::from_rgb(117, 130, 164);
+const GROUP_BAR: Color32 = Color32::from_rgb(115, 127, 157);
 fn active_id() -> egui::Id {
     egui::Id::new("source-panel-layout-active")
 }

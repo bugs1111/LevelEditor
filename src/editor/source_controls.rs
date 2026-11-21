@@ -427,7 +427,14 @@ pub(in crate::app) fn form_row<R>(
     label_width: f32,
     body: impl FnOnce(&mut egui::Ui) -> R,
 ) -> R {
-    form_row_inner(ui, label, key, egui::vec2(label_width, 30.), false, body)
+    form_row_inner(
+        ui,
+        label,
+        key,
+        egui::vec2(label_width, 30.),
+        FormLabel::SingleLine,
+        body,
+    )
 }
 
 pub(in crate::app) fn form_row_wrapped<R>(
@@ -447,7 +454,24 @@ pub(in crate::app) fn form_row_wrapped_sized<R>(
     label_size: Vec2,
     body: impl FnOnce(&mut egui::Ui) -> R,
 ) -> R {
-    form_row_inner(ui, label, key, label_size, true, body)
+    form_row_inner(ui, label, key, label_size, FormLabel::Wrapped, body)
+}
+
+pub(in crate::app) fn form_grid_row<R>(
+    ui: &mut egui::Ui,
+    label: &str,
+    key: &str,
+    size: Vec2,
+    body: impl FnOnce(&mut egui::Ui) -> R,
+) -> R {
+    form_row_inner(ui, label, key, size, FormLabel::TopAligned, body)
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum FormLabel {
+    SingleLine,
+    Wrapped,
+    TopAligned,
 }
 
 fn form_row_inner<R>(
@@ -455,19 +479,24 @@ fn form_row_inner<R>(
     label: &str,
     key: &str,
     label_size: Vec2,
-    wrap: bool,
+    layout: FormLabel,
     body: impl FnOnce(&mut egui::Ui) -> R,
 ) -> R {
-    ui.horizontal(|ui| {
+    let row = |ui: &mut egui::Ui| {
         ui.spacing_mut().item_spacing.x = 8.;
-        property_label_layout(ui, label, key, label_size, wrap);
+        property_label_layout(ui, label, key, label_size, layout);
         ui.allocate_ui_with_layout(
             egui::vec2(ui.available_width(), label_size.y),
             egui::Layout::left_to_right(egui::Align::Center),
             body,
         )
         .inner
-    })
+    };
+    if layout == FormLabel::TopAligned {
+        ui.horizontal_top(row)
+    } else {
+        ui.horizontal(row)
+    }
     .inner
 }
 
@@ -501,7 +530,13 @@ pub(in crate::app) fn property_label_with_width(
     key: &str,
     label_width: f32,
 ) {
-    property_label_layout(ui, label, key, egui::vec2(label_width, 30.), true);
+    property_label_layout(
+        ui,
+        label,
+        key,
+        egui::vec2(label_width, 30.),
+        FormLabel::Wrapped,
+    );
 }
 pub(in crate::app) fn property_label_intrinsic_width(ui: &egui::Ui, label: &str, key: &str) -> f32 {
     let (_, reserve) = property_label_help(label, key);
@@ -523,7 +558,15 @@ fn property_label_help(label: &str, key: &str) -> (Option<&'static str>, f32) {
     (info, if info.is_some() { 32. } else { 8. })
 }
 
-fn property_label_layout(ui: &mut egui::Ui, label: &str, key: &str, label_size: Vec2, wrap: bool) {
+fn property_label_layout(
+    ui: &mut egui::Ui,
+    label: &str,
+    key: &str,
+    label_size: Vec2,
+    layout: FormLabel,
+) {
+    let wrap = layout != FormLabel::SingleLine;
+    let top_aligned = layout == FormLabel::TopAligned;
     let (info, reserve) = property_label_help(label, key);
     let width = ui.available_width().min(label_size.x);
     let text_width = (width - reserve).max(0.);
@@ -555,34 +598,54 @@ fn property_label_layout(ui: &mut egui::Ui, label: &str, key: &str, label_size: 
         }
     }
     lines.push(line);
-    let galley = if wrap && displayed != label {
+    let galley = if top_aligned {
+        let (text, max_width) = if displayed != label {
+            (displayed.to_owned(), text_width)
+        } else {
+            (lines.join("\n"), f32::INFINITY)
+        };
+        let mut job = egui::text::LayoutJob::simple(text, font, color, max_width);
+        job.halign = egui::Align::RIGHT;
+        job.sections[0].format.line_height = Some(15.);
+        ui.painter().layout_job(job)
+    } else if wrap && displayed != label {
         ui.painter()
             .layout(displayed.to_owned(), font, color, text_width)
     } else {
         ui.painter().layout_no_wrap(lines.join("\n"), font, color)
     };
-    let (rect, response) =
-        ui.allocate_exact_size(
-            egui::vec2(width, galley.size().y.max(label_size.y)),
-            Sense::hover(),
-        );
+    let (rect, response) = ui.allocate_exact_size(
+        egui::vec2(
+            width,
+            (galley.size().y + if top_aligned { 4. } else { 0. }).max(label_size.y),
+        ),
+        Sense::hover(),
+    );
     let right = rect.right() - reserve;
+    let position = if top_aligned {
+        egui::pos2(right, rect.top() + 4.)
+    } else {
+        egui::pos2(
+            right - galley.size().x,
+            rect.center().y - galley.size().y * 0.5,
+        )
+    };
     ui.painter()
         .with_clip_rect(
             Rect::from_min_max(rect.min, egui::pos2(right, rect.bottom()))
                 .intersect(ui.clip_rect()),
         )
-        .galley(
-            egui::pos2(
-                right - galley.size().x,
-                rect.center().y - galley.size().y * 0.5,
-            ),
-            galley,
-            color,
-        );
+        .galley(position, galley, color);
     if let Some(help) = info {
         let badge = Rect::from_center_size(
-            egui::pos2(rect.right() - 12., rect.center().y),
+            egui::pos2(
+                rect.right() - 12.,
+                if top_aligned {
+                    rect.top() + 12.
+                } else {
+                    rect.center().y
+                },
+            ),
             egui::vec2(24., 16.),
         );
         let mut child = ui.new_child(

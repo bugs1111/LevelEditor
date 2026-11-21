@@ -31,6 +31,83 @@ fn duplicate_remaps_ids_and_internal_refs_and_preserves_unknowns() {
     assert_eq!(copied["unknown"], old["unknown"]);
     assert_eq!(copied["layerInstances"][0]["levelId"], copied["uid"]);
 }
+
+#[test]
+fn duplicate_level_preserves_source_reference_slots_and_targets() {
+    let mut p = sample();
+    let actor = p.json["defs"]["entities"][0]["uid"].as_i64().unwrap();
+    let other = p.add_level(None, "Other", 256, 256).unwrap();
+    p.add_entity(K, 0, actor, 48, 16).unwrap();
+    p.add_entity(other, 0, actor, 16, 16).unwrap();
+    let entity_id = |project: &Project, level, index: usize| {
+        project.layer(level, 0).unwrap()["entityInstances"][index]["iid"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+    };
+    let owner = entity_id(&p, K, 0);
+    let local = entity_id(&p, K, 1);
+    let remote = entity_id(&p, other, 0);
+    let entity_field = p
+        .add_field_definition(Some(actor), "Targets", "EntityRef", true)
+        .unwrap();
+    let level_field = p
+        .add_field_definition(None, "LevelTargets", "EntityRef", true)
+        .unwrap();
+    let local_field = p
+        .add_field_definition(Some(actor), "LocalTarget", "EntityRef", false)
+        .unwrap();
+    let remote_field = p
+        .add_field_definition(Some(actor), "RemoteTarget", "EntityRef", false)
+        .unwrap();
+    for uid in [entity_field, level_field, local_field, remote_field] {
+        p.update_field_definition(uid, &json!({"canBeNull":true, "allowedRefs":"Any"}))
+            .unwrap();
+    }
+    p.set_field_editor_value(
+        K,
+        Some(&owner),
+        entity_field,
+        json!([null, local, null, remote, null]),
+    )
+    .unwrap();
+    p.set_field_editor_value(K, None, level_field, json!([local, null, remote]))
+        .unwrap();
+    p.set_field_editor_value(K, Some(&owner), local_field, json!(local))
+        .unwrap();
+    p.set_field_editor_value(K, Some(&owner), remote_field, json!(remote))
+        .unwrap();
+    let original_level_field = p.level(K).unwrap()["fieldInstances"][0].clone();
+    let copy = p.duplicate_level(K, "Copy").unwrap();
+    let copied_target = entity_id(&p, copy, 1);
+    let fields = &p.layer(copy, 0).unwrap()["entityInstances"][0]["fieldInstances"];
+    let field = &fields[0];
+    assert_eq!(
+        field["__value"],
+        json!([null, {
+            "entityIid":copied_target,
+            "layerIid":p.layer(copy, 0).unwrap()["iid"],
+            "levelIid":p.level(copy).unwrap()["iid"],
+            "worldIid":p.json["dummyWorldIid"],
+        }, null, null])
+    );
+    assert_eq!(
+        field["realEditorValues"],
+        json!([null, {"id":"V_String","params":[copied_target]}, null, null])
+    );
+    assert_eq!(
+        p.level(copy).unwrap()["fieldInstances"][0],
+        original_level_field
+    );
+    assert_eq!(fields[1]["__value"], field["__value"][1]);
+    assert_eq!(
+        fields[1]["realEditorValues"][0],
+        field["realEditorValues"][1]
+    );
+    assert!(fields[2]["__value"].is_null());
+    assert_eq!(fields[2]["realEditorValues"], json!([]));
+}
+
 #[test]
 fn entity_remove_repairs_reference_and_toc() {
     let mut p = sample();
@@ -99,6 +176,56 @@ fn save_rebuilds_table_of_contents_after_flag_and_position_changes() {
             saved.json["toc"][0]["instancesData"],
             entry["instancesData"]
         );
+    }
+}
+
+#[test]
+fn preview_154_saves_level_smart_colors_for_inline_and_external_levels() {
+    let directory = tempfile::tempdir().unwrap();
+    for external in [false, true] {
+        let path = directory.path().join(if external {
+            "external.ldtk"
+        } else {
+            "inline.ldtk"
+        });
+        let mut project = Project::new();
+        let other = project.add_level(None, "Other", 256, 256).unwrap();
+        let tint = project
+            .add_field_definition(None, "Tint", "Color", true)
+            .unwrap();
+        project
+            .update_field_definition(tint, &json!({"canBeNull":true}))
+            .unwrap();
+        project.add_enum_definition("Biome", &["Water"]).unwrap();
+        project.json["defs"]["enums"][0]["values"][0]["color"] = json!(0x7695D1);
+        let region = project
+            .add_field_definition(None, "Region", "LocalEnum.Biome", false)
+            .unwrap();
+        project
+            .update_field_definition(region, &json!({"useForSmartColor":true}))
+            .unwrap();
+        project
+            .set_field_editor_value(other, None, tint, json!([null, "#204080", "#FFFFFF"]))
+            .unwrap();
+        project
+            .set_field_value(other, None, region, json!("Water"))
+            .unwrap();
+        project.level_mut(K).unwrap()["bgColor"] = json!("#C24A58");
+        project.json["externalLevels"] = json!(external);
+        project.save(&path).unwrap();
+
+        let saved = Project::load(&path).unwrap();
+        assert_eq!(saved.level(K).unwrap()["__smartColor"], "#DD9BA3");
+        assert_eq!(saved.level(other).unwrap()["__smartColor"], "#8496B9");
+
+        project
+            .set_field_editor_value(other, None, tint, json!([null]))
+            .unwrap();
+        project.save(&path).unwrap();
+        let saved = Project::load(&path).unwrap();
+        assert_eq!(saved.level(other).unwrap()["__smartColor"], "#B4C5E6");
+        let stub = &saved.json["levels"][other.level];
+        assert_eq!(stub["__smartColor"], "#B4C5E6");
     }
 }
 

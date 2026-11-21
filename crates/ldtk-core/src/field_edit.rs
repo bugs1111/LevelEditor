@@ -337,6 +337,61 @@ fn enum_has_value(p: &Project, d: &Value, value: &Value) -> bool {
     enum_field_value(p, d, value).is_some()
 }
 impl Project {
+    /// The source level tint before or after blending it 45% toward white.
+    pub fn level_smart_color(&self, level: &Value, bright: bool) -> [u8; 3] {
+        let parse_color = |value: &Value| {
+            value
+                .as_str()
+                .and_then(|hex| u32::from_str_radix(hex.trim_start_matches('#'), 16).ok())
+                .or_else(|| value.as_i64().map(|color| color as u32))
+        };
+        let field_color = self.json["defs"]["levelFields"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|def| def["useForSmartColor"] == true)
+            .find_map(|def| {
+                let field = level["fieldInstances"]
+                    .as_array()?
+                    .iter()
+                    .find(|field| field["defUid"] == def["uid"])?;
+                let value = &field["__value"];
+                let values = if array(def) {
+                    value.as_array()?.as_slice()
+                } else {
+                    std::slice::from_ref(value)
+                };
+                match base(def) {
+                    "Color" => values.iter().find_map(parse_color),
+                    kind if kind.starts_with("LocalEnum.") || kind.starts_with("ExternEnum.") => {
+                        values
+                            .iter()
+                            .find_map(|value| enum_field_value(self, def, value))
+                            .and_then(|value| parse_color(&value["color"]))
+                    }
+                    _ => None,
+                }
+            });
+        let color = field_color
+            .or_else(|| parse_color(&level["bgColor"]))
+            .or_else(|| parse_color(&self.json["defaultLevelBgColor"]))
+            .or_else(|| parse_color(&level["__bgColor"]))
+            .unwrap_or(0x696A79);
+        let [_, r, g, b] = color.to_be_bytes();
+        [r, g, b].map(|channel| {
+            if bright {
+                ((u16::from(channel) * 55 + 255 * 45 + 50) / 100) as u8
+            } else {
+                channel
+            }
+        })
+    }
+
+    pub(crate) fn exported_level_smart_color(&self, level: &Value) -> String {
+        let [r, g, b] = self.level_smart_color(level, true);
+        format!("#{r:02X}{g:02X}{b:02X}")
+    }
+
     pub fn cleanup_identifier(&self, input: &str) -> String {
         crate::naming::cleanup(
             input,

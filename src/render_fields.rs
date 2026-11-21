@@ -1,6 +1,5 @@
 use super::{
-    Scene, Transform, bitmap_font, darken, entities::entity_bounds, lighten, number, pair, text,
-    values,
+    Scene, Transform, bitmap_font, darken, entities::entity_bounds, number, pair, text, values,
 };
 use crate::theme;
 use eframe::egui::{self, Color32, Painter, Pos2, Rect, Stroke, Vec2, vec2};
@@ -518,7 +517,11 @@ impl Scene<'_> {
         let (size, label_width, sizes) = self.rows_size(rows, max_width);
         let min = anchor - vec2(size.x * 0.5, size.y * align_y);
         if self.options.fields_table && !rows.is_empty() {
-            let color = base_color;
+            let background = |percent: u16| {
+                let channel = |value: u8| ((u16::from(value) * percent + 50) / 100) as u8;
+                let [r, g, b, a] = base_color.to_array();
+                Color32::from_rgba_premultiplied(channel(r), channel(g), channel(b), a)
+            };
             let pad = vec2(4. * self.options.ui_scale, 2. * self.options.ui_scale)
                 / self.ctx.pixels_per_point();
             painter.rect_filled(
@@ -527,7 +530,7 @@ impl Scene<'_> {
                     size + pad * 2.,
                 ),
                 0.,
-                darken(color, 0.65),
+                background(35),
             );
             if label_width > 0. {
                 painter.rect_filled(
@@ -539,7 +542,7 @@ impl Scene<'_> {
                         ),
                     ),
                     0.,
-                    darken(color, 0.85),
+                    background(15),
                 );
             }
         }
@@ -566,7 +569,7 @@ impl Scene<'_> {
                     label_origin
                         - vec2(0., (2. * self.options.ui_scale).round() / self.ctx.pixels_per_point() * row.scale),
                     &row.label,
-                    full_brightness(lighten(row.color, row.label_brighten)),
+                    full_brightness(row.color.lerp_to_gamma(Color32::WHITE, row.label_brighten)),
                     row.scale,
                     max_width * row.scale,
                     (!self.options.fields_table && !gpu_outline).then_some(row.color),
@@ -633,7 +636,9 @@ impl Scene<'_> {
                                     * row.scale,
                             ),
                             value,
-                            full_brightness(lighten(row.color, row.value_brighten)),
+                            full_brightness(
+                                row.color.lerp_to_gamma(Color32::WHITE, row.value_brighten),
+                            ),
                             row.scale,
                             max_width * row.scale,
                             (!self.options.fields_table && !gpu_outline).then_some(row.color),
@@ -889,7 +894,8 @@ impl Scene<'_> {
         let color = if defs.iter().any(|fd| self.field_error(level, fd).is_some()) {
             Color32::RED
         } else {
-            self.level_color(level)
+            let [r, g, b] = self.project.level_smart_color(level, true);
+            Color32::from_rgb(r, g, b)
         };
         let mut rows = defs
             .iter()
@@ -1530,29 +1536,6 @@ mod tests {
 }
 
 pub(crate) fn level_smart_color(project: &Project, level: &Value) -> Color32 {
-    for fd in values(&project.json["defs"]["levelFields"])
-        .iter()
-        .filter(|fd| fd["useForSmartColor"] == true)
-    {
-        let value = field_value(level, fd);
-        for item in if fd["isArray"] == true {
-            values(&value)
-        } else {
-            std::slice::from_ref(value.as_ref())
-        } {
-            if text(fd, "__type", "").contains("Color")
-                && let Some(color) = item.as_str()
-            {
-                return theme::color(color);
-            }
-            if let Some(color) = enum_value(project, fd, item).and_then(|ev| ev["color"].as_str()) {
-                return theme::color(color);
-            }
-        }
-    }
-    theme::color(text(
-        level,
-        "__bgColor",
-        text(&project.json, "defaultLevelBgColor", "#696A79"),
-    ))
+    let [r, g, b] = project.level_smart_color(level, false);
+    Color32::from_rgb(r, g, b)
 }

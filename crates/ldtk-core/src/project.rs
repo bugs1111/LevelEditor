@@ -465,6 +465,13 @@ impl Project {
         let preserve_identical_levels = current_version && self.path.as_ref() == Some(&path);
         let mut external = Vec::new();
         for key in candidate.level_keys() {
+            if current_version && let Some(level) = candidate.level(key) {
+                let color = candidate.exported_level_smart_color(level);
+                if level["__smartColor"] != color {
+                    candidate.level_mut(key).expect("enumerated level")["__smartColor"] =
+                        Value::String(color);
+                }
+            }
             if let Some(rel) = external_path(candidate.level_stub(key).expect("enumerated level"))?
                 .map(str::to_owned)
             {

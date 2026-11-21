@@ -96,6 +96,9 @@ pub(crate) fn visit_fields_mut(level: &mut Value, mut f: impl FnMut(&mut Value))
             f(field);
         }
     }
+    visit_entity_fields_mut(level, f);
+}
+fn visit_entity_fields_mut(level: &mut Value, mut f: impl FnMut(&mut Value)) {
     if let Some(layers) = level["layerInstances"].as_array_mut() {
         for layer in layers {
             if let Some(entities) = layer["entityInstances"].as_array_mut() {
@@ -115,60 +118,53 @@ fn ref_iid(v: &Value) -> Option<&str> {
 }
 pub(crate) fn remap_refs(level: &mut Value, remaps: &BTreeMap<String, Value>, clear_outside: bool) {
     visit_fields_mut(level, |field| {
-        if !field["__type"]
-            .as_str()
-            .is_some_and(|s| s.contains("EntityRef"))
-        {
-            return;
-        }
-        let array = field["__type"]
-            .as_str()
-            .is_some_and(|s| s.starts_with("Array<"));
-        if let Some(values) = field["realEditorValues"].as_array_mut() {
-            for v in values.iter_mut() {
-                if let Some(old) = v["params"][0].as_str() {
-                    if let Some(new) = remaps.get(old) {
-                        v["params"][0] = new.clone();
-                    } else if clear_outside {
-                        *v = Value::Null;
-                    }
-                }
-            }
-            if array && clear_outside {
-                values.retain(|v| !v.is_null());
-            }
-        }
-        if array {
-            if let Some(values) = field["__value"].as_array_mut() {
-                for v in values.iter_mut() {
-                    if let Some(old) = ref_iid(v) {
-                        if let Some(new) = remaps.get(old) {
-                            if v.is_string() {
-                                *v = new.clone();
-                            } else {
-                                v["entityIid"] = new.clone();
-                            }
-                        } else if clear_outside {
-                            *v = Value::Null;
-                        }
-                    }
-                }
-                if clear_outside {
-                    values.retain(|v| !v.is_null());
-                }
-            }
-        } else if let Some(old) = ref_iid(&field["__value"]) {
-            if let Some(new) = remaps.get(old) {
-                if field["__value"].is_string() {
-                    field["__value"] = new.clone();
-                } else {
-                    field["__value"]["entityIid"] = new.clone();
-                }
-            } else if clear_outside {
-                field["__value"] = Value::Null;
-            }
-        }
+        remap_field_refs(field, remaps, clear_outside)
     });
+}
+fn remap_field_refs(field: &mut Value, remaps: &BTreeMap<String, Value>, clear_outside: bool) {
+    let array = match field["__type"].as_str() {
+        Some("Array<EntityRef>") => true,
+        Some("EntityRef") => false,
+        _ => return,
+    };
+    if let Some(values) = field["realEditorValues"].as_array_mut() {
+        values.retain_mut(|value| {
+            let Some(old) = value["params"][0].as_str() else {
+                return true;
+            };
+            if let Some(new) = remaps.get(old) {
+                value["params"][0] = new.clone();
+                true
+            } else {
+                !clear_outside
+            }
+        });
+    }
+    let remap_value = |value: &mut Value| {
+        let Some(old) = ref_iid(value) else {
+            return true;
+        };
+        if let Some(new) = remaps.get(old) {
+            if value.is_string() {
+                *value = new.clone();
+            } else {
+                value["entityIid"] = new.clone();
+            }
+        } else if clear_outside {
+            if array {
+                return false;
+            }
+            *value = Value::Null;
+        }
+        true
+    };
+    if array {
+        if let Some(values) = field["__value"].as_array_mut() {
+            values.retain_mut(remap_value);
+        }
+    } else {
+        remap_value(&mut field["__value"]);
+    }
 }
 impl Project {
     pub fn cleanup_tag(input: &str) -> Option<String> {
@@ -316,7 +312,8 @@ impl Project {
                     }
                 }
             }
-            remap_refs(&mut copy, &remaps, true);
+            // A level duplicate retargets entity fields. Its level fields keep their links.
+            visit_entity_fields_mut(&mut copy, |field| remap_field_refs(field, &remaps, true));
             let new = LevelKey {
                 world: key.world,
                 level: key.level + 1,
