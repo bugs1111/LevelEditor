@@ -105,6 +105,89 @@ pub(super) fn dialog_title(ui: &mut egui::Ui, title: &str, width: f32, fill: Col
     );
 }
 
+fn save_warning(ui: &mut egui::Ui, width: f32, message: String) {
+    let painter = ui.painter();
+    let galley = painter.layout(
+        message,
+        FontId::proportional(14.667),
+        Color32::PLACEHOLDER,
+        width - 18.,
+    );
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(width, galley.size().y + 18.), Sense::hover());
+    let painter = ui.painter();
+    let dark_red = Color32::from_rgb(139, 0, 0);
+    painter.add(
+        egui::Shadow {
+            offset: [0, 0],
+            blur: 4,
+            spread: 0,
+            color: dark_red,
+        }
+        .as_shape(rect, 0.),
+    );
+    // The source's 66% black fill over the save dialog's dark red.
+    painter.rect_filled(rect, 0., Color32::from_rgb(41, 6, 2));
+
+    // Sample the 32 px CSS inset blur from each edge.
+    let mut inset = egui::Mesh::default();
+    let stops = [
+        (0., 0.5),
+        (4., 0.4),
+        (8., 0.31),
+        (16., 0.16),
+        (24., 0.067),
+        (32., 0.023),
+        (48., 0.),
+    ];
+    let horizontal = egui::vec2(rect.width(), 0.);
+    let vertical = egui::vec2(0., rect.height());
+    for (edge, inward, span) in [
+        (rect.left_top(), Vec2::Y, horizontal),
+        (rect.left_bottom(), -Vec2::Y, horizontal),
+        (rect.left_top(), Vec2::X, vertical),
+        (rect.right_top(), -Vec2::X, vertical),
+    ] {
+        for pair in stops.windows(2) {
+            let [(first, first_alpha), (last, last_alpha)] = [pair[0], pair[1]];
+            let start = edge + inward * first;
+            let end = edge + inward * last;
+            let a = inset.vertices.len() as u32;
+            let near = dark_red.gamma_multiply(first_alpha);
+            let far = dark_red.gamma_multiply(last_alpha);
+            inset.colored_vertex(start, near);
+            inset.colored_vertex(start + span, near);
+            inset.colored_vertex(end, far);
+            inset.colored_vertex(end + span, far);
+            inset.add_triangle(a, a + 1, a + 2);
+            inset.add_triangle(a + 1, a + 3, a + 2);
+        }
+    }
+    painter.with_clip_rect(rect.shrink(1.)).add(egui::Shape::mesh(inset));
+    let edge = rect.shrink(0.5);
+    for side in [
+        [edge.left_top(), edge.right_top()],
+        [edge.left_bottom(), edge.right_bottom()],
+        [edge.left_top(), edge.left_bottom()],
+        [edge.right_top(), edge.right_bottom()],
+    ] {
+        painter.extend(egui::Shape::dashed_line(
+            &side,
+            Stroke::new(1., Color32::RED),
+            2.,
+            3.,
+        ));
+    }
+    let text = rect.min + Vec2::splat(9.);
+    for offset in [Vec2::X, -Vec2::X, Vec2::Y, -Vec2::Y] {
+        painter.galley(
+            text + offset * 1.5,
+            galley.clone(),
+            Color32::RED.gamma_multiply(0.16),
+        );
+    }
+    painter.galley(text, galley, Color32::WHITE);
+}
+
 impl EditorApp {
     pub(super) fn check_application_write(&mut self, ctx: &egui::Context, write: ApplicationWrite) {
         if in_application_directory(write.path()) {
@@ -218,7 +301,14 @@ impl EditorApp {
         }
 
         let message = match &self.save_failure {
-            Some(services::SaveFailure::Write { message, .. }) => message,
+            Some(services::SaveFailure::Write { path, reason }) => match reason {
+                services::SaveWriteFailure::DirectoryConflict => locale::format_ctx(
+                    ctx,
+                    "I need to create a folder named \"{name}\", but there is a file with the exact same name there.",
+                    &[("name", &path.file_stem().unwrap_or_default().to_string_lossy())],
+                ),
+                services::SaveWriteFailure::Io(message) => message.clone(),
+            },
             Some(services::SaveFailure::MissingTarget(_)) => {
                 self.show_missing_save_target(ctx);
                 return;
@@ -239,7 +329,7 @@ impl EditorApp {
                     .inner_margin(egui::Margin {
                         left: 20,
                         right: 20,
-                        top: 16,
+                        top: 15,
                         bottom: 23,
                     })
                     .show(ui, |ui| {
@@ -247,15 +337,8 @@ impl EditorApp {
                         ui.set_width(width);
                         let body =
                             |text: &str| RichText::new(text).size(14.667).color(Color32::WHITE);
-                        egui::Frame::new()
-                            .fill(Color32::from_rgb(85, 3, 1))
-                            .stroke(Stroke::new(1., Color32::RED))
-                            .inner_margin(8)
-                            .show(ui, |ui| {
-                                ui.set_width(width - 18.);
-                                ui.label(body(message));
-                            });
-                        ui.add_space(12.);
+                        save_warning(ui, width, message);
+                        ui.add_space(13.);
                         ui.label(body(locale::tr(ui, "The project was NOT saved properly!")));
                         ui.add_space(16.);
                         let size = egui::vec2(width, 35.);
@@ -523,6 +606,9 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
         assert!(app.saving.is_none());
+        if app.save_failure.is_some() {
+            frame(app, ctx, vec![]);
+        }
         frame(app, ctx, vec![])
     }
 
@@ -617,6 +703,101 @@ mod tests {
         assert_eq!(layer["intGridCsv"][1 + width], 1);
         assert_eq!(std::fs::read(moved.join(relative)).unwrap(), before);
         assert!(!original.exists() && !app.dirty);
+    }
+
+    #[test]
+    fn save_failure_reason_has_a_dashed_red_border() {
+        let mut app = EditorApp::empty();
+        app.set_project(Project::new());
+        app.save_failure = Some(services::SaveFailure::Write {
+            path: PathBuf::from("Map.ldtk"),
+            reason: services::SaveWriteFailure::DirectoryConflict,
+        });
+        let ctx = egui::Context::default();
+        theme::configure(&ctx);
+        frame(&mut app, &ctx, vec![]);
+        let output = frame(&mut app, &ctx, vec![]);
+        let retry = label(&output, "RETRY");
+        let segments = output.shapes.iter().filter(|shape| {
+            matches!(&shape.shape, egui::Shape::LineSegment { points, stroke }
+                if stroke.color.r() > 0 && stroke.color.g() == 0 && stroke.color.b() == 0
+                    && (points[0].y - points[1].y).abs() < 0.01
+                    && points[0].y < retry.top()
+                    && (points[0].x - points[1].x).abs() <= 2.1)
+        }).count();
+        assert!(segments > 100, "save failure warning should paint both dashed horizontal borders");
+    }
+
+    #[test]
+    fn save_failure_keeps_the_inspector_visible_and_blocks_its_controls() {
+        let mut project = Project::new();
+        project.add_layer("Actors", "Entities", 16).unwrap();
+        let actor = project.add_entity_def("Actor", 16, 16).unwrap();
+        let key = project.level_keys()[0];
+        project.add_entity(key, 0, actor, 80, 88).unwrap();
+        let iid = project.json["iid"].as_str().unwrap().to_owned();
+        let mut app = EditorApp::empty();
+        app.set_project(project);
+        app.panel = Some(Panel::Entity);
+        app.entity_index = Some(0);
+        let ctx = egui::Context::default();
+        theme::configure(&ctx);
+        for _ in 0..3 {
+            frame(&mut app, &ctx, vec![]);
+        }
+        let before = frame(&mut app, &ctx, vec![]);
+        let extra = label(&before, "EXTRA ENTITY INFOS");
+        let before_ui = app.settings.ui_state_int("extraEntityInfos", Some(&iid), 0);
+
+        app.save_failure = Some(services::SaveFailure::Write {
+            path: PathBuf::from("Map.ldtk"),
+            reason: services::SaveWriteFailure::DirectoryConflict,
+        });
+        frame(&mut app, &ctx, vec![]);
+        let under_modal = frame(&mut app, &ctx, vec![]);
+        assert_eq!(label(&under_modal, "EXTRA ENTITY INFOS"), extra);
+        label(&under_modal, "ERROR DURING PROJECT SAVING");
+
+        click(&mut app, &ctx, extra.center());
+        let after = frame(&mut app, &ctx, vec![]);
+        assert!(app.save_failure.is_none());
+        assert_eq!(app.panel, Some(Panel::Entity));
+        assert_eq!(app.entity_index, Some(0));
+        assert_eq!(app.settings.ui_state_int("extraEntityInfos", Some(&iid), 0), before_ui);
+        assert_eq!(label(&after, "EXTRA ENTITY INFOS"), extra);
+    }
+
+    #[test]
+    fn embedded_project_save_rejects_a_conflicting_folder_then_retries_the_edit() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("Map.ldtk");
+        let blocker = path.with_extension("");
+        let mut project = Project::new();
+        let key = project.level_keys()[0];
+        project.save(&path).unwrap();
+        let original = std::fs::read(&path).unwrap();
+        std::fs::write(&blocker, "Existing file").unwrap();
+        project.level_mut(key).unwrap()["identifier"] = "Edited".into();
+
+        let mut app = EditorApp::empty();
+        app.set_project(project);
+        app.dirty = true;
+        let ctx = egui::Context::default();
+        theme::configure(&ctx);
+        frame(&mut app, &ctx, vec![]);
+        app.save(false);
+        let failed = wait_for_save(&mut app, &ctx);
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+        assert!(app.dirty && app.status_error);
+        label(&failed, "Saving failed!");
+        let retry = label(&failed, "RETRY");
+        assert_eq!(std::fs::read_to_string(&blocker).unwrap(), "Existing file");
+
+        std::fs::remove_file(blocker).unwrap();
+        click(&mut app, &ctx, retry.center());
+        wait_for_save(&mut app, &ctx);
+        assert_eq!(Project::load(&path).unwrap().level(key).unwrap()["identifier"], "Edited");
+        assert!(!app.dirty && !app.status_error);
     }
 
     #[test]

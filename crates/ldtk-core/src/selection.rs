@@ -440,28 +440,35 @@ pub(crate) fn validate_entity_clipboard(
             continue;
         }
         let scope = d["limitScope"].as_str().unwrap_or("PerLevel");
-        let mut count = entities.iter().filter(|e| e["defUid"] == uid).count();
-        for candidate in p.level_keys() {
-            if candidate.world != key.world || (scope != "PerWorld" && candidate != key) {
-                continue;
-            }
-            let level = p
-                .level(candidate)
-                .ok_or_else(|| invalid("level not loaded"))?;
-            if let Some(ls) = level["layerInstances"].as_array() {
-                for (i, l) in ls.iter().enumerate() {
-                    if scope == "PerLayer" && i != layer_index {
-                        continue;
-                    }
-                    count += l["entityInstances"]
-                        .as_array()
-                        .map_or(0, |es| es.iter().filter(|e| e["defUid"] == uid).count());
-                }
-            }
-        }
+        let count = entities.iter().filter(|e| e["defUid"] == uid).count()
+            + entity_count_in_limit_scope(p, key, layer_index, uid, scope)?;
         if count > max as usize {
             return Err(invalid("clipboard duplication exceeds entity count limit"));
         }
     }
     Ok(())
+}
+
+pub(crate) fn entity_count_in_limit_scope(
+    p: &Project,
+    key: LevelKey,
+    layer_index: usize,
+    uid: i64,
+    scope: &str,
+) -> Result<usize> {
+    let mut count = 0;
+    for candidate in p.level_keys() {
+        if candidate.world != key.world || (scope != "PerWorld" && candidate != key) {
+            continue;
+        }
+        let level = p.level(candidate).ok_or_else(|| invalid("level not loaded"))?;
+        for (index, layer) in level["layerInstances"].as_array().into_iter().flatten().enumerate() {
+            if scope == "PerLayer" && index != layer_index {
+                continue;
+            }
+            count += layer["entityInstances"].as_array().into_iter().flatten()
+                .filter(|entity| entity["defUid"] == uid).count();
+        }
+    }
+    Ok(count)
 }

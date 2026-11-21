@@ -4,7 +4,7 @@ use std::collections::VecDeque;
 pub(super) enum Continuation {
     None,
     Save(PathBuf),
-    AfterSave,
+    AfterSave(Option<String>),
 }
 pub(super) struct HookFlow {
     commands: VecDeque<String>,
@@ -72,7 +72,10 @@ impl EditorApp {
         match continuation {
             Continuation::None => {}
             Continuation::Save(path) => self.save_async_at(path),
-            Continuation::AfterSave => {
+            Continuation::AfterSave(saved_name) => {
+                if let Some(name) = saved_name {
+                    self.report_saved_project(name);
+                }
                 if !self.dirty
                     && let Some(action) = self.pending.take()
                 {
@@ -152,6 +155,9 @@ impl EditorApp {
             return;
         }
         self.finish_stroke();
+        if self.reject_conflicting_save_folder(&path) {
+            return;
+        }
         let Some(mut project) = self.project.clone() else {
             return;
         };

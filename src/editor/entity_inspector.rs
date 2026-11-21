@@ -146,6 +146,7 @@ impl EditorApp {
             .order(egui::Order::Middle)
             .anchor(egui::Align2::RIGHT_CENTER, egui::Vec2::ZERO)
             .movable(false)
+            .enabled(self.save_failure.is_none())
             .constrain(false)
             .default_width(state.width)
             .default_height(max_height)

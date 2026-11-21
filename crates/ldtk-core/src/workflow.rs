@@ -121,7 +121,7 @@ pub(crate) fn remap_refs(level: &mut Value, remaps: &BTreeMap<String, Value>, cl
         remap_field_refs(field, remaps, clear_outside)
     });
 }
-fn remap_field_refs(field: &mut Value, remaps: &BTreeMap<String, Value>, clear_outside: bool) {
+pub(crate) fn remap_field_refs(field: &mut Value, remaps: &BTreeMap<String, Value>, clear_outside: bool) {
     let array = match field["__type"].as_str() {
         Some("Array<EntityRef>") => true,
         Some("EntityRef") => false,

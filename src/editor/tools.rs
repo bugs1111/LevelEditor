@@ -422,7 +422,7 @@ impl EditorApp {
                     bleep::mark_group(&mut self.history, project, key, &group, false);
                     bleep::mark_moved_group(&mut self.history, project, key, &group, delta);
                     let mut rules = ldtk_core::DeferredAutoLayers::default();
-                    match project.drag_selection_group_with_geometry(
+                    match project.drag_selection_group_with_report(
                         key,
                         &group,
                         delta,
@@ -431,7 +431,28 @@ impl EditorApp {
                         free_entities,
                         now.map(|_| &mut rules),
                     ) {
-                        Ok(next) => {
+                        Ok((next, report)) => {
+                            if self.panel == Some(Panel::Entity)
+                                && group["elementCount"] == 1
+                                && let Some(layer) = project.layer(key, self.layer)
+                                && group["layers"].as_array().into_iter().flatten().any(|entry| {
+                                    entry["layerDefUid"] == layer["layerDefUid"]
+                                        && entry["clipboard"]["entityInstances"]
+                                            .get(0)
+                                            .is_some()
+                                })
+                            {
+                                let selected = next["layers"].as_array().into_iter().flatten()
+                                    .find(|entry| entry["layerDefUid"] == layer["layerDefUid"])
+                                    .and_then(|entry| entry["clipboard"]["entityInstances"].get(0));
+                                self.entity_index = selected.and_then(|entity| {
+                                    layer["entityInstances"].as_array()?.iter()
+                                        .position(|current| current["iid"] == entity["iid"])
+                                });
+                                if self.entity_index.is_none() {
+                                    self.panel = None;
+                                }
+                            }
                             if let Some(now) = now
                                 && !rules.is_empty()
                             {
@@ -449,7 +470,15 @@ impl EditorApp {
                                 self.defer_selection_render(key, now, snapshots);
                             }
                             self.set_selection_group(next);
-                            self.status = "Selection moved".into();
+                            if report.out_of_bounds.is_empty() && report.copy_limits.is_empty() {
+                                self.status = "Selection moved".into();
+                            } else {
+                                self.status.clear();
+                                for (maximum, identifier) in report.copy_limits {
+                                    self.report_entity_limit(maximum, identifier);
+                                }
+                                self.report_out_of_bounds(&report.out_of_bounds);
+                            }
                             self.status_error = false;
                         }
                         Err(error) => {
@@ -616,14 +645,23 @@ impl EditorApp {
 
     fn finish_entity_gesture(&mut self, key: LevelKey, layer: usize, index: usize) {
         if let Some(project) = &mut self.project {
-            if let Some(entity) = project
+            let name = project
                 .layer(key, layer)
                 .and_then(|l| l["entityInstances"].get(index))
-            {
-                self.history.mark_entity_change(project, key, layer, entity);
-            }
+                .map(|entity| {
+                    self.history.mark_entity_change(project, key, layer, entity);
+                    text(entity, "__identifier", "").to_owned()
+                });
             match project.finish_entity_transform(key, layer, index) {
-                Ok(true) => self.entity_index = None,
+                Ok(true) => {
+                    self.entity_index = None;
+                    if self.panel == Some(Panel::Entity) {
+                        self.panel = None;
+                    }
+                    if let Some(name) = name {
+                        self.report_out_of_bounds(&[name]);
+                    }
+                }
                 Ok(false) => {}
                 Err(error) => {
                     self.history.cancel(project);

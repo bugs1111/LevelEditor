@@ -276,7 +276,7 @@ pub struct EditorApp {
     pending: Option<Action>,
     suggest_backups: bool,
     quick_notification: Option<(String, Option<egui::ImageSource<'static>>, Instant)>,
-    canvas_notice: Option<(notifications::CanvasNotice, Instant)>,
+    canvas_notices: Vec<notifications::CanvasNoticeEntry>,
     loading: Option<Receiver<Result<services::LoadedProject, String>>>,
     loading_progress: Option<Arc<Mutex<Option<(usize, usize)>>>>,
     saving_progress: Option<Arc<Mutex<save_progress::SaveProgress>>>,
@@ -494,7 +494,7 @@ impl EditorApp {
             pending: None,
             suggest_backups: false,
             quick_notification: None,
-            canvas_notice: None,
+            canvas_notices: Vec::new(),
             loading: None,
             loading_progress: None,
             saving_progress: None,
@@ -619,7 +619,7 @@ impl EditorApp {
         let closing_settings = self.panel == Some(Panel::Settings);
         self.suggest_backups = project_dialogs::suggest_backups(&project);
         self.quick_notification = None;
-        self.canvas_notice = None;
+        self.canvas_notices.clear();
         self.selected = project.level_keys().first().copied();
         if self.settings.bool("openLastProject")
             && project.path.as_ref().is_some_and(|p| {
@@ -827,7 +827,7 @@ impl EditorApp {
                 self.project = None;
                 self.suggest_backups = false;
                 self.quick_notification = None;
-                self.canvas_notice = None;
+                self.canvas_notices.clear();
                 self.selected = None;
                 self.active_world = None;
                 self.dirty = false;
@@ -922,6 +922,10 @@ impl EditorApp {
         let conflicts = self.changed_document_files();
         if !conflicts.is_empty() {
             self.external_changes = Some(conflicts);
+            return;
+        }
+        if self.reject_conflicting_save_folder(&path) {
+            ctx.request_repaint();
             return;
         }
         self.queue_project_hooks(ctx, "BeforeSave", hooks::Continuation::Save(path));
@@ -1173,6 +1177,9 @@ impl EditorApp {
 
     fn dialogs(&mut self, ctx: &egui::Context, level_point_picker_was_open: bool) {
         if self.is_busy() {
+            if self.save_failure.is_some() && self.panel == Some(Panel::Entity) {
+                self.show_entity_inspector(ctx);
+            }
             return;
         }
         if self.pending.is_some() {
@@ -3451,6 +3458,103 @@ mod tests {
             assert!(draw(&mut app).shapes.iter().any(|shape| {
                 matches!(&shape.shape, egui::Shape::Text(text) if text.galley.text() == message)
             }), "{message}");
+        }
+    }
+
+    #[test]
+    fn dragging_entities_and_points_outside_reports_the_removed_name_and_can_undo() {
+        let mut project = Project::new();
+        project.add_layer("Actors", "Entities", 16).unwrap();
+        let def = project.add_entity_def("Actor", 16, 16).unwrap();
+        let field = project
+            .add_field_definition(Some(def), "Target", "Point", true)
+            .unwrap();
+        let key = project.level_keys()[0];
+        project.add_entity(key, 0, def, 80, 88).unwrap();
+        let iid = project.layer(key, 0).unwrap()["entityInstances"][0]["iid"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        project
+            .set_field_value(
+                key,
+                Some(&iid),
+                field,
+                serde_json::json!([null, {"cx":10,"cy":8}]),
+            )
+            .unwrap();
+        let mut app = EditorApp::empty();
+        app.grid = false;
+        for (start, end, name, alt) in [
+            ([80., 88.], [-40., 88.], "Actor", false),
+            ([80., 88.], [-40., 88.], "Actor", true),
+            ([168., 136.], [-24., 136.], "Target", false),
+        ] {
+            app.set_project(project.clone());
+            app.fit = false;
+            app.viewport = Viewport {
+                center: [128.; 2],
+                zoom: 1.,
+            };
+            let ctx = egui::Context::default();
+            let modifiers = egui::Modifiers {
+                alt,
+                ..Default::default()
+            };
+            let pos = egui::pos2(start[0], start[1]);
+            canvas_frame(&mut app, &ctx, vec![egui::Event::PointerMoved(pos)], modifiers);
+            canvas_frame(
+                &mut app,
+                &ctx,
+                vec![egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers,
+                }],
+                modifiers,
+            );
+            let pos = egui::pos2(end[0], end[1]);
+            canvas_frame(&mut app, &ctx, vec![egui::Event::PointerMoved(pos)], modifiers);
+            assert!(app.canvas_notices.is_empty(), "warning before release");
+            canvas_frame(
+                &mut app,
+                &ctx,
+                vec![egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers,
+                }],
+                modifiers,
+            );
+            let entities = &app.project.as_ref().unwrap().layer(key, 0).unwrap()["entityInstances"];
+            if name == "Actor" {
+                assert_eq!(entities, &serde_json::json!([]));
+            } else {
+                assert_eq!(entities[0]["iid"], iid);
+                assert_eq!(
+                    entities[0]["fieldInstances"][0]["__value"],
+                    serde_json::json!([null])
+                );
+            }
+            let rect = ctx.content_rect();
+            let draw = |app: &mut EditorApp| {
+                ctx.run(
+                    egui::RawInput { screen_rect: Some(rect), ..Default::default() },
+                    |ctx| app.canvas_notifications(ctx, rect),
+                )
+            };
+            draw(&mut app);
+            let message = format!("Out-of-bounds entity removed: {name}");
+            assert!(draw(&mut app).shapes.iter().any(|shape| {
+                matches!(&shape.shape, egui::Shape::Text(text) if text.galley.text() == message)
+            }), "{message}");
+            app.undo_action(false);
+            assert_eq!(
+                app.project.as_ref().unwrap().layer(key, 0).unwrap()["entityInstances"],
+                project.layer(key, 0).unwrap()["entityInstances"]
+            );
         }
     }
 

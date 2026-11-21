@@ -1,9 +1,57 @@
 use super::*;
 
+pub(super) const SAVED_PROJECT_TITLE: &str = "Saved project";
+
 #[derive(PartialEq, Eq)]
 pub(super) enum CanvasNotice {
     ResizeRemovals(usize),
+    OutOfBounds(String),
     EntityLimit { maximum: i64, identifier: String },
+    SavedProject(String),
+    SavingFailed,
+}
+
+pub(super) struct CanvasNoticeEntry {
+    pub(super) notice: CanvasNotice,
+    since: Instant,
+    compacted: Option<Instant>,
+}
+
+impl CanvasNotice {
+    fn message(&self, ctx: &egui::Context) -> String {
+        match self {
+            Self::ResizeRemovals(removed) => locale::format_ctx(
+                ctx,
+                "{count} entity(ies) deleted during resizing!",
+                &[("count", &removed.to_string())],
+            ),
+            Self::OutOfBounds(names) => locale::format_ctx(
+                ctx,
+                "Out-of-bounds entity removed: {names}",
+                &[("names", names)],
+            ),
+            Self::EntityLimit { maximum, identifier } => locale::format_ctx(
+                ctx,
+                "You cannot have more than {count} {entity}.",
+                &[("count", &maximum.to_string()), ("entity", identifier)],
+            ),
+            Self::SavedProject(_) => locale::tr_ctx(ctx, SAVED_PROJECT_TITLE).into(),
+            Self::SavingFailed => locale::tr_ctx(ctx, "Saving failed!").into(),
+        }
+    }
+
+    fn subtitle(&self) -> Option<&str> {
+        match self {
+            Self::SavedProject(name) => Some(name),
+            _ => None,
+        }
+    }
+
+    fn duration(&self, message: &str) -> f32 {
+        let length = message.encode_utf16().count()
+            + self.subtitle().map_or(0, |name| name.encode_utf16().count());
+        3. + 0.04 * length as f32
+    }
 }
 
 impl EditorApp {
@@ -17,11 +65,171 @@ impl EditorApp {
         self.report_canvas_notice(CanvasNotice::EntityLimit { maximum, identifier });
     }
 
+    pub(super) fn report_out_of_bounds(&mut self, names: &[String]) {
+        if !names.is_empty() {
+            self.report_canvas_notice(CanvasNotice::OutOfBounds(names.join(", ")));
+        }
+    }
+
+    pub(super) fn report_saved_project(&mut self, name: String) {
+        self.report_canvas_notice(CanvasNotice::SavedProject(name));
+    }
+
+    pub(super) fn report_saving_failed(&mut self) {
+        self.report_canvas_notice(CanvasNotice::SavingFailed);
+    }
+
     fn report_canvas_notice(&mut self, notice: CanvasNotice) {
-        if !self.canvas_notice.as_ref().is_some_and(|(last, since)| {
-            *last == notice && since.elapsed().as_secs_f32() <= 0.7
-        }) {
-            self.canvas_notice = Some((notice, Instant::now()));
+        let now = Instant::now();
+        if let Some(last) = self.canvas_notices.last_mut() {
+            let repeated = last.notice == notice
+                || matches!((&last.notice, &notice), (CanvasNotice::SavedProject(_), CanvasNotice::SavedProject(_)));
+            if repeated && now.duration_since(last.since).as_secs_f32() <= 0.7 {
+                return;
+            }
+            last.compacted.get_or_insert(now);
+        }
+        self.canvas_notices.push(CanvasNoticeEntry { notice, since: now, compacted: None });
+    }
+
+    fn paint_canvas_notices(&mut self, ctx: &egui::Context, now: Instant) {
+        use panels::source_controls::css_ease_remaining;
+
+        if self.canvas_notices.is_empty() {
+            return;
+        }
+        let screen = ctx.content_rect();
+        let painter = ctx.layer_painter(egui::LayerId::new(
+            egui::Order::Tooltip, egui::Id::new("canvas-notices"),
+        ));
+        let mut bottom = screen.bottom() - screen.height() * 0.1 - 38.;
+        let mut scheduled = f32::INFINITY;
+        for entry in self.canvas_notices.iter().rev() {
+            let message = entry.notice.message(ctx);
+            let subtitle = entry.notice.subtitle();
+            let age = now.duration_since(entry.since).as_secs_f32();
+            let duration = entry.notice.duration(&message);
+            if age >= duration + 0.1 {
+                continue;
+            }
+            let compact_age = entry.compacted.map(|since| now.duration_since(since).as_secs_f32());
+            let compact_remaining = match compact_age {
+                Some(age) if age < 0.3 => css_ease_remaining(age / 0.3),
+                Some(_) => 0.,
+                None => 1.,
+            };
+            let zoom = if entry.compacted.is_some() { 0.9 } else { 1. };
+            let opacity = 0.8 + 0.2 * compact_remaining;
+            let left = 20. * zoom;
+            let right = (20. + 20. * compact_remaining) * zoom;
+            let vertical = (4. + 2. * compact_remaining) * zoom;
+            let edge_width = (4. + 4. * compact_remaining).round();
+            let horizontal = left + right + edge_width + 1.;
+            let max_text_width = (screen.width() - horizontal - 10.).max(1.);
+            let body_font = FontId::proportional(14.67 * zoom);
+            let title_font = if subtitle.is_some() {
+                FontId::new(14.67 * zoom, egui::FontFamily::Name("body-bold".into()))
+            } else {
+                body_font.clone()
+            };
+            let galley = painter.layout(
+                message, title_font, Color32::PLACEHOLDER, max_text_width,
+            );
+            let subtitle_inset = 4. * zoom;
+            let subtitle = subtitle.map(|text| painter.layout(
+                text.to_owned(), body_font, Color32::PLACEHOLDER,
+                (max_text_width - subtitle_inset).max(1.),
+            ));
+            let text_width = subtitle.as_ref().map_or(galley.size().x, |line| {
+                galley.size().x.max(line.size().x + subtitle_inset)
+            });
+            let subtitle_y = galley.size().y + 4. * zoom;
+            let text_height = subtitle.as_ref().map_or(galley.size().y, |line| subtitle_y + line.size().y);
+            let width = (text_width + left + right).max(150.) + edge_width + 1.;
+            let height = text_height + vertical * 2. + 2.;
+            // Match the source's max-height arrival and jQuery slide-up on dismissal.
+            let arrival_time = if subtitle.is_some() { 1.3 } else { 1. };
+            let arrived = 2. + 200. * (1. - css_ease_remaining((age / arrival_time).min(1.)));
+            let exit = ((age - duration) / 0.1).clamp(0., 1.);
+            let visible = 0.5 + 0.5 * (std::f32::consts::PI * exit).cos();
+            let top = bottom - height.min(arrived) * visible;
+            let row = Rect::from_min_size(egui::pos2(screen.right() - width, top), egui::vec2(width, height));
+            let clip = Rect::from_min_max(
+                egui::pos2(screen.left(), screen.top()),
+                egui::pos2(screen.right(), if top + height > bottom + 0.01 { bottom } else { bottom + 8. }),
+            );
+            bottom = top - 8. * visible;
+            if row.bottom() >= screen.top() {
+                let painter = painter.with_clip_rect(clip);
+                let brightness = if subtitle.is_some() { 1. } else { [(0.25, 7.), (0.4, 3.), (0.85, 1.5), (1.75, 1.)]
+                    .windows(2)
+                    .find_map(|points| {
+                        let [(start, from), (end, to)] = [points[0], points[1]];
+                        (start..end).contains(&age).then(|| {
+                            to + (from - to) * css_ease_remaining((age - start) / (end - start))
+                        })
+                    })
+                    .unwrap_or(1.) };
+                let (fill, edge) = match entry.notice {
+                    CanvasNotice::EntityLimit { .. } | CanvasNotice::SavingFailed => {
+                        ([87, 0, 0], [255, 0, 0])
+                    }
+                    CanvasNotice::SavedProject(_) => ([22, 62, 38], [66, 183, 113]),
+                    _ => ([69, 48, 6], [203, 141, 19]),
+                };
+                let shade = |channels: [u8; 3]| {
+                    let [r, g, b] = channels.map(|v| (f32::from(v) * brightness).round() as u8);
+                    Color32::from_rgb(r, g, b).gamma_multiply(opacity)
+                };
+                let corners = egui::CornerRadius { nw: 3, sw: 3, ..Default::default() };
+                let shadow = egui::epaint::Shadow {
+                    offset: [0, 4], blur: 6, spread: 0,
+                    color: Color32::from_black_alpha(180).gamma_multiply(opacity),
+                };
+                painter.add(shadow.as_shape(row, corners));
+                painter.rect_filled(row, corners, shade(fill));
+                if entry.compacted.is_some()
+                    && let Ok(egui::load::TexturePoll::Ready { texture }) =
+                        egui::Image::new(egui::include_image!("../../assets/img/stripesLight.png"))
+                            .texture_options(egui::TextureOptions::NEAREST_REPEAT)
+                            .load_for_size(ctx, row.size())
+                {
+                    painter.image(
+                        texture.id, row,
+                        Rect::from_min_size(egui::Pos2::ZERO, row.size() / 8.),
+                        Color32::WHITE.gamma_multiply(opacity),
+                    );
+                }
+                let border = shade(edge);
+                painter.rect_stroke(row, corners, Stroke::new(1., border), egui::StrokeKind::Inside);
+                painter.rect_filled(
+                    Rect::from_min_max(egui::pos2(row.right() - edge_width, top), row.max),
+                    0., border,
+                );
+                let pos = row.min + egui::vec2(left + 1., vertical + 1.);
+                let text_opacity = opacity * if entry.compacted.is_some() { 0.8 } else { 1. };
+                painter.galley(pos, galley, Color32::WHITE.gamma_multiply(text_opacity));
+                if let Some(subtitle) = subtitle {
+                    painter.galley(
+                        pos + egui::vec2(subtitle_inset, subtitle_y), subtitle,
+                        Color32::WHITE.gamma_multiply(0.8 * text_opacity),
+                    );
+                }
+            }
+            scheduled = scheduled.min(
+                if age < 1.75 || age >= duration || compact_age.is_some_and(|age| age < 0.3) {
+                    0.016
+                } else {
+                    duration - age
+                },
+            );
+        }
+        self.canvas_notices.retain(|entry| {
+            let duration = entry.notice.duration(&entry.notice.message(ctx));
+            now.duration_since(entry.since).as_secs_f32() < duration + 0.1
+        });
+        if scheduled.is_finite() {
+            ctx.request_repaint_after(std::time::Duration::from_secs_f32(scheduled));
         }
     }
 
@@ -183,95 +391,7 @@ impl EditorApp {
                         });
                 });
         }
-        if let Some((notice, since)) = &self.canvas_notice {
-            let (message, fill, edge) = match notice {
-                CanvasNotice::ResizeRemovals(removed) => (
-                    locale::format_ctx(
-                        ctx,
-                        "{count} entity(ies) deleted during resizing!",
-                        &[("count", &removed.to_string())],
-                    ),
-                    [69, 48, 6],
-                    [203, 141, 19],
-                ),
-                CanvasNotice::EntityLimit { maximum, identifier } => (
-                    locale::format_ctx(
-                        ctx,
-                        "You cannot have more than {count} {entity}.",
-                        &[("count", &maximum.to_string()), ("entity", identifier)],
-                    ),
-                    [87, 0, 0],
-                    [255, 0, 0],
-                ),
-            };
-            let duration = 3. + 0.04 * message.chars().count() as f32;
-            let age = since.elapsed().as_secs_f32();
-            let remaining = duration - age;
-            if remaining <= 0. {
-                self.canvas_notice = None;
-            } else {
-                // The original warning flashes after 250 ms and returns to its normal color.
-                let brightness = [(0.25, 7.), (0.4, 3.), (0.85, 1.5), (1.75, 1.)]
-                    .windows(2)
-                    .find_map(|points| {
-                        let [(start, from), (end, to)] = [points[0], points[1]];
-                        (start..end).contains(&age).then(|| {
-                            let progress = (age - start) / (end - start);
-                            to + (from - to) * panels::source_controls::css_ease_remaining(progress)
-                        })
-                    })
-                    .unwrap_or(1.);
-                let shade = |channels: [u8; 3]| {
-                    let [r, g, b] = channels.map(|v| (f32::from(v) * brightness).round() as u8);
-                    Color32::from_rgb(r, g, b)
-                };
-                let border = shade(edge);
-                let screen = ctx.content_rect();
-                egui::Area::new(egui::Id::new("canvas-notice"))
-                    .anchor(Align2::RIGHT_BOTTOM, egui::vec2(0., -screen.height() * 0.1 - 38.))
-                    .order(egui::Order::Tooltip)
-                    .interactable(false)
-                    .fade_in(false)
-                    .show(ctx, |ui| {
-                        let notice = egui::Frame::new()
-                            .fill(shade(fill))
-                            .stroke(Stroke::new(1., border))
-                            .corner_radius(egui::CornerRadius {
-                                nw: 3,
-                                sw: 3,
-                                ..Default::default()
-                            })
-                            .shadow(egui::epaint::Shadow {
-                                offset: [0, 4],
-                                blur: 6,
-                                spread: 0,
-                                color: Color32::from_black_alpha(180),
-                            })
-                            .inner_margin(egui::Margin {
-                                left: 20,
-                                right: 47,
-                                top: 6,
-                                bottom: 6,
-                            })
-                            .show(ui, |ui| {
-                                ui.set_min_width(81.);
-                                ui.set_max_width((screen.width() - 70.).max(81.));
-                                ui.label(RichText::new(message).size(14.67).color(Color32::WHITE));
-                            });
-                        let rect = notice.response.rect;
-                        ui.painter().rect_filled(
-                            Rect::from_min_max(egui::pos2(rect.right() - 8., rect.top()), rect.max),
-                            0.,
-                            border,
-                        );
-                    });
-                ctx.request_repaint_after(std::time::Duration::from_secs_f32(if age < 1.75 {
-                    0.016
-                } else {
-                    remaining
-                }));
-            }
-        }
+        self.paint_canvas_notices(ctx, Instant::now());
         let id = egui::Id::new("last-notification");
         let mut toast = ctx
             .data_mut(|d| d.get_temp::<(String, Instant)>(id))
@@ -282,8 +402,11 @@ impl EditorApp {
         }
         if !self.is_busy()
             && !self.status.is_empty()
-            && !(matches!(self.canvas_notice, Some((CanvasNotice::ResizeRemovals(_), _)))
-                && self.status == "Level resized")
+            && self.status != SAVED_PROJECT_TITLE
+            && !self.status.starts_with("Save failed: ")
+            && !(self.status == "Level resized" && self.canvas_notices.iter().any(|entry| {
+                matches!(entry.notice, CanvasNotice::ResizeRemovals(_))
+            }))
             && (self.status_error || toast.1.elapsed().as_secs_f32() < 4.0)
             && !self.status.starts_with("Project opened.")
             && !self.status.starts_with("Open a project")
@@ -306,5 +429,70 @@ impl EditorApp {
                         });
                 });
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn paint(app: &mut EditorApp, ctx: &egui::Context, now: Instant) -> egui::FullOutput {
+        let screen = Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1440., 900.));
+        ctx.run(
+            egui::RawInput {
+                screen_rect: Some(screen),
+                ..Default::default()
+            },
+            |ctx| app.paint_canvas_notices(ctx, now),
+        )
+    }
+
+    #[test]
+    fn simultaneous_canvas_notices_keep_the_earlier_message_above_the_latest() {
+        let mut app = EditorApp::empty();
+        let ctx = egui::Context::default();
+        theme::configure(&ctx);
+        app.report_entity_limit(1, "Actor".into());
+        app.report_out_of_bounds(&["Actor".into()]);
+        let at = Instant::now() + std::time::Duration::from_secs(2);
+        let output = paint(&mut app, &ctx, at);
+        let row = |color| {
+            output.shapes.iter().find_map(|shape| match &shape.shape {
+                egui::Shape::Rect(rect) if rect.fill == color && rect.rect.width() > 150. => {
+                    Some(rect.rect)
+                }
+                _ => None,
+            }).expect("notice background")
+        };
+        let red = row(Color32::from_rgb(87, 0, 0).gamma_multiply(0.8));
+        let amber = row(Color32::from_rgb(69, 48, 6));
+        assert_eq!(red.right(), amber.right());
+        assert_eq!(amber.bottom(), 772.);
+        assert!((amber.top() - red.bottom() - 8.).abs() < 0.01);
+        assert!(red.height() < amber.height());
+    }
+
+    #[test]
+    fn canvas_notices_expire_independently_and_repeats_do_not_restart_the_timer() {
+        let mut app = EditorApp::empty();
+        let ctx = egui::Context::default();
+        theme::configure(&ctx);
+        app.report_out_of_bounds(&["A_very_long_entity_identifier".into()]);
+        app.report_entity_limit(1, "A".into());
+        let limit_since = app.canvas_notices[1].since;
+        app.report_entity_limit(1, "A".into());
+        assert_eq!(app.canvas_notices.len(), 2);
+        assert_eq!(app.canvas_notices[1].since, limit_since);
+
+        let at = limit_since + std::time::Duration::from_millis(4500);
+        let output = paint(&mut app, &ctx, at);
+        assert_eq!(app.canvas_notices.len(), 1);
+        assert!(app.canvas_notices[0].compacted.is_some());
+        assert!(output.shapes.iter().any(|shape| {
+            matches!(&shape.shape, egui::Shape::Text(text)
+                if text.galley.text().ends_with("A_very_long_entity_identifier"))
+        }));
+        paint(&mut app, &ctx, at + std::time::Duration::from_secs(2));
+        assert!(app.canvas_notices.is_empty());
     }
 }

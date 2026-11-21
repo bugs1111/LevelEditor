@@ -508,31 +508,33 @@ impl EditorApp {
         {
             self.capture_selection(region);
         }
-        let Some(group) = self.selection_group.clone() else {
-            if let Some(index) = self.entity_index {
-                let layer = self.layer;
-                self.edit_level_marked("Entity deleted", key, |p, history| {
-                    if let Some(entity) = p
-                        .layer(key, layer)
-                        .and_then(|l| l["entityInstances"].get(index))
-                    {
-                        history.mark_entity_change(p, key, layer, entity);
-                    }
-                    p.remove_entity_with_references(key, layer, index)
-                });
-                self.entity_index = None;
-            }
-            return;
-        };
-        if self
-            .edit_level_marked("Selection deleted", key, |p, history| {
+        let removed = if let Some(group) = self.selection_group.clone() {
+            self.edit_level_marked("Selection deleted", key, |p, history| {
                 bleep::mark_group(history, p, key, &group, true);
                 p.delete_selection_group(key, &group)
             })
             .is_some()
-        {
+        } else if let Some(index) = self.entity_index {
+            let layer = self.layer;
+            self.edit_level_marked("Entity deleted", key, |p, history| {
+                if let Some(entity) = p
+                    .layer(key, layer)
+                    .and_then(|l| l["entityInstances"].get(index))
+                {
+                    history.mark_entity_change(p, key, layer, entity);
+                }
+                p.remove_entity_with_references(key, layer, index)
+            }) == Some(true)
+        } else {
+            false
+        };
+        if removed {
             self.selection = None;
             self.selection_group = None;
+            self.entity_index = None;
+            if self.panel == Some(Panel::Entity) {
+                self.panel = None;
+            }
         }
     }
 }

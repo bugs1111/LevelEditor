@@ -377,6 +377,40 @@ mod tests {
         app
     }
     #[test]
+    fn copying_an_entity_by_drag_moves_the_inspector_to_the_duplicate() {
+        let mut project = Project::new();
+        project.add_layer("Actors", "Entities", 16).unwrap();
+        let uid = project.add_entity_def("Actor", 16, 16).unwrap();
+        project.add_entity(K, 0, uid, 40, 40).unwrap();
+        let mut app = app(project);
+        app.grid = false;
+        assert!(app.select_element_at([40., 40.], true, Some(egui::Pos2::ZERO)));
+        let Some(tools::Gesture::SelectionMove {
+            world_end, moved, ..
+        }) = &mut app.gesture
+        else {
+            panic!("copy drag did not start");
+        };
+        *world_end = [72., 56.];
+        *moved = true;
+        app.finish_gesture();
+
+        let entities = &app.project.as_ref().unwrap().layer(K, 0).unwrap()["entityInstances"];
+        assert_eq!(entities[0]["px"], json!([40, 40]));
+        assert_eq!(entities[1]["px"], json!([72, 56]));
+        assert_ne!(entities[0]["iid"], entities[1]["iid"]);
+        assert_eq!(app.panel, Some(Panel::Entity));
+        assert_eq!(app.entity_index, Some(1));
+
+        app.delete_selection();
+        assert_eq!(app.panel, None);
+        assert_eq!(app.entity_index, None);
+        let entities = &app.project.as_ref().unwrap().layer(K, 0).unwrap()["entityInstances"];
+        assert_eq!(entities.as_array().unwrap().len(), 1);
+        assert_eq!(entities[0]["px"], json!([40, 40]));
+    }
+
+    #[test]
     fn alt_pick_top_layer_creates_a_group_that_drags_and_deletes() {
         let mut p = Project::new();
         p.add_layer("Bottom", "IntGrid", 16).unwrap();

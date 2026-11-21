@@ -427,11 +427,11 @@ mod tests {
         let def = project.add_entity_def("Actor", 16, 16).unwrap();
         assert!(project.add_entity(key, 0, def, 32, 16).unwrap());
         app.level_resize = Some(resize(&app, [1, 0], [-224., 0.]));
-        assert!(app.canvas_notice.is_none());
+        assert!(app.canvas_notices.is_empty());
         app.finish_level_resize();
         assert!(matches!(
-            app.canvas_notice,
-            Some((notifications::CanvasNotice::ResizeRemovals(1), _))
+            app.canvas_notices.first().map(|entry| &entry.notice),
+            Some(notifications::CanvasNotice::ResizeRemovals(1))
         ));
         assert!(app.last_chance.is_none());
         let project = app.project.as_mut().unwrap();

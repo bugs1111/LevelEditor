@@ -1,8 +1,14 @@
 //! Mixed-layer selections retain stable object identities and original layer-local data.
-use crate::workflow::{iid, invalid, remap_refs};
+use crate::workflow::{iid, invalid, remap_field_refs};
 use crate::{DeferredAutoLayers, LevelKey, Project, Result};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
+
+#[derive(Default)]
+pub struct SelectionDragReport {
+    pub out_of_bounds: Vec<String>,
+    pub copy_limits: Vec<(i64, String)>,
+}
 pub fn selection_group_is_entity_only(group: &Value) -> bool {
     let Some(layers) = group["layers"].as_array() else {
         return false;
@@ -259,7 +265,7 @@ fn transform(
             }
     })
 }
-fn delete(p: &mut Project, key: LevelKey, group: &Value, delete_points: bool) -> Result<usize> {
+fn delete(p: &mut Project, key: LevelKey, group: &Value, delete_objects: bool) -> Result<usize> {
     if group["type"] != "SelectionGroup" {
         return Err(invalid("not a selection group"));
     }
@@ -317,12 +323,12 @@ fn delete(p: &mut Project, key: LevelKey, group: &Value, delete_points: bool) ->
             });
             count += before - tiles.len();
         }
-        if let Some(entities) = layer["entityInstances"].as_array_mut() {
-            let before = entities.len();
-            entities.retain(|e| !e["iid"].as_str().is_some_and(|id| ids.contains(id)));
-            count += before - entities.len();
-        }
-        if delete_points {
+        if delete_objects {
+            if let Some(entities) = layer["entityInstances"].as_array_mut() {
+                let before = entities.len();
+                entities.retain(|e| !e["iid"].as_str().is_some_and(|id| ids.contains(id)));
+                count += before - entities.len();
+            }
             let mut points = entry["points"].as_array().cloned().unwrap_or_default();
             points
                 .sort_by_key(|point| std::cmp::Reverse(point["arrayIndex"].as_u64().unwrap_or(0)));
@@ -593,8 +599,9 @@ fn apply_deferred(
     stack: bool,
     duplicate: bool,
     provided_remaps: Option<&BTreeMap<String, Value>>,
+    move_originals: &BTreeSet<String>,
     finish: bool,
-) -> Result<(usize, Value)> {
+) -> Result<(usize, Value, Vec<String>)> {
     if group["type"] != "SelectionGroup" {
         return Err(invalid("not a selection group"));
     }
@@ -603,7 +610,7 @@ fn apply_deferred(
         out["origin"] = json!(target);
         out["levelIid"] = p.level(key).ok_or_else(|| invalid("level not loaded"))?["iid"].clone();
         out["elementCount"] = json!(0);
-        return Ok((0, out));
+        return Ok((0, out, vec![]));
     }
     let origin = pair(&group["origin"])?;
     let size = pair(&group["size"])?;
@@ -624,16 +631,23 @@ fn apply_deferred(
                     .as_str()
                     .ok_or_else(|| invalid("entity IID missing"))?
                     .to_owned();
+                if move_originals.contains(&old) {
+                    continue;
+                }
                 let new = remaps.get(&old).cloned().unwrap_or_else(iid);
                 remaps.insert(old, new.clone());
                 entity["iid"] = new;
             }
         }
         for entry in material["layers"].as_array_mut().expect("validated layers") {
-            let mut temporary = json!({"layerInstances":[{"entityInstances":entry["clipboard"]["entityInstances"]}]});
-            remap_refs(&mut temporary, &remaps, false);
-            entry["clipboard"]["entityInstances"] =
-                temporary["layerInstances"][0]["entityInstances"].clone();
+            for entity in entry["clipboard"]["entityInstances"].as_array_mut().into_iter().flatten() {
+                if entity["iid"].as_str().is_some_and(|id| move_originals.contains(id)) {
+                    continue;
+                }
+                for field in entity["fieldInstances"].as_array_mut().into_iter().flatten() {
+                    remap_field_refs(field, &remaps, false);
+                }
+            }
         }
     }
     let defs = p.json["defs"]["entities"]
@@ -641,6 +655,7 @@ fn apply_deferred(
         .cloned()
         .unwrap_or_default();
     let mut count = 0;
+    let mut out_of_bounds = vec![];
     for entry in material["layers"]
         .as_array()
         .ok_or_else(|| invalid("selection layers missing"))?
@@ -816,6 +831,7 @@ fn apply_deferred(
             }
             "Entities" => {
                 let mut additions = vec![];
+                let mut moved = BTreeMap::new();
                 for entity in entry["clipboard"]["entityInstances"]
                     .as_array()
                     .into_iter()
@@ -849,16 +865,17 @@ fn apply_deferred(
                         .find(|d| d["uid"] == e["defUid"])
                         .ok_or_else(|| invalid("clipboard entity definition missing"))?;
                     e["px"] = json!(local);
-                    if def["allowOutOfBounds"] != true
-                        && crate::workflow::entity_out_of_layer_bounds(
+                    let in_bounds = def["allowOutOfBounds"] == true
+                        || !crate::workflow::entity_out_of_layer_bounds(
                             p,
                             p.layer(key, index).expect("selected layer"),
                             &e,
-                        )
-                    {
-                        continue;
+                        );
+                    if !in_bounds {
+                        out_of_bounds.extend(def["identifier"].as_str().map(str::to_owned));
                     }
-                    if duplicate {
+                    let id = entity["iid"].as_str().ok_or_else(|| invalid("entity IID missing"))?;
+                    if duplicate && in_bounds {
                         move_entity_points(
                             &mut e,
                             source_offset,
@@ -876,16 +893,37 @@ fn apply_deferred(
                             [width, height],
                         )?;
                     }
-                    additions.push(e);
+                    if !duplicate || move_originals.contains(id) {
+                        moved.insert(id, in_bounds.then_some(e));
+                    } else if in_bounds {
+                        additions.push(e);
+                    }
                 }
-                if duplicate {
-                    crate::selection::validate_entity_clipboard(p, key, index, &additions)?;
-                }
-                count += additions.len();
-                p.layer_mut(key, index).expect("selected layer")["entityInstances"]
+                let entities = p.layer_mut(key, index).expect("selected layer")["entityInstances"]
                     .as_array_mut()
-                    .ok_or_else(|| invalid("entities missing"))?
-                    .extend(additions);
+                    .ok_or_else(|| invalid("entities missing"))?;
+                if !moved.is_empty() {
+                    // Instance order is the manual depth order. Apply moves in the original slots.
+                    entities.retain_mut(|entity| {
+                        match entity["iid"].as_str().and_then(|id| moved.remove(id)) {
+                            Some(Some(updated)) => {
+                                *entity = updated;
+                                count += 1;
+                                true
+                            }
+                            Some(None) => false,
+                            None => true,
+                        }
+                    });
+                }
+                if duplicate && !additions.is_empty() {
+                    crate::selection::validate_entity_clipboard(p, key, index, &additions)?;
+                    count += additions.len();
+                    p.layer_mut(key, index).expect("selected layer")["entityInstances"]
+                        .as_array_mut()
+                        .expect("validated entities")
+                        .extend(additions);
+                }
             }
             _ => return Err(invalid("unsupported selection layer type")),
         }
@@ -922,12 +960,11 @@ fn apply_deferred(
                 .ok_or_else(|| invalid("selected point field missing"))?;
             let idx = point["arrayIndex"].as_u64().unwrap_or(0) as usize;
             let insert = duplicate && field["__type"] == "Array<Point>";
-            put_point(
-                field,
-                idx,
-                (pt[0] >= 0 && pt[1] >= 0 && pt[0] < width && pt[1] < height).then_some(pt),
-                insert,
-            )?;
+            let in_bounds = pt[0] >= 0 && pt[1] >= 0 && pt[0] < width && pt[1] < height;
+            if !in_bounds {
+                out_of_bounds.extend(field["__identifier"].as_str().map(str::to_owned));
+            }
+            put_point(field, idx, in_bounds.then_some(pt), insert)?;
             count += 1;
         }
     }
@@ -935,7 +972,7 @@ fn apply_deferred(
         p.refresh_auto_and_derived()?;
     }
     let result = selection_result(p, key, group, &material, target, flips, duplicate, &remaps)?;
-    Ok((count, result))
+    Ok((count, result, out_of_bounds))
 }
 fn element_count(group: &Value) -> usize {
     group["layers"]
@@ -1200,7 +1237,8 @@ fn apply(
     stack: bool,
     duplicate: bool,
 ) -> Result<(usize, Value)> {
-    apply_deferred(p, key, group, target, flips, stack, duplicate, None, true)
+    apply_deferred(p, key, group, target, flips, stack, duplicate, None, &BTreeSet::new(), true)
+        .map(|(count, group, _)| (count, group))
 }
 
 fn geometry(entry: &Value) -> Result<([f64; 2], f64)> {
@@ -1361,8 +1399,10 @@ impl Project {
                 false,
                 false,
                 true,
+                None,
                 true,
             )
+            .map(|(group, _)| group)
         })
     }
 
@@ -1389,8 +1429,10 @@ impl Project {
                 false,
                 false,
                 false,
+                None,
                 true,
             )
+            .map(|(group, _)| group)
         })
     }
     #[allow(clippy::too_many_arguments)]
@@ -1420,8 +1462,10 @@ impl Project {
                 stack,
                 true,
                 false,
+                None,
                 true,
             )
+            .map(|(group, _)| group)
         })
     }
 
@@ -1438,6 +1482,22 @@ impl Project {
         free_entities: bool,
         pending: Option<&mut DeferredAutoLayers>,
     ) -> Result<Value> {
+        self.drag_selection_group_with_report(key, group, delta, geometries, copy, free_entities, pending)
+            .map(|(group, _)| group)
+    }
+
+    /// Apply a drag and return the selection and its user-facing notices.
+    #[allow(clippy::too_many_arguments)]
+    pub fn drag_selection_group_with_report(
+        &mut self,
+        key: LevelKey,
+        group: &Value,
+        delta: [f64; 2],
+        geometries: &Value,
+        copy: bool,
+        free_entities: bool,
+        pending: Option<&mut DeferredAutoLayers>,
+    ) -> Result<(Value, SelectionDragReport)> {
         let mut candidate = self.clone();
         let group = if copy {
             paste_geometry(group, geometries)?
@@ -1448,7 +1508,8 @@ impl Project {
         if free_entities && !selection_group_is_entity_only(&group) {
             return Err(invalid("free movement requires an entity-only selection"));
         }
-        let next = apply_geometry(
+        let mut report = SelectionDragReport::default();
+        let (next, removed) = apply_geometry(
             &mut candidate,
             key,
             &group,
@@ -1458,8 +1519,10 @@ impl Project {
             copy,
             copy,
             free_entities,
+            copy.then_some(&mut report.copy_limits),
             pending.is_none(),
         )?;
+        report.out_of_bounds = removed;
         if let Some(pending) = pending {
             let old = self
                 .level(key)
@@ -1482,8 +1545,66 @@ impl Project {
             candidate.update_auto_layers_after_selection(key, &changed, pending)?;
         }
         *self = candidate;
-        Ok(next)
+        Ok((next, report))
     }
+}
+
+fn drag_copy_limits(
+    p: &Project,
+    key: LevelKey,
+    group: &Value,
+    delta: [f64; 2],
+    warnings: &mut Vec<(i64, String)>,
+) -> Result<BTreeSet<String>> {
+    let mut move_originals = BTreeSet::new();
+    let mut counts = BTreeMap::new();
+    for entry in group["layers"].as_array().into_iter().flatten() {
+        let Some(entities) = entry["clipboard"]["entityInstances"].as_array() else {
+            continue;
+        };
+        if entities.is_empty() {
+            continue;
+        }
+        let index = layer_index(p, key, entry)?;
+        let layer = p.layer(key, index).expect("selected layer");
+        let origin = pair(&entry["origin"])?;
+        let shift = [
+            origin[0] - n(layer, "__pxTotalOffsetX") + delta[0].trunc() as i64,
+            origin[1] - n(layer, "__pxTotalOffsetY") + delta[1].trunc() as i64,
+        ];
+        for entity in entities {
+            let uid = n(entity, "defUid");
+            let def = p.definition("entities", uid)
+                .ok_or_else(|| invalid("clipboard entity definition missing"))?;
+            let maximum = n(def, "maxCount");
+            if maximum <= 0 {
+                continue;
+            }
+            let scope = def["limitScope"].as_str().unwrap_or("PerLevel");
+            let count = match counts.entry((uid, (scope == "PerLayer").then_some(index))) {
+                std::collections::btree_map::Entry::Occupied(entry) => entry.into_mut(),
+                std::collections::btree_map::Entry::Vacant(entry) => entry.insert(
+                    crate::selection::entity_count_in_limit_scope(p, key, index, uid, scope)?,
+                ),
+            };
+            let [x, y] = pair(&entity["px"])?;
+            let mut destination = entity.clone();
+            destination["px"] = json!([x + shift[0], y + shift[1]]);
+            let in_bounds = def["allowOutOfBounds"] == true
+                || !crate::workflow::entity_out_of_layer_bounds(p, layer, &destination);
+            if *count >= maximum as usize {
+                let id = entity["iid"].as_str().ok_or_else(|| invalid("entity IID missing"))?;
+                move_originals.insert(id.to_owned());
+                warnings.push((maximum, def["identifier"].as_str().unwrap_or_default().to_owned()));
+                if !in_bounds {
+                    *count -= 1;
+                }
+            } else if in_bounds {
+                *count += 1;
+            }
+        }
+    }
+    Ok(move_originals)
 }
 
 fn paste_geometry(group: &Value, geometries: &Value) -> Result<Value> {
@@ -1601,8 +1722,9 @@ fn apply_geometry(
     stack: bool,
     duplicate: bool,
     free_entities: bool,
+    drag_warnings: Option<&mut Vec<(i64, String)>>,
     rebuild_all_rules: bool,
-) -> Result<Value> {
+) -> Result<(Value, Vec<String>)> {
     if delta
         .iter()
         .any(|v| !v.is_finite() || v.abs() > i32::MAX as f64)
@@ -1610,7 +1732,7 @@ fn apply_geometry(
         return Err(invalid("invalid selection movement"));
     }
     if element_count(group) == 0 {
-        return Ok(group.clone());
+        return Ok((group.clone(), vec![]));
     }
     if !duplicate && !free_entities && group["compatibleGrids"] == false {
         return Err(invalid("selection contains incompatible layer grid sizes"));
@@ -1619,9 +1741,16 @@ fn apply_geometry(
         .as_f64()
         .filter(|g| *g > 0.)
         .ok_or_else(|| invalid("selection scaled grid missing"))?;
+    let move_originals = match drag_warnings {
+        Some(warnings) => drag_copy_limits(p, key, group, delta, warnings)?,
+        None => BTreeSet::new(),
+    };
     let ids = selected_ids(group);
     let remaps = if duplicate {
-        ids.iter().map(|id| (id.clone(), json!(iid()))).collect()
+        ids.iter()
+            .filter(|id| !move_originals.contains(*id))
+            .map(|id| (id.clone(), json!(iid())))
+            .collect()
     } else {
         BTreeMap::new()
     };
@@ -1633,6 +1762,7 @@ fn apply_geometry(
         out["originalRects"] = clear_arrival_rectangles(p, key, group, delta, geometries)?;
     }
     let mut entries = vec![];
+    let mut out_of_bounds = vec![];
     for original in group["layers"]
         .as_array()
         .ok_or_else(|| invalid("selection layers missing"))?
@@ -1667,7 +1797,7 @@ fn apply_geometry(
         });
         material["pointTranslation"] = json!(point_delta);
         let one = json!({"type":"SelectionGroup","levelIid":group["levelIid"],"origin":origin,"size":size,"emptySpace":false,"layers":[material]});
-        let (_, result) = apply_deferred(
+        let (_, result, removed_entities) = apply_deferred(
             p,
             key,
             &one,
@@ -1676,6 +1806,7 @@ fn apply_geometry(
             stack,
             duplicate,
             Some(&remaps),
+            &move_originals,
             false,
         )?;
         let mut entry = result["layers"][0].clone();
@@ -1689,9 +1820,17 @@ fn apply_geometry(
                 .as_array_mut()
                 .expect("selection points")
                 .retain(|pt| !pt["entityIid"].as_str().is_some_and(|id| ids.contains(id)));
+        } else if !removed_entities.is_empty() {
+            let retained = selected_ids(&result);
+            point_entry["points"]
+                .as_array_mut()
+                .expect("selection points")
+                .retain(|pt| {
+                    !pt["entityIid"].as_str().is_some_and(|id| ids.contains(id) && !retained.contains(id))
+                });
         }
         let points = json!({"type":"SelectionGroup","levelIid":group["levelIid"],"origin":origin,"size":size,"layers":[point_entry]});
-        let (_, result) = apply_deferred(
+        let (_, result, removed_points) = apply_deferred(
             p,
             key,
             &points,
@@ -1700,8 +1839,11 @@ fn apply_geometry(
             stack,
             duplicate,
             Some(&remaps),
+            &move_originals,
             false,
         )?;
+        out_of_bounds.extend(removed_entities);
+        out_of_bounds.extend(removed_points);
         entry["points"]
             .as_array_mut()
             .expect("selection points")
@@ -1730,5 +1872,5 @@ fn apply_geometry(
     ]);
     out = p.refresh_selection_group(key, &out)?;
     geometry_stats(&mut out)?;
-    Ok(out)
+    Ok((out, out_of_bounds))
 }

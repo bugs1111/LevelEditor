@@ -13,8 +13,18 @@ pub(super) struct SavedProject {
 }
 
 pub(super) enum SaveFailure {
-    Write { path: PathBuf, message: String },
+    Write { path: PathBuf, reason: SaveWriteFailure },
     MissingTarget(PathBuf),
+}
+
+pub(super) enum SaveWriteFailure {
+    DirectoryConflict,
+    Io(String),
+}
+
+fn save_folder_conflicts(path: &Path) -> bool {
+    let folder = path.with_extension("");
+    folder != path && std::fs::metadata(folder).is_ok_and(|metadata| !metadata.is_dir())
 }
 
 pub(super) fn prepare_project(
@@ -53,6 +63,27 @@ pub(super) fn prepare_project(
 }
 
 impl EditorApp {
+    pub(super) fn reject_conflicting_save_folder(&mut self, path: &Path) -> bool {
+        if !save_folder_conflicts(path) {
+            return false;
+        }
+        self.fail_save(path.to_owned(), SaveWriteFailure::DirectoryConflict);
+        true
+    }
+
+    fn fail_save(&mut self, path: PathBuf, reason: SaveWriteFailure) {
+        self.clear_save_progress();
+        self.status = match &reason {
+            SaveWriteFailure::DirectoryConflict => {
+                format!("Save failed: {} occupies the project folder path", path.with_extension("").display())
+            }
+            SaveWriteFailure::Io(error) => format!("Save failed: {error}"),
+        };
+        self.status_error = true;
+        self.report_saving_failed();
+        self.save_failure = Some(SaveFailure::Write { path, reason });
+    }
+
     pub(super) fn create_project_async(&mut self, ctx: &egui::Context, path: PathBuf) {
         if self.is_busy() {
             return;
@@ -149,8 +180,13 @@ impl EditorApp {
                         .project
                         .as_ref()
                         .and_then(|p| p.filesystem_snapshot().ok());
+                    let saved_name = self.project.as_ref()
+                        .and_then(|p| p.path.as_deref())
+                        .and_then(Path::file_stem)
+                        .filter(|_| saved.report.export_errors.is_empty())
+                        .map(|name| name.to_string_lossy().into_owned());
                     self.status = if saved.report.export_errors.is_empty() {
-                        format!("Saved {} files", saved.report.outputs.len())
+                        notifications::SAVED_PROJECT_TITLE.into()
                     } else {
                         format!("Project saved; {}", saved.report.export_errors.join("; "))
                     };
@@ -176,31 +212,25 @@ impl EditorApp {
                             .unwrap_or(0);
                         self.settings.remember(path, uid);
                     }
-                    self.queue_project_hooks(ctx, "AfterSave", hooks::Continuation::AfterSave);
+                    self.queue_project_hooks(ctx, "AfterSave", hooks::Continuation::AfterSave(saved_name));
                 }
                 Err(e) => {
-                    self.saving_progress = None;
-                    self.status = format!("Save failed: {e}");
-                    self.status_error = true;
                     if let Some(path) = self.save_attempt.take() {
                         let folder = path.with_extension("");
-                        let message = match &e {
+                        let reason = match &e {
                             ldtk_core::Error::Io { path: failed, .. }
-                                if folder != path
-                                    && failed.starts_with(&folder)
-                                    && folder.is_file() =>
+                                if failed.starts_with(&folder) && save_folder_conflicts(&path) =>
                             {
-                                format!(
-                                    "I need to create a folder named \"{}\", but there is a file with the exact same name there.",
-                                    folder
-                                        .file_name()
-                                        .unwrap_or(folder.as_os_str())
-                                        .to_string_lossy()
-                                )
+                                SaveWriteFailure::DirectoryConflict
                             }
-                            _ => e.to_string(),
+                            _ => SaveWriteFailure::Io(e.to_string()),
                         };
-                        self.save_failure = Some(SaveFailure::Write { path, message });
+                        self.fail_save(path, reason);
+                    } else {
+                        self.clear_save_progress();
+                        self.status = format!("Save failed: {e}");
+                        self.status_error = true;
+                        self.report_saving_failed();
                     }
                 }
             }
@@ -672,6 +702,46 @@ mod creation_tests {
             assert!(app.exporting.is_none());
             assert!(app.exporting_progress.is_none());
             assert_eq!(app.status_error, failed);
+        }
+    }
+
+    #[test]
+    fn completed_save_shows_a_localized_title_and_the_project_file_stem() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("雨.林.ldtk");
+        let ctx = egui::Context::default();
+        theme::configure(&ctx);
+        let mut app = EditorApp::empty();
+        app.set_project(Project::new());
+        app.save_async_at(path.clone());
+
+        let until = Instant::now() + std::time::Duration::from_secs(5);
+        while app.saving.is_some() && Instant::now() < until {
+            app.poll_services(&ctx);
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(app.saving.is_none());
+        assert!(Project::load(&path).is_ok());
+        app.clear_save_progress();
+
+        let screen = Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1440., 900.));
+        for (language, title) in [
+            (locale::Language::English, "Saved project"),
+            (locale::Language::SimplifiedChinese, "项目已保存"),
+        ] {
+            locale::set(&ctx, language);
+            let output = ctx.run(
+                egui::RawInput { screen_rect: Some(screen), ..Default::default() },
+                |ctx| app.canvas_notifications(ctx, screen),
+            );
+            let text = |label| output.shapes.iter().find_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) if text.galley.text() == label => Some(text.pos),
+                _ => None,
+            });
+            let title = text(title).expect("successful save title");
+            let name = text("雨.林").expect("file stem as notification subtitle");
+            assert!(name.x > title.x && name.y > title.y);
+            assert!(text("Saved 1 files").is_none());
         }
     }
 

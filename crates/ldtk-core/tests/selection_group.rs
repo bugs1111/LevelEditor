@@ -4,6 +4,134 @@ const K: LevelKey = LevelKey {
     world: None,
     level: 0,
 };
+
+#[test]
+fn moving_selected_entities_preserves_depth_and_removes_only_out_of_bounds_entities() {
+    let mut p = Project::new();
+    let layer = p.add_layer("Actors", "Entities", 16).unwrap();
+    p.update_layer_properties(layer, &json!({"entityDepthSorting":"Manual"}))
+        .unwrap();
+    let actor = p.add_entity_def("Actor", 16, 16).unwrap();
+    for x in [32, 80, 128] {
+        assert!(p.add_entity(K, 0, actor, x, 32).unwrap());
+    }
+    let before = p.layer(K, 0).unwrap()["entityInstances"].clone();
+    let geometries = json!([{"layerDefUid":layer,"origin":[0.,0.],"scale":1.}]);
+    let regions = json!([{"layerIndex":0,"rect":[2,2,1,1],"geometry":geometries[0]}]);
+    let group = p
+        .copy_selection_group_from_regions(K, &regions, [32, 32, 16, 16])
+        .unwrap();
+    assert_eq!(group["elementCount"], 1);
+
+    let moved = p
+        .drag_selection_group_with_geometry(K, &group, [48., 0.], &geometries, false, true, None)
+        .unwrap();
+    let mut expected = before.clone();
+    expected[0]["px"] = json!([80, 32]);
+    expected[0]["__grid"] = json!([5, 2]);
+    expected[0]["__worldX"] = json!(80);
+    assert_eq!(p.layer(K, 0).unwrap()["entityInstances"], expected);
+
+    let outside = p
+        .drag_selection_group_with_geometry(K, &moved, [-128., 0.], &geometries, false, true, None)
+        .unwrap();
+    assert_eq!(outside["elementCount"], 0);
+    assert_eq!(
+        p.layer(K, 0).unwrap()["entityInstances"].as_array().unwrap(),
+        &before.as_array().unwrap()[1..]
+    );
+}
+
+#[test]
+fn moving_a_selection_outside_drops_an_entity_and_its_selected_points_together() {
+    let mut p = Project::new();
+    let layer = p.add_layer("Actors", "Entities", 16).unwrap();
+    let actor = p.add_entity_def("Actor", 16, 16).unwrap();
+    let point = p
+        .add_field_definition(Some(actor), "Target", "Point", false)
+        .unwrap();
+    p.add_entity(K, 0, actor, 32, 32).unwrap();
+    let iid = p.layer(K, 0).unwrap()["entityInstances"][0]["iid"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    p.set_field_value(K, Some(&iid), point, json!({"cx":3,"cy":3}))
+        .unwrap();
+    let group = p.select_all_group(K, &[0]).unwrap();
+    assert_eq!(group["elementCount"], 2);
+    let geometries = json!([{"layerDefUid":layer,"origin":[0.,0.],"scale":1.}]);
+    let (next, report) = p
+        .drag_selection_group_with_report(K, &group, [-64., 0.], &geometries, false, false, None)
+        .unwrap();
+    assert_eq!(report.out_of_bounds, ["Actor"]);
+    assert_eq!(next["elementCount"], 0);
+    assert_eq!(p.layer(K, 0).unwrap()["entityInstances"], json!([]));
+}
+
+#[test]
+fn limited_copy_drag_moves_the_original_and_its_point_for_every_policy() {
+    for policy in ["PreventAdding", "DiscardOldOnes", "MoveLastOne"] {
+        let mut p = Project::new();
+        let layer = p.add_layer("Actors", "Entities", 16).unwrap();
+        let def = p.add_entity_def("Actor", 16, 16).unwrap();
+        let point = p
+            .add_field_definition(Some(def), "Target", "Point", false)
+            .unwrap();
+        p.update_entity_definition(
+            def,
+            &json!({"maxCount":1,"limitBehavior":policy,"limitScope":"PerLevel"}),
+        )
+        .unwrap();
+        p.add_entity(K, 0, def, 32, 32).unwrap();
+        let id = p.layer(K, 0).unwrap()["entityInstances"][0]["iid"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        p.set_field_value(K, Some(&id), point, json!({"cx":6,"cy":6}))
+            .unwrap();
+        let geometries = json!([{"layerDefUid":layer,"origin":[0.,0.],"scale":1.}]);
+        let regions = json!([{"layerIndex":0,"rect":[2,2,1,1],"geometry":geometries[0]}]);
+        let group = p.copy_selection_group_from_regions(K, &regions, [32, 32, 16, 16]).unwrap();
+        let (next, report) = p
+            .drag_selection_group_with_report(K, &group, [32., 16.], &geometries, true, false, None)
+            .unwrap();
+        assert_eq!(report.copy_limits, [(1, "Actor".to_owned())]);
+        let entities = p.layer(K, 0).unwrap()["entityInstances"].as_array().unwrap();
+        assert_eq!(entities.len(), 1);
+        assert_eq!(entities[0]["iid"], id);
+        assert_eq!(entities[0]["px"], json!([64, 48]));
+        assert_eq!(entities[0]["fieldInstances"][0]["__value"], json!({"cx":8,"cy":7}));
+        assert_eq!(next["layers"][0]["clipboard"]["entityInstances"][0]["iid"], id);
+    }
+}
+
+#[test]
+fn copy_drag_uses_the_available_slots_in_selection_order_and_moves_the_rest() {
+    let mut p = Project::new();
+    let layer = p.add_layer("Actors", "Entities", 16).unwrap();
+    let def = p.add_entity_def("Actor", 16, 16).unwrap();
+    p.update_entity_definition(def, &json!({"maxCount":3,"limitScope":"PerLevel"}))
+        .unwrap();
+    for x in [32, 96] {
+        assert!(p.add_entity(K, 0, def, x, 32).unwrap());
+    }
+    let original = p.layer(K, 0).unwrap()["entityInstances"].clone();
+    let group = p.select_all_group(K, &[0]).unwrap();
+    let geometries = json!([{"layerDefUid":layer,"origin":[0.,0.],"scale":1.}]);
+    let (next, report) = p
+        .drag_selection_group_with_report(K, &group, [32., 16.], &geometries, true, false, None)
+        .unwrap();
+    assert_eq!(report.copy_limits, [(3, "Actor".to_owned())]);
+    let entities = p.layer(K, 0).unwrap()["entityInstances"].as_array().unwrap();
+    assert_eq!(entities.len(), 3);
+    assert_eq!(entities[0], original[0]);
+    assert_eq!(entities[1]["iid"], original[1]["iid"]);
+    assert_eq!(entities[1]["px"], json!([128, 48]));
+    assert_ne!(entities[2]["iid"], original[0]["iid"]);
+    assert_eq!(entities[2]["px"], json!([64, 48]));
+    assert_eq!(next["elementCount"], 2);
+}
+
 #[test]
 fn mixed_grid_move_keeps_layer_cells_and_identity_and_zero_holes_do_not_erase_destinations() {
     let mut p = Project::new();
