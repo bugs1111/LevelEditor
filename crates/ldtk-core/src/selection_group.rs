@@ -1,6 +1,6 @@
 //! Mixed-layer selections retain stable object identities and original layer-local data.
 use crate::workflow::{iid, invalid, remap_field_refs};
-use crate::{DeferredAutoLayers, LevelKey, Project, Result};
+use crate::{DeferredAutoLayers, Error, LevelKey, Project, Result};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -1290,7 +1290,164 @@ fn geometry_stats(group: &mut Value) -> Result<()> {
     group["elementCount"] = json!(element_count(group));
     Ok(())
 }
+
+fn selection_bounds(a: [i64; 4], b: [i64; 4]) -> [i64; 4] {
+    let x = a[0].min(b[0]);
+    let y = a[1].min(b[1]);
+    [
+        x,
+        y,
+        (a[0] + a[2]).max(b[0] + b[2]) - x,
+        (a[1] + a[3]).max(b[1] + b[3]) - y,
+    ]
+}
+
+fn merge_selection_entries(first: &mut Value, second: Value) -> Result<()> {
+    let rect = |entry: &Value| {
+        let [x, y] = pair(&entry["rect"])?;
+        Ok::<_, Error>([
+            x,
+            y,
+            n(&entry["clipboard"], "width"),
+            n(&entry["clipboard"], "height"),
+        ])
+    };
+    let [x, y, width, height] = selection_bounds(rect(first)?, rect(&second)?);
+    let [old_x, old_y] = pair(&first["rect"])?;
+    let [ox, oy] = pair(&first["origin"])?;
+    let grid = n(&first["clipboard"], "gridSize");
+    let mut clipboard = first["clipboard"].clone();
+    clipboard["origin"] = json!([x, y]);
+    clipboard["width"] = json!(width);
+    clipboard["height"] = json!(height);
+    let mut cells = BTreeMap::new();
+    let mut tiles = Vec::new();
+    let mut entities = Vec::new();
+    let mut points = Vec::new();
+    let mut tile_cells = BTreeSet::new();
+    let mut entity_ids = BTreeSet::new();
+    let mut point_ids = BTreeSet::new();
+    for entry in [&*first, &second] {
+        let [left, top, old_width, _] = rect(entry)?;
+        let [dx, dy] = [left - x, top - y];
+        let clip = &entry["clipboard"];
+        for cell in entry["cellMask"].as_array().into_iter().flatten() {
+            let i = cell
+                .as_i64()
+                .ok_or_else(|| invalid("selection cell index invalid"))?;
+            let index = (i / old_width + dy) * width + i % old_width + dx;
+            cells.insert(index as usize, clip["intGridCsv"][i as usize].clone());
+        }
+        let mut entry_tiles = BTreeSet::new();
+        for tile in clip["gridTiles"].as_array().into_iter().flatten() {
+            let [px, py] = pair(&tile["px"])?;
+            let absolute = [px + dx * grid, py + dy * grid];
+            if !tile_cells.contains(&absolute) {
+                entry_tiles.insert(absolute);
+                let mut tile = tile.clone();
+                tile["px"] = json!(absolute);
+                tiles.push(tile);
+            }
+        }
+        tile_cells.extend(entry_tiles);
+        for entity in clip["entityInstances"].as_array().into_iter().flatten() {
+            if entity_ids.insert(entity["iid"].as_str().unwrap_or_default()) {
+                let [px, py] = pair(&entity["px"])?;
+                let mut entity = entity.clone();
+                entity["px"] = json!([px + dx * grid, py + dy * grid]);
+                entities.push(entity);
+            }
+        }
+        for point in entry["points"].as_array().into_iter().flatten() {
+            if point_ids.insert((
+                point["entityIid"].as_str().unwrap_or_default(),
+                n(point, "fieldDefUid"),
+                n(point, "arrayIndex"),
+            )) {
+                points.push(point.clone());
+            }
+        }
+    }
+    if clipboard["type"] == "IntGrid" {
+        let area = width
+            .checked_mul(height)
+            .filter(|area| *area <= 16_777_216)
+            .ok_or_else(|| invalid("clipboard allocation too large"))?;
+        let mut csv = vec![json!(0); area as usize];
+        for (&index, value) in &cells {
+            csv[index] = value.clone();
+        }
+        clipboard["intGridCsv"] = json!(csv);
+    }
+    clipboard["gridTiles"] = json!(tiles);
+    clipboard["entityInstances"] = json!(entities);
+    first["clipboard"] = clipboard;
+    first["origin"] = json!([ox + (x - old_x) * grid, oy + (y - old_y) * grid]);
+    first["rect"] = json!([x, y, width, height]);
+    first["cellMask"] = json!(cells.keys().collect::<Vec<_>>());
+    first["points"] = json!(points);
+    Ok(())
+}
+
 impl Project {
+    /// Add freshly captured elements to a selection, keeping cells and object identities unique.
+    pub fn append_selection_group(
+        &self,
+        key: LevelKey,
+        previous: &Value,
+        mut added: Value,
+        geometries: &Value,
+    ) -> Result<Value> {
+        let mut group = self.refresh_selection_group_geometry(key, previous, geometries)?;
+        let entries = group["layers"].as_array_mut().expect("group layers");
+        let added_entries = added["layers"]
+            .as_array_mut()
+            .ok_or_else(|| invalid("selection layers missing"))?;
+        for entry in std::mem::take(added_entries) {
+            if entry["cellMask"].as_array().is_none_or(Vec::is_empty)
+                && entry["points"].as_array().is_none_or(Vec::is_empty)
+                && ["gridTiles", "entityInstances"].iter().all(|name| {
+                    entry["clipboard"][*name]
+                        .as_array()
+                        .is_none_or(Vec::is_empty)
+                })
+            {
+                continue;
+            }
+            if let Some(first) = entries
+                .iter_mut()
+                .find(|existing| existing["layerDefUid"] == entry["layerDefUid"])
+            {
+                merge_selection_entries(first, entry)?;
+            } else {
+                entries.push(entry);
+            }
+        }
+        let rect = |group: &Value| {
+            let [x, y] = pair(&group["origin"])?;
+            let [w, h] = pair(&group["size"])?;
+            Ok::<_, Error>([x, y, w, h])
+        };
+        let [x, y, w, h] = selection_bounds(rect(&group)?, rect(&added)?);
+        group["origin"] = json!([x, y]);
+        group["size"] = json!([w, h]);
+        let mut rects = group["originalRects"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+        rects.extend(
+            added["originalRects"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .cloned(),
+        );
+        group["originalRects"] = json!(rects);
+        group["emptySpace"] = json!(group["emptySpace"] == true || added["emptySpace"] == true);
+        geometry_stats(&mut group)?;
+        Ok(group)
+    }
+
     /// Capture per-layer cell rectangles computed with the renderer's current camera transform.
     pub fn copy_selection_group_from_regions(
         &self,

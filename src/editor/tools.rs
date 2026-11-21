@@ -365,9 +365,9 @@ impl EditorApp {
                 let r = region(start, end);
                 if select {
                     if r[2] == 1 && r[3] == 1 {
-                        self.select_element_at(world_end, false, None);
+                        self.append_element_at(world_end);
                     } else {
-                        self.capture_selection(r);
+                        self.capture_selection_rectangle(r, true);
                     }
                     self.finish_stroke();
                     return;
@@ -1491,7 +1491,8 @@ impl EditorApp {
         let width = number(layer, "__cWid", 0.0) as i32;
         let height = number(layer, "__cHei", 0.0) as i32;
         let kind = text(layer, "__type", "").to_owned();
-        if !self.details
+        if !matches!(self.gesture, Some(Gesture::Rectangle { select: true, .. }))
+            && !self.details
             && kind == "IntGrid"
             && !project
                 .layer_def(layer["layerDefUid"].as_i64().unwrap_or(-1))
@@ -1529,12 +1530,21 @@ impl EditorApp {
         };
         if let Some(gesture) = &mut self.gesture {
             match gesture {
-                Gesture::Rectangle { end, world_end, .. } => {
+                Gesture::Rectangle {
+                    end,
+                    world_end,
+                    select,
+                    ..
+                } => {
                     *world_end = local_world;
-                    *end = [
-                        cell[0].clamp(0, (width - 1).max(0)),
-                        cell[1].clamp(0, (height - 1).max(0)),
-                    ];
+                    *end = if *select {
+                        cell
+                    } else {
+                        [
+                            cell[0].clamp(0, (width - 1).max(0)),
+                            cell[1].clamp(0, (height - 1).max(0)),
+                        ]
+                    };
                 }
                 Gesture::SelectionMove {
                     end,
@@ -1695,12 +1705,14 @@ impl EditorApp {
                 self.history.begin_layer(project, key, self.layer);
             }
             self.last_chance = None;
-            self.selection = None;
-            self.selection_group = None;
-            if kind != "Entities" {
-                self.entity_index = None;
-                if self.panel == Some(Panel::Entity) {
-                    self.panel = None;
+            if !modifiers.alt {
+                self.selection = None;
+                self.selection_group = None;
+                if kind != "Entities" {
+                    self.entity_index = None;
+                    if self.panel == Some(Panel::Entity) {
+                        self.panel = None;
+                    }
                 }
             }
             self.stroke_was_dirty = self.dirty;
@@ -1868,9 +1880,14 @@ impl EditorApp {
         let project = self.project.as_ref().unwrap();
         let key = self.selected.unwrap();
         let origin = self.viewport.level_render_canvas_origin(rect, ui.ctx().pixels_per_point());
-        let draw = |r: [i32; 4], color: Color32| {
+        let draw = |r: [i32; 4], select: bool| {
+            let layer_to_world = if select {
+                canvas::layer_to_pointer_world
+            } else {
+                canvas::layer_to_world
+            };
             let min = self.viewport.to_screen(
-                canvas::layer_to_world(
+                layer_to_world(
                     project,
                     key,
                     self.layer,
@@ -1881,7 +1898,7 @@ impl EditorApp {
                 rect.size().into(),
             );
             let max = self.viewport.to_screen(
-                canvas::layer_to_world(
+                layer_to_world(
                     project,
                     key,
                     self.layer,
@@ -1892,16 +1909,25 @@ impl EditorApp {
                 rect.size().into(),
             );
             let screen = Rect::from_two_pos(min.into(), max.into());
-            ui.painter().with_clip_rect(rect).rect_stroke(
-                screen,
-                0.0,
-                Stroke::new(2.0_f32, color),
-                StrokeKind::Inside,
-            );
+            let painter = ui.painter().with_clip_rect(rect);
+            if select {
+                let scale = screen.width() / (r[2] as f32 * grid);
+                preview::paint_pick_grid(&painter, screen, scale, Color32::WHITE, true);
+            } else {
+                painter.rect_stroke(
+                    screen,
+                    0.0,
+                    Stroke::new(2.0, Color32::WHITE),
+                    StrokeKind::Inside,
+                );
+            }
         };
         self.draw_selection_highlight(ui, rect);
-        if let Some(Gesture::Rectangle { start, end, .. }) = self.gesture {
-            draw(region(start, end), Color32::WHITE);
+        if let Some(Gesture::Rectangle {
+            start, end, select, ..
+        }) = self.gesture
+        {
+            draw(region(start, end), select);
         }
     }
 }
@@ -1984,5 +2010,79 @@ mod tests {
     #[test]
     fn reverse_rectangle_keeps_inclusive_cell_extent() {
         assert_eq!(region([4, 7], [2, 3]), [2, 3, 3, 5]);
+    }
+
+    #[test]
+    fn selection_rectangles_accumulate_without_selecting_gaps_or_duplicates() {
+        let mut project = Project::new();
+        let key = LevelKey {
+            world: None,
+            level: 0,
+        };
+        project.add_layer("Ground", "IntGrid", 16).unwrap();
+        let width = project.layer(key, 0).unwrap()["__cWid"].as_u64().unwrap() as usize;
+        for x in [1, 4, 7] {
+            project.layer_mut(key, 0).unwrap()["intGridCsv"][width + x] = 1.into();
+        }
+        let mut app = EditorApp::empty();
+        app.set_project(project);
+        for (start, end) in [([1, 1], [2, 1]), ([6, 1], [7, 1]), ([7, 1], [8, 1])] {
+            app.gesture = Some(Gesture::Rectangle {
+                start,
+                end,
+                erase: false,
+                select: true,
+                started: Instant::now(),
+                world_end: [end[0] as f32 * 16. + 8., 24.],
+            });
+            app.finish_gesture();
+        }
+        let group = app.selection_group.as_ref().unwrap();
+        assert_eq!(group["elementCount"], 2);
+        let project = app.project.as_mut().unwrap();
+        project.delete_selection_group(key, group).unwrap();
+        let csv = &project.layer(key, 0).unwrap()["intGridCsv"];
+        assert_eq!(csv[width + 1], 0);
+        assert_eq!(csv[width + 4], 1);
+        assert_eq!(csv[width + 7], 0);
+    }
+
+    #[test]
+    fn selection_rectangle_single_cell_uses_other_layers_even_in_single_layer_mode() {
+        let mut project = Project::new();
+        let key = project.level_keys()[0];
+        project.add_layer("Ground", "IntGrid", 16).unwrap();
+        project.add_layer("Actors", "Entities", 16).unwrap();
+        let uid = project.add_entity_def("Actor", 16, 16).unwrap();
+        project.add_entity(key, 0, uid, 88, 88).unwrap();
+        let width = project.layer(key, 1).unwrap()["__cWid"].as_u64().unwrap() as usize;
+        project.layer_mut(key, 1).unwrap()["intGridCsv"][width + 1] = 1.into();
+        let mut app = EditorApp::empty();
+        app.set_project(project);
+        app.layer = 1;
+        app.single_layer = true;
+
+        for (start, end, count) in [
+            ([1, 1], [2, 1], 1),
+            ([4, 5], [5, 5], 1),
+            ([5, 5], [5, 5], 2),
+            ([8, 8], [8, 8], 0),
+        ] {
+            app.gesture = Some(Gesture::Rectangle {
+                start,
+                end,
+                erase: false,
+                select: true,
+                started: Instant::now(),
+                world_end: end.map(|cell| cell as f32 * 16. + 8.),
+            });
+            app.finish_gesture();
+            assert_eq!(app.layer, 1);
+            let actual = app
+                .selection_group
+                .as_ref()
+                .map_or(0, |group| group["elementCount"].as_u64().unwrap());
+            assert_eq!(actual, count);
+        }
     }
 }

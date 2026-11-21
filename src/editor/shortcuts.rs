@@ -674,7 +674,11 @@ impl EditorApp {
         if world_form_dialog::is_open(ctx) {
             return;
         }
-        if help::changelog_is_open(ctx) {
+        if help::changelog_is_open(ctx)
+            || self.panel == Some(Panel::Project)
+                && (Self::tiled_export_disclaimer_open(ctx)
+                    || ctx.memory(|mem| mem.top_modal_layer().is_some()))
+        {
             return;
         }
         if self.enum_sync_is_open()
@@ -790,6 +794,13 @@ impl EditorApp {
                 continue;
             }
             if key == Key::Escape {
+                if matches!(self.panel, Some(Panel::Help | Panel::Project))
+                    && egui::Popup::is_any_open(ctx)
+                {
+                    egui::Popup::close_all(ctx);
+                    ctx.input_mut(|input| input.consume_key(modifiers, Key::Escape));
+                    continue;
+                }
                 if self.command_palette {
                     self.command_palette = false;
                     ctx.input_mut(|input| input.consume_key(modifiers, Key::Escape));

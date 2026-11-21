@@ -22,6 +22,13 @@ pub(super) enum CanvasNotice {
     SavedProject(String),
     SavedTileSelection,
     SavingFailed,
+    NothingToSelect,
+    LinkOpened,
+    LinkCopied,
+    ValueReset,
+    ProjectFileSettingChanged,
+    LocateMissingPath,
+    LocatingFile,
 }
 
 pub(super) struct CanvasNoticeEntry {
@@ -51,19 +58,36 @@ impl CanvasNotice {
             Self::SavedProject(_) => locale::tr_ctx(ctx, SAVED_PROJECT_TITLE).into(),
             Self::SavedTileSelection => locale::tr_ctx(ctx, "Saved selection").into(),
             Self::SavingFailed => locale::tr_ctx(ctx, "Saving failed!").into(),
+            Self::NothingToSelect => locale::tr_ctx(ctx, "Nothing to select").into(),
+            Self::LinkOpened => locale::tr_ctx(ctx, "Opening url...").into(),
+            Self::LinkCopied => locale::tr_ctx(ctx, "Copied to clipboard.").into(),
+            Self::ValueReset => locale::tr_ctx(ctx, "Value reset.").into(),
+            Self::ProjectFileSettingChanged => {
+                locale::tr_ctx(ctx, "Project file setting changed").into()
+            }
+            Self::LocateMissingPath => {
+                locale::tr_ctx(ctx, "Sorry, but this file couldn't be found.").into()
+            }
+            Self::LocatingFile => locale::tr_ctx(ctx, "Locating file...").into(),
         }
     }
 
-    fn subtitle(&self) -> Option<&str> {
+    fn subtitle(&self, ctx: &egui::Context) -> Option<&str> {
         match self {
             Self::SavedProject(name) => Some(name),
+            Self::ProjectFileSettingChanged => Some(locale::tr_ctx(
+                ctx,
+                "You should save the project at least once for this setting to apply its effects.",
+            )),
             _ => None,
         }
     }
 
-    fn duration(&self, message: &str) -> f32 {
+    fn duration(&self, ctx: &egui::Context, message: &str) -> f32 {
         let length = message.encode_utf16().count()
-            + self.subtitle().map_or(0, |name| name.encode_utf16().count());
+            + self
+                .subtitle(ctx)
+                .map_or(0, |name| name.encode_utf16().count());
         3. + 0.04 * length as f32
     }
 }
@@ -97,11 +121,32 @@ impl EditorApp {
         self.report_canvas_notice(CanvasNotice::SavedTileSelection);
     }
 
+    pub(super) fn report_empty_selection(&mut self) {
+        if let Some(ctx) = &self.repaint {
+            app_log::record(
+                ctx,
+                self.settings.path.as_deref(),
+                "Nothing to select",
+                true,
+            );
+        }
+        self.report_canvas_notice(CanvasNotice::NothingToSelect);
+    }
+
     pub(super) fn notify_quick(&mut self, message: String) {
         self.quick_notification = Some((message, None, Instant::now()));
     }
 
-    fn report_canvas_notice(&mut self, notice: CanvasNotice) {
+    pub(super) fn recommend_saving_project(&mut self) {
+        if !self.canvas_notices.iter().any(|entry| {
+            entry.notice == CanvasNotice::ProjectFileSettingChanged
+                && entry.since.elapsed().as_secs_f32() < 2.
+        }) {
+            self.report_canvas_notice(CanvasNotice::ProjectFileSettingChanged);
+        }
+    }
+
+    pub(super) fn report_canvas_notice(&mut self, notice: CanvasNotice) {
         let now = Instant::now();
         if let Some(last) = self.canvas_notices.last_mut() {
             let repeated = last.notice == notice
@@ -128,9 +173,9 @@ impl EditorApp {
         let mut scheduled = f32::INFINITY;
         for entry in self.canvas_notices.iter().rev() {
             let message = entry.notice.message(ctx);
-            let subtitle = entry.notice.subtitle();
+            let subtitle = entry.notice.subtitle(ctx);
             let age = now.duration_since(entry.since).as_secs_f32();
-            let duration = entry.notice.duration(&message);
+            let duration = entry.notice.duration(ctx, &message);
             if age >= duration + 0.1 {
                 continue;
             }
@@ -170,7 +215,15 @@ impl EditorApp {
             let width = (text_width + left + right).max(150.) + edge_width + 1.;
             let height = text_height + vertical * 2. + 2.;
             // Match the source's max-height arrival and jQuery slide-up on dismissal.
-            let blink = !matches!(entry.notice, CanvasNotice::SavedProject(_) | CanvasNotice::SavedTileSelection);
+            let blink = !matches!(
+                entry.notice,
+                CanvasNotice::SavedProject(_)
+                    | CanvasNotice::SavedTileSelection
+                    | CanvasNotice::LinkOpened
+                    | CanvasNotice::LinkCopied
+                    | CanvasNotice::ValueReset
+                    | CanvasNotice::LocatingFile
+            );
             let arrival_time = if blink { 1. } else { 1.3 };
             let arrived = 2. + 200. * (1. - css_ease_remaining((age / arrival_time).min(1.)));
             let exit = ((age - duration) / 0.1).clamp(0., 1.);
@@ -194,11 +247,17 @@ impl EditorApp {
                     })
                     .unwrap_or(1.) };
                 let (fill, edge) = match entry.notice {
-                    CanvasNotice::EntityLimit { .. } | CanvasNotice::SavingFailed => {
-                        ([87, 0, 0], [255, 0, 0])
+                    CanvasNotice::EntityLimit { .. }
+                    | CanvasNotice::SavingFailed
+                    | CanvasNotice::NothingToSelect
+                    | CanvasNotice::LocateMissingPath => ([87, 0, 0], [255, 0, 0]),
+                    CanvasNotice::SavedProject(_) | CanvasNotice::ValueReset => {
+                        ([22, 62, 38], [66, 183, 113])
                     }
-                    CanvasNotice::SavedProject(_) => ([22, 62, 38], [66, 183, 113]),
-                    CanvasNotice::SavedTileSelection => ([30, 34, 41], [84, 93, 115]),
+                    CanvasNotice::SavedTileSelection
+                    | CanvasNotice::LinkOpened
+                    | CanvasNotice::LinkCopied
+                    | CanvasNotice::LocatingFile => ([30, 34, 41], [84, 93, 115]),
                     _ => ([69, 48, 6], [203, 141, 19]),
                 };
                 let shade = |channels: [u8; 3]| {
@@ -249,7 +308,7 @@ impl EditorApp {
             );
         }
         self.canvas_notices.retain(|entry| {
-            let duration = entry.notice.duration(&entry.notice.message(ctx));
+            let duration = entry.notice.duration(ctx, &entry.notice.message(ctx));
             now.duration_since(entry.since).as_secs_f32() < duration + 0.1
         });
         if scheduled.is_finite() {

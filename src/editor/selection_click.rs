@@ -287,16 +287,26 @@ impl EditorApp {
         copy: bool,
         press: Option<egui::Pos2>,
     ) -> bool {
+        self.select_element_with_options(world, copy, press, false)
+    }
+
+    pub(super) fn append_element_at(&mut self, world: [f32; 2]) {
+        self.select_element_with_options(world, false, None, true);
+    }
+
+    fn select_element_with_options(
+        &mut self,
+        world: [f32; 2],
+        copy: bool,
+        press: Option<egui::Pos2>,
+        append: bool,
+    ) -> bool {
         let (Some(key), Some(project)) = (self.selected, &self.project) else {
             return false;
         };
-        let Some(layers) = project
-            .level(key)
-            .and_then(|level| level["layerInstances"].as_array())
+        let Some((layer_index, cell, element)) =
+            self.generic_element_at(world, self.single_layer && !append)
         else {
-            return false;
-        };
-        let Some((layer_index, cell, element)) = self.generic_element_at(world, self.single_layer) else {
             self.selection = None;
             self.selection_group = None;
             self.entity_index = None;
@@ -306,8 +316,23 @@ impl EditorApp {
             }
             return false;
         };
-        let layer = &layers[layer_index];
-        let group = match self.element_selection_group(project, key, layer_index, cell, element) {
+        let result = self
+            .element_selection_group(project, key, layer_index, cell, element)
+            .and_then(|group| {
+                if append
+                    && let Some(previous) = self.selection_group.as_ref()
+                    && previous["elementCount"].as_u64().is_some_and(|n| n > 0)
+                {
+                    return project.append_selection_group(
+                        key,
+                        previous,
+                        group,
+                        &self.selection_geometries(key),
+                    );
+                }
+                Ok(group)
+            });
+        let group = match result {
             Ok(group) => group,
             Err(e) => {
                 self.status = e.to_string();
@@ -315,6 +340,92 @@ impl EditorApp {
                 return true;
             }
         };
+        if group["elementCount"].as_u64().is_some_and(|n| n > 1) {
+            self.chain_entity = None;
+            self.set_selection_group(group);
+            return true;
+        }
+        self.apply_element_pick(key, layer_index, cell, element);
+        self.set_selection_group(group);
+        if let Some(press) = press {
+            let region = self.selection.unwrap_or([cell[0], cell[1], 1, 1]);
+            self.begin_selection_move(key, region, cell, world, press, copy);
+        }
+        self.bleep_selected_element(key, layer_index, cell, element);
+        true
+    }
+
+    pub(super) fn apply_single_marquee_pick(&mut self, key: LevelKey, group: &Value) {
+        if group["elementCount"] != 1 {
+            return;
+        }
+        let Some((index, cell, element)) = self.project.as_ref().and_then(|project| {
+            let layers = project.level(key)?["layerInstances"].as_array()?;
+            group["layers"].as_array()?.iter().find_map(|entry| {
+                let index = layers
+                    .iter()
+                    .position(|layer| layer["layerDefUid"] == entry["layerDefUid"])?;
+                let rect = &entry["rect"];
+                let clip = &entry["clipboard"];
+                let [x, y] = [rect[0].as_i64()? as i32, rect[1].as_i64()? as i32];
+                let entity_index = |iid: &Value| {
+                    layers[index]["entityInstances"]
+                        .as_array()?
+                        .iter()
+                        .position(|entity| entity["iid"] == *iid)
+                };
+                if let Some(i) = entry["cellMask"][0].as_i64() {
+                    let width = clip["width"].as_i64()?;
+                    return Some((
+                        index,
+                        [x + (i % width) as i32, y + (i / width) as i32],
+                        Element::Grid,
+                    ));
+                }
+                if let Some(px) = clip["gridTiles"][0]["px"].as_array() {
+                    let grid = clip["gridSize"].as_i64()?;
+                    return Some((
+                        index,
+                        [
+                            x + (px[0].as_i64()? / grid) as i32,
+                            y + (px[1].as_i64()? / grid) as i32,
+                        ],
+                        Element::Grid,
+                    ));
+                }
+                if let Some(entity) = entity_index(&clip["entityInstances"][0]["iid"]) {
+                    return Some((index, [x, y], Element::Entity(entity)));
+                }
+                let p = &entry["points"][0];
+                let value = &p["value"];
+                let cell = [value["cx"].as_i64()? as i32, value["cy"].as_i64()? as i32];
+                let element = Element::Point {
+                    entity: entity_index(&p["entityIid"])?,
+                    field: p["fieldDefUid"].as_i64()?,
+                    index: p["arrayIndex"].as_u64()? as usize,
+                };
+                Some((index, cell, element))
+            })
+        }) else {
+            return;
+        };
+        self.apply_element_pick(key, index, cell, element);
+        self.bleep_selected_element(key, index, cell, element);
+    }
+
+    fn apply_element_pick(
+        &mut self,
+        key: LevelKey,
+        layer_index: usize,
+        cell: [i32; 2],
+        element: Element,
+    ) {
+        let layer = self
+            .project
+            .as_ref()
+            .unwrap()
+            .layer(key, layer_index)
+            .unwrap();
         if self.layer != layer_index {
             self.quick_notification = Some(notifications::layer_notification(layer));
             self.layer = layer_index;
@@ -363,13 +474,6 @@ impl EditorApp {
                 self.panel = Some(Panel::Entity);
             }
         }
-        self.set_selection_group(group);
-        if let Some(press) = press {
-            let region = self.selection.unwrap_or([cell[0], cell[1], 1, 1]);
-            self.begin_selection_move(key, region, cell, world, press, copy);
-        }
-        self.bleep_selected_element(key, layer_index, cell, element);
-        true
     }
 }
 

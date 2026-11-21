@@ -529,7 +529,7 @@ impl EditorApp {
                                         .inner_margin(egui::Margin {
                                             left: 20,
                                             right: 20,
-                                            top: 40,
+                                            top: 32,
                                             bottom: 20,
                                         })
                                         .show(ui, |ui| {

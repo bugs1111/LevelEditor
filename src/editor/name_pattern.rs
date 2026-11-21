@@ -6,7 +6,7 @@ pub(super) struct Variable(&'static str, &'static str, &'static str);
 
 pub(super) const LEVEL_DEFAULT: &str = "Level_%idx";
 pub(super) const LEVEL: &[Variable] = &[
-    Variable("world", "WorldId", "World identifier"),
+    Variable("world", "WorldId", ""),
     Variable("idx1", "LevelIndex(1)", "Level index (starting at 1)"),
     Variable("idx", "LevelIndex(0)", "Level index (starting at 0)"),
     Variable("x", "LevelX", "X coordinate of the level"),
@@ -28,7 +28,7 @@ enum Block {
     Var(Variable),
 }
 
-fn blocks(mut input: &str, variables: &[Variable]) -> Vec<Block> {
+fn parse_blocks(mut input: &str, variables: &[Variable]) -> Vec<Block> {
     let mut output = Vec::new();
     while !input.is_empty() {
         if let Some(rest) = input.strip_prefix('%')
@@ -55,6 +55,28 @@ fn blocks(mut input: &str, variables: &[Variable]) -> Vec<Block> {
     output
 }
 
+fn encoded_len(block: &Block) -> usize {
+    match block {
+        Block::Literal(value) => value.len(),
+        Block::Var(var) => var.0.len() + 1,
+    }
+}
+
+fn map_selection(old: &[Block], new: &[Block], index: usize) -> Option<usize> {
+    let offset = old[..index].iter().map(encoded_len).sum::<usize>();
+    let mut start = 0;
+    new.iter().position(|block| {
+        let end = start + encoded_len(block);
+        let matches = match (&old[index], block) {
+            (Block::Var(a), Block::Var(b)) => offset == start && a.0 == b.0,
+            (Block::Literal(_), Block::Literal(_)) => (start..=end).contains(&offset),
+            _ => false,
+        };
+        start = end;
+        matches
+    })
+}
+
 fn encode(blocks: &[Block]) -> String {
     let mut output = String::new();
     for block in blocks {
@@ -79,6 +101,7 @@ fn encode(blocks: &[Block]) -> String {
 struct Draft {
     value: String,
     focus: bool,
+    cursor_at_start: bool,
 }
 
 #[derive(Clone, Default)]
@@ -89,17 +112,93 @@ struct State {
     focus_variable: bool,
 }
 
-fn choose_variable(ui: &mut egui::Ui, variables: &[Variable], used: &[&str]) -> Option<Variable> {
-    for &var in variables {
-        if used.contains(&var.0) {
-            continue;
-        }
-        if ui.button(var.1).on_hover_text(var.2).clicked() {
-            ui.close();
-            return Some(var);
-        }
-    }
-    None
+fn variable_menu(
+    response: &egui::Response,
+    variables: &[Variable],
+    used: &[&str],
+    open: Option<egui::SetOpenCommand>,
+) -> Option<Variable> {
+    let height = (response.ctx.content_rect().bottom() - 16. - response.rect.bottom()).max(32.);
+    egui::Popup::menu(response)
+        .open_memory(open)
+        .align_alternatives(&[])
+        .frame(source_controls::context_menu_frame(&response.ctx.style()))
+        .show(|ui| {
+            ui.spacing_mut().item_spacing.y = 0.;
+            let rows = variables
+                .iter()
+                .copied()
+                .filter(|var| !used.contains(&var.0))
+                .map(|var| {
+                    let title = ui.painter().layout_no_wrap(
+                        var.1.to_uppercase(),
+                        FontId::proportional(13.33),
+                        Color32::PLACEHOLDER,
+                    );
+                    let description = (!var.2.is_empty()).then(|| {
+                        ui.painter().layout_no_wrap(
+                            locale::tr(ui, var.2).into(),
+                            FontId::proportional(13.33),
+                            Color32::PLACEHOLDER,
+                        )
+                    });
+                    (var, title, description)
+                })
+                .collect::<Vec<_>>();
+            let width = 40.
+                + rows
+                    .iter()
+                    .map(|(_, title, description)| {
+                        description
+                            .as_ref()
+                            .map_or(title.size().x, |text| text.size().x.max(title.size().x))
+                    })
+                    .fold(0., f32::max);
+            egui::ScrollArea::vertical()
+                .max_height(height - 2.)
+                .show(ui, |ui| {
+                    for (var, title, description) in rows {
+                        let height = if description.is_some() { 48. } else { 32. };
+                        let (rect, row) =
+                            ui.allocate_exact_size(egui::vec2(width, height), Sense::click());
+                        let (color, subtitle) = if row.hovered() {
+                            ui.painter().rect_filled(rect, 0., theme::ACCENT);
+                            (Color32::BLACK, Color32::BLACK)
+                        } else {
+                            (theme::ACCENT, Color32::from_rgb(122, 134, 166))
+                        };
+                        row.widget_info(|| {
+                            egui::WidgetInfo::labeled(egui::WidgetType::Button, true, var.1)
+                        });
+                        ui.painter()
+                            .galley(rect.min + egui::vec2(20., 7.), title, color);
+                        if let Some(description) = description {
+                            ui.painter().galley(
+                                rect.min + egui::vec2(20., 24.),
+                                description,
+                                subtitle,
+                            );
+                        }
+                        ui.painter().hline(
+                            rect.x_range(),
+                            rect.bottom() - 0.5,
+                            Stroke::new(1., theme::MEDIUM),
+                        );
+                        if row.clicked() {
+                            ui.close();
+                            return Some(var);
+                        }
+                    }
+                    None
+                })
+                .inner
+        })
+        .and_then(|popup| popup.inner)
+}
+
+pub(super) struct Change {
+    pub(super) value: String,
+    pub(super) reset: bool,
 }
 
 pub(super) fn show(
@@ -108,7 +207,7 @@ pub(super) fn show(
     input: &str,
     default: &str,
     variables: &[Variable],
-) -> Option<String> {
+) -> Option<Change> {
     let id = ui.make_persistent_id(key);
     let mut state = ui
         .data(|d| d.get_temp::<State>(id))
@@ -117,7 +216,7 @@ pub(super) fn show(
             input: input.into(),
             ..Default::default()
         });
-    let mut blocks = blocks(input, variables);
+    let mut blocks = parse_blocks(input, variables);
     let mut select = None;
     let mut edit = None;
     let mut remove = None;
@@ -128,8 +227,8 @@ pub(super) fn show(
 
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 2.;
-        let add_width = 32.;
-        let reset_label = egui::WidgetText::from("[reset]");
+        let add_width = 44.;
+        let reset_label = egui::WidgetText::from(RichText::new("[reset]").size(12.));
         let reset_width = reset_label
             .clone()
             .into_galley(ui, None, f32::INFINITY, egui::TextStyle::Body)
@@ -144,6 +243,7 @@ pub(super) fn show(
                 Block::Literal(_) => None,
             })
             .collect::<Vec<_>>();
+        let has_choices = variables.iter().any(|var| !used.contains(&var.0));
         egui::Frame::new()
             .fill(theme::DARK)
             .stroke(Stroke::new(1., theme::LIGHT))
@@ -152,6 +252,7 @@ pub(super) fn show(
                 ui.set_width((width - 10.).max(14.));
                 ui.horizontal_wrapped(|ui| {
                     ui.spacing_mut().item_spacing = egui::vec2(1., 2.);
+                    ui.spacing_mut().button_padding = egui::vec2(2., 2.);
                     for (index, block) in blocks.iter().enumerate() {
                         ui.push_id(index, |ui| {
                             let selected = state.selected == Some(index);
@@ -170,14 +271,23 @@ pub(super) fn show(
                                     ui.input_mut(|i| {
                                         if edge == Some(0)
                                             && index > 0
-                                            && i.consume_key(egui::Modifiers::NONE, Key::ArrowLeft)
+                                            && (i
+                                                .consume_key(egui::Modifiers::NONE, Key::ArrowLeft)
+                                                || i.consume_key(
+                                                    egui::Modifiers::NONE,
+                                                    Key::Backspace,
+                                                ))
                                         {
-                                            Some(index - 1)
+                                            Some((index - 1, false))
                                         } else if edge == Some(draft.value.chars().count())
                                             && index + 1 < blocks.len()
-                                            && i.consume_key(egui::Modifiers::NONE, Key::ArrowRight)
+                                            && (i.consume_key(
+                                                egui::Modifiers::NONE,
+                                                Key::ArrowRight,
+                                            ) || i
+                                                .consume_key(egui::Modifiers::NONE, Key::Delete))
                                         {
-                                            Some(index + 1)
+                                            Some((index + 1, false))
                                         } else {
                                             None
                                         }
@@ -195,6 +305,17 @@ pub(super) fn show(
                                 );
                                 if draft.focus {
                                     response.request_focus();
+                                    if draft.cursor_at_start
+                                        && let Some(mut text_state) =
+                                            egui::TextEdit::load_state(ui.ctx(), input_id)
+                                    {
+                                        text_state.cursor.set_char_range(Some(
+                                            egui::text::CCursorRange::one(
+                                                egui::text::CCursor::new(0),
+                                            ),
+                                        ));
+                                        text_state.store(ui.ctx(), input_id);
+                                    }
                                     draft.focus = false;
                                 }
                                 ui_commit::track_editor(ui.ctx(), &response);
@@ -207,7 +328,9 @@ pub(super) fn show(
                                 {
                                     response.surrender_focus();
                                     edit = Some((index, draft.value.clone()));
-                                    select = next;
+                                    if next.is_some() {
+                                        select = next;
+                                    }
                                 }
                                 return;
                             }
@@ -219,7 +342,11 @@ pub(super) fn show(
                                     value.is_empty(),
                                 ),
                                 Block::Var(var) => (
-                                    RichText::new(var.1).monospace().size(12.).strong(),
+                                    RichText::new(var.1)
+                                        .monospace()
+                                        .size(12.)
+                                        .strong()
+                                        .color(Color32::WHITE),
                                     if selected {
                                         Color32::from_rgb(103, 42, 15)
                                     } else {
@@ -236,7 +363,7 @@ pub(super) fn show(
                                 theme::LIGHT
                             };
                             let button = egui::Button::new(label)
-                                .min_size(egui::vec2(if empty { 10. } else { 0. }, 22.))
+                                .min_size(egui::vec2(if empty { 10. } else { 0. }, 20.))
                                 .fill(if empty { theme::DARK } else { background })
                                 .stroke(Stroke::new(1., stroke))
                                 .sense(if empty {
@@ -262,27 +389,34 @@ pub(super) fn show(
                                 }
                                 let open =
                                     response.clicked() && selected || response.secondary_clicked();
-                                egui::Popup::menu(&response)
-                                    .open_memory(open.then_some(egui::SetOpenCommand::Bool(true)))
-                                    .show(|ui| {
-                                        replace = choose_variable(ui, variables, &used)
-                                            .map(|var| (index, var))
-                                    });
+                                if has_choices
+                                    && let Some(variable) = variable_menu(
+                                        &response,
+                                        variables,
+                                        &used,
+                                        open.then_some(egui::SetOpenCommand::Bool(true)),
+                                    )
+                                {
+                                    replace = Some((index, variable));
+                                }
                                 if response.has_focus() {
                                     ui.input_mut(|i| {
-                                        if i.consume_key(egui::Modifiers::NONE, Key::Backspace)
+                                        let backspace =
+                                            i.consume_key(egui::Modifiers::NONE, Key::Backspace);
+                                        if backspace
                                             || i.consume_key(egui::Modifiers::NONE, Key::Delete)
                                         {
-                                            remove = Some(index);
+                                            remove = Some((index, backspace));
                                         } else if i
                                             .consume_key(egui::Modifiers::NONE, Key::ArrowLeft)
                                         {
-                                            select = index.checked_sub(1);
+                                            select =
+                                                index.checked_sub(1).map(|index| (index, false));
                                         } else if i
                                             .consume_key(egui::Modifiers::NONE, Key::ArrowRight)
                                             && index + 1 < blocks.len()
                                         {
-                                            select = Some(index + 1);
+                                            select = Some((index + 1, true));
                                         }
                                     });
                                 }
@@ -291,17 +425,31 @@ pub(super) fn show(
                                 if matches!(block, Block::Var(_)) {
                                     response.request_focus();
                                 }
-                                select = Some(index);
+                                select = Some((index, false));
                             }
                         });
                     }
                 });
             });
+        let plus = egui::Image::new(egui::include_image!("../../assets/icons/add.svg"))
+            .fit_to_exact_size(Vec2::splat(17.));
         let button =
-            source_controls::add_sized_button(ui, [add_width, 31.], egui::Button::new("+"))
-                .on_hover_text("Add a variable");
-        egui::Popup::menu(&button).show(|ui| add = choose_variable(ui, variables, &used));
-        reset = ui.link(reset_label).clicked();
+            source_controls::add_sized_button(ui, [add_width, 31.], egui::Button::image(plus))
+                .on_hover_text(locale::tr(ui, "Add a variable"));
+        if has_choices {
+            add = variable_menu(
+                &button,
+                variables,
+                &used,
+                button.clicked().then_some(egui::SetOpenCommand::Toggle),
+            );
+        }
+        reset = ui
+            .scope(|ui| {
+                ui.visuals_mut().hyperlink_color = theme::ACCENT;
+                ui.link(reset_label).clicked()
+            })
+            .inner;
     });
 
     let mut changed = false;
@@ -321,30 +469,19 @@ pub(super) fn show(
         state.selected = None;
         state.draft = None;
         changed = true;
-    } else if let Some(index) = remove {
+    } else if let Some((index, backspace)) = remove {
         blocks.remove(index);
         state.selected = None;
+        select = index.checked_sub(1).map(|index| (index, backspace));
         changed = true;
     } else if let Some((index, var)) = replace {
         blocks[index] = Block::Var(var);
+        select = Some((index, false));
         changed = true;
     } else if let Some(var) = add {
         blocks.push(Block::Var(var));
-        state.selected = None;
+        select = Some((blocks.len() - 1, false));
         changed = true;
-    }
-    if let Some(index) = select
-        && let Some(block) = blocks.get(index)
-    {
-        state.selected = Some(index);
-        state.focus_variable = matches!(block, Block::Var(_));
-        state.draft = match block {
-            Block::Literal(value) => Some(Draft {
-                value: value.clone(),
-                focus: true,
-            }),
-            Block::Var(_) => None,
-        };
     }
     let next = if reset {
         default.into()
@@ -353,12 +490,34 @@ pub(super) fn show(
     } else {
         input.into()
     };
+    if !reset
+        && let Some((index, cursor_at_start)) = select.filter(|(index, _)| *index < blocks.len())
+    {
+        let normalized = (next != input).then(|| parse_blocks(&next, variables));
+        let selected = normalized
+            .as_ref()
+            .map_or(Some(index), |new| map_selection(&blocks, new, index));
+        if let Some(index) = selected {
+            let block = &normalized.as_deref().unwrap_or(&blocks)[index];
+            state.selected = Some(index);
+            state.focus_variable = matches!(block, Block::Var(_));
+            state.draft = match block {
+                Block::Literal(value) => Some(Draft {
+                    value: value.clone(),
+                    focus: true,
+                    cursor_at_start,
+                }),
+                Block::Var(_) => None,
+            };
+        }
+    }
     ui.data_mut(|d| {
-        if reset || next != input {
+        if reset {
             d.remove::<State>(id);
         } else {
+            state.input.clone_from(&next);
             d.insert_temp(id, state);
         }
     });
-    (next != input).then_some(next)
+    (next != input).then_some(Change { value: next, reset })
 }

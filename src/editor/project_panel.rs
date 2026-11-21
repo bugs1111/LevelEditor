@@ -4,13 +4,19 @@ use super::*;
 #[path = "name_pattern.rs"]
 mod name_pattern;
 
+const TILED_EXPORT_DISCLAIMER: &str = "source-tiled-export-disclaimer";
+
 fn project_row<R>(
     ui: &mut egui::Ui,
     label: &str,
     key: &str,
     body: impl FnOnce(&mut egui::Ui) -> R,
 ) -> R {
-    let response = source_controls::form_row(ui, label, key, 250., body);
+    let response = if matches!(key, "exportLevelBg" | "pngFilePattern") {
+        source_controls::form_row_left_aligned(ui, label, key, 250., body)
+    } else {
+        source_controls::form_row(ui, label, key, 250., body)
+    };
     ui.add_space(10.);
     response
 }
@@ -88,26 +94,62 @@ fn project_choice(
     choices: &[(&str, &str)],
 ) {
     let current = text(values, key, choices[0].0);
-    let mut value = current.to_owned();
-    egui::ComboBox::from_id_salt(key)
-        .width(if key == "when" {
-            140.
-        } else {
-            ui.available_width()
-        })
-        .selected_text(
-            choices
-                .iter()
-                .find(|(key, _)| *key == current)
-                .map_or(current, |(_, label)| locale::tr(ui, label)),
-        )
-        .show_ui(ui, |ui| {
-            for (key, label) in choices {
-                ui.selectable_value(&mut value, (*key).to_owned(), locale::tr(ui, label));
-            }
-        });
-    if value != current {
-        patch[key] = json!(value);
+    let selected = choices
+        .iter()
+        .position(|(value, _)| *value == current)
+        .unwrap_or(choices.len());
+    let options = choices
+        .iter()
+        .map(|(_, label)| (locale::tr(ui, label), Color32::WHITE))
+        .collect::<Vec<_>>();
+    let width = if key == "when" {
+        ui.available_width().min(164.)
+    } else {
+        ui.available_width()
+    };
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(width, 30.), Sense::click());
+    let title = options.get(selected).map_or(current, |option| option.0);
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::ComboBox, true, title));
+    ui.painter().rect(
+        rect,
+        2.,
+        theme::DARK,
+        Stroke::new(
+            1.,
+            if response.hovered() {
+                theme::ACCENT
+            } else {
+                theme::LIGHT
+            },
+        ),
+        StrokeKind::Inside,
+    );
+    ui.painter()
+        .with_clip_rect(rect.with_max_x(rect.right() - 18.))
+        .text(
+            rect.left_center() + egui::vec2(5., 0.),
+            Align2::LEFT_CENTER,
+            title,
+            FontId::proportional(13.33),
+            ui.visuals().text_color(),
+        );
+    let arrow = rect.right_center() - egui::vec2(8., 0.);
+    ui.painter().add(egui::Shape::line(
+        vec![
+            arrow + egui::vec2(-3., -1.5),
+            arrow + egui::vec2(0., 1.5),
+            arrow + egui::vec2(3., -1.5),
+        ],
+        Stroke::new(1., ui.visuals().text_color()),
+    ));
+    if let Some(picked) = source_controls::searchable_select_popup(
+        &response,
+        response.id.with(key),
+        selected,
+        &options,
+    ) && choices[picked].0 != current
+    {
+        patch[key] = json!(choices[picked].0);
     }
 }
 
@@ -306,7 +348,7 @@ impl EditorApp {
                     } else {
                         "%level_name__%layer_name"
                     };
-                    if let Some(value) = name_pattern::show(
+                    if let Some(change) = name_pattern::show(
                         ui,
                         (&iid, "pngFilePattern"),
                         values["pngFilePattern"].as_str().unwrap_or(default),
@@ -314,10 +356,10 @@ impl EditorApp {
                         name_pattern::PNG,
                     ) && patch.get("imageExportMode").is_none()
                     {
-                        patch["pngFilePattern"] = if value == default {
+                        patch["pngFilePattern"] = if change.value == default {
                             Value::Null
                         } else {
-                            json!(value)
+                            json!(change.value)
                         };
                     }
                 });
@@ -449,7 +491,20 @@ impl EditorApp {
             ui.ctx()
                 .data_mut(|data| data.insert_temp(identifier_confirmation, style));
         }
-        self.apply_source_project_patch(patch);
+        let tiled_enabled = patch["exportTiled"] == true;
+        let output_setting_changed = patch.get("externalLevels").is_some()
+            || patch["simplifiedExport"] == true
+            || patch["imageExportMode"]
+                .as_str()
+                .is_some_and(|mode| mode != "None");
+        let applied = self.apply_source_project_patch(patch);
+        let show_tiled_disclaimer = applied && tiled_enabled;
+        if show_tiled_disclaimer {
+            ui.ctx()
+                .data_mut(|data| data.insert_temp(egui::Id::new(TILED_EXPORT_DISCLAIMER), true));
+        } else if applied && output_setting_changed {
+            self.recommend_saving_project();
+        }
         if let Some((path, select)) = locate {
             self.locate_project_path(path, select);
         }
@@ -473,8 +528,8 @@ impl EditorApp {
             project_number(ui, project, &mut patch, "defaultEntityHeight", 1, 65536);
             ui.label("px");
         });
-        project_row(ui, "Default level identifiers", "levelName", |ui| {
-            if let Some(pattern) = name_pattern::show(
+        let reset_level_name = project_row(ui, "Default level identifiers", "levelName", |ui| {
+            if let Some(change) = name_pattern::show(
                 ui,
                 (&iid, "levelNamePattern"),
                 values["levelNamePattern"]
@@ -483,7 +538,10 @@ impl EditorApp {
                 name_pattern::LEVEL_DEFAULT,
                 name_pattern::LEVEL,
             ) {
-                patch["levelNamePattern"] = json!(pattern);
+                patch["levelNamePattern"] = json!(change.value);
+                change.reset
+            } else {
+                false
             }
         });
         for (key, label, help) in [
@@ -532,11 +590,16 @@ impl EditorApp {
                 }
             },
         );
-        if changed(&patch) {
-            self.edit("Workspace settings changed", |project| {
-                apply_patch(&mut project.json, &patch);
-                project.refresh_derived_data()
-            });
+        if changed(&patch)
+            && self
+                .edit("Workspace settings changed", |project| {
+                    apply_patch(&mut project.json, &patch);
+                    project.refresh_derived_data()
+                })
+                .is_some()
+            && reset_level_name
+        {
+            self.report_canvas_notice(notifications::CanvasNotice::ValueReset);
         }
         ui.add_space(16.);
         self.source_project_advanced(ui);
@@ -546,8 +609,64 @@ impl EditorApp {
             identifier_confirmation,
             opened_confirmation,
         );
+        self.tiled_export_disclaimer(ui.ctx(), show_tiled_disclaimer);
         if extension_changed {
             self.change_project_extension(use_ldtk);
+        }
+    }
+
+    pub(in crate::app) fn tiled_export_disclaimer_open(ctx: &egui::Context) -> bool {
+        ctx.data(|data| data.get_temp::<bool>(egui::Id::new(TILED_EXPORT_DISCLAIMER)))
+            .unwrap_or(false)
+    }
+
+    fn tiled_export_disclaimer(&mut self, ctx: &egui::Context, just_opened: bool) {
+        if !Self::tiled_export_disclaimer_open(ctx) {
+            return;
+        }
+        let id = egui::Id::new(TILED_EXPORT_DISCLAIMER);
+        let modal = egui::Modal::new(id)
+            .frame(project_dialogs::dialog_frame(20))
+            .backdrop_color(Color32::from_black_alpha(140))
+            .show(ctx, |ui| {
+                let width = (ctx.content_rect().width() - 42.).clamp(0., 458.);
+                ui.set_width(width);
+                let icon_width = 91_f32.min(width * 0.25);
+                let text_width = (width - icon_width - 16.).max(1.);
+                let font = FontId::proportional(14.667);
+                let message = ui.painter().layout(
+                    locale::tr(ui, "Disclaimer: Tiled export is only meant to load your LDtk project in a game framework that only supports Tiled files. It is recommended to write your own LDtk JSON parser, as some LDtk features may not be supported.").into(),
+                    font.clone(), Color32::WHITE, text_width,
+                );
+                let footer = ui.painter().layout(
+                    locale::tr(ui, "It's not so complicated, I promise :)").into(),
+                    font, Color32::WHITE, text_width,
+                );
+                let height = message.size().y + footer.size().y + 14.667;
+                let (rect, _) = ui.allocate_exact_size(egui::vec2(width, height), Sense::hover());
+                let icon = Rect::from_min_size(rect.min, egui::vec2(icon_width, height));
+                ui.painter().rect_filled(icon, 8., Color32::from_black_alpha(230));
+                egui::Image::new(egui::include_image!("../../assets/icons/projectSettings.png"))
+                    .paint_at(ui, Rect::from_center_size(
+                        icon.center_top() + egui::vec2(0., 46.), Vec2::splat(60.).min(icon.size()),
+                    ));
+                let text = rect.min + egui::vec2(icon_width + 16., 0.);
+                let footer_pos = text + egui::vec2(0., message.size().y + 14.667);
+                ui.painter().galley(text, message, Color32::WHITE);
+                ui.painter().galley(footer_pos, footer, Color32::WHITE);
+                ui.add_space(14.);
+                project_dialogs::button(ui, "CLOSE", egui::vec2(width, 35.), false, 13.333).clicked()
+            });
+        if modal.inner
+            || !just_opened
+                && (modal.should_close()
+                    || modal.is_top_modal
+                        && ctx.input_mut(|input| {
+                            input.consume_key(egui::Modifiers::NONE, egui::Key::Enter)
+                        }))
+        {
+            ctx.data_mut(|data| data.remove::<bool>(id));
+            self.recommend_saving_project();
         }
     }
 
@@ -613,12 +732,14 @@ impl EditorApp {
         if !target.exists() {
             self.status = format!("Could not locate {}.", target.display());
             self.status_error = true;
+            self.report_canvas_notice(notifications::CanvasNotice::LocateMissingPath);
             return;
         }
         match home_files::locate(target, select) {
             Ok(()) => {
                 self.status = "Locating file...".into();
                 self.status_error = false;
+                self.report_canvas_notice(notifications::CanvasNotice::LocatingFile);
             }
             Err(error) => {
                 self.status = error.to_string();
@@ -627,9 +748,9 @@ impl EditorApp {
         }
     }
 
-    fn apply_source_project_patch(&mut self, patch: Value) {
+    fn apply_source_project_patch(&mut self, patch: Value) -> bool {
         if !changed(&patch) {
-            return;
+            return false;
         }
         let operation = |project: &mut Project| {
             if let Some(enabled) = patch["externalLevels"].as_bool() {
@@ -645,9 +766,10 @@ impl EditorApp {
             Ok(())
         };
         if patch.get("identifierStyle").is_some() {
-            self.edit_recoverable("Identifier style changed", operation);
+            self.edit_recoverable("Identifier style changed", operation)
+                .is_some()
         } else {
-            self.edit("Project settings changed", operation);
+            self.edit("Project settings changed", operation).is_some()
         }
     }
 
@@ -707,7 +829,14 @@ impl EditorApp {
                         &mut patch,
                         "when",
                         &[
-                            ("Manual", "Run manually"),
+                            (
+                                "Manual",
+                                if cfg!(target_os = "macos") {
+                                    "Run manually (CMD-R)"
+                                } else {
+                                    "Run manually (CTRL-R)"
+                                },
+                            ),
                             ("AfterLoad", "Run after loading"),
                             ("BeforeSave", "Run before saving"),
                             ("AfterSave", "Run after saving"),
@@ -888,6 +1017,9 @@ mod tests {
                 ..Default::default()
             },
             |ctx| {
+                if app.panel == Some(Panel::Project) {
+                    app.shortcuts(ctx);
+                }
                 egui::CentralPanel::default().show(ctx, |ui| {
                     ui.set_max_width(800.);
                     ui.spacing_mut().item_spacing = Vec2::ZERO;
@@ -981,16 +1113,90 @@ mod tests {
         json["imageExportMode"] = json!("LayersAndLevels");
         json["backupOnSave"] = json!(true);
         let output = frame(&mut app, &ctx, vec![]);
-        label(&output, "PNG file names").expect("PNG pattern when export is enabled");
+        let export_heading = label(&output, "EXTRA FILES").unwrap();
+        let png_names = label(&output, "PNG file names").expect("PNG pattern when export is enabled");
+        assert!((png_names.left() - export_heading.left()).abs() <= 1.);
         label(&output, "LevelName").expect("effective default PNG naming pattern");
         label(&output, "LayerName").expect("effective default PNG naming pattern");
-        label(&output, "Also export level backgrounds").expect("PNG backgrounds");
+        let backgrounds = label(&output, "Also export level backgrounds").expect("PNG backgrounds");
+        assert!((backgrounds.left() - export_heading.left()).abs() <= 1.);
         label(&output, "Max backup files:").expect("backup limit when backups are enabled");
 
         app.project.as_mut().unwrap().json["simplifiedExport"] = json!(true);
         let output = frame(&mut app, &ctx, vec![]);
         assert!(label(&output, "Export as PNG").is_none());
         assert!(label(&output, "PNG file names").is_none());
+    }
+
+    #[test]
+    fn project_tiled_export_shows_the_disclaimer_before_the_save_reminder() {
+        let (mut app, ctx) = editor();
+        let initial = frame(&mut app, &ctx, vec![]);
+        let tiled = label(&initial, "Export Tiled TMX").unwrap();
+        click(&mut app, &ctx, egui::pos2(289., tiled.center().y));
+        assert_eq!(app.project.as_ref().unwrap().json["exportTiled"], true);
+        assert!(app.canvas_notices.is_empty());
+        let dialog = frame(&mut app, &ctx, vec![]);
+        assert!(label(&dialog, "It's not so complicated, I promise :)").is_some());
+        let close = label(&dialog, "CLOSE").expect("Tiled disclaimer close button");
+        click(&mut app, &ctx, close.center());
+        assert_eq!(app.project.as_ref().unwrap().json["exportTiled"], true);
+        assert_eq!(app.canvas_notices.len(), 1);
+        let dialog = frame(&mut app, &ctx, vec![]);
+        assert!(label(&dialog, "It's not so complicated, I promise :)").is_none());
+    }
+
+    #[test]
+    fn project_png_mode_change_resets_the_pattern_and_prompts_to_save() {
+        let (mut app, ctx) = editor();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("Map.v1.ldtk");
+        app.project.as_mut().unwrap().save(&path).unwrap();
+        let doc = &mut app.project.as_mut().unwrap().json;
+        doc["imageExportMode"] = json!("OneImagePerLayer");
+        doc["pngFilePattern"] = json!("Custom_%level_name");
+        let initial = frame(&mut app, &ctx, vec![]);
+        click(
+            &mut app,
+            &ctx,
+            label(&initial, "One PNG per layer").unwrap().center(),
+        );
+        frame(&mut app, &ctx, vec![]);
+        let menu = frame(&mut app, &ctx, vec![egui::Event::Text("merged".into())]);
+        assert!(label(&menu, "One PNG per level (layers are merged down)").is_some());
+        assert!(label(&menu, "Don't export any image").is_none());
+        frame(
+            &mut app,
+            &ctx,
+            vec![egui::Event::Key {
+                key: Key::Enter,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
+        );
+        let doc = &app.project.as_ref().unwrap().json;
+        assert_eq!(doc["imageExportMode"], "OneImagePerLevel");
+        assert!(doc["pngFilePattern"].is_null());
+        assert!(matches!(
+            app.canvas_notices.last().map(|entry| &entry.notice),
+            Some(notifications::CanvasNotice::ProjectFileSettingChanged)
+        ));
+
+        let output = frame(&mut app, &ctx, vec![]);
+        let png = label(&output, "Export as PNG").unwrap();
+        click(&mut app, &ctx, egui::pos2(293., png.center().y));
+        assert!(app.status_error);
+        assert!(
+            app.status
+                .contains(&*dir.path().join("Map.v1/png").to_string_lossy())
+        );
+        assert!(matches!(
+            app.canvas_notices.last().map(|entry| &entry.notice),
+            Some(notifications::CanvasNotice::LocateMissingPath)
+        ));
+        assert!(!dir.path().join("Map.v1").exists());
     }
 
     #[test]
@@ -1207,16 +1413,20 @@ mod tests {
             &ctx,
             label(&out, "FULL (fully indented)").unwrap().center(),
         );
-        let out = frame(&mut app, &ctx, vec![]);
-        click(
+        frame(&mut app, &ctx, vec![]);
+        let filtered = frame(&mut app, &ctx, vec![egui::Event::Text("compact".into())]);
+        assert!(label(&filtered, "COMPACT (mostly indented, but small arrays are inlined)").is_some());
+        assert!(label(&filtered, "MINIFIED (minimal file size, no indentation)").is_none());
+        frame(
             &mut app,
             &ctx,
-            label(
-                &out,
-                "COMPACT (mostly indented, but small arrays are inlined)",
-            )
-            .unwrap()
-            .center(),
+            vec![egui::Event::Key {
+                key: Key::Enter,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
         );
         assert_eq!(app.project.as_ref().unwrap().json["jsonStyle"], "Compact");
         assert!(app.history.undo(app.project.as_mut().unwrap()));
@@ -1226,6 +1436,7 @@ mod tests {
     #[test]
     fn source_project_identifier_style_confirms_before_renaming() {
         let (mut app, ctx) = editor();
+        app.panel = Some(Panel::Project);
         app.project
             .as_mut()
             .unwrap()
@@ -1254,8 +1465,19 @@ mod tests {
         frame(&mut app, &ctx, vec![]);
         choose_lowercase(&mut app);
         assert_eq!(app.project.as_ref().unwrap().json, before);
-        let out = frame(&mut app, &ctx, vec![]);
-        click(&mut app, &ctx, label(&out, "CANCEL").unwrap().center());
+        frame(&mut app, &ctx, vec![]);
+        frame(
+            &mut app,
+            &ctx,
+            vec![egui::Event::Key {
+                key: egui::Key::Escape,
+                physical_key: Some(egui::Key::Escape),
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
+        );
+        assert!(app.panel == Some(Panel::Project));
         assert_eq!(app.project.as_ref().unwrap().json, before);
         assert!(app.last_chance.is_none());
 
@@ -1345,6 +1567,29 @@ mod tests {
         );
         assert!(app.history.undo(app.project.as_mut().unwrap()));
         assert_eq!(app.project.as_ref().unwrap().json, before);
+    }
+
+    #[test]
+    fn source_project_command_trigger_can_be_filtered_and_selected() {
+        let (mut app, ctx) = editor();
+        app.project.as_mut().unwrap().json["customCommands"] =
+            json!([{"when":"Manual","command":""}]);
+        let output = frame(&mut app, &ctx, vec![]);
+        let manual = if cfg!(target_os = "macos") {
+            "Run manually (CMD-R)"
+        } else {
+            "Run manually (CTRL-R)"
+        };
+        click(&mut app, &ctx, label(&output, manual).unwrap().center());
+        frame(&mut app, &ctx, vec![]);
+        let output = frame(&mut app, &ctx, vec![egui::Event::Text("loading".into())]);
+        assert!(label(&output, "Run after saving").is_none());
+        click(&mut app, &ctx, label(&output, "Run after loading").unwrap().center());
+        assert_eq!(
+            app.project.as_ref().unwrap().json["customCommands"][0]["when"],
+            "AfterLoad"
+        );
+        assert!(!app.command_open);
     }
 
     #[test]
@@ -1453,6 +1698,48 @@ mod tests {
     }
 
     #[test]
+    fn level_name_pattern_keeps_keyboard_selection_after_committing_a_literal() {
+        let (mut app, ctx) = editor();
+        let output = frame(&mut app, &ctx, vec![]);
+        click(&mut app, &ctx, label(&output, "Level_").unwrap().center());
+        frame(&mut app, &ctx, vec![]);
+        let key = |key, modifiers| egui::Event::Key {
+            key,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers,
+        };
+        frame(
+            &mut app,
+            &ctx,
+            vec![
+                key(Key::A, egui::Modifiers::COMMAND),
+                egui::Event::Text("Room_".into()),
+            ],
+        );
+        frame(
+            &mut app,
+            &ctx,
+            vec![key(Key::ArrowRight, egui::Modifiers::NONE)],
+        );
+        assert_eq!(
+            app.project.as_ref().unwrap().json["levelNamePattern"],
+            "Room_%idx"
+        );
+        frame(&mut app, &ctx, vec![]);
+        frame(
+            &mut app,
+            &ctx,
+            vec![key(Key::Delete, egui::Modifiers::NONE)],
+        );
+        assert_eq!(
+            app.project.as_ref().unwrap().json["levelNamePattern"],
+            "Room_"
+        );
+    }
+
+    #[test]
     fn source_project_level_name_blocks_can_be_added_reordered_and_reset() {
         let (mut app, ctx) = editor();
         let output = frame(&mut app, &ctx, vec![]);
@@ -1460,8 +1747,9 @@ mod tests {
         let plus = egui::pos2(reset.left() - 18., reset.center().y);
         click(&mut app, &ctx, plus);
         let output = frame(&mut app, &ctx, vec![]);
-        assert!(label(&output, "LevelIndex(1)").is_some());
-        let world = label(&output, "WorldId").expect("unused variable").center();
+        assert!(label(&output, "LEVELINDEX(1)").is_some());
+        assert!(label(&output, "Level index (starting at 1)").is_some());
+        let world = label(&output, "WORLDID").expect("unused variable").center();
         click(&mut app, &ctx, world);
         assert_eq!(
             app.project.as_ref().unwrap().json["levelNamePattern"],
@@ -1492,7 +1780,7 @@ mod tests {
         click(&mut app, &ctx, world);
         click(&mut app, &ctx, world);
         let output = frame(&mut app, &ctx, vec![]);
-        let coordinate = label(&output, "LevelX")
+        let coordinate = label(&output, "LEVELX")
             .expect("variable replacement menu")
             .center();
         click(&mut app, &ctx, coordinate);
@@ -1506,6 +1794,10 @@ mod tests {
             app.project.as_ref().unwrap().json["levelNamePattern"],
             "Level_%idx"
         );
+        assert!(matches!(
+            app.canvas_notices.last().map(|entry| &entry.notice),
+            Some(notifications::CanvasNotice::ValueReset)
+        ));
         assert!(app.history.undo(app.project.as_mut().unwrap()));
         assert_eq!(
             app.project.as_ref().unwrap().json["levelNamePattern"],

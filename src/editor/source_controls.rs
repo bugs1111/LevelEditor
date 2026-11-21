@@ -461,6 +461,23 @@ pub(in crate::app) fn form_row<R>(
     )
 }
 
+pub(in crate::app) fn form_row_left_aligned<R>(
+    ui: &mut egui::Ui,
+    label: &str,
+    key: &str,
+    label_width: f32,
+    body: impl FnOnce(&mut egui::Ui) -> R,
+) -> R {
+    form_row_inner(
+        ui,
+        label,
+        key,
+        egui::vec2(label_width, 30.),
+        FormLabel::LeftAligned,
+        body,
+    )
+}
+
 pub(in crate::app) fn form_row_wrapped<R>(
     ui: &mut egui::Ui,
     label: &str,
@@ -496,6 +513,7 @@ enum FormLabel {
     SingleLine,
     Wrapped,
     TopAligned,
+    LeftAligned,
 }
 
 fn form_row_inner<R>(
@@ -589,13 +607,14 @@ fn property_label_layout(
     label_size: Vec2,
     layout: FormLabel,
 ) {
-    let wrap = layout != FormLabel::SingleLine;
+    let wrap = matches!(layout, FormLabel::Wrapped | FormLabel::TopAligned);
     let top_aligned = layout == FormLabel::TopAligned;
+    let left_aligned = layout == FormLabel::LeftAligned;
     let (info, reserve) = property_label_help(label, key);
     let width = ui.available_width().min(label_size.x);
     let text_width = (width - reserve).max(0.);
     let font = FontId::proportional(PROPERTY_LABEL_FONT_SIZE);
-    let color = ui.visuals().text_color();
+    let color = if left_aligned { Color32::WHITE } else { ui.visuals().text_color() };
     // CSS dt labels wrap at spaces, without splitting an individual word.
     let mut lines = Vec::new();
     let mut line = String::new();
@@ -646,7 +665,9 @@ fn property_label_layout(
         Sense::hover(),
     );
     let right = rect.right() - reserve;
-    let position = if top_aligned {
+    let position = if left_aligned {
+        rect.left_top() + egui::vec2(0., 1.)
+    } else if top_aligned {
         egui::pos2(right, rect.top() + 4.)
     } else {
         egui::pos2(
@@ -796,47 +817,53 @@ pub(in crate::app) fn select_popup(
     selected: usize,
     options: &[(&str, Color32)],
 ) -> Option<usize> {
-    let last = options.len().checked_sub(1)?;
+    select_popup_contents(response, id, selected, options, false)
+}
+
+pub(in crate::app) fn searchable_select_popup(
+    response: &egui::Response,
+    id: egui::Id,
+    selected: usize,
+    options: &[(&str, Color32)],
+) -> Option<usize> {
+    select_popup_contents(response, id, selected, options, true)
+}
+
+fn select_popup_contents(
+    response: &egui::Response,
+    id: egui::Id,
+    selected: usize,
+    options: &[(&str, Color32)],
+    searchable: bool,
+) -> Option<usize> {
+    let last_option = options.len().checked_sub(1)?;
     let ctx = &response.ctx;
     let open = egui::Popup::is_id_open(ctx, id);
     let cursor_id = id.with("highlighted");
+    let search_id = id.with("search");
     if !open {
-        ctx.data_mut(|data| data.remove::<usize>(cursor_id));
+        ctx.data_mut(|data| {
+            data.remove::<usize>(cursor_id);
+            data.remove::<String>(search_id);
+        });
     }
     let mut choice = None;
-    egui::Popup::menu(response)
+    let popup = egui::Popup::menu(response)
         .id(id)
         .open_memory(
             ((!open && response.clicked()) || response.clicked_by(egui::PointerButton::Primary))
                 .then_some(egui::SetOpenCommand::Toggle),
         )
         .width(response.rect.width())
-        .frame(egui::Frame::new().fill(theme::LIGHT))
-        .show(|ui| {
-            let mut cursor = ui
-                .data(|data| data.get_temp::<usize>(cursor_id))
-                .unwrap_or(selected)
-                .min(last);
-            let previous = cursor;
-            let confirm = ui.input_mut(|input| {
-                let mut pressed = |key| input.consume_key(egui::Modifiers::NONE, key);
-                cursor = if pressed(Key::Home) {
-                    0
-                } else if pressed(Key::End) {
-                    last
-                } else if pressed(Key::ArrowDown) {
-                    (cursor + 1).min(last)
-                } else if pressed(Key::ArrowUp) {
-                    cursor.saturating_sub(1)
-                } else {
-                    cursor
-                };
-                pressed(Key::Enter)
-            });
-            if confirm {
-                choice = Some(cursor);
-                ui.close();
-            }
+        .frame(egui::Frame::new().fill(theme::LIGHT));
+    let popup = if searchable {
+        popup
+            .anchor(response.rect.left_top())
+            .frame(context_menu_frame(&ctx.style()).fill(theme::LIGHT))
+    } else {
+        popup
+    };
+    popup.show(|ui| {
             let pointer_moved = ui.input(|input| input.pointer.delta() != Vec2::ZERO);
             let font = FontId::proportional(14.667);
             let width = options
@@ -850,46 +877,112 @@ pub(in crate::app) fn select_popup(
                 })
                 .fold(response.rect.width(), f32::max)
                 .min(ctx.content_rect().width());
-            egui::ScrollArea::vertical()
-                .max_height(250.)
-                .show(ui, |ui| {
-                    ui.spacing_mut().item_spacing.y = 0.;
-                    for (index, &(label, color)) in options.iter().enumerate() {
-                        let (rect, option) =
-                            ui.allocate_exact_size(egui::vec2(width, 32.), Sense::click());
-                        option.widget_info(|| {
-                            egui::WidgetInfo::selected(
-                                egui::WidgetType::SelectableLabel,
-                                true,
-                                index == selected,
-                                label,
-                            )
-                        });
-                        if index == cursor && cursor != previous {
-                            option.scroll_to_me(None);
-                        }
-                        if pointer_moved && option.hovered() {
-                            cursor = index;
-                        }
-                        let highlighted = index == cursor;
-                        if highlighted {
-                            ui.painter().rect_filled(rect, 0., theme::ACCENT);
-                        }
-                        ui.painter().with_clip_rect(rect).text(
-                            rect.left_center() + egui::vec2(8., 0.),
-                            Align2::LEFT_CENTER,
-                            label,
-                            font.clone(),
-                            if highlighted { Color32::BLACK } else { color },
-                        );
-                        if option.clicked() {
-                            choice = Some(index);
-                            ui.close();
-                        }
-                    }
-                });
-            ui.data_mut(|data| data.insert_temp(cursor_id, cursor));
+
+        let (home, end, down, up, confirm) = ui.input_mut(|input| {
+            let mut pressed = |key| input.consume_key(egui::Modifiers::NONE, key);
+            (
+                !searchable && pressed(Key::Home),
+                !searchable && pressed(Key::End),
+                pressed(Key::ArrowDown),
+                pressed(Key::ArrowUp),
+                pressed(Key::Enter),
+            )
         });
+        let mut search = String::new();
+        if searchable {
+            search = ui
+                .data(|data| data.get_temp::<String>(search_id))
+                .unwrap_or_default();
+            let edit = ui.add_sized(
+                [width, 34.],
+                egui::TextEdit::singleline(&mut search)
+                    .id(search_id)
+                    .hint_text(locale::tr(ui, "Search"))
+                    .font(font.clone()),
+            );
+            if !open {
+                edit.request_focus();
+            }
+            ui.data_mut(|data| data.insert_temp(search_id, search.clone()));
+        }
+        let search = search.to_lowercase();
+        let visible = options
+            .iter()
+            .enumerate()
+            .filter_map(|(index, (label, _))| {
+                (search.is_empty() || label.to_lowercase().contains(&search)).then_some(index)
+            })
+            .collect::<Vec<_>>();
+        let Some(last) = visible.len().checked_sub(1) else {
+            return;
+        };
+        let previous = ui
+            .data(|data| data.get_temp::<usize>(cursor_id))
+            .unwrap_or(selected)
+            .min(last_option);
+        let index = visible
+            .iter()
+            .position(|&index| index == previous)
+            .unwrap_or(0);
+        let index = if home {
+            0
+        } else if end {
+            last
+        } else if down {
+            (index + 1).min(last)
+        } else if up {
+            index.saturating_sub(1)
+        } else {
+            index
+        };
+        let mut cursor = visible[index];
+        if confirm {
+            choice = Some(cursor);
+            ui.close();
+        }
+        egui::ScrollArea::vertical()
+            .max_height(250.)
+            .show(ui, |ui| {
+                ui.spacing_mut().item_spacing.y = 0.;
+                for index in visible {
+                    let (label, color) = options[index];
+                    let (rect, option) = ui.allocate_exact_size(
+                        egui::vec2(width, if searchable { 27. } else { 32. }),
+                        Sense::click(),
+                    );
+                    option.widget_info(|| {
+                        egui::WidgetInfo::selected(
+                            egui::WidgetType::SelectableLabel,
+                            true,
+                            index == selected,
+                            label,
+                        )
+                    });
+                    if index == cursor && cursor != previous {
+                        option.scroll_to_me(None);
+                    }
+                    if pointer_moved && option.hovered() {
+                        cursor = index;
+                    }
+                    let highlighted = index == cursor;
+                    if highlighted {
+                        ui.painter().rect_filled(rect, 0., theme::ACCENT);
+                    }
+                    ui.painter().with_clip_rect(rect).text(
+                        rect.left_center() + egui::vec2(8., 0.),
+                        Align2::LEFT_CENTER,
+                        label,
+                        font.clone(),
+                        if highlighted { Color32::BLACK } else { color },
+                    );
+                    if option.clicked() {
+                        choice = Some(index);
+                        ui.close();
+                    }
+                }
+            });
+        ui.data_mut(|data| data.insert_temp(cursor_id, cursor));
+    });
     choice
 }
 

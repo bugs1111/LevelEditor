@@ -295,7 +295,7 @@ impl EditorApp {
                 let label = definition
                     .and_then(|entry| entry["identifier"].as_str())
                     .map_or_else(|| format!("#{value}"), str::to_owned);
-                paint_pick_grid(&painter, grid_rect, grid_scale, color);
+                paint_pick_grid(&painter, grid_rect, grid_scale, color, false);
                 paint_pick_label(
                     ctx,
                     &painter,
@@ -332,6 +332,7 @@ impl EditorApp {
                         grid_rect,
                         grid_scale,
                         canvas::entity_smart_color(project, owner, def, false),
+                        false,
                     );
                 }
                 return;
@@ -377,8 +378,17 @@ impl EditorApp {
     }
 }
 
-fn paint_pick_grid(painter: &egui::Painter, rect: Rect, scale: f32, color: Color32) {
+pub(super) fn paint_pick_grid(
+    painter: &egui::Painter,
+    rect: Rect,
+    scale: f32,
+    color: Color32,
+    fill: bool,
+) {
     for (inset, stroke) in [(2., Color32::BLACK), (0., color)] {
+        if fill && inset == 0. {
+            painter.rect_filled(rect, 0., color.gamma_multiply(0.35));
+        }
         let rect = rect.shrink(inset * scale);
         let mut path = egui::epaint::tessellator::Path::default();
         path.add_line_loop(&[

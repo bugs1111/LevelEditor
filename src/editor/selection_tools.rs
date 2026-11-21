@@ -29,7 +29,7 @@ impl EditorApp {
         };
         json!(project.level(key).and_then(|l|l["layerInstances"].as_array()).into_iter().flatten().enumerate().map(|(index,layer)|{
             let origin=canvas::layer_to_world(project,key,index,&self.viewport,[0.0,0.0]);let unit=canvas::layer_to_world(project,key,index,&self.viewport,[1.0,0.0]);
-            let kind=text(layer,"__type","");let details=self.details||matches!(kind,"Tiles"|"AutoLayer")||kind=="IntGrid"&&project.layer_def(layer["layerDefUid"].as_i64().unwrap_or(-1)).is_some_and(|d|d["autoRuleGroups"].as_array().is_some_and(|rules|!rules.is_empty()));
+            let kind=text(layer,"__type","");let details=self.details||matches!(kind,"Tiles"|"AutoLayer")||kind=="IntGrid"&&project.layer_def(layer["layerDefUid"].as_i64().unwrap_or(-1)).is_some_and(|d|!d["tilesetDefUid"].is_null());
             let visible=self.layer_visible(key,index)&&(!self.single_layer||index==self.layer)&&details;
             json!({"layerDefUid":layer["layerDefUid"],"origin":origin,"scale":unit[0]-origin[0],"visible":visible})
         }).collect::<Vec<_>>())
@@ -283,13 +283,8 @@ impl EditorApp {
                 let d = l["layerDefUid"]
                     .as_i64()
                     .and_then(|uid| project.layer_def(uid));
-                l["visible"] != false
-                    && (!self.single_layer || *i == self.layer)
-                    && !self
-                        .hidden
-                        .contains(&l["layerDefUid"].as_i64().unwrap_or(-1))
+                (!self.single_layer || *i == self.layer)
                     && (*i == self.layer || d.is_some_and(|d| d["canSelectWhenInactive"] != false))
-                    && (self.details || l["__type"] != "Entities")
                     && l["__type"] != "AutoLayer"
             })
             .map(|(i, _)| i)
@@ -297,6 +292,10 @@ impl EditorApp {
     }
 
     pub(super) fn capture_selection(&mut self, region: [i32; 4]) {
+        self.capture_selection_rectangle(region, false);
+    }
+
+    pub(super) fn capture_selection_rectangle(&mut self, region: [i32; 4], append: bool) {
         let Some(key) = self.selected else {
             return;
         };
@@ -307,14 +306,14 @@ impl EditorApp {
             return;
         };
         let grid = number(layer, "__gridSize", 16.0);
-        let a = canvas::layer_to_world(
+        let a = canvas::layer_to_pointer_world(
             project,
             key,
             self.layer,
             &self.viewport,
             [region[0] as f32 * grid, region[1] as f32 * grid],
         );
-        let b = canvas::layer_to_world(
+        let b = canvas::layer_to_pointer_world(
             project,
             key,
             self.layer,
@@ -324,34 +323,64 @@ impl EditorApp {
                 (region[1] + region[3]) as f32 * grid,
             ],
         );
+        let a = a.map(f32::trunc);
+        let b = b.map(|v| (v - 1.).trunc());
         let bounds = [
-            a[0].floor() as i32,
-            a[1].floor() as i32,
-            (b[0] - a[0]).ceil().max(1.0) as i32,
-            (b[1] - a[1]).ceil().max(1.0) as i32,
+            a[0] as i32,
+            a[1] as i32,
+            (b[0] - a[0]) as i32 + 1,
+            (b[1] - a[1]) as i32 + 1,
         ];
         let geometries = self.selection_geometries(key);
         let regions = json!(
             self.selectable_layers()
                 .iter()
+                .filter(|&&index| geometries[index]["visible"] == true)
                 .map(|&index| {
                     let layer = project.layer(key, index).unwrap();
                     let grid = number(layer, "__gridSize", 16.0);
-                    let left = canvas::world_to_layer(project, key, index, &self.viewport, a);
-                    let right = canvas::world_to_layer(project, key, index, &self.viewport, b);
-                    let x = (left[0] / grid).floor() as i32;
-                    let y = (left[1] / grid).floor() as i32;
-                    let w = (right[0] / grid).ceil() as i32 - x;
-                    let h = (right[1] / grid).ceil() as i32 - y;
+                    let left = canvas::pointer_to_layer(project, key, index, &self.viewport, a);
+                    let right = canvas::pointer_to_layer(project, key, index, &self.viewport, b);
+                    let x = (left[0] / grid) as i32;
+                    let y = (left[1] / grid) as i32;
+                    let w = (right[0] / grid) as i32 - x + 1;
+                    let h = (right[1] / grid) as i32 - y + 1;
                     json!({"layerIndex":index,"rect":[x,y,w,h],"geometry":geometries[index]})
                 })
                 .collect::<Vec<_>>()
         );
-        match project.copy_selection_group_from_regions(key, &regions, bounds) {
-            Ok(mut group) => {
+        let result = project.copy_selection_group_from_regions(key, &regions, bounds)
+            .and_then(|mut group| {
                 group["emptySpace"] = self.settings.bool("emptySpaceSelection").into();
                 if group["emptySpace"] == false {
                     group["originalRects"] = json!([]);
+                }
+                if append
+                    && let Some(previous) = self.selection_group.as_ref()
+                    && previous["elementCount"].as_u64().is_some_and(|n| n > 0)
+                {
+                    if group["elementCount"] == 0 {
+                        if group["emptySpace"] == false {
+                            return Ok(previous.clone());
+                        }
+                        let level = project.level(key).unwrap();
+                        group["originalRects"] = json!([{
+                            "leftPx": bounds[0].max(0),
+                            "rightPx": (bounds[0] + bounds[2] - 1).min(number(level, "pxWid", 0.) as i32),
+                            "topPx": bounds[1].max(0),
+                            "bottomPx": (bounds[1] + bounds[3] - 1).min(number(level, "pxHei", 0.) as i32)
+                        }]);
+                    }
+                    return project.append_selection_group(key, previous, group, &geometries);
+                }
+                Ok(group)
+            });
+        match result {
+            Ok(group) => {
+                if append {
+                    self.apply_single_marquee_pick(key, &group);
+                    self.set_selection_group(group);
+                    return;
                 }
                 if group["elementCount"].as_u64().is_some_and(|n| n > 1) {
                     self.entity_index = None;
@@ -370,6 +399,9 @@ impl EditorApp {
     }
 
     pub(super) fn select_all(&mut self) {
+        if self.world {
+            return;
+        }
         let Some(key) = self.selected else {
             return;
         };
@@ -386,13 +418,32 @@ impl EditorApp {
         }).collect::<Vec<_>>());
         match project.copy_selection_group_from_regions(key, &regions, [0, 0, width, height]) {
             Ok(mut group) => {
+                if self.selection_group.is_some() && self.panel == Some(Panel::Entity) {
+                    self.panel = None;
+                    self.entity_index = None;
+                }
+                let any = group["elementCount"].as_u64().is_some_and(|count| count > 0);
                 group["emptySpace"] = self.settings.bool("emptySpaceSelection").into();
-                group["originalRects"] = if group["emptySpace"] == true {
+                group["originalRects"] = if any && group["emptySpace"] == true {
                     json!([{"leftPx":0,"topPx":0,"rightPx":width,"bottomPx":height}])
                 } else {
                     json!([])
                 };
                 self.set_selection_group(group);
+                if any {
+                    let label = if self.single_layer {
+                        "Selected all in layer"
+                    } else {
+                        "Selected all"
+                    };
+                    let message = self
+                        .repaint
+                        .as_ref()
+                        .map_or(label, |ctx| locale::tr_ctx(ctx, label));
+                    self.notify_quick(message.into());
+                } else {
+                    self.report_empty_selection();
+                }
             }
             Err(e) => {
                 self.status = e.to_string();
@@ -542,6 +593,71 @@ impl EditorApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn select_all_includes_hidden_layers_except_inactive_protected_layers() {
+        let mut project = Project::new();
+        let key = project.level_keys()[0];
+        project.add_layer("Ground", "IntGrid", 16).unwrap();
+        let actor_layer = project.add_layer("Actors", "Entities", 16).unwrap();
+        let actor = project.add_entity_def("Actor", 16, 16).unwrap();
+        project.add_entity(key, 0, actor, 24, 24).unwrap();
+        project.paint_int_grid(key, 1, 1, 1, 1).unwrap();
+        project.layer_mut(key, 0).unwrap()["visible"] = false.into();
+        let mut app = EditorApp::empty();
+        app.set_project(project);
+        app.layer = 1;
+
+        app.select_all();
+        assert_eq!(app.selection_group.as_ref().unwrap()["elementCount"], 2);
+        assert_eq!(app.quick_notification.as_ref().unwrap().0, "Selected all");
+
+        app.details = false;
+        app.select_all();
+        assert_eq!(app.selection_group.as_ref().unwrap()["elementCount"], 2);
+
+        app.single_layer = true;
+        app.select_all();
+        assert_eq!(app.selection_group.as_ref().unwrap()["elementCount"], 1);
+        assert_eq!(
+            app.quick_notification.as_ref().unwrap().0,
+            "Selected all in layer"
+        );
+        app.single_layer = false;
+
+        let project = app.project.as_mut().unwrap();
+        let definition = project.json["defs"]["layers"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|definition| definition["uid"] == actor_layer)
+            .unwrap();
+        definition["canSelectWhenInactive"] = false.into();
+        app.select_all();
+        assert_eq!(app.selection_group.as_ref().unwrap()["elementCount"], 1);
+    }
+
+    #[test]
+    fn select_all_reports_an_empty_level_without_creating_an_empty_space_selection() {
+        let mut project = Project::new();
+        project.add_layer("Ground", "IntGrid", 16).unwrap();
+        let mut app = EditorApp::empty();
+        app.set_project(project);
+        app.settings.value["emptySpaceSelection"] = true.into();
+
+        app.world = true;
+        app.select_all();
+        assert!(app.canvas_notices.is_empty());
+        app.world = false;
+
+        app.select_all();
+        assert!(app.selection.is_none());
+        assert!(app.selection_group.is_none());
+        assert!(matches!(
+            app.canvas_notices.last().map(|entry| &entry.notice),
+            Some(notifications::CanvasNotice::NothingToSelect)
+        ));
+    }
 
     #[test]
     fn select_all_uses_full_level_extent_and_respects_empty_space_selection() {

@@ -116,9 +116,18 @@ fn request_video_thumbnails(ctx: &egui::Context) {
     });
 }
 
-fn video_card(ui: &mut egui::Ui, id: &'static str, title: &'static str, width: f32) {
+fn video_card(ui: &mut egui::Ui, id: &'static str, title: &'static str, width: f32) -> egui::Response {
     let title = locale::tr(ui, title);
     let (rect, response) = ui.allocate_exact_size(egui::vec2(width, 182.), Sense::click());
+    ui.painter().add(
+        egui::epaint::Shadow {
+            offset: [0, 0],
+            blur: 8,
+            spread: 0,
+            color: Color32::from_black_alpha(128),
+        }
+        .as_shape(rect, 0),
+    );
     ui.painter().rect_filled(rect, 0., Color32::BLACK);
     let inner = rect.shrink(1.);
     if ui.data(|data| data.get_temp::<bool>(egui::Id::new(("help-video", id)))) == Some(true)
@@ -145,14 +154,7 @@ fn video_card(ui: &mut egui::Ui, id: &'static str, title: &'static str, width: f
             .rect_stroke(rect, 0., Stroke::new(1., theme::ACCENT), StrokeKind::Inside);
     }
     response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Link, true, title));
-    if response
-        .on_hover_text(title)
-        .on_hover_cursor(egui::CursorIcon::PointingHand)
-        .clicked()
-    {
-        ui.ctx()
-            .open_url(egui::OpenUrl::new_tab(format!("https://youtu.be/{id}")));
-    }
+    response.on_hover_text(title)
 }
 
 enum HelpKey<'a> {
@@ -277,7 +279,8 @@ fn help_section(ui: &mut egui::Ui, heading: &str, rows: &[(&str, &str)], major: 
             (columns - key_width - 2. * indent - 1.).max(30.),
         );
         let has_mouse = keys.iter().any(|(key, _)| matches!(key, HelpKey::Mouse(_)));
-        let height = (if has_mouse { 40_f32 } else { 31. }).max(galley.size().y + 8.);
+        let key_height = if has_mouse { 40_f32 } else { 31. };
+        let height = key_height.max(galley.size().y + 8.);
         let (row, _) = ui.allocate_exact_size(egui::vec2(columns, height), Sense::hover());
         let key_rect = Rect::from_min_size(row.min, egui::vec2(key_width, height));
         ui.painter().rect_filled(key_rect, 4., theme::DARK);
@@ -295,7 +298,11 @@ fn help_section(ui: &mut egui::Ui, heading: &str, rows: &[(&str, &str)], major: 
         );
         let mut x = key_rect.max.x - width - if major { 4. } else { 8. };
         for (key, width) in keys {
-            key.paint(ui, egui::pos2(x + width * 0.5, row.center().y), width);
+            key.paint(
+                ui,
+                egui::pos2(x + width * 0.5, row.min.y + key_height * 0.5),
+                width,
+            );
             x += width + 2.;
         }
         ui.add_space(1.);
@@ -303,39 +310,100 @@ fn help_section(ui: &mut egui::Ui, heading: &str, rows: &[(&str, &str)], major: 
 }
 
 impl EditorApp {
+    fn help_link(&mut self, ui: &egui::Ui, response: egui::Response, url: &str, show_address: bool) {
+        let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
+        if show_address
+            && response.hovered()
+            && !response.secondary_clicked()
+            && !egui::Popup::is_any_open(ui.ctx())
+        {
+            let address = url.strip_prefix("https://").unwrap_or(url);
+            let mut tip = egui::Tooltip::for_widget(&response);
+            tip.popup = tip
+                .popup
+                .align(egui::emath::RectAlign::RIGHT_START)
+                .frame(
+                    egui::Frame::new()
+                        .fill(Color32::from_rgb(66, 91, 131))
+                        .corner_radius(4)
+                        .inner_margin(egui::Margin::symmetric(18, 12)),
+                );
+            tip.show(|ui| {
+                ui.label(
+                    RichText::new(address)
+                        .monospace()
+                        .size(9.33)
+                        .color(Color32::from_rgb(172, 214, 247)),
+                );
+            });
+        }
+        if response.clicked() || response.middle_clicked() {
+            ui.ctx().open_url(egui::OpenUrl::new_tab(url));
+            if response.clicked() {
+                self.report_canvas_notice(notifications::CanvasNotice::LinkOpened);
+            }
+        }
+        egui::Popup::context_menu(&response)
+            .anchor(response.rect)
+            .frame(panels::source_controls::context_menu_frame(ui.style()))
+            .show(|ui| {
+                let label = locale::tr(ui, "Copy URL").to_uppercase();
+                let font = FontId::proportional(13.33);
+                let galley = ui.painter().layout_no_wrap(label, font, Color32::PLACEHOLDER);
+                let size = egui::vec2(galley.size().x + 40., 31.);
+                let (rect, item) = ui.allocate_exact_size(size, Sense::click());
+                let color = if item.hovered() {
+                    ui.painter().rect_filled(rect, 0., theme::ACCENT);
+                    Color32::BLACK
+                } else {
+                    theme::ACCENT
+                };
+                item.widget_info(|| {
+                    egui::WidgetInfo::labeled(egui::WidgetType::Button, true, galley.text())
+                });
+                ui.painter().galley(rect.center() - galley.size() * 0.5, galley, color);
+                if item.clicked() {
+                    ui.ctx().copy_text(url.to_owned());
+                    self.report_canvas_notice(notifications::CanvasNotice::LinkCopied);
+                    ui.close();
+                }
+            });
+    }
+
     pub(super) fn help_contents(&mut self, ui: &mut egui::Ui) {
         request_video_thumbnails(ui.ctx());
         let width = ui.available_width();
         ui.horizontal_top(|ui| {
             ui.spacing_mut().item_spacing.x = 16.;
-            let docs_width = ((width - 16.) * 0.548).round();
+            let docs_width = ((width - 16.) * 0.316).round();
             ui.with_layout(egui::Layout::top_down_justified(egui::Align::Min), |ui| {
                 ui.set_width(docs_width);
+                ui.add_space(2.);
                 panels::source_controls::form_heading_line(ui, "Online documentation");
                 ui.add_space(10.);
                 for (label, icon, fill, url) in [
                     (
                         "Release notes",
                         egui::include_image!("../../assets/icons/doc.svg"),
-                        Color32::from_rgb(235, 78, 0),
+                        Color32::from_rgb(227, 77, 0),
                         None,
                     ),
                     (
                         "Website",
                         egui::include_image!("../../assets/icons/doc.svg"),
-                        Color32::from_rgb(68, 133, 78),
+                        Color32::from_rgb(73, 141, 85),
                         Some("https://ldtk.io/docs"),
                     ),
                     (
                         "JSON file format",
                         egui::include_image!("../../assets/icons/json.svg"),
-                        Color32::from_rgb(68, 133, 78),
+                        Color32::from_rgb(73, 141, 85),
                         Some("https://ldtk.io/json"),
                     ),
                     (
                         "Discord",
                         egui::include_image!("../../assets/icons/discord.svg"),
-                        Color32::from_rgb(119, 138, 214),
+                        Color32::from_rgb(114, 137, 218),
                         Some("https://ldtk.io/go/discord"),
                     ),
                 ] {
@@ -358,21 +426,19 @@ impl EditorApp {
                         margin + egui::vec2(37., 0.),
                         Align2::LEFT_CENTER,
                         label,
-                        FontId::proportional(14.),
+                        FontId::proportional(13.33),
                         Color32::WHITE,
                     );
                     response.widget_info(|| {
                         egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label)
                     });
-                    if response.clicked() {
-                        if let Some(url) = url {
-                            ui.ctx().open_url(egui::OpenUrl::new_tab(url));
-                        } else {
-                            self.dismiss_panel();
-                            ui.data_mut(|data| {
-                                data.insert_temp(egui::Id::new("release-notes-open"), true)
-                            });
-                        }
+                    if let Some(url) = url {
+                        self.help_link(ui, response, url, true);
+                    } else if response.clicked() {
+                        self.dismiss_panel();
+                        ui.data_mut(|data| {
+                            data.insert_temp(egui::Id::new("release-notes-open"), true)
+                        });
                     }
                     ui.add_space(1.);
                 }
@@ -381,11 +447,12 @@ impl EditorApp {
                 let video_width = (width - 16. - docs_width).max(80.);
                 ui.set_width(video_width);
                 panels::source_controls::form_heading_line(ui, "Video guides");
-                ui.add_space(8.);
+                ui.add_space(11.);
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 4.;
                     for (id, title) in VIDEO_GUIDES {
-                        video_card(ui, id, title, (video_width - 4.) * 0.5);
+                        let response = video_card(ui, id, title, (video_width - 4.) * 0.5);
+                        self.help_link(ui, response, &format!("https://youtu.be/{id}"), false);
                     }
                 });
             });
@@ -721,6 +788,111 @@ impl EditorApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn help_reserves_the_original_width_for_video_guides() {
+        let ctx = egui::Context::default();
+        theme::configure(&ctx);
+        ctx.data_mut(|data| {
+            data.insert_temp(egui::Id::new("help-video-thumbnails-requested"), true)
+        });
+        let mut app = EditorApp::empty();
+        let output = ctx.run(
+            egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(856., 850.))),
+                ..Default::default()
+            },
+            |ctx| {
+                egui::CentralPanel::default()
+                    .frame(egui::Frame::NONE)
+                    .show(ctx, |ui| app.help_contents(ui));
+            },
+        );
+        let video_heading = output
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) if text.galley.text() == "VIDEO GUIDES" => Some(text.pos.x),
+                _ => None,
+            })
+            .expect("video guides heading");
+        assert!((280. ..=284.).contains(&video_heading), "video guides start at {video_heading}");
+    }
+
+    #[test]
+    fn help_website_link_supports_middle_click_and_copy_url() {
+        let ctx = egui::Context::default();
+        theme::configure(&ctx);
+        ctx.data_mut(|data| {
+            data.insert_temp(egui::Id::new("help-video-thumbnails-requested"), true)
+        });
+        let mut app = EditorApp::empty();
+        app.panel = Some(Panel::Help);
+        let mut draw = |events| {
+            ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(856., 850.))),
+                    events,
+                    ..Default::default()
+                },
+                |ctx| {
+                    app.shortcuts(ctx);
+                    if app.panel == Some(Panel::Help) {
+                        egui::CentralPanel::default().show(ctx, |ui| app.help_contents(ui));
+                    }
+                },
+            )
+        };
+        let text_position = |output: &egui::FullOutput, label: &str| {
+            output.shapes.iter().find_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) if text.galley.text() == label => {
+                    Some(text.pos + text.galley.size() * 0.5)
+                }
+                _ => None,
+            })
+        };
+        let pointer = |pos, button, pressed| {
+            vec![egui::Event::PointerMoved(pos), egui::Event::PointerButton {
+                pos,
+                button,
+                pressed,
+                modifiers: egui::Modifiers::NONE,
+            }]
+        };
+        let initial = draw(vec![]);
+        assert!(text_position(&initial, "ldtk.io/docs").is_none());
+        let website = text_position(&initial, "Website").unwrap();
+        draw(pointer(website, egui::PointerButton::Middle, true));
+        let opened = draw(pointer(website, egui::PointerButton::Middle, false));
+        let url = "https://ldtk.io/docs";
+        assert!(opened.platform_output.commands.iter().any(|command| {
+            matches!(command, egui::OutputCommand::OpenUrl(open) if open.url == url)
+        }));
+
+        draw(pointer(website, egui::PointerButton::Secondary, true));
+        draw(pointer(website, egui::PointerButton::Secondary, false));
+        let menu = draw(vec![]);
+        assert!(text_position(&menu, "ldtk.io/docs").is_none());
+        let copy = text_position(&menu, "COPY URL").expect("help link context action");
+        draw(pointer(copy, egui::PointerButton::Primary, true));
+        let copied = draw(pointer(copy, egui::PointerButton::Primary, false));
+        assert!(copied.platform_output.commands.iter().any(|command| {
+            matches!(command, egui::OutputCommand::CopyText(text) if text == url)
+        }));
+
+        draw(pointer(website, egui::PointerButton::Secondary, true));
+        draw(pointer(website, egui::PointerButton::Secondary, false));
+        assert!(egui::Popup::is_any_open(&ctx));
+        let escape = draw(vec![egui::Event::Key {
+            key: Key::Escape,
+            physical_key: Some(Key::Escape),
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        }]);
+        assert!(!egui::Popup::is_any_open(&ctx));
+        assert!(text_position(&escape, "Website").is_some());
+    }
 
     #[test]
     fn opening_release_notes_from_help_closes_the_help_panel() {
