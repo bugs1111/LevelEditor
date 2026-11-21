@@ -1,6 +1,13 @@
 use crate::{DeferredAutoLayers, Error, LevelKey, Project, Result};
 use serde_json::{Value, json};
 
+/// Distinguishes a rejected placement from a click where the brush cannot place an entity.
+pub enum EntityPlacement {
+    Placed,
+    Ignored,
+    LimitReached { maximum: i64, identifier: String },
+}
+
 fn invalid(message: &str) -> Error {
     Error::Invalid(message.into())
 }
@@ -445,6 +452,18 @@ impl Project {
         cursor: [i32; 2],
         position: [i32; 2],
     ) -> Result<bool> {
+        self.place_entity_with_outcome(key, layer_index, def_uid, cursor, position)
+            .map(|outcome| matches!(outcome, EntityPlacement::Placed))
+    }
+
+    pub fn place_entity_with_outcome(
+        &mut self,
+        key: LevelKey,
+        layer_index: usize,
+        def_uid: i64,
+        cursor: [i32; 2],
+        position: [i32; 2],
+    ) -> Result<EntityPlacement> {
         self.edit_document(|p| p.add_entity_inner(key, layer_index, def_uid, cursor, position))
     }
     fn add_entity_inner(
@@ -454,7 +473,7 @@ impl Project {
         def_uid: i64,
         cursor: [i32; 2],
         position: [i32; 2],
-    ) -> Result<bool> {
+    ) -> Result<EntityPlacement> {
         let layer = self
             .layer(key, layer_index)
             .ok_or_else(|| invalid("layer not found"))?;
@@ -478,7 +497,7 @@ impl Project {
         }
         let [click_x, click_y] = cursor;
         if click_x < 0 || click_y < 0 || i64::from(click_x) >= width || i64::from(click_y) >= height {
-            return Ok(false);
+            return Ok(EntityPlacement::Ignored);
         }
         let [x, y] = position;
         if let Some(layer_def) = layer
@@ -502,7 +521,7 @@ impl Project {
                 .and_then(Value::as_array)
                 .is_some_and(|tags| !tags.is_empty());
             if (requires_tags && !intersects("requiredTags")) || intersects("excludedTags") {
-                return Ok(false);
+                return Ok(EntityPlacement::Ignored);
             }
         }
         let max = definition
@@ -552,7 +571,12 @@ impl Project {
             .unwrap_or("PreventAdding");
         if limit_reached {
             match behavior {
-                "PreventAdding" => return Ok(false),
+                "PreventAdding" => {
+                    return Ok(EntityPlacement::LimitReached {
+                        maximum: max,
+                        identifier: definition["identifier"].as_str().unwrap_or_default().into(),
+                    });
+                }
                 "MoveLastOne" => {
                     let &(old_key, li, ei) = matches.last().expect("positive max reached");
                     entity = self.layer(old_key, li).expect("matched layer")["entityInstances"][ei]
@@ -606,7 +630,7 @@ impl Project {
             .expect("validated entity array")
             .push(entity);
         self.refresh_derived_data()?;
-        Ok(true)
+        Ok(EntityPlacement::Placed)
     }
 }
 

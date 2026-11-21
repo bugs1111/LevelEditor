@@ -1107,8 +1107,8 @@ impl EditorApp {
                 if let Some(path) = patch["bgRelPath"].as_str() {
                     ldtk_core::exports::load_image_rgba(&canvas::asset_path(p, path))?;
                 }
-                if resizing {
-                    p.resize_level(
+                let removed = if resizing {
+                    p.resize_level_counting_removed_entities(
                         key,
                         patch["pxWid"]
                             .as_i64()
@@ -1120,23 +1120,29 @@ impl EditorApp {
                             as i32,
                         0,
                         0,
-                    )?;
-                }
+                    )?
+                } else {
+                    0
+                };
                 let target = p
                     .level_mut(key)
                     .ok_or_else(|| ldtk_core::Error::Invalid("level missing".into()))?;
                 apply_patch(target, &patch);
                 p.refresh_derived_data()?;
-                p.rebuild_auto_layers(key)
+                p.rebuild_auto_layers(key)?;
+                Ok(removed)
             };
             let applied = if resizing {
                 self.edit_level_recoverable("Level resized", key, operation)
             } else {
                 self.edit("Level properties changed", operation)
             };
-            if applied.is_some() && patch.get("worldDepth").is_some() {
-                // A typed depth refreshes the original form without rechecking its active state.
-                self.level_form_depth_override = Some(key);
+            if let Some(removed) = applied {
+                self.report_resize_removals(removed);
+                if patch.get("worldDepth").is_some() {
+                    // A typed depth refreshes the original form without rechecking its active state.
+                    self.level_form_depth_override = Some(key);
+                }
             }
         }
         if depth_move != 0 {
@@ -2025,16 +2031,55 @@ mod tests {
     #[test]
     fn source_level_size_entry_clamps_minimum_and_preserves_recovery() {
         let (mut app, ctx) = editor();
+        let key = app.selected.unwrap();
+        let project = app.project.as_mut().unwrap();
+        project.add_layer("Actors", "Entities", 16).unwrap();
+        let normal = project.add_entity_def("Normal", 16, 16).unwrap();
+        let allowed = project.add_entity_def("Allowed", 16, 16).unwrap();
+        project
+            .update_entity_definition(allowed, &json!({"allowOutOfBounds":true}))
+            .unwrap();
+        for (uid, x) in [(normal, 15), (normal, 16), (normal, 32), (allowed, 48)] {
+            assert!(project.add_entity(key, 0, uid, x, 24).unwrap());
+        }
         let output = frame(&mut app, &ctx, Panel::Level, vec![]);
         let pos = egui::pos2(156., label(&output, "Size").y);
         click_at(&mut app, &ctx, Panel::Level, pos);
         replace_text(&mut app, &ctx, Panel::Level, "1");
         assert_eq!(app.project.as_ref().unwrap().json["levels"][0]["pxWid"], 16);
         assert!(app.last_chance.is_some());
+        assert_eq!(
+            app.project.as_ref().unwrap().layer(key, 0).unwrap()["entityInstances"]
+                .as_array()
+                .unwrap()
+                .len(),
+            2
+        );
+        let notice = |app: &mut EditorApp| {
+            let rect = Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1000., 800.));
+            ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(rect),
+                    ..Default::default()
+                },
+                |ctx| app.canvas_notifications(ctx, rect),
+            )
+        };
+        notice(&mut app);
+        label(&notice(&mut app), "2 entity(ies) deleted during resizing!");
+        locale::set(&ctx, locale::Language::SimplifiedChinese);
+        label(&notice(&mut app), "调整关卡尺寸时删除了 2 个实体！");
         app.restore_last_chance();
         assert_eq!(
             app.project.as_ref().unwrap().json["levels"][0]["pxWid"],
             256
+        );
+        assert_eq!(
+            app.project.as_ref().unwrap().layer(key, 0).unwrap()["entityInstances"]
+                .as_array()
+                .unwrap()
+                .len(),
+            4
         );
     }
     #[test]

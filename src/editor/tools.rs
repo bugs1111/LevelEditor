@@ -1471,19 +1471,6 @@ impl EditorApp {
             self.finish_stroke();
             return;
         }
-        if self.gesture.is_none()
-            && pressed
-            && kind == "Entities"
-            && !modifiers.shift
-            && !modifiers.alt
-        {
-            let erase = secondary || (cfg!(target_os = "macos") && modifiers.ctrl);
-            if !erase && self.point_interaction(key, local, local_world, cell, pointer, false) {
-                return;
-            }
-        }
-        let project = self.project.as_ref().unwrap();
-        let layer = project.layer(key, self.layer).unwrap();
         let resize_positions: Vec<_> = if matches!(self.gesture, Some(Gesture::EntityResize { .. })) {
             let density = ctx.pixels_per_point();
             ctx.input(|input| {
@@ -1632,6 +1619,19 @@ impl EditorApp {
         } else {
             secondary || (cfg!(target_os = "macos") && modifiers.ctrl)
         };
+        if pressed
+            && primary
+            && !erase
+            && !modifiers.shift
+            && kind == "Entities"
+            && matches!(
+                self.generic_element_at(local_world, true),
+                Some((_, _, selection_click::Element::Point { .. }))
+            )
+        {
+            self.select_element_at(local_world, false, Some(pointer));
+            return;
+        }
         let entity_brush = kind == "Entities" && !modifiers.shift && self.stamp.is_none();
         let entity_placement = entity_brush
             && pressed
@@ -1695,30 +1695,16 @@ impl EditorApp {
                 entity["px"][0].as_i64().unwrap_or(0) as i32,
                 entity["px"][1].as_i64().unwrap_or(0) as i32,
             ];
-            if modifiers.command {
-                self.gesture = Some(Gesture::EntityResize {
-                    key,
-                    layer: self.layer,
-                    index,
-                    size: [
-                        number(entity, "width", 16.0) as i32,
-                        number(entity, "height", 16.0) as i32,
-                    ],
-                    origin,
-                    handle: [1, 1],
-                });
-            } else {
-                self.gesture = Some(Gesture::EntityMove {
-                    key,
-                    layer: self.layer,
-                    index,
-                    press: pointer,
-                    start: local_world,
-                    end: local_world,
-                    origin,
-                    moved: false,
-                });
-            }
+            self.gesture = Some(Gesture::EntityMove {
+                key,
+                layer: self.layer,
+                index,
+                press: pointer,
+                start: local_world,
+                end: local_world,
+                origin,
+                moved: false,
+            });
             self.try_chain_to(key, self.layer, index, false, brush_uid);
             return;
         }

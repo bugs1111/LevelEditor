@@ -469,26 +469,6 @@ impl EditorApp {
         let panel_id = egui::Id::new("source-definition-panel");
         let dimmer = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, panel_id));
         let shade = (!rules && panel != Panel::World).then(|| dimmer.add(egui::Shape::Noop));
-        let active_button = match panel {
-            Panel::Project => Some(0),
-            Panel::World => Some(1),
-            Panel::Level => Some(2),
-            Panel::Layers | Panel::Rules => Some(3),
-            Panel::Entities => Some(4),
-            Panel::Enums => Some(5),
-            Panel::Tilesets => Some(6),
-            Panel::Help => Some(7),
-            _ => None,
-        };
-        for index in 0..10 {
-            if active_button != Some(index) {
-                dimmer.rect_filled(
-                    Rect::from_min_size(egui::pos2(index as f32 * 30., 0.), egui::vec2(30., 34.)),
-                    0.,
-                    Color32::from_black_alpha(100),
-                );
-            }
-        }
         let area = egui::Area::new(panel_id)
             .order(egui::Order::Foreground)
             .fixed_pos(egui::pos2(0., top))
@@ -747,14 +727,17 @@ impl EditorApp {
             width
         };
         if let Some(shade) = shade {
-            let mask = Rect::from_min_max(egui::pos2(right, 34.), screen.max);
+            let canvas_left = (screen.left() + chrome::SIDEBAR_WIDTH).min(screen.right());
+            let mask = Rect::from_min_max(egui::pos2(canvas_left, screen.top()), screen.max);
             dimmer.set(
                 shade,
-                egui::Shape::rect_filled(mask, 0., Color32::from_black_alpha(100)),
+                egui::Shape::rect_filled(mask, 0., Color32::from_black_alpha(89)),
             );
             let mask_press = ctx.input(|input| {
                 input.events.iter().find_map(|event| match event {
-                    egui::Event::PointerButton { pos, pressed: true, .. } if mask.contains(*pos) => {
+                    egui::Event::PointerButton { pos, pressed: true, .. }
+                        if mask.contains(*pos) && (pos.y < top || pos.x >= right) =>
+                    {
                         Some(*pos)
                     }
                     _ => None,
@@ -3189,6 +3172,62 @@ impl EditorApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn modal_panel_uses_the_source_canvas_mask_and_keeps_recovery_above_it() {
+        let ctx = egui::Context::default();
+        theme::configure(&ctx);
+        ctx.style_mut(|style| style.animation_time = 0.);
+        let screen = Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1440., 900.));
+        let mut app = EditorApp::empty();
+        app.set_project(Project::new());
+        let draw = |app: &mut EditorApp, panel| {
+            ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(screen),
+                    ..Default::default()
+                },
+                |ctx| {
+                    app.canvas_notifications(ctx, screen);
+                    assert!(app.source_panel(ctx, panel));
+                    ctx.move_to_top(egui::LayerId::new(
+                        egui::Order::Foreground,
+                        egui::Id::new("source-definition-panel"),
+                    ));
+                },
+            )
+        };
+        draw(&mut app, Panel::Level);
+        app.last_chance = Some(("Level resized".into(), Instant::now()));
+        app.report_resize_removals(2);
+        draw(&mut app, Panel::Level);
+        let output = draw(&mut app, Panel::Level);
+        let mask = |out: &egui::FullOutput| {
+            out.shapes.iter().enumerate().find_map(|(index, shape)| match &shape.shape {
+                egui::Shape::Rect(rect)
+                    if rect.rect.right_bottom() == screen.right_bottom()
+                        && rect.fill.r() == 0
+                        && (1..255).contains(&rect.fill.a()) =>
+                {
+                    Some((index, rect.rect, rect.fill))
+                }
+                _ => None,
+            })
+        };
+        let (shade, rect, fill) = mask(&output).expect("modal panel canvas mask");
+        assert_eq!(rect, Rect::from_min_max(egui::pos2(300., 0.), screen.max));
+        assert_eq!(fill, Color32::from_black_alpha(89));
+        for label in ["Level resized", "2 entity(ies) deleted during resizing!"] {
+            let notice = output
+                .shapes
+                .iter()
+                .position(|shape| text_center(&shape.shape, label).is_some())
+                .expect(label);
+            assert!(notice > shade, "{label} must paint above the mask");
+        }
+        assert!(mask(&draw(&mut app, Panel::World)).is_none());
+        assert!(mask(&draw(&mut app, Panel::Rules)).is_none());
+    }
 
     #[test]
     fn header_controls_do_not_change_the_panel_body_position() {

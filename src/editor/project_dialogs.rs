@@ -856,6 +856,13 @@ mod tests {
         theme::configure(&ctx);
         frame(&mut app, &ctx, vec![]);
 
+        // Warm the world panel and notification fonts before checking the timed overlay.
+        app.show_panel(Some(Panel::World));
+        frame(&mut app, &ctx, vec![]);
+        frame(&mut app, &ctx, vec![]);
+        app.show_panel(None);
+        frame(&mut app, &ctx, vec![]);
+
         app.show_panel(Some(Panel::World));
         frame(&mut app, &ctx, vec![]);
         let output = frame(&mut app, &ctx, vec![]);

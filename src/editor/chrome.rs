@@ -1,4 +1,5 @@
 use super::*;
+use egui::emath::GuiRounding as _;
 
 pub(super) const SIDEBAR_WIDTH: f32 = 300.;
 pub(super) const ZEN_EDGE_WIDTH: f32 = 17.;
@@ -13,7 +14,17 @@ fn show_sidebar(ctx: &egui::Context, overlay: bool, contents: impl FnOnce(&mut e
     let panel = egui::SidePanel::left("main-panel")
         .exact_width(SIDEBAR_WIDTH)
         .resizable(false)
+        .show_separator_line(false)
         .frame(egui::Frame::new().fill(theme::DARK));
+    let contents = |ui: &mut egui::Ui| {
+        let rect = ui.max_rect();
+        contents(ui);
+        ui.painter().rect_filled(
+            Rect::from_min_max(egui::pos2(rect.right() - 2., rect.top()), rect.max),
+            0.,
+            Color32::BLACK,
+        );
+    };
     if overlay {
         let screen = ctx.content_rect();
         let size = egui::vec2(SIDEBAR_WIDTH.min(screen.width()), screen.height());
@@ -281,6 +292,139 @@ fn icon(
     response
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ToolbarButtonState {
+    Normal,
+    Active,
+    Faded,
+}
+
+const CLOSE_TOOLBAR_COLOR: Color32 = Color32::from_rgb(49, 55, 66);
+
+fn paint_toolbar_icon(ui: &egui::Ui, source: egui::ImageSource<'static>, center: egui::Pos2) {
+    let icon_size = Vec2::splat(20.);
+    let (uri, bytes) = match &source {
+        egui::ImageSource::Bytes { uri, bytes } if uri.ends_with(".png") => (uri, bytes),
+        _ => {
+            egui::Image::new(source).paint_at(ui, Rect::from_center_size(center, icon_size));
+            return;
+        }
+    };
+
+    let ctx = ui.ctx();
+    let scale = ui.pixels_per_point();
+    let id = egui::Id::new(("toolbar-bitmap", uri.as_ref()));
+    let cached = ctx
+        .data(|data| data.get_temp::<(f32, Vec2, egui::TextureHandle)>(id))
+        .filter(|(cached_scale, _, _)| *cached_scale == scale);
+    let (_, size, texture) = if let Some(cached) = cached {
+        cached
+    } else {
+        ctx.include_bytes(uri.clone(), bytes.clone());
+        let Ok(egui::load::ImagePoll::Ready { image }) = ctx.try_load_image(uri, Default::default())
+        else {
+            return;
+        };
+        let [width, height] = image.size;
+        let size = egui::vec2(width as f32, height as f32) * (icon_size.x / width.max(height) as f32);
+        let target = (size * scale).round().max(Vec2::splat(1.));
+        let rgba = image.pixels.iter().flat_map(|pixel| pixel.to_array()).collect();
+        let Some(original) = image::RgbaImage::from_raw(width as u32, height as u32, rgba) else {
+            return;
+        };
+        // Resample premultiplied pixels so transparent texels do not bleed into the icon.
+        let mut resized = image::imageops::resize(
+            &original,
+            target.x as u32,
+            target.y as u32,
+            image::imageops::FilterType::CatmullRom,
+        );
+        for pixel in resized.pixels_mut() {
+            let alpha = pixel[3];
+            for channel in &mut pixel.0[..3] {
+                *channel = (*channel).min(alpha);
+            }
+        }
+        let resized = egui::ColorImage::from_rgba_premultiplied(
+            [target.x as usize, target.y as usize],
+            resized.as_raw(),
+        );
+        let texture = ctx.load_texture(uri.as_ref(), resized, egui::TextureOptions::LINEAR);
+        let cached = (scale, size, texture);
+        ctx.data_mut(|data| data.insert_temp(id, cached.clone()));
+        cached
+    };
+    // Chromium snaps the origin and dimensions separately when drawing the bitmap.
+    let origin = (center - size * 0.5).round_to_pixels(scale);
+    let rect = Rect::from_min_size(origin, texture.size_vec2() / scale);
+    egui::Image::from_texture(egui::load::SizedTexture::from_handle(&texture)).paint_at(ui, rect);
+}
+
+fn toolbar_button(
+    ui: &mut egui::Ui,
+    rect: Rect,
+    image: egui::ImageSource<'static>,
+    (normal, hover): (Color32, Color32),
+    state: ToolbarButtonState,
+    tip: &str,
+    keys: &[&str],
+) -> egui::Response {
+    let response = ui
+        .interact(rect, ui.id().with(tip), Sense::click())
+        .on_hover_cursor(egui::CursorIcon::PointingHand);
+    response.widget_info(|| {
+        egui::WidgetInfo::labeled(egui::WidgetType::Button, response.enabled(), locale::tr(ui, tip))
+    });
+    let painter = ui.painter();
+    let fill = if state == ToolbarButtonState::Active {
+        theme::LIGHT
+    } else if response.hovered() {
+        hover
+    } else {
+        normal
+    };
+    painter.rect_filled(rect, 0., fill);
+    if state == ToolbarButtonState::Normal {
+        if normal != CLOSE_TOOLBAR_COLOR {
+            painter.rect_filled(
+                Rect::from_min_max(egui::pos2(rect.left(), rect.bottom() - 2.), rect.max),
+                0.,
+                Color32::from_black_alpha(77),
+            );
+        }
+        let edge = if normal == CLOSE_TOOLBAR_COLOR {
+            theme::LIGHT.gamma_multiply(0.26)
+        } else {
+            Color32::from_white_alpha(15)
+        };
+        painter.rect_stroke(rect, 0., Stroke::new(1., edge), StrokeKind::Inside);
+        painter.rect_stroke(
+            rect.shrink(1.),
+            0.,
+            Stroke::new(1., edge.gamma_multiply(0.2)),
+            StrokeKind::Inside,
+        );
+    } else if state == ToolbarButtonState::Faded {
+        painter.rect_filled(
+            Rect::from_min_max(egui::pos2(rect.left(), rect.bottom() - 6.), rect.max),
+            0.,
+            Color32::from_black_alpha(102),
+        );
+    }
+    paint_toolbar_icon(ui, image, rect.center());
+    if state == ToolbarButtonState::Faded {
+        // CSS fades the finished button, including its icon and inset shadow.
+        let [r, g, b, _] = theme::DARK.to_array();
+        painter.rect_filled(
+            rect,
+            0.,
+            Color32::from_rgba_premultiplied(r / 2, g / 2, b / 2, 127),
+        );
+    }
+    source_tooltip(&response, tip, keys, false);
+    response
+}
+
 impl EditorApp {
     pub(super) fn visible_layer_indices(&self) -> Vec<usize> {
         let Some(project) = &self.project else {
@@ -395,13 +539,32 @@ impl EditorApp {
                 }
                 ui.spacing_mut().item_spacing = Vec2::ZERO;
                 ui.horizontal(|ui| {
-                    let orange = Color32::from_rgb(232, 84, 0);
-                    let blue = Color32::from_rgb(44, 128, 179);
-                    for (panel, image, fill, tip, keys) in [
+                    let (bar, _) = ui.allocate_exact_size(
+                        egui::vec2(SIDEBAR_WIDTH - 2., 36.),
+                        Sense::hover(),
+                    );
+                    // Chromium lays out the ten equal flex children in 1/64-point units.
+                    let width = (bar.width() * 64. / 10.).floor() / 64.;
+                    let slot = |index| {
+                        Rect::from_min_size(
+                            bar.min + egui::vec2(index as f32 * width, 0.),
+                            egui::vec2(width, bar.height()),
+                        )
+                    };
+                    let linked = self.panel.filter(|panel| {
+                        matches!(
+                            panel,
+                            Panel::Project | Panel::World | Panel::Level | Panel::Layers
+                                | Panel::Entities | Panel::Enums | Panel::Tilesets | Panel::Help
+                        )
+                    });
+                    let orange = (Color32::from_rgb(227, 77, 0), Color32::from_rgb(255, 93, 74));
+                    let blue = (Color32::from_rgb(42, 115, 171), Color32::from_rgb(52, 143, 213));
+                    for (index, (panel, image, fill, tip, keys)) in [
                         (
                             Panel::Project,
                             egui::include_image!("../../assets/icons/projectSettings.png"),
-                            Color32::from_rgb(142, 78, 48),
+                            (Color32::from_rgb(148, 78, 54), Color32::from_rgb(191, 101, 70)),
                             "Project settings",
                             &["P"][..],
                         ),
@@ -454,25 +617,27 @@ impl EditorApp {
                         (
                             Panel::Help,
                             egui::include_image!("../../assets/icons/help.svg"),
-                            Color32::from_rgb(70, 140, 80),
+                            (Color32::from_rgb(73, 141, 85), Color32::from_rgb(94, 171, 107)),
                             "Help and shortcuts",
                             &["H"][..],
                         ),
                         (
                             Panel::Settings,
                             egui::include_image!("../../assets/icons/settings.svg"),
-                            theme::LIGHT,
+                            (theme::LIGHT, Color32::from_rgb(115, 127, 157)),
                             "App settings",
                             &["F12"][..],
                         ),
-                    ] {
-                        let fill = if self.panel == Some(panel) {
-                            theme::LIGHT
-                        } else {
-                            fill
+                    ]
+                    .into_iter()
+                    .enumerate()
+                    {
+                        let state = match linked {
+                            Some(active) if active == panel => ToolbarButtonState::Active,
+                            Some(_) => ToolbarButtonState::Faded,
+                            None => ToolbarButtonState::Normal,
                         };
-                        let response =
-                            icon(ui, image, egui::vec2(30.0, 36.0), fill, tip, keys, false);
+                        let response = toolbar_button(ui, slot(index), image, fill, state, tip, keys);
                         if response.clicked() {
                             self.toggle_toolbar_panel(panel);
                         }
@@ -508,14 +673,18 @@ impl EditorApp {
                             });
                         }
                     }
-                    if icon(
+                    if toolbar_button(
                         ui,
+                        slot(9),
                         egui::include_image!("../../assets/icons/exit.svg"),
-                        egui::vec2(30.0, 36.0),
-                        theme::MEDIUM,
+                        (CLOSE_TOOLBAR_COLOR, theme::LIGHT),
+                        if linked.is_some() {
+                            ToolbarButtonState::Faded
+                        } else {
+                            ToolbarButtonState::Normal
+                        },
                         "Close project",
                         &["CTRL", "W"],
-                        false,
                     )
                     .clicked()
                     {
@@ -2045,6 +2214,83 @@ mod tests {
         );
         app.project.as_mut().unwrap().level_mut(far).unwrap()["worldDepth"] = serde_json::json!(0);
         assert!(!title(&app_frame(&mut app, &ctx, vec![])));
+    }
+
+    #[test]
+    fn toolbar_icons_preserve_source_aspect_ratio_and_pixel_alignment() {
+        let ctx = egui::Context::default();
+        theme::configure(&ctx);
+        let mut app = EditorApp::empty();
+        app.set_project(Project::new());
+        let icon_bounds = |app: &mut EditorApp| {
+            let deadline = Instant::now() + std::time::Duration::from_secs(2);
+            loop {
+                let output = app_frame(app, &ctx, vec![]);
+                let icons = output
+                    .shapes
+                    .iter()
+                    .filter_map(|shape| match &shape.shape {
+                        egui::Shape::Rect(shape) if shape.brush.is_some() => {
+                            let bounds = shape.rect;
+                            (bounds.top() >= 6. && bounds.bottom() <= 30. && bounds.right() < 298.)
+                                .then_some(bounds)
+                        }
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>();
+                if icons.len() == 10 {
+                    break icons;
+                }
+                assert!(Instant::now() < deadline, "toolbar icon textures did not load");
+                std::thread::sleep(std::time::Duration::from_millis(2));
+            }
+        };
+        let icons = icon_bounds(&mut app);
+        assert_eq!(
+            icons[0],
+            Rect::from_min_max(egui::pos2(5., 9.), egui::pos2(25., 28.))
+        );
+        assert_eq!(icons[2].min, egui::pos2(64., 8.));
+        assert_eq!(icons[7].min, egui::pos2(213., 8.));
+
+        ctx.set_pixels_per_point(2.);
+        let icons = icon_bounds(&mut app);
+        assert_eq!(
+            icons[0],
+            Rect::from_min_max(egui::pos2(5., 8.5), egui::pos2(25., 27.))
+        );
+        assert_eq!(icons[2].min, egui::pos2(64.5, 8.));
+        assert_eq!(icons[7].min, egui::pos2(213.5, 8.));
+    }
+
+    #[test]
+    fn toolbar_fades_inactive_panel_buttons_at_full_height_and_restores_them_on_close() {
+        let ctx = egui::Context::default();
+        theme::configure(&ctx);
+        let mut app = EditorApp::empty();
+        app.set_project(Project::new());
+        let layer_button = egui::pos2(105., 5.);
+        let fade_color = Color32::from_rgba_premultiplied(15, 17, 20, 127);
+        let fades_at = |output: &egui::FullOutput, point| {
+            output.shapes.iter().any(|shape| matches!(&shape.shape, egui::Shape::Rect(rect)
+                if rect.fill == fade_color && rect.rect.contains(point)
+                    && rect.rect.top() == 0. && rect.rect.bottom() == 36.))
+        };
+        assert!(!fades_at(&app_frame(&mut app, &ctx, vec![]), layer_button));
+        for (x, panel) in [(75., Panel::Level), (45., Panel::World)] {
+            app_click(&mut app, &ctx, egui::pos2(x, 18.));
+            let output = app_frame(&mut app, &ctx, vec![]);
+            assert_eq!(app.panel, Some(panel));
+            assert!(fades_at(&output, layer_button));
+            assert!(!fades_at(&output, egui::pos2(x, 5.)));
+            assert!(output.shapes.iter().any(|shape| matches!(&shape.shape, egui::Shape::Rect(rect)
+                if rect.rect.contains(egui::pos2(105., 33.))
+                    && rect.rect.top() == 30. && rect.rect.bottom() == 36.
+                    && rect.fill == Color32::from_black_alpha(102))));
+        }
+        app_click(&mut app, &ctx, egui::pos2(45., 18.));
+        assert!(!fades_at(&app_frame(&mut app, &ctx, vec![]), layer_button));
+        assert!(app.panel.is_none());
     }
 
     #[test]

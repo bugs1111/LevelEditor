@@ -772,13 +772,14 @@ impl EditorApp {
             }
         }
         if changed(&patch) {
+            let resizing = patch.get("pxWid").is_some() || patch.get("pxHei").is_some();
             let operation = |p: &mut Project| {
                 let mut patch = patch.clone();
                 snap_level_form_patch(p, key, &mut patch)?;
                 relative_path_patch(p, &mut patch, "bgRelPath")?;
                 normalize_background_patch(&level, &mut patch);
-                if patch.get("pxWid").is_some() || patch.get("pxHei").is_some() {
-                    p.resize_level(
+                let removed = if resizing {
+                    p.resize_level_counting_removed_entities(
                         key,
                         patch["pxWid"]
                             .as_i64()
@@ -790,8 +791,10 @@ impl EditorApp {
                             as i32,
                         0,
                         0,
-                    )?;
-                }
+                    )?
+                } else {
+                    0
+                };
                 let l = p
                     .level_mut(key)
                     .ok_or_else(|| ldtk_core::Error::Invalid("level missing".into()))?;
@@ -800,10 +803,13 @@ impl EditorApp {
                     l["bgColor"] = patch["__bgColor"].clone();
                 }
                 p.refresh_derived_data()?;
-                p.rebuild_auto_layers(key)
+                p.rebuild_auto_layers(key)?;
+                Ok(removed)
             };
-            if patch.get("pxWid").is_some() || patch.get("pxHei").is_some() {
-                self.edit_level_recoverable("Level resized", key, operation);
+            if resizing {
+                if let Some(removed) = self.edit_level_recoverable("Level resized", key, operation) {
+                    self.report_resize_removals(removed);
+                }
             } else {
                 self.edit("Level properties changed", operation);
             }

@@ -149,21 +149,8 @@ impl ArrayRowSlide {
         if now <= self.started {
             return self.initial_offset;
         }
-        // Chromium's default CSS ease is cubic-bezier(0.25, 0.1, 0.25, 1).
         let progress = ((now - self.started) / self.duration) as f32;
-        let (mut low, mut high) = (0., 1.);
-        for _ in 0..12 {
-            let t: f32 = (low + high) * 0.5;
-            let x = 0.75 * (1. - t) * t + t.powi(3);
-            if x < progress {
-                low = t;
-            } else {
-                high = t;
-            }
-        }
-        let t: f32 = (low + high) * 0.5;
-        let remaining = (1. - t).powi(2) * (1. + 1.7 * t);
-        self.initial_offset * remaining
+        self.initial_offset * panels::source_controls::css_ease_remaining(progress)
     }
 }
 

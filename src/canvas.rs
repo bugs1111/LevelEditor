@@ -269,6 +269,15 @@ pub(super) fn darken(c: Color32, ratio: f32) -> Color32 {
         c.a(),
     )
 }
+fn layer_pixel_size(level: &Value, layer: &Value) -> [i64; 2] {
+    [("pxWid", "pxOffsetX"), ("pxHei", "pxOffsetY")].map(|(size, offset)| {
+        level[size]
+            .as_i64()
+            .unwrap_or(0)
+            .saturating_sub(layer[offset].as_i64().unwrap_or(0))
+    })
+}
+
 fn layer_transform_for(
     level: &Value,
     layer: &Value,
@@ -904,14 +913,7 @@ impl Scene<'_> {
             .or_else(|| layer["__gridSize"].as_i64())
             .unwrap_or(16)
             .max(1);
-        let width = level["pxWid"]
-            .as_i64()
-            .unwrap_or(0)
-            .saturating_sub(layer["pxOffsetX"].as_i64().unwrap_or(0));
-        let height = level["pxHei"]
-            .as_i64()
-            .unwrap_or(0)
-            .saturating_sub(layer["pxOffsetY"].as_i64().unwrap_or(0));
+        let [width, height] = layer_pixel_size(level, layer);
         if width <= 0 || height <= 0 || alpha <= 0. || tiles.is_empty() {
             return 0;
         }
@@ -923,8 +925,6 @@ impl Scene<'_> {
             -number(layer, "__pxTotalOffsetX", 0.),
             -number(layer, "__pxTotalOffsetY", 0.),
         ]);
-        let clip = Rect::from_min_size(Pos2::ZERO, egui::vec2(width as f32, height as f32));
-        let painter = painter.with_clip_rect(self.screen(base.rect(clip)));
         let columns = 1 + (width - 1) / grid;
         let rows = 1 + (height - 1) / grid;
         let side = grid as f32;
@@ -1256,6 +1256,7 @@ pub fn draw(
         0.,
         theme::color(text(&project.json, "bgColor", "#292c39")),
     );
+    let canvas_painter = painter.with_clip_rect(canvas);
     blur::next_frame(options.single_layer);
     let projection_origin = view.level_render_canvas_origin(canvas, ctx.pixels_per_point());
     let mut scene = Scene {
@@ -1399,7 +1400,6 @@ pub fn draw(
                 content.multiply_opacity(opacity);
                 content.rect_filled(rect, 0., bg);
                 neighbor.background(&content, level, origin);
-                content.set_opacity(painter.opacity());
                 let edge_region = if depth_delta == 0 && distance == 0. && options.nearby_dist > 0.
                 {
                     Some(Rect::from_min_max(
@@ -1416,8 +1416,9 @@ pub fn draw(
                     None
                 };
                 if distance <= 300. {
-                    content.multiply_opacity(if depth_delta > 0 { 0.15 } else { 1. });
-                    count += neighbor.world_layers(&content, level, origin, edge_region);
+                    let mut layers = canvas_painter.clone();
+                    layers.multiply_opacity(if depth_delta > 0 { 0.15 } else { 1. });
+                    count += neighbor.world_layers(&layers, level, origin, edge_region);
                     if let Some(region) = edge_region {
                         for (index, layer) in
                             values(&level["layerInstances"]).iter().enumerate().rev()
@@ -1442,7 +1443,7 @@ pub fn draw(
                                 number(layer, "__pxTotalOffsetY", 0.),
                             ]);
                             count += neighbor.tiles_in_region(
-                                &content,
+                                &layers,
                                 level,
                                 layer,
                                 def,
@@ -1518,7 +1519,7 @@ pub fn draw(
         let layers = values(&level["layerInstances"]);
         if options.world {
             if render_alpha > 0. {
-                let mut layer_painter = clipped.clone();
+                let mut layer_painter = canvas_painter.clone();
                 layer_painter.multiply_opacity(render_alpha);
                 count += scene.world_layers(&layer_painter, level, origin, None);
             }
@@ -1540,16 +1541,6 @@ pub fn draw(
                 ]);
                 let first = blur::begin(painter);
                 let kind = text(layer, "__type", "");
-                let autotile = kind == "AutoLayer"
-                    || (kind == "IntGrid" && !layer["__tilesetDefUid"].is_null());
-                if kind == "IntGrid" && (!autotile || !options.render_auto) {
-                    count += scene.intgrid(&clipped, layer, def, transform, draw_alpha);
-                }
-                if kind == "Tiles" || (autotile && options.render_auto) {
-                    count += scene.tiles_in_region(
-                        &clipped, level, layer, def, transform, draw_alpha, active, None,
-                    );
-                }
                 if kind == "Entities" {
                     let entities = options
                         .async_paint
@@ -1560,6 +1551,34 @@ pub fn draw(
                     for index in entity_order(entities, def) {
                         let entity = &entities[index];
                         scene.entity(painter, entity, def, transform, draw_alpha, active, key);
+                    }
+                } else {
+                    // LayerRender anchors the mask at the layer root before applying tile offsets.
+                    let [width, height] = layer_pixel_size(level, layer);
+                    if width <= 0 || height <= 0 {
+                        continue;
+                    }
+                    let mask = Rect::from_min_size(
+                        Pos2::ZERO,
+                        egui::vec2(width as f32, height as f32),
+                    );
+                    let layer_painter = canvas_painter.with_clip_rect(scene.screen(base.rect(mask)));
+                    let autotile = kind == "AutoLayer"
+                        || (kind == "IntGrid" && !layer["__tilesetDefUid"].is_null());
+                    if kind == "IntGrid" && (!autotile || !options.render_auto) {
+                        count += scene.intgrid(&layer_painter, layer, def, transform, draw_alpha);
+                    }
+                    if kind == "Tiles" || (autotile && options.render_auto) {
+                        count += scene.tiles_in_region(
+                            &layer_painter,
+                            level,
+                            layer,
+                            def,
+                            transform,
+                            draw_alpha,
+                            active,
+                            None,
+                        );
                     }
                 }
                 if filtered {

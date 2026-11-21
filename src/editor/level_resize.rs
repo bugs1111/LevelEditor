@@ -183,18 +183,22 @@ impl EditorApp {
             return;
         }
         let [left, top, right, bottom] = bounds;
-        if self
-            .edit_level("Level resized", drag.key, |project| {
-                project.move_level(
-                    drag.key,
-                    drag.world_origin[0] + left,
-                    drag.world_origin[1] + top,
-                    drag.depth,
-                )?;
-                project.resize_level(drag.key, right - left, bottom - top, -left, -top)
-            })
-            .is_some()
-        {
+        if let Some(removed) = self.edit_level("Level resized", drag.key, |project| {
+            project.move_level(
+                drag.key,
+                drag.world_origin[0] + left,
+                drag.world_origin[1] + top,
+                drag.depth,
+            )?;
+            project.resize_level_counting_removed_entities(
+                drag.key,
+                right - left,
+                bottom - top,
+                -left,
+                -top,
+            )
+        }) {
+            self.report_resize_removals(removed);
             self.selection = None;
             self.selection_group = None;
             self.entity_index = None;
@@ -414,6 +418,34 @@ mod tests {
         assert_eq!(level["worldX"], 100);
         assert_eq!(level["layerInstances"][0]["intGridCsv"][0], 1);
     }
+    #[test]
+    fn ruler_shrink_warns_once_on_release_and_level_undo_restores_entities() {
+        let mut app = editor();
+        let key = app.selected.unwrap();
+        let project = app.project.as_mut().unwrap();
+        project.add_layer("Actors", "Entities", 16).unwrap();
+        let def = project.add_entity_def("Actor", 16, 16).unwrap();
+        assert!(project.add_entity(key, 0, def, 32, 16).unwrap());
+        app.level_resize = Some(resize(&app, [1, 0], [-224., 0.]));
+        assert!(app.canvas_notice.is_none());
+        app.finish_level_resize();
+        assert!(matches!(
+            app.canvas_notice,
+            Some((notifications::CanvasNotice::ResizeRemovals(1), _))
+        ));
+        assert!(app.last_chance.is_none());
+        let project = app.project.as_mut().unwrap();
+        assert_eq!(
+            project.layer(key, 0).unwrap()["entityInstances"],
+            serde_json::json!([])
+        );
+        assert!(app.history.undo_level(project, key));
+        assert_eq!(
+            project.layer(key, 0).unwrap()["entityInstances"][0]["px"],
+            serde_json::json!([32, 16])
+        );
+    }
+
     #[test]
     fn invalid_bounds_click_without_drag_and_cancel_never_mutate_document() {
         let mut app = editor();

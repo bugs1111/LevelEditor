@@ -276,6 +276,7 @@ pub struct EditorApp {
     pending: Option<Action>,
     suggest_backups: bool,
     quick_notification: Option<(String, Option<egui::ImageSource<'static>>, Instant)>,
+    canvas_notice: Option<(notifications::CanvasNotice, Instant)>,
     loading: Option<Receiver<Result<services::LoadedProject, String>>>,
     loading_progress: Option<Arc<Mutex<Option<(usize, usize)>>>>,
     saving_progress: Option<Arc<Mutex<save_progress::SaveProgress>>>,
@@ -493,6 +494,7 @@ impl EditorApp {
             pending: None,
             suggest_backups: false,
             quick_notification: None,
+            canvas_notice: None,
             loading: None,
             loading_progress: None,
             saving_progress: None,
@@ -617,6 +619,7 @@ impl EditorApp {
         let closing_settings = self.panel == Some(Panel::Settings);
         self.suggest_backups = project_dialogs::suggest_backups(&project);
         self.quick_notification = None;
+        self.canvas_notice = None;
         self.selected = project.level_keys().first().copied();
         if self.settings.bool("openLastProject")
             && project.path.as_ref().is_some_and(|p| {
@@ -824,6 +827,7 @@ impl EditorApp {
                 self.project = None;
                 self.suggest_backups = false;
                 self.quick_notification = None;
+                self.canvas_notice = None;
                 self.selected = None;
                 self.active_world = None;
                 self.dirty = false;
@@ -1138,22 +1142,12 @@ impl EditorApp {
         let placement = if self.grid { local } else { level_pixel };
         let pos = ldtk_core::snapped_entity_position(def, placement, grid as i32, self.grid);
         let cursor = level_pixel.map(|pixel| pixel as i32);
-        let prevent_message = format!(
-            "You cannot have more than {} {}.",
-            number(def, "maxCount", 0.) as i32,
-            text(def, "identifier", "entities")
-        );
         let snapshot = self.capture_entity_render(key, self.layer);
         let project = self.project.as_mut().unwrap();
-        match project.place_entity(key, self.layer, uid, cursor, pos) {
-            Ok(changed) => {
-                self.dirty |= changed;
-                if !changed {
-                    self.status = prevent_message;
-                    self.status_error = true;
-                }
-                if changed
-                    && let Some(index) = project
+        match project.place_entity_with_outcome(key, self.layer, uid, cursor, pos) {
+            Ok(ldtk_core::EntityPlacement::Placed) => {
+                self.dirty = true;
+                if let Some(index) = project
                         .layer(key, self.layer)
                         .and_then(|l| l["entityInstances"].as_array())
                         .map(|a| a.len().saturating_sub(1))
@@ -1168,6 +1162,10 @@ impl EditorApp {
                     self.entity_index = Some(index);
                     self.try_chain_to(key, self.layer, index, true, self.entity_uid);
                 }
+            }
+            Ok(ldtk_core::EntityPlacement::Ignored) => {}
+            Ok(ldtk_core::EntityPlacement::LimitReached { maximum, identifier }) => {
+                self.report_entity_limit(maximum, identifier);
             }
             Err(e) => self.status = e.to_string(),
         }
@@ -3413,10 +3411,55 @@ mod tests {
     }
 
     #[test]
+    fn blocked_entity_placement_shows_the_localized_limit_notice_without_a_history_entry() {
+        let mut p = Project::new();
+        p.add_layer("Actors", "Entities", 16).unwrap();
+        let actor = p.add_entity_def("Actor", 16, 16).unwrap();
+        p.update_entity_definition(
+            actor,
+            &serde_json::json!({"maxCount":1,"limitBehavior":"PreventAdding","limitScope":"PerLevel"}),
+        )
+        .unwrap();
+        let key = p.level_keys()[0];
+        assert!(p.add_entity(key, 0, actor, 16, 16).unwrap());
+        let before = p.json.clone();
+        let mut app = EditorApp::empty();
+        app.set_project(p);
+        app.entity_uid = Some(actor);
+        app.history.begin(app.project.as_ref().unwrap(), key);
+        app.place_entity([100., 100.], [100., 100.]);
+        assert!(!app.history.commit(app.project.as_ref().unwrap()));
+        assert_eq!(app.project.as_ref().unwrap().json, before);
+        assert!(!app.dirty);
+        assert!(!app.status_error, "the original uses a transient error notification");
+
+        let ctx = egui::Context::default();
+        theme::configure(&ctx);
+        let rect = Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1440., 900.));
+        let draw = |app: &mut EditorApp| {
+            ctx.run(
+                egui::RawInput { screen_rect: Some(rect), ..Default::default() },
+                |ctx| app.canvas_notifications(ctx, rect),
+            )
+        };
+        draw(&mut app);
+        for (language, message) in [
+            (locale::Language::English, "You cannot have more than 1 Actor."),
+            (locale::Language::SimplifiedChinese, "Actor 的数量不能超过 1 个。"),
+        ] {
+            locale::set(&ctx, language);
+            assert!(draw(&mut app).shapes.iter().any(|shape| {
+                matches!(&shape.shape, egui::Shape::Text(text) if text.galley.text() == message)
+            }), "{message}");
+        }
+    }
+
+    #[test]
     fn point_click_drag_and_right_delete_do_not_create_or_delete_an_entity() {
         let mut p = Project::new();
         p.add_layer("Entities", "Entities", 16).unwrap();
         let uid = p.add_entity_def("Actor", 16, 16).unwrap();
+        let other = p.add_entity_def("Other", 16, 16).unwrap();
         let field = p
             .add_field_definition(Some(uid), "Target", "Point", false)
             .unwrap();
@@ -3430,7 +3473,7 @@ mod tests {
             .unwrap();
         let mut app = EditorApp::empty();
         app.set_project(p);
-        app.entity_uid = Some(uid);
+        app.entity_uid = Some(other);
         app.fit = false;
         app.viewport = Viewport {
             center: [128.0, 128.0],
@@ -3457,6 +3500,8 @@ mod tests {
             }],
             modifiers,
         );
+        assert_eq!(app.entity_uid, Some(uid), "selecting the Point picks its owner brush");
+        assert_eq!(app.panel, Some(Panel::Entity));
         canvas_frame(
             &mut app,
             &ctx,
@@ -3491,6 +3536,7 @@ mod tests {
             entities[0]["fieldInstances"][0]["__value"],
             serde_json::json!({"cx":4,"cy":4})
         );
+        app.entity_uid = Some(other);
         canvas_frame(
             &mut app,
             &ctx,
@@ -3521,6 +3567,7 @@ mod tests {
             .unwrap();
         assert_eq!(entities.len(), 1);
         assert!(entities[0]["fieldInstances"][0]["__value"].is_null());
+        assert_eq!(app.entity_uid, Some(uid), "erasing the Point selects its owner");
     }
 
     #[test]
@@ -3950,7 +3997,12 @@ mod tests {
             .unwrap();
         let key = project.level_keys()[0];
         project.add_entity(key, 0, actor, 64, 80).unwrap();
-        for (grid, expected) in [(false, [78, 96]), (true, [76, 92])] {
+        for (grid, command, expected) in [
+            (false, false, [78, 96]),
+            (true, false, [76, 92]),
+            (false, true, [78, 96]),
+            (true, true, [76, 92]),
+        ] {
             let mut app = EditorApp::empty();
             app.set_project(project.clone());
             app.fit = false;
@@ -3960,7 +4012,12 @@ mod tests {
             let ctx = egui::Context::default();
             let start = egui::pos2(86., 96.);
             let end = egui::pos2(100., 112.);
-            let modifiers = egui::Modifiers::NONE;
+            let modifiers = egui::Modifiers {
+                ctrl: command && !cfg!(target_os = "macos"),
+                mac_cmd: command && cfg!(target_os = "macos"),
+                command,
+                ..Default::default()
+            };
             canvas_frame(&mut app, &ctx, vec![egui::Event::PointerMoved(start)], modifiers);
             for (pos, pressed) in [(start, true), (end, false)] {
                 canvas_frame(
@@ -3982,7 +4039,11 @@ mod tests {
                 app.project.as_ref().unwrap().layer(key, 0).unwrap()["entityInstances"][0]["px"]
                     .clone()
             };
-            assert_eq!(position(&app), serde_json::json!(expected), "grid={grid}");
+            assert_eq!(
+                position(&app),
+                serde_json::json!(expected),
+                "grid={grid}, command={command}"
+            );
             app.undo_action(false);
             assert_eq!(position(&app), serde_json::json!([64, 80]));
         }

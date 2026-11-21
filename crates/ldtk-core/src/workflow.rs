@@ -363,6 +363,19 @@ impl Project {
         offset_x: i32,
         offset_y: i32,
     ) -> Result<()> {
+        self.resize_level_counting_removed_entities(key, width, height, offset_x, offset_y)
+            .map(|_| ())
+    }
+
+    /// Resize the level and return the number of entities cropped from it.
+    pub fn resize_level_counting_removed_entities(
+        &mut self,
+        key: LevelKey,
+        width: i32,
+        height: i32,
+        offset_x: i32,
+        offset_y: i32,
+    ) -> Result<usize> {
         self.edit_document(|p| {
             if width <= 0 || height <= 0 {
                 return Err(invalid("level dimensions must be positive"));
@@ -377,6 +390,7 @@ impl Project {
                 .ok_or_else(|| invalid("level not loaded"))?;
             level["pxWid"] = json!(width);
             level["pxHei"] = json!(height);
+            let mut removed = 0;
             if let Some(layers) = level["layerInstances"].as_array_mut() {
                 for layer in layers {
                     let g = layer["__gridSize"]
@@ -448,6 +462,7 @@ impl Project {
                         }
                     }
                     if let Some(entities) = layer["entityInstances"].as_array_mut() {
+                        let before = entities.len();
                         entities.retain_mut(|entity| {
                             let x = entity["px"][0].as_i64().unwrap_or(0) + cell_dx * g;
                             let y = entity["px"][1].as_i64().unwrap_or(0) + cell_dy * g;
@@ -462,6 +477,7 @@ impl Project {
                                     && x < i64::from(width)
                                     && y < i64::from(height))
                         });
+                        removed += before - entities.len();
                     }
                     crate::field_edit::offset_point_fields(layer, cell_dx, cell_dy, nw, nh)?;
                     layer["pxOffsetX"] = json!(remainder_x);
@@ -469,7 +485,8 @@ impl Project {
                 }
             }
             p.grid_presence = grid_presence;
-            p.refresh_auto_and_derived()
+            p.refresh_auto_and_derived()?;
+            Ok(removed)
         })
     }
     pub fn move_entity(

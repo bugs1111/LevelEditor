@@ -353,6 +353,91 @@ fn neighbor_distances_match_64_installed_original_js_vectors() {
 }
 
 #[test]
+fn offset_tiles_follow_the_layer_mask_in_level_view_and_the_grid_in_world_view() {
+    let mut project = Project::new();
+    project.json["defs"]["layers"] = serde_json::json!([
+        {"uid":1,"type":"Tiles","gridSize":16,"renderInWorldView":true}
+    ]);
+    project.json["defs"]["tilesets"] = serde_json::json!([
+        {"uid":2,"relPath":"offset-tiles.png","tileGridSize":16}
+    ]);
+    project.json["levels"] = serde_json::json!([{
+        "pxWid":32,"pxHei":35,"worldX":0,"worldY":0,
+        "layerInstances":[{
+            "layerDefUid":1,"__type":"Tiles","__gridSize":16,"__cWid":3,"__cHei":2,
+            "__tilesetDefUid":2,"pxOffsetX":-4,"pxOffsetY":4,
+            "__pxTotalOffsetX":-4,"__pxTotalOffsetY":4,
+            "gridTiles":[{"px":[32,16],"src":[0,0],"t":0,"f":0,"d":[5],"a":1}]
+        }]
+    }]);
+    let ctx = egui::Context::default();
+    let path = asset_path(&project, "offset-tiles.png");
+    let mut assets = Assets::default();
+    assets
+        .store_file_image(
+            &ctx,
+            &path,
+            image::RgbaImage::from_pixel(16, 16, image::Rgba([255, 0, 255, 255])),
+        )
+        .unwrap();
+    let texture = assets.texture(&ctx, &path).unwrap().id();
+    let hidden = HashSet::new();
+    let mut options = options(&hidden, project.level_keys()[0]);
+    options.details = false;
+    options.grid = false;
+    let view = Viewport {
+        center: [16., 17.],
+        zoom: 1.,
+    };
+    let tile_bounds = |out: &egui::FullOutput, world: bool| {
+        out.shapes
+            .iter()
+            .find_map(|shape| {
+                let tile = match &shape.shape {
+                    egui::Shape::Mesh(mesh) if !world && mesh.texture_id == texture => {
+                        mesh.calc_bounds()
+                    }
+                    egui::Shape::Rect(rect)
+                        if world && rect.fill == Color32::from_rgb(255, 0, 255) =>
+                    {
+                        rect.rect
+                    }
+                    _ => return None,
+                };
+                Some(tile.intersect(shape.clip_rect))
+            })
+            .expect("offset tile")
+    };
+    let mut bounds = Vec::new();
+    for world in [false, true] {
+        options.world = world;
+        let (count, out) = frame(&ctx, &project, &view, &options, &mut assets);
+        assert_eq!(count, 1);
+        bounds.push(tile_bounds(&out, world));
+    }
+    assert_eq!(
+        bounds,
+        [
+            Rect::from_min_max(egui::pos2(512., 353.), egui::pos2(520., 364.)),
+            Rect::from_min_max(egui::pos2(512., 353.), egui::pos2(528., 369.)),
+        ]
+    );
+
+    let mut neighbor = project.json["levels"][0].clone();
+    neighbor["worldX"] = 32.into();
+    project.json["worldLayout"] = "Free".into();
+    project.json["levels"][0]["layerInstances"] = serde_json::json!([]);
+    project.json["levels"].as_array_mut().unwrap().push(neighbor);
+    options.world = false;
+    let (count, out) = frame(&ctx, &project, &view, &options, &mut assets);
+    assert_eq!(count, 1);
+    assert_eq!(
+        tile_bounds(&out, false),
+        Rect::from_min_max(egui::pos2(544., 353.), egui::pos2(560., 369.))
+    );
+}
+
+#[test]
 fn world_simplification_does_not_reveal_tiles_under_transparent_stack_top() {
     let mut project = Project::new();
     project.json["defs"]["layers"] = serde_json::json!([{"uid":1,"renderInWorldView":true},{"uid":2,"renderInWorldView":true,"intGridValues":[{"value":1,"color":"#00ff00"}]}]);

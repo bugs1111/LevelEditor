@@ -1,6 +1,22 @@
 //! Shared native rendering of source form help and button treatments.
 use super::*;
 
+pub(in crate::app) fn css_ease_remaining(progress: f32) -> f32 {
+    // Chromium's default CSS ease is cubic-bezier(0.25, 0.1, 0.25, 1).
+    let (mut low, mut high) = (0., 1.);
+    for _ in 0..12 {
+        let t: f32 = (low + high) * 0.5;
+        let x = 0.75 * (1. - t) * t + t.powi(3);
+        if x < progress {
+            low = t;
+        } else {
+            high = t;
+        }
+    }
+    let t: f32 = (low + high) * 0.5;
+    (1. - t).powi(2) * (1. + 1.7 * t)
+}
+
 pub(in crate::app) fn edit_text(
     ui: &mut egui::Ui,
     key: impl std::hash::Hash,

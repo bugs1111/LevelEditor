@@ -349,7 +349,10 @@ fn entity_move_limit_preserves_identity_and_existing_custom_values() {
 fn entity_tag_filters_and_world_count_limits_are_honored() {
     let mut p = project();
     p.json["defs"]["layers"][2]["requiredTags"] = json!(["enemy"]);
-    assert!(!p.add_entity(KEY, 2, 4, 0, 0).unwrap());
+    assert!(matches!(
+        p.place_entity_with_outcome(KEY, 2, 4, [0, 0], [0, 0]).unwrap(),
+        ldtk_core::EntityPlacement::Ignored
+    ));
     p.json["defs"]["layers"][2]["requiredTags"] = json!(["actor"]);
     p.json["defs"]["entities"][0]["limitScope"] = json!("PerWorld");
     let second = p.json["levels"][0].clone();
@@ -359,7 +362,10 @@ fn entity_tag_filters_and_world_count_limits_are_honored() {
         world: None,
         level: 1,
     };
-    assert!(!p.add_entity(second_key, 2, 4, 0, 0).unwrap());
+    assert!(matches!(
+        p.place_entity_with_outcome(second_key, 2, 4, [0, 0], [0, 0]).unwrap(),
+        ldtk_core::EntityPlacement::LimitReached { maximum: 1, identifier } if identifier == "Hero"
+    ));
     p.json["defs"]["entities"][0]["limitBehavior"] = json!("MoveLastOne");
     let iid = p.layer(KEY, 2).unwrap()["entityInstances"][0]["iid"].clone();
     assert!(p.add_entity(second_key, 2, 4, 0, 0).unwrap());

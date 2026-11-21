@@ -1103,7 +1103,7 @@ mod tests {
             .unwrap();
         p.set_field_value(KEY, Some(&iid), field, json!([{"cx":4,"cy":2}]))
             .unwrap();
-        assert!(app.point_interaction(KEY, [72., 40.], [72., 40.], [4, 2], egui::Pos2::ZERO, true));
+        app.erase_entities_at_input(&ctx, Rect::EVERYTHING, [72., 40.], true);
         let shapes = draw(&app, &ctx, 0.);
         assert_eq!(shapes.len(), 2);
         let circle = shapes

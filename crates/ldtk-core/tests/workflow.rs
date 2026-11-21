@@ -561,7 +561,11 @@ fn resize_removes_entities_outside_bounds_and_cleans_incoming_refs() {
         .unwrap()
         .to_owned();
     p.set_field_value(K, None, f, json!(id)).unwrap();
-    p.resize_level(K, 16, 16, 0, 0).unwrap();
+    assert_eq!(
+        p.resize_level_counting_removed_entities(K, 16, 16, 0, 0)
+            .unwrap(),
+        1
+    );
     assert_eq!(p.layer(K, 0).unwrap()["entityInstances"], json!([]));
     assert!(p.level(K).unwrap()["fieldInstances"][0]["__value"].is_null());
 }

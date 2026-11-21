@@ -16,6 +16,7 @@ mod workflow;
 
 pub use autotile::DeferredAutoLayers;
 pub use definitions::{BakeMode, TilesetRemap};
+pub use edit::EntityPlacement;
 pub use field_edit::FieldArrayEdit;
 pub use history::History;
 pub use project::{

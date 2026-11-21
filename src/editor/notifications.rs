@@ -1,6 +1,30 @@
 use super::*;
 
+#[derive(PartialEq, Eq)]
+pub(super) enum CanvasNotice {
+    ResizeRemovals(usize),
+    EntityLimit { maximum: i64, identifier: String },
+}
+
 impl EditorApp {
+    pub(super) fn report_resize_removals(&mut self, removed: usize) {
+        if removed > 0 {
+            self.report_canvas_notice(CanvasNotice::ResizeRemovals(removed));
+        }
+    }
+
+    pub(super) fn report_entity_limit(&mut self, maximum: i64, identifier: String) {
+        self.report_canvas_notice(CanvasNotice::EntityLimit { maximum, identifier });
+    }
+
+    fn report_canvas_notice(&mut self, notice: CanvasNotice) {
+        if !self.canvas_notice.as_ref().is_some_and(|(last, since)| {
+            *last == notice && since.elapsed().as_secs_f32() <= 0.7
+        }) {
+            self.canvas_notice = Some((notice, Instant::now()));
+        }
+    }
+
     pub(super) fn notify_world_view(&mut self) {
         self.quick_notification = Some((
             "World view".into(),
@@ -84,7 +108,7 @@ impl EditorApp {
             let mut restore = false;
             egui::Area::new(egui::Id::new("last-chance"))
                 .anchor(Align2::RIGHT_TOP, egui::vec2(0., 40.))
-                .order(egui::Order::Foreground)
+                .order(egui::Order::Tooltip)
                 .show(ctx, |ui| {
                     let right = if rect.width() >= 426. { 80 } else { 20 };
                     let text_width = (rect.width() - f32::from(right) - 96.).clamp(100., 250.);
@@ -159,6 +183,95 @@ impl EditorApp {
                         });
                 });
         }
+        if let Some((notice, since)) = &self.canvas_notice {
+            let (message, fill, edge) = match notice {
+                CanvasNotice::ResizeRemovals(removed) => (
+                    locale::format_ctx(
+                        ctx,
+                        "{count} entity(ies) deleted during resizing!",
+                        &[("count", &removed.to_string())],
+                    ),
+                    [69, 48, 6],
+                    [203, 141, 19],
+                ),
+                CanvasNotice::EntityLimit { maximum, identifier } => (
+                    locale::format_ctx(
+                        ctx,
+                        "You cannot have more than {count} {entity}.",
+                        &[("count", &maximum.to_string()), ("entity", identifier)],
+                    ),
+                    [87, 0, 0],
+                    [255, 0, 0],
+                ),
+            };
+            let duration = 3. + 0.04 * message.chars().count() as f32;
+            let age = since.elapsed().as_secs_f32();
+            let remaining = duration - age;
+            if remaining <= 0. {
+                self.canvas_notice = None;
+            } else {
+                // The original warning flashes after 250 ms and returns to its normal color.
+                let brightness = [(0.25, 7.), (0.4, 3.), (0.85, 1.5), (1.75, 1.)]
+                    .windows(2)
+                    .find_map(|points| {
+                        let [(start, from), (end, to)] = [points[0], points[1]];
+                        (start..end).contains(&age).then(|| {
+                            let progress = (age - start) / (end - start);
+                            to + (from - to) * panels::source_controls::css_ease_remaining(progress)
+                        })
+                    })
+                    .unwrap_or(1.);
+                let shade = |channels: [u8; 3]| {
+                    let [r, g, b] = channels.map(|v| (f32::from(v) * brightness).round() as u8);
+                    Color32::from_rgb(r, g, b)
+                };
+                let border = shade(edge);
+                let screen = ctx.content_rect();
+                egui::Area::new(egui::Id::new("canvas-notice"))
+                    .anchor(Align2::RIGHT_BOTTOM, egui::vec2(0., -screen.height() * 0.1 - 38.))
+                    .order(egui::Order::Tooltip)
+                    .interactable(false)
+                    .fade_in(false)
+                    .show(ctx, |ui| {
+                        let notice = egui::Frame::new()
+                            .fill(shade(fill))
+                            .stroke(Stroke::new(1., border))
+                            .corner_radius(egui::CornerRadius {
+                                nw: 3,
+                                sw: 3,
+                                ..Default::default()
+                            })
+                            .shadow(egui::epaint::Shadow {
+                                offset: [0, 4],
+                                blur: 6,
+                                spread: 0,
+                                color: Color32::from_black_alpha(180),
+                            })
+                            .inner_margin(egui::Margin {
+                                left: 20,
+                                right: 47,
+                                top: 6,
+                                bottom: 6,
+                            })
+                            .show(ui, |ui| {
+                                ui.set_min_width(81.);
+                                ui.set_max_width((screen.width() - 70.).max(81.));
+                                ui.label(RichText::new(message).size(14.67).color(Color32::WHITE));
+                            });
+                        let rect = notice.response.rect;
+                        ui.painter().rect_filled(
+                            Rect::from_min_max(egui::pos2(rect.right() - 8., rect.top()), rect.max),
+                            0.,
+                            border,
+                        );
+                    });
+                ctx.request_repaint_after(std::time::Duration::from_secs_f32(if age < 1.75 {
+                    0.016
+                } else {
+                    remaining
+                }));
+            }
+        }
         let id = egui::Id::new("last-notification");
         let mut toast = ctx
             .data_mut(|d| d.get_temp::<(String, Instant)>(id))
@@ -169,6 +282,8 @@ impl EditorApp {
         }
         if !self.is_busy()
             && !self.status.is_empty()
+            && !(matches!(self.canvas_notice, Some((CanvasNotice::ResizeRemovals(_), _)))
+                && self.status == "Level resized")
             && (self.status_error || toast.1.elapsed().as_secs_f32() < 4.0)
             && !self.status.starts_with("Project opened.")
             && !self.status.starts_with("Open a project")

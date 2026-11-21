@@ -573,6 +573,8 @@
   "Level moved to world": "已将关卡移到选定世界",
   "Level properties changed": "已更改关卡属性",
   "Level resized": "已调整关卡尺寸",
+  "{count} entity(ies) deleted during resizing!": "调整关卡尺寸时删除了 {count} 个实体！",
+  "You cannot have more than {count} {entity}.": "{entity} 的数量不能超过 {count} 个。",
   "Level {name}": "关卡 {name}",
   "LevelEditor updates": "LevelEditor 更新",
   "LevelTile": "替换关卡图像",

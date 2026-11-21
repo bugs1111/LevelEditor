@@ -119,6 +119,7 @@ impl EditorApp {
                 self.selection = None;
                 self.selection_group = None;
                 self.entity_index = Some(index);
+                self.entity_uid = entity["defUid"].as_i64();
                 self.panel = Some(Panel::Entity);
                 self.bleep_entity(key, self.layer, &entity);
                 self.bleep_point(key, position, color);
