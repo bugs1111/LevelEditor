@@ -22,7 +22,7 @@ pub fn finish_picker_filter(painter: &egui::Painter, start: Option<usize>, rect:
     }
 }
 #[path = "bitmap_font.rs"]
-mod bitmap_font;
+pub(crate) mod bitmap_font;
 #[path = "render_entities.rs"]
 mod entities;
 #[path = "render_fields.rs"]

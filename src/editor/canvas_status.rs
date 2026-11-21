@@ -112,20 +112,7 @@ fn status_element(
 ) -> Option<(String, Option<Color32>)> {
     if let Element::Grid = element {
         if layer["__type"] == "Tiles" {
-            let tiles = selection_click::tiles_at_cell(layer, cell)
-                .filter_map(|tile| tile["t"].as_i64())
-                .map(|id| id.to_string())
-                .collect::<Vec<_>>();
-            let format = if tiles.len() == 1 {
-                "Tile {id}"
-            } else {
-                "Tiles {ids}"
-            };
-            let key = if tiles.len() == 1 { "id" } else { "ids" };
-            return Some((
-                locale::format_ctx(ctx, format, &[(key, &tiles.join(", "))]),
-                None,
-            ));
+            return Some((selection_click::tile_stack_label(ctx, layer, cell), None));
         }
         let width = layer["__cWid"].as_i64()?;
         let value = layer["intGridCsv"]

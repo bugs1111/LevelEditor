@@ -251,6 +251,8 @@ pub struct EditorApp {
     camera_motion: CameraMotion,
     assets: Assets,
     hidden: HashSet<i64>,
+    layer_visibility_press: Option<visibility::LayerVisibilityPress>,
+    layer_context_menu: Option<(i64, egui::Pos2)>,
     world: bool,
     grid: bool,
     details: bool,
@@ -469,6 +471,8 @@ impl EditorApp {
             camera_motion: CameraMotion::default(),
             assets: Assets::default(),
             hidden: HashSet::new(),
+            layer_visibility_press: None,
+            layer_context_menu: None,
             world: false,
             grid: true,
             details: true,
@@ -607,6 +611,8 @@ impl EditorApp {
     }
 
     fn set_project(&mut self, project: Project) {
+        self.layer_visibility_press = None;
+        self.layer_context_menu = None;
         if let Some(ctx) = &self.repaint {
             bleep::reset_error_scans(ctx);
         }
@@ -653,7 +659,7 @@ impl EditorApp {
         self.camera_drag = None;
         self.space_fit_pending = false;
         self.project = Some(project);
-        self.layer = 0;
+        self.layer = self.visible_layer_indices(false).first().copied().unwrap_or(0);
         self.history = History::default();
         if let Some(project) = self.project.as_ref().filter(|p| p.path.is_none()) {
             for key in project.level_keys() {

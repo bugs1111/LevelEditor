@@ -768,6 +768,290 @@ mod tests {
     }
 
     #[test]
+    fn save_failure_preserves_layer_selection_and_blocks_layer_clicks() {
+        let mut project = Project::new();
+        project.add_layer("Lower", "Entities", 16).unwrap();
+        project.add_layer("Upper", "Entities", 16).unwrap();
+        let mut app = EditorApp::empty();
+        app.set_project(project);
+        assert_eq!(app.layer, 0);
+        let ctx = egui::Context::default();
+        theme::configure(&ctx);
+        frame(&mut app, &ctx, vec![]);
+        let before = frame(&mut app, &ctx, vec![]);
+        let upper = label(&before, "Upper");
+        let lower = label(&before, "Lower");
+        let row_fill = |output: &egui::FullOutput| {
+            output.shapes.iter().find_map(|shape| match &shape.shape {
+                egui::Shape::Rect(rect) if rect.rect.width() == 300.
+                    && rect.rect.height() == 31. && rect.rect.contains(upper.center()) =>
+                {
+                    Some(rect.fill)
+                }
+                _ => None,
+            })
+        };
+        assert_eq!(row_fill(&before), Some(theme::ACCENT));
+
+        app.save_failure = Some(services::SaveFailure::Write {
+            path: PathBuf::from("Map.ldtk"),
+            reason: services::SaveWriteFailure::DirectoryConflict,
+        });
+        frame(&mut app, &ctx, vec![]);
+        let under_modal = frame(&mut app, &ctx, vec![]);
+        assert_eq!(row_fill(&under_modal), Some(theme::ACCENT));
+        assert_eq!(label(&under_modal, "Lower"), lower);
+
+        click(&mut app, &ctx, lower.center());
+        frame(&mut app, &ctx, vec![]);
+        assert!(app.save_failure.is_none());
+        assert_eq!(app.layer, 0);
+        click(&mut app, &ctx, lower.center());
+        assert_eq!(app.layer, 1);
+
+        let key = app.selected.unwrap();
+        let upper_eye = egui::pos2(285., upper.center().y);
+        click(&mut app, &ctx, upper_eye);
+        assert_eq!(app.layer, 0);
+        assert!(!app.layer_visible(key, 0));
+        click(&mut app, &ctx, upper_eye);
+        assert!(app.layer_visible(key, 0));
+    }
+
+    #[test]
+    fn layer_visibility_drag_applies_one_value_and_keeps_the_selected_layer() {
+        let mut project = Project::new();
+        for name in ["Bottom", "Lower", "Upper", "Top"] {
+            project.add_layer(name, "Entities", 16).unwrap();
+        }
+        let mut app = EditorApp::empty();
+        app.set_project(project);
+        let key = app.selected.unwrap();
+        let ctx = egui::Context::default();
+        theme::configure(&ctx);
+        frame(&mut app, &ctx, vec![]);
+        let output = frame(&mut app, &ctx, vec![]);
+        let eye = |name| egui::pos2(285., label(&output, name).center().y);
+        let (top, upper, lower, bottom) =
+            (eye("Top"), eye("Upper"), eye("Lower"), eye("Bottom"));
+        let button = |pos, pressed| egui::Event::PointerButton {
+            pos,
+            pressed,
+            button: egui::PointerButton::Primary,
+            modifiers: Default::default(),
+        };
+        let visibility =
+            |app: &EditorApp| [0, 1, 2, 3].map(|index| app.layer_visible(key, index));
+
+        frame(&mut app, &ctx, vec![egui::Event::PointerMoved(upper), button(upper, true)]);
+        assert_eq!(visibility(&app), [true, false, true, true]);
+        frame(&mut app, &ctx, vec![
+            egui::Event::PointerMoved(lower),
+            egui::Event::PointerMoved(bottom),
+            button(bottom, false),
+        ]);
+        assert_eq!(visibility(&app), [true, false, false, false]);
+        assert_eq!(app.layer, 0);
+
+        app.undo_action(false);
+        assert_eq!(visibility(&app), [true, false, false, true]);
+        app.undo_action(false);
+        assert_eq!(visibility(&app), [true, false, true, true]);
+        app.undo_action(true);
+        app.undo_action(true);
+        assert_eq!(visibility(&app), [true, false, false, false]);
+
+        frame(&mut app, &ctx, vec![egui::Event::PointerMoved(upper), button(upper, true)]);
+        frame(&mut app, &ctx, vec![egui::Event::PointerMoved(bottom), button(bottom, false)]);
+        assert_eq!(visibility(&app), [true, true, false, true]);
+        frame(&mut app, &ctx, vec![egui::Event::PointerMoved(lower)]);
+        assert_eq!(visibility(&app), [true, true, false, true]);
+        assert_eq!(app.layer, 0);
+
+        frame(&mut app, &ctx, vec![egui::Event::PointerMoved(upper), button(upper, true)]);
+        frame(&mut app, &ctx, vec![egui::Event::WindowFocused(false)]);
+        frame(&mut app, &ctx, vec![
+            egui::Event::WindowFocused(true),
+            egui::Event::PointerMoved(top),
+            button(top, false),
+        ]);
+        assert_eq!(visibility(&app), [true, false, false, true]);
+        assert_eq!(app.layer, 0);
+    }
+
+    #[test]
+    fn layer_context_menu_toggles_visibility_without_selecting_the_layer() {
+        let mut project = Project::new();
+        project.add_layer("Lower", "Entities", 16).unwrap();
+        project.add_layer("Upper", "Entities", 16).unwrap();
+        let mut app = EditorApp::empty();
+        app.set_project(project);
+        let key = app.selected.unwrap();
+        let ctx = egui::Context::default();
+        theme::configure(&ctx);
+        frame(&mut app, &ctx, vec![]);
+        let output = frame(&mut app, &ctx, vec![]);
+        let lower = label(&output, "Lower").center();
+        let eye = egui::pos2(285., lower.y);
+        let open_menu = |app: &mut EditorApp, pos: egui::Pos2| {
+            frame(app, &ctx, vec![egui::Event::PointerMoved(pos)]);
+            for pressed in [true, false] {
+                frame(
+                    app,
+                    &ctx,
+                    vec![
+                        egui::Event::PointerMoved(pos),
+                        egui::Event::PointerButton {
+                            pos,
+                            pressed,
+                            button: egui::PointerButton::Secondary,
+                            modifiers: Default::default(),
+                        },
+                    ],
+                );
+            }
+            frame(app, &ctx, vec![])
+        };
+        let menu = open_menu(&mut app, eye);
+        let toggle = label(&menu, "TOGGLE VISIBILITY");
+        assert!(!app.layer_visible(key, 1));
+        click(&mut app, &ctx, toggle.center());
+        assert!(app.layer_visible(key, 1));
+        assert_eq!(app.layer, 0);
+        app.undo_action(false);
+        assert!(!app.layer_visible(key, 1));
+        app.undo_action(false);
+        assert!(app.layer_visible(key, 1));
+
+        let menu = open_menu(&mut app, lower);
+        label(&menu, "TOGGLE VISIBILITY");
+        assert!(app.layer_visible(key, 1));
+        click(&mut app, &ctx, eye);
+        assert!(app.layer_visible(key, 1));
+        assert_eq!(app.layer, 0);
+
+        let menu = open_menu(&mut app, lower);
+        click(&mut app, &ctx, label(&menu, "EDIT LAYER SETTINGS").center());
+        assert_eq!(app.layer, 1);
+        assert_eq!(app.panel, Some(Panel::Layers));
+    }
+
+    #[test]
+    fn layer_filter_keeps_a_matching_layer_and_selects_a_fallback_when_needed() {
+        let mut project = Project::new();
+        for (name, tag) in [
+            ("HiddenLayer", ""),
+            ("OtherLayer", "Other"),
+            ("BackLayer", "Map"),
+            ("FrontLayer", "Map"),
+        ] {
+            let uid = project.add_layer(name, "Entities", 16).unwrap();
+            let tags = if tag.is_empty() {
+                json!([])
+            } else {
+                json!([tag])
+            };
+            project
+                .update_definition(
+                    "layers",
+                    uid,
+                    &json!({
+                        "uiFilterTags": tags,
+                        "hideInList": tag.is_empty(),
+                    }),
+                )
+                .unwrap();
+        }
+        let mut app = EditorApp::empty();
+        app.set_project(project);
+        app.switch_layer(1);
+        let ctx = egui::Context::default();
+        theme::configure(&ctx);
+        frame(&mut app, &ctx, vec![]);
+        let output = frame(&mut app, &ctx, vec![]);
+        click(&mut app, &ctx, label(&output, "Map").center());
+        assert_eq!(app.layer, 1, "retain the active layer when it matches");
+
+        let output = frame(&mut app, &ctx, vec![]);
+        click(&mut app, &ctx, label(&output, "Other").center());
+        assert_eq!(app.layer, 2);
+        app.set_project(app.project.as_ref().unwrap().clone());
+        assert_eq!(app.layer, 2, "restore the project's saved filter on open");
+        app.switch_layer(3);
+        let output = frame(&mut app, &ctx, vec![]);
+        click(&mut app, &ctx, label(&output, "All").center());
+        assert_eq!(app.layer, 0, "pick a listed layer when showing all");
+    }
+
+    #[test]
+    fn layer_filter_dropdown_supports_keyboard_navigation_and_confirmation() {
+        let mut project = Project::new();
+        for (name, tag) in [
+            ("DarkLayer", "Background"),
+            ("OtherLayer", "Other"),
+            ("CustomLayer", "Sprites"),
+            ("FrontLayer", "Map"),
+        ] {
+            let uid = project.add_layer(name, "Entities", 16).unwrap();
+            project
+                .update_definition("layers", uid, &json!({"uiFilterTags": [tag]}))
+                .unwrap();
+        }
+        let mut app = EditorApp::empty();
+        app.set_project(project);
+        let ctx = egui::Context::default();
+        theme::configure(&ctx);
+        frame(&mut app, &ctx, vec![]);
+        let output = frame(&mut app, &ctx, vec![]);
+        let all = label(&output, "- Show all layers -").center();
+        click(&mut app, &ctx, all);
+        for key in [
+            Key::Home,
+            Key::ArrowDown,
+            Key::ArrowDown,
+            Key::ArrowDown,
+            Key::Enter,
+        ] {
+            for pressed in [true, false] {
+                frame(
+                    &mut app,
+                    &ctx,
+                    vec![egui::Event::Key {
+                        key,
+                        physical_key: None,
+                        pressed,
+                        repeat: false,
+                        modifiers: Default::default(),
+                    }],
+                );
+            }
+        }
+        assert_eq!(app.layer, 2);
+        let output = frame(&mut app, &ctx, vec![]);
+        label(&output, "Other");
+        assert!(!egui::Popup::is_any_open(&ctx));
+    }
+
+    #[test]
+    fn empty_project_shows_the_layer_list_and_add_layer_guide() {
+        let mut app = EditorApp::empty();
+        app.set_project(Project::new());
+        let ctx = egui::Context::default();
+        theme::configure(&ctx);
+        frame(&mut app, &ctx, vec![]);
+        let output = frame(&mut app, &ctx, vec![]);
+        let empty = label(&output, "No layer");
+        let guide = label(&output, "Need at least 1 layer");
+        assert!(empty.center().y < guide.center().y);
+        assert!(guide.left() < 12.);
+        assert!(output.shapes.iter().any(|shape| {
+            matches!(&shape.shape, egui::Shape::Rect(rect)
+                if rect.fill == Color32::from_rgb(39, 63, 47)
+                    && rect.rect.top() == 140. && rect.rect.height() == 27.15625)
+        }));
+    }
+
+    #[test]
     fn embedded_project_save_rejects_a_conflicting_folder_then_retries_the_edit() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("Map.ldtk");

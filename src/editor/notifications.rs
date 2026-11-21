@@ -2,12 +2,25 @@ use super::*;
 
 pub(super) const SAVED_PROJECT_TITLE: &str = "Saved project";
 
+pub(super) fn layer_notification(
+    layer: &Value,
+) -> (String, Option<egui::ImageSource<'static>>, Instant) {
+    let icon = match layer["__type"].as_str() {
+        Some("Entities") => egui::include_image!("../../assets/icons/entity.png"),
+        Some("IntGrid") => egui::include_image!("../../assets/icons/intGrid.png"),
+        Some("AutoLayer") => egui::include_image!("../../assets/icons/autoLayer.svg"),
+        _ => egui::include_image!("../../assets/icons/tile.png"),
+    };
+    (text(layer, "__identifier", "").to_owned(), Some(icon), Instant::now())
+}
+
 #[derive(PartialEq, Eq)]
 pub(super) enum CanvasNotice {
     ResizeRemovals(usize),
     OutOfBounds(String),
     EntityLimit { maximum: i64, identifier: String },
     SavedProject(String),
+    SavedTileSelection,
     SavingFailed,
 }
 
@@ -36,6 +49,7 @@ impl CanvasNotice {
                 &[("count", &maximum.to_string()), ("entity", identifier)],
             ),
             Self::SavedProject(_) => locale::tr_ctx(ctx, SAVED_PROJECT_TITLE).into(),
+            Self::SavedTileSelection => locale::tr_ctx(ctx, "Saved selection").into(),
             Self::SavingFailed => locale::tr_ctx(ctx, "Saving failed!").into(),
         }
     }
@@ -77,6 +91,14 @@ impl EditorApp {
 
     pub(super) fn report_saving_failed(&mut self) {
         self.report_canvas_notice(CanvasNotice::SavingFailed);
+    }
+
+    pub(super) fn report_saved_tile_selection(&mut self) {
+        self.report_canvas_notice(CanvasNotice::SavedTileSelection);
+    }
+
+    pub(super) fn notify_quick(&mut self, message: String) {
+        self.quick_notification = Some((message, None, Instant::now()));
     }
 
     fn report_canvas_notice(&mut self, notice: CanvasNotice) {
@@ -148,7 +170,8 @@ impl EditorApp {
             let width = (text_width + left + right).max(150.) + edge_width + 1.;
             let height = text_height + vertical * 2. + 2.;
             // Match the source's max-height arrival and jQuery slide-up on dismissal.
-            let arrival_time = if subtitle.is_some() { 1.3 } else { 1. };
+            let blink = !matches!(entry.notice, CanvasNotice::SavedProject(_) | CanvasNotice::SavedTileSelection);
+            let arrival_time = if blink { 1. } else { 1.3 };
             let arrived = 2. + 200. * (1. - css_ease_remaining((age / arrival_time).min(1.)));
             let exit = ((age - duration) / 0.1).clamp(0., 1.);
             let visible = 0.5 + 0.5 * (std::f32::consts::PI * exit).cos();
@@ -161,7 +184,7 @@ impl EditorApp {
             bottom = top - 8. * visible;
             if row.bottom() >= screen.top() {
                 let painter = painter.with_clip_rect(clip);
-                let brightness = if subtitle.is_some() { 1. } else { [(0.25, 7.), (0.4, 3.), (0.85, 1.5), (1.75, 1.)]
+                let brightness = if !blink { 1. } else { [(0.25, 7.), (0.4, 3.), (0.85, 1.5), (1.75, 1.)]
                     .windows(2)
                     .find_map(|points| {
                         let [(start, from), (end, to)] = [points[0], points[1]];
@@ -175,6 +198,7 @@ impl EditorApp {
                         ([87, 0, 0], [255, 0, 0])
                     }
                     CanvasNotice::SavedProject(_) => ([22, 62, 38], [66, 183, 113]),
+                    CanvasNotice::SavedTileSelection => ([30, 34, 41], [84, 93, 115]),
                     _ => ([69, 48, 6], [203, 141, 19]),
                 };
                 let shade = |channels: [u8; 3]| {

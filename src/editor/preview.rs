@@ -1,4 +1,4 @@
-use super::*;
+use super::{selection_click::Element, *};
 use serde_json::json;
 
 impl EditorApp {
@@ -22,11 +22,19 @@ impl EditorApp {
         let (Some(project), Some(key)) = (&self.project, self.selected) else {
             return;
         };
-        let Some(layer) = project.layer(key, self.layer) else {
-            return;
-        };
         let (world, _) =
             self.canvas_pointer_pixels(project, key, rect, pointer, ui.ctx().pixels_per_point());
+        if ui.input(|input| input.modifiers.alt && !input.key_down(Key::Space)) {
+            self.draw_pick_preview(ui, rect, world);
+            return;
+        }
+        let Some((project, layer)) = self
+            .project
+            .as_ref()
+            .and_then(|project| project.layer(key, self.layer).map(|layer| (project, layer)))
+        else {
+            return;
+        };
         if layer["__type"] == "AutoLayer"
             && self
                 .stamp
@@ -213,11 +221,368 @@ impl EditorApp {
             &mut self.assets,
         );
     }
+
+    fn draw_pick_preview(&mut self, ui: &egui::Ui, rect: Rect, world: [f32; 2]) {
+        let ctx = ui.ctx();
+        if self.selection_contains_world(world) {
+            ctx.set_cursor_icon(egui::CursorIcon::Grab);
+            return;
+        }
+        let Some((index, cell, element)) = self.generic_element_at(world, self.single_layer) else {
+            ctx.set_cursor_icon(egui::CursorIcon::Help);
+            return;
+        };
+        let (Some(project), Some(key)) = (&self.project, self.selected) else {
+            return;
+        };
+        let Some(layer) = project.layer(key, index) else {
+            return;
+        };
+        ctx.set_cursor_icon(egui::CursorIcon::Grab);
+        let painter = ui.painter().with_clip_rect(rect);
+        let grid = number(layer, "__gridSize", 16.).max(1.);
+        let local = cell.map(|cell| cell as f32 * grid);
+        let offset = [
+            number(layer, "__pxTotalOffsetX", 0.),
+            number(layer, "__pxTotalOffsetY", 0.),
+        ];
+        let origin = [local[0] + offset[0], local[1] + offset[1]];
+        let on_screen = |local| -> egui::Pos2 {
+            let anchor = canvas::layer_to_world(project, key, index, &self.viewport, local);
+            self.viewport
+                .to_screen(
+                    anchor,
+                    self.viewport
+                        .level_render_canvas_origin(rect, ctx.pixels_per_point()),
+                    rect.size().into(),
+                )
+                .into()
+        };
+        let screen = on_screen(local);
+        let grid_rect = Rect::from_min_max(screen, on_screen(local.map(|axis| axis + grid)));
+        let ui_scale = self.settings.float("editorUiScale", 1.);
+        let grid_scale = grid_rect.width() / grid;
+
+        let (clipboard, mode, label) = match element {
+            Element::Grid if layer["__type"] == "Tiles" => {
+                let Some(mut tile) = selection_click::tiles_at_cell(layer, cell).last().cloned()
+                else {
+                    return;
+                };
+                tile["px"] = json!([0, 0]);
+                tile["a"] = json!(1.);
+                (
+                    json!({"gridSize": grid, "width": 1, "height": 1, "gridTiles": [tile]}),
+                    canvas::GhostMode::Brush,
+                    Some(selection_click::tile_stack_label(ctx, layer, cell)),
+                )
+            }
+            Element::Grid => {
+                let width = number(layer, "__cWid", 0.) as i32;
+                let value = &layer["intGridCsv"][(cell[0] + cell[1] * width) as usize];
+                let definition = layer["layerDefUid"]
+                    .as_i64()
+                    .and_then(|uid| project.layer_def(uid))
+                    .and_then(|def| {
+                        canvas::values(&def["intGridValues"])
+                            .iter()
+                            .find(|entry| entry["value"] == *value)
+                    });
+                let color = definition
+                    .and_then(|entry| entry["color"].as_str())
+                    .map(theme::color)
+                    .unwrap_or(theme::ACCENT);
+                let label = definition
+                    .and_then(|entry| entry["identifier"].as_str())
+                    .map_or_else(|| format!("#{value}"), str::to_owned);
+                paint_pick_grid(&painter, grid_rect, grid_scale, color);
+                paint_pick_label(
+                    ctx,
+                    &painter,
+                    &mut self.assets,
+                    screen,
+                    grid,
+                    self.viewport.zoom,
+                    ui_scale,
+                    &label,
+                    color,
+                );
+                return;
+            }
+            Element::Entity(index) => {
+                let mut entity = layer["entityInstances"][index].clone();
+                entity["px"] = json!([
+                    entity["px"][0].as_f64().unwrap_or(0.) - f64::from(local[0]),
+                    entity["px"][1].as_f64().unwrap_or(0.) - f64::from(local[1]),
+                ]);
+                (
+                    json!({"gridSize": grid, "width": 1, "height": 1, "entityInstances": [entity]}),
+                    canvas::GhostMode::EntityHover { ui_scale },
+                    None,
+                )
+            }
+            Element::Point { entity, .. } => {
+                let owner = &layer["entityInstances"][entity];
+                let definition = canvas::values(&project.json["defs"]["entities"])
+                    .iter()
+                    .find(|def| def["uid"] == owner["defUid"]);
+                if let Some(def) = definition {
+                    paint_pick_grid(
+                        &painter,
+                        grid_rect,
+                        grid_scale,
+                        canvas::entity_smart_color(project, owner, def, false),
+                    );
+                }
+                return;
+            }
+        };
+
+        let group = json!({
+            "origin": origin,
+            "size": [grid, grid],
+            "layers": [{
+                "layerDefUid": layer["layerDefUid"],
+                "origin": origin,
+                "rect": [cell[0], cell[1], 1, 1],
+                "clipboard": clipboard,
+            }],
+        });
+        canvas::draw_group_ghost(
+            ctx,
+            &painter,
+            rect,
+            project,
+            &self.viewport,
+            key,
+            &group,
+            [0.; 2],
+            [false; 2],
+            mode,
+            &mut self.assets,
+        );
+        if let Some(label) = label {
+            paint_pick_label(
+                ctx,
+                &painter,
+                &mut self.assets,
+                screen,
+                grid,
+                self.viewport.zoom,
+                ui_scale,
+                &label,
+                Color32::WHITE,
+            );
+        }
+    }
+}
+
+fn paint_pick_grid(painter: &egui::Painter, rect: Rect, scale: f32, color: Color32) {
+    for (inset, stroke) in [(2., Color32::BLACK), (0., color)] {
+        let rect = rect.shrink(inset * scale);
+        let mut path = egui::epaint::tessellator::Path::default();
+        path.add_line_loop(&[
+            rect.left_top(),
+            rect.right_top(),
+            rect.right_bottom(),
+            rect.left_bottom(),
+        ]);
+        let mut outline = egui::Mesh::default();
+        path.stroke_closed(0., &Stroke::new(2. * scale, stroke).into(), &mut outline);
+        painter.add(egui::Shape::mesh(outline));
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn paint_pick_label(
+    ctx: &egui::Context,
+    painter: &egui::Painter,
+    assets: &mut Assets,
+    screen: egui::Pos2,
+    grid: f32,
+    zoom: f32,
+    scale: f32,
+    label: &str,
+    color: Color32,
+) {
+    let foreground = color.lerp_to_gamma(Color32::WHITE, 0.5);
+    let background = color.lerp_to_gamma(Color32::BLACK, 0.5);
+    let pad = egui::vec2(3., 1.) * (scale / ctx.pixels_per_point());
+    let fallback = (!label.is_ascii()).then(|| {
+        painter.layout_no_wrap(
+            label.to_owned(),
+            FontId::proportional(12. * scale),
+            foreground,
+        )
+    });
+    let extent = fallback.as_ref().map_or_else(
+        || canvas::bitmap_font::measure_flow(ctx, label, scale, f32::INFINITY),
+        |galley| galley.size(),
+    );
+    let size = extent + pad * 2.;
+    let min = screen
+        + egui::vec2(
+            (grid * 0.5 - size.x / (2. * zoom)).trunc(),
+            (-size.y / zoom).trunc(),
+        ) * zoom;
+    painter.rect_filled(Rect::from_min_size(min, size), 0., background);
+    if let Some(galley) = fallback {
+        painter.galley(min + pad, galley, foreground);
+    } else {
+        canvas::bitmap_font::paint(
+            ctx,
+            painter,
+            assets,
+            min + pad,
+            label,
+            foreground,
+            scale,
+            f32::INFINITY,
+            false,
+        );
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn alt_hover_shows_intgrid_entity_and_point_cursors() {
+        let mut project = Project::new();
+        let ground = project.add_layer("Ground", "IntGrid", 16).unwrap();
+        project.add_layer("Actors", "Entities", 16).unwrap();
+        let definition = project.add_entity_def("Actor", 16, 16).unwrap();
+        let point = project
+            .add_field_definition(Some(definition), "Target", "Point", false)
+            .unwrap();
+        let key = project.level_keys()[0];
+        project
+            .update_definition(
+                "layers",
+                ground,
+                &json!({
+                    "intGridValues":[{"value":1,"identifier":null,"color":"#759944","groupUid":0}]
+                }),
+            )
+            .unwrap();
+        project.add_entity(key, 0, definition, 80, 88).unwrap();
+        project.layer_mut(key, 0).unwrap()["entityInstances"][0]["fieldInstances"][0] = json!({"__identifier":"Target","__type":"Point","__value":{"cx":10,"cy":8},"defUid":point});
+        project.paint_int_grid(key, 1, 2, 3, 1).unwrap();
+        let entity_color = theme::ACCENT;
+        let mut app = EditorApp::empty();
+        app.set_project(project);
+        app.viewport = Viewport {
+            center: [128., 128.],
+            zoom: 1.,
+        };
+        let ctx = egui::Context::default();
+        let rect = Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(256., 256.));
+        let frame = |app: &mut EditorApp, point| {
+            ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(rect),
+                    modifiers: egui::Modifiers::ALT,
+                    events: vec![egui::Event::PointerMoved(point)],
+                    ..Default::default()
+                },
+                |ctx| {
+                    egui::CentralPanel::default()
+                        .frame(egui::Frame::NONE)
+                        .show(ctx, |ui| app.draw_brush_preview(ui, rect, true))
+                        .inner
+                },
+            )
+        };
+        let grid = frame(&mut app, egui::pos2(40., 56.));
+        assert_eq!(grid.platform_output.cursor_icon, egui::CursorIcon::Grab);
+        let grid_color = Color32::from_rgb(117, 153, 68);
+        let has_outline = |output: &egui::FullOutput, color| {
+            output.shapes.iter().any(|shape| {
+                matches!(&shape.shape, egui::Shape::Mesh(mesh)
+                    if mesh.indices.len() == 24 && mesh.vertices.iter().all(|vertex| vertex.color == color))
+            })
+        };
+        assert!(has_outline(&grid, grid_color));
+        assert!(
+            grid.shapes
+                .iter()
+                .any(|shape| matches!(&shape.shape, egui::Shape::Rect(rect)
+            if rect.fill == grid_color.lerp_to_gamma(Color32::BLACK, 0.5)))
+        );
+        assert_eq!(app.layer, 0);
+        app.layer = 1;
+        let entity = frame(&mut app, egui::pos2(80., 88.));
+        assert_eq!(entity.platform_output.cursor_icon, egui::CursorIcon::Grab);
+        assert!(
+            entity
+                .shapes
+                .iter()
+                .any(|shape| matches!(&shape.shape, egui::Shape::Rect(rect)
+            if rect.fill == entity_color.lerp_to_gamma(Color32::BLACK, 0.5)))
+        );
+        let point = frame(&mut app, egui::pos2(168., 136.));
+        assert_eq!(point.platform_output.cursor_icon, egui::CursorIcon::Grab);
+        assert!(has_outline(&point, entity_color));
+        assert_eq!(app.layer, 1);
+    }
+
+    #[test]
+    fn alt_hover_previews_the_picked_tile_stack_across_layers() {
+        let mut project = Project::new();
+        let tile_layer = project.add_layer("Floor", "Tiles", 16).unwrap();
+        project.add_layer("Actors", "Entities", 16).unwrap();
+        let atlas = project
+            .add_tileset(std::path::Path::new("art.png"), 16, 64, 32)
+            .unwrap();
+        project.assign_tileset(tile_layer, atlas).unwrap();
+        let key = project.level_keys()[0];
+        project
+            .paint_tile(key, 1, 2, 3, 0, [0, 0], 0, false)
+            .unwrap();
+        project
+            .paint_tile_stacked(key, 1, 2, 3, 1, [16, 0], 3, false, true)
+            .unwrap();
+        let mut app = EditorApp::empty();
+        app.set_project(project);
+        app.viewport = Viewport {
+            center: [128., 128.],
+            zoom: 1.,
+        };
+        let ctx = egui::Context::default();
+        let rect = Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(256., 256.));
+        let frame = |app: &mut EditorApp, point| {
+            ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(rect),
+                    modifiers: egui::Modifiers::ALT,
+                    events: vec![egui::Event::PointerMoved(point)],
+                    ..Default::default()
+                },
+                |ctx| {
+                    egui::CentralPanel::default()
+                        .frame(egui::Frame::NONE)
+                        .show(ctx, |ui| app.draw_brush_preview(ui, rect, true));
+                },
+            )
+        };
+        let hovered = frame(&mut app, egui::pos2(40., 56.));
+        assert_eq!(hovered.platform_output.cursor_icon, egui::CursorIcon::Grab);
+        assert!(
+            hovered.shapes.iter().any(|shape| {
+                matches!(&shape.shape, egui::Shape::Rect(rect)
+                if rect.fill == Color32::from_gray(128) && rect.rect.width() == 53.)
+            }),
+            "draws the source-sized bitmap label for Tiles 0, 1"
+        );
+        assert_eq!(
+            frame(&mut app, egui::pos2(90., 104.))
+                .platform_output
+                .cursor_icon,
+            egui::CursorIcon::Help
+        );
+        assert_eq!(app.layer, 0);
+    }
 
     #[test]
     fn entity_brush_highlights_hovered_bounds_and_labels_only_existing_entities() {

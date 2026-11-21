@@ -790,6 +790,109 @@ pub(in crate::app) fn context_menu_frame(style: &egui::Style) -> egui::Frame {
         .inner_margin(0.)
 }
 
+pub(in crate::app) fn select_popup(
+    response: &egui::Response,
+    id: egui::Id,
+    selected: usize,
+    options: &[(&str, Color32)],
+) -> Option<usize> {
+    let last = options.len().checked_sub(1)?;
+    let ctx = &response.ctx;
+    let open = egui::Popup::is_id_open(ctx, id);
+    let cursor_id = id.with("highlighted");
+    if !open {
+        ctx.data_mut(|data| data.remove::<usize>(cursor_id));
+    }
+    let mut choice = None;
+    egui::Popup::menu(response)
+        .id(id)
+        .open_memory(
+            ((!open && response.clicked()) || response.clicked_by(egui::PointerButton::Primary))
+                .then_some(egui::SetOpenCommand::Toggle),
+        )
+        .width(response.rect.width())
+        .frame(egui::Frame::new().fill(theme::LIGHT))
+        .show(|ui| {
+            let mut cursor = ui
+                .data(|data| data.get_temp::<usize>(cursor_id))
+                .unwrap_or(selected)
+                .min(last);
+            let previous = cursor;
+            let confirm = ui.input_mut(|input| {
+                let mut pressed = |key| input.consume_key(egui::Modifiers::NONE, key);
+                cursor = if pressed(Key::Home) {
+                    0
+                } else if pressed(Key::End) {
+                    last
+                } else if pressed(Key::ArrowDown) {
+                    (cursor + 1).min(last)
+                } else if pressed(Key::ArrowUp) {
+                    cursor.saturating_sub(1)
+                } else {
+                    cursor
+                };
+                pressed(Key::Enter)
+            });
+            if confirm {
+                choice = Some(cursor);
+                ui.close();
+            }
+            let pointer_moved = ui.input(|input| input.pointer.delta() != Vec2::ZERO);
+            let font = FontId::proportional(14.667);
+            let width = options
+                .iter()
+                .map(|(label, _)| {
+                    ui.painter()
+                        .layout_no_wrap((*label).to_owned(), font.clone(), Color32::WHITE)
+                        .size()
+                        .x
+                        + 16.
+                })
+                .fold(response.rect.width(), f32::max)
+                .min(ctx.content_rect().width());
+            egui::ScrollArea::vertical()
+                .max_height(250.)
+                .show(ui, |ui| {
+                    ui.spacing_mut().item_spacing.y = 0.;
+                    for (index, &(label, color)) in options.iter().enumerate() {
+                        let (rect, option) =
+                            ui.allocate_exact_size(egui::vec2(width, 32.), Sense::click());
+                        option.widget_info(|| {
+                            egui::WidgetInfo::selected(
+                                egui::WidgetType::SelectableLabel,
+                                true,
+                                index == selected,
+                                label,
+                            )
+                        });
+                        if index == cursor && cursor != previous {
+                            option.scroll_to_me(None);
+                        }
+                        if pointer_moved && option.hovered() {
+                            cursor = index;
+                        }
+                        let highlighted = index == cursor;
+                        if highlighted {
+                            ui.painter().rect_filled(rect, 0., theme::ACCENT);
+                        }
+                        ui.painter().with_clip_rect(rect).text(
+                            rect.left_center() + egui::vec2(8., 0.),
+                            Align2::LEFT_CENTER,
+                            label,
+                            font.clone(),
+                            if highlighted { Color32::BLACK } else { color },
+                        );
+                        if option.clicked() {
+                            choice = Some(index);
+                            ui.close();
+                        }
+                    }
+                });
+            ui.data_mut(|data| data.insert_temp(cursor_id, cursor));
+        });
+    choice
+}
+
 pub(in crate::app) fn disabled_hatch(ui: &egui::Ui, rect: Rect) {
     egui::Image::new(egui::include_image!("../../assets/img/stripesLight.png"))
         .texture_options(egui::TextureOptions::NEAREST_REPEAT)

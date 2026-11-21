@@ -722,6 +722,18 @@ impl History {
         }
         self.pending = Some(Snapshot::capture_layers(p, iid, &uids));
     }
+    /// Visibility changes only the addressed layer instance.
+    pub fn begin_layer_visibility(&mut self, p: &Project, key: LevelKey, index: usize) {
+        if self.pending.is_none()
+            && let Some(uid) = p
+                .layer(key, index)
+                .and_then(|layer| layer["layerDefUid"].as_i64())
+            && let Some(iid) = p.level(key).and_then(|level| level["iid"].as_str())
+        {
+            self.pending = Some(Snapshot::capture_layers(p, iid, &BTreeSet::from([uid])));
+        }
+    }
+
     pub fn begin_project(&mut self, p: &Project) {
         if self.pending.is_none() {
             self.pending = Some(Snapshot::capture(p));

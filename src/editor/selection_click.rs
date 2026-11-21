@@ -71,6 +71,19 @@ pub(super) fn tiles_at_cell(layer: &Value, cell: [i32; 2]) -> impl Iterator<Item
         })
 }
 
+pub(super) fn tile_stack_label(ctx: &egui::Context, layer: &Value, cell: [i32; 2]) -> String {
+    let tiles = tiles_at_cell(layer, cell)
+        .filter_map(|tile| tile["t"].as_i64())
+        .map(|id| id.to_string())
+        .collect::<Vec<_>>();
+    let (format, key) = if tiles.len() == 1 {
+        ("Tile {id}", "id")
+    } else {
+        ("Tiles {ids}", "ids")
+    };
+    locale::format_ctx(ctx, format, &[(key, &tiles.join(", "))])
+}
+
 pub(super) fn layer_hit(
     project: &Project,
     layer: &Value,
@@ -283,7 +296,7 @@ impl EditorApp {
         else {
             return false;
         };
-        let Some((layer_index, cell, element)) = self.generic_element_at(world, false) else {
+        let Some((layer_index, cell, element)) = self.generic_element_at(world, self.single_layer) else {
             self.selection = None;
             self.selection_group = None;
             self.entity_index = None;
@@ -302,23 +315,20 @@ impl EditorApp {
                 return true;
             }
         };
-        self.layer = layer_index;
+        if self.layer != layer_index {
+            self.quick_notification = Some(notifications::layer_notification(layer));
+            self.layer = layer_index;
+        }
         self.entity_index = None;
         self.chain_entity = None;
         match element {
             Element::Grid => {
-                let grid = number(layer, "__gridSize", 16.);
                 if layer["__type"] == "IntGrid" {
                     let width = number(layer, "__cWid", 1.) as i32;
                     self.int_value = layer["intGridCsv"][(cell[0] + cell[1] * width) as usize]
                         .as_i64()
                         .unwrap_or(0) as i32;
-                } else if let Some(tile) = layer["gridTiles"].as_array().and_then(|ts| {
-                    ts.iter().rev().find(|t| {
-                        t["px"][0].as_f64() == Some(f64::from(cell[0] as f32 * grid))
-                            && t["px"][1].as_f64() == Some(f64::from(cell[1] as f32 * grid))
-                    })
-                }) {
+                } else if let Some(tile) = tiles_at_cell(layer, cell).last() {
                     let uid = layer["__tilesetDefUid"].as_i64().unwrap_or(-1);
                     let id = tile["t"].as_i64().unwrap_or(0) as i32;
                     let flips = tile["f"].as_i64().unwrap_or(0) as i32;
@@ -565,6 +575,7 @@ mod tests {
         assert!(app.set_atlas_selection(other_atlas, vec![1]));
         app.remember_canvas_atlas_memory(&ctx, other_atlas);
         assert!(app.select_element_at([4., 4.], false, None));
+        assert!(matches!(&app.quick_notification, Some((label, Some(_), _)) if label == "Art"));
         assert_eq!(app.layer, art_index);
         app.restore_canvas_atlas_memory(&ctx, atlas);
         assert_eq!(app.selected_tile_ids_for(atlas), [1, 2]);
@@ -649,13 +660,15 @@ mod tests {
             .unwrap()
             .paint_int_grid(K, 1, 0, 0, 0)
             .unwrap();
-        assert!(a.select_element_at([4., 4.], false, None));
+        assert!(!a.select_element_at([4., 4.], false, None));
         assert_eq!(
-            a.layer, 0,
-            "single-layer mode still falls back when active has no hit"
+            a.layer, 1,
+            "single-layer mode does not fall back to another layer"
         );
-        a.layer = 1;
         a.single_layer = false;
+        assert!(a.select_element_at([4., 4.], false, None));
+        assert_eq!(a.layer, 0);
+        a.layer = 1;
         a.project.as_mut().unwrap().json["defs"]["layers"]
             .as_array_mut()
             .unwrap()

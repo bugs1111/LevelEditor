@@ -2,6 +2,19 @@
 use super::*;
 use serde_json::json;
 
+fn tileset_selector_id() -> egui::Id {
+    egui::Id::new("tile-palette-tileset-picker")
+}
+
+fn tileset_warning_id() -> egui::Id {
+    egui::Id::new("palette-tileset-confirm")
+}
+
+pub(super) fn tileset_selector_open(ctx: &egui::Context) -> bool {
+    egui::Popup::is_id_open(ctx, tileset_selector_id())
+        || ctx.data(|data| data.get_temp::<i64>(tileset_warning_id()).is_some())
+}
+
 #[derive(Clone, Default)]
 struct PopOut {
     open: bool,
@@ -165,95 +178,210 @@ impl EditorApp {
                 (choices, default_uid, occupied)
             })
             .unwrap_or_default();
-        ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 2.;
-            ui.spacing_mut().button_padding = egui::vec2(4., 2.);
-            let width = (ui.available_width() - 106.).max(40.);
-            ui.allocate_ui_with_layout(
-                egui::vec2(width, 29.),
-                egui::Layout::left_to_right(egui::Align::Center),
-                |ui| {
-                    egui::ComboBox::from_id_salt(("palette-tileset", uid))
-                        .width(width - 8.)
-                        .truncate()
-                        .selected_text(
-                            choices
-                                .iter()
-                                .find(|c| c.0 == uid)
-                                .map(|c| {
-                                    format!(
-                                        "{}{}",
-                                        c.1,
-                                        if Some(uid) == default_uid {
-                                            " (default)"
-                                        } else {
-                                            ""
-                                        }
-                                    )
-                                })
-                                .unwrap_or_default(),
-                        )
-                        .show_ui(ui, |ui| {
-                            for (id, name, bad) in &choices {
-                                ui.selectable_value(
-                                    &mut target,
-                                    *id,
-                                    format!(
-                                        "{name}{}{}",
-                                        if Some(*id) == default_uid {
-                                            " (default)"
-                                        } else {
-                                            ""
-                                        },
-                                        if *bad { " (INCOMPATIBLE SIZE!)" } else { "" }
-                                    ),
-                                );
-                            }
-                        });
-                },
+        let (header, _) =
+            ui.allocate_exact_size(egui::vec2(ui.available_width(), 29.), Sense::hover());
+        let button_width = 30.65625;
+        let buttons_left = header.right() - 3. - 3. * button_width - 4.;
+        let selector =
+            Rect::from_min_max(header.min, egui::pos2(buttons_left - 9., header.bottom()));
+        let choices_text = choices
+            .iter()
+            .map(|(id, name, bad)| {
+                let default = if Some(*id) == default_uid {
+                    locale::tr(ui, "(default)")
+                } else {
+                    ""
+                };
+                let warning = if *bad {
+                    locale::tr(ui, "(INCOMPATIBLE SIZE!)")
+                } else {
+                    ""
+                };
+                [name, default, warning]
+                    .into_iter()
+                    .filter(|part| !part.is_empty())
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            })
+            .collect::<Vec<_>>();
+        if let Some(current) = choices.iter().position(|(id, _, _)| *id == uid) {
+            let response = ui
+                .interact(selector, ui.id().with("palette-tileset"), Sense::click())
+                .on_hover_cursor(egui::CursorIcon::PointingHand);
+            let value = &choices_text[current];
+            response.widget_info(|| {
+                egui::WidgetInfo::labeled(egui::WidgetType::ComboBox, response.enabled(), value)
+            });
+            let id = tileset_selector_id();
+            let painter = ui.painter();
+            painter.rect_filled(
+                selector.translate(egui::vec2(0., 2.)),
+                3.,
+                Color32::from_black_alpha(77),
             );
-            let mut icon = |image, selected, tip| {
-                super::panels::source_controls::add_sized_button(
-                    ui,
-                    [32., 29.],
-                    egui::Button::image(
-                        egui::Image::new(image).fit_to_exact_size(Vec2::splat(24.)),
-                    )
-                    .selected(selected)
-                    .corner_radius(0)
-                    .stroke(Stroke::NONE),
-                )
-                .on_hover_text(tip)
+            let border = if response.hovered() || egui::Popup::is_id_open(ctx, id) {
+                Color32::WHITE
+            } else {
+                Color32::from_rgb(115, 127, 157)
             };
-            if icon(
-                egui::include_image!("../../assets/icons/random.svg"),
-                self.random_tiles,
-                "Enable random mode for current selection of tiles · R",
-            )
-            .clicked()
+            painter.rect(
+                selector,
+                3.,
+                theme::LIGHT,
+                Stroke::new(1., border),
+                StrokeKind::Inside,
+            );
+            let font = FontId::proportional(13.333);
+            let caption = Rect::from_min_max(
+                selector.min + egui::vec2(8., 0.),
+                selector.max - egui::vec2(18., 0.),
+            );
+            let full = painter.layout_no_wrap(value.clone(), font.clone(), Color32::WHITE);
+            let galley = if full.size().x <= caption.width() {
+                full
+            } else {
+                painter.layout_no_wrap(choices[current].1.clone(), font, Color32::WHITE)
+            };
+            painter.with_clip_rect(caption).galley(
+                caption.left_center() - egui::vec2(0., galley.size().y / 2.),
+                galley,
+                Color32::WHITE,
+            );
+            let arrow = selector.right_center() - egui::vec2(9., 0.);
+            painter.add(egui::Shape::line(
+                vec![
+                    arrow + egui::vec2(-4., -2.),
+                    arrow + egui::vec2(0., 2.),
+                    arrow + egui::vec2(4., -2.),
+                ],
+                Stroke::new(1.5, Color32::WHITE),
+            ));
+            let options = choices_text
+                .iter()
+                .zip(&choices)
+                .map(|(text, (_, _, bad))| {
+                    (
+                        text.as_str(),
+                        if *bad { theme::DARK } else { Color32::WHITE },
+                    )
+                })
+                .collect::<Vec<_>>();
+            if let Some(index) =
+                panels::source_controls::select_popup(&response, id, current, &options)
             {
-                self.random_tiles = !self.random_tiles;
+                target = choices[index].0;
             }
-            if icon(
-                egui::include_image!("../../assets/icons/save.svg"),
-                false,
-                "Memorize current selection of tiles · Shift S",
-            )
-            .clicked()
-            {
-                self.tile_selection_memory(ctx, false);
+        }
+
+        let button = |slot, image, toggle, tip, keys| {
+            let rect = Rect::from_min_size(
+                egui::pos2(
+                    buttons_left + slot as f32 * (button_width + 2.),
+                    header.top() + 1.,
+                ),
+                egui::vec2(button_width, 27.),
+            );
+            let response = ui
+                .interact(rect, ui.id().with(tip), Sense::click())
+                .on_hover_cursor(egui::CursorIcon::PointingHand);
+            response.widget_info(|| {
+                egui::WidgetInfo::labeled(
+                    egui::WidgetType::Button,
+                    response.enabled(),
+                    locale::tr(ui, tip),
+                )
+            });
+            let painter = ui.painter();
+            if let Some(on) = toggle {
+                let green = Color32::from_rgb(207, 221, 64);
+                let outline = if on { green } else { theme::LIGHT };
+                painter.rect(
+                    rect,
+                    2.,
+                    theme::DARK,
+                    Stroke::new(1., outline),
+                    StrokeKind::Outside,
+                );
+                if on {
+                    for (inset, amount) in [0.44, 0.36, 0.28, 0.21, 0.15, 0.10, 0.06, 0.03]
+                        .into_iter()
+                        .enumerate()
+                    {
+                        painter.rect_stroke(
+                            rect.shrink(inset as f32),
+                            2.,
+                            Stroke::new(1., green.gamma_multiply(amount)),
+                            StrokeKind::Inside,
+                        );
+                    }
+                }
+            } else {
+                painter.add(
+                    egui::epaint::Shadow {
+                        offset: [0, 2],
+                        blur: 2,
+                        spread: 0,
+                        color: Color32::from_black_alpha(77),
+                    }
+                    .as_shape(rect, 0.),
+                );
+                let fill = if response.hovered() {
+                    Color32::from_rgb(115, 127, 157)
+                } else {
+                    theme::LIGHT
+                };
+                painter.rect_filled(rect, 0., fill);
+                for (inset, alpha) in [14, 3].into_iter().enumerate() {
+                    painter.rect_stroke(
+                        rect.shrink(inset as f32),
+                        0.,
+                        Stroke::new(1., Color32::from_white_alpha(alpha)),
+                        StrokeKind::Inside,
+                    );
+                }
+                painter.rect_filled(
+                    Rect::from_min_max(egui::pos2(rect.left(), rect.bottom() - 2.), rect.max),
+                    0.,
+                    Color32::from_black_alpha(77),
+                );
             }
-            if icon(
-                egui::include_image!("../../assets/icons/fit.svg"),
-                *fit,
-                "Fit tileset view in the interface panel",
-            )
-            .clicked()
-            {
-                *fit = !*fit;
-            }
-        });
-        let pending_id = egui::Id::new("palette-tileset-confirm");
+            egui::Image::new(image)
+                .tint(Color32::WHITE.gamma_multiply(if toggle == Some(false) { 0.5 } else { 1. }))
+                .paint_at(
+                    ui,
+                    Rect::from_center_size(rect.center(), Vec2::splat(22.65625)),
+                );
+            chrome::source_tooltip(&response, tip, keys, false);
+            response.clicked()
+        };
+        if button(
+            0,
+            egui::include_image!("../../assets/icons/random.svg"),
+            Some(self.random_tiles),
+            "Enable random mode for current selection of tiles",
+            &["R"][..],
+        ) {
+            self.random_tiles = !self.random_tiles;
+        }
+        if button(
+            1,
+            egui::include_image!("../../assets/icons/save.svg"),
+            None,
+            "Memorize current selection of tiles",
+            &["S", "SHIFT"][..],
+        ) {
+            self.tile_selection_memory(ctx, false);
+        }
+        if button(
+            2,
+            egui::include_image!("../../assets/icons/fit.svg"),
+            Some(*fit),
+            "Fit tileset view in the interface panel",
+            &[][..],
+        ) {
+            *fit = !*fit;
+        }
+        let pending_id = tileset_warning_id();
         if target != uid {
             if incompatible && choices.iter().any(|c| c.0 == target && c.2) {
                 ctx.data_mut(|d| d.insert_temp(pending_id, target));
@@ -262,24 +390,28 @@ impl EditorApp {
             }
         }
         if let Some(target) = ctx.data(|d| d.get_temp::<i64>(pending_id)) {
-            let mut done = false;
-            egui::Modal::new(pending_id).show(ctx, |ui| {
+            let modal = egui::Modal::new(pending_id).show(ctx, |ui| {
                 ui.set_max_width(400.);
-                ui.label(
+                ui.label(locale::tr(
+                    ui,
                     "Warning: using this tileset in this layer will mess any existing tiles here.",
-                );
+                ));
+                let enter =
+                    ui.input_mut(|input| input.consume_key(egui::Modifiers::NONE, Key::Enter));
                 ui.horizontal(|ui| {
-                    if ui.button("Continue").clicked() {
-                        self.apply_palette_tileset(target, true);
-                        done = true;
-                    }
-                    if ui.button("Cancel").clicked() {
-                        done = true;
-                    }
-                });
+                    let confirm = panels::source_controls::button(ui, "Confirm").clicked() || enter;
+                    let cancel = panels::source_controls::button(ui, "Cancel").clicked();
+                    (confirm, cancel)
+                })
+                .inner
             });
-            if done {
+            let (confirm, cancel) = modal.inner;
+            if confirm {
+                self.apply_palette_tileset(target, true);
+            }
+            if confirm || cancel || modal.should_close() {
                 ctx.data_mut(|d| d.remove::<i64>(pending_id));
+                ctx.request_repaint();
             }
         }
     }
@@ -492,6 +624,11 @@ mod tests {
             .add_tileset(std::path::Path::new("TopDown_by_deepnight.png"), 16, 64, 32)
             .unwrap();
         p.assign_tileset(layer, uid).unwrap();
+        let key = p.level_keys()[0];
+        p.paint_tile(key, 0, 0, 0, 0, [0, 0], 0, false).unwrap();
+        let other = p
+            .add_tileset(std::path::Path::new("Alternate.png"), 16, 128, 32)
+            .unwrap();
         let mut app = EditorApp::empty();
         app.set_project(p);
         app.set_atlas_selection(uid, vec![0, 2]);
@@ -520,7 +657,14 @@ mod tests {
                 },
             )
         };
-        run(&mut app, &mut fit, vec![]);
+        let initial = run(&mut app, &mut fit, vec![]);
+        assert!(
+            initial.shapes.iter().any(|shape| {
+                matches!(&shape.shape, egui::Shape::Text(text)
+                if text.galley.text().starts_with("TopDown_by_deepnight"))
+            }),
+            "the closed selector must leave room for the complete atlas name"
+        );
         assert!(
             bounds.get().height() <= 30.,
             "one28pt row: {:?}",
@@ -559,6 +703,63 @@ mod tests {
             }
         }
         assert_eq!(app.selected_tile_ids_for(uid), vec![0, 2]);
+        let selector = egui::pos2(100., y);
+        let open = |app: &mut EditorApp, fit: &mut bool| {
+            for pressed in [true, false] {
+                run(
+                    app,
+                    fit,
+                    vec![
+                        egui::Event::PointerMoved(selector),
+                        egui::Event::PointerButton {
+                            pos: selector,
+                            pressed,
+                            button: egui::PointerButton::Primary,
+                            modifiers: Default::default(),
+                        },
+                    ],
+                );
+            }
+        };
+        let press = |app: &mut EditorApp, fit: &mut bool, key| {
+            for pressed in [true, false] {
+                run(
+                    app,
+                    fit,
+                    vec![egui::Event::Key {
+                        key,
+                        physical_key: None,
+                        pressed,
+                        repeat: false,
+                        modifiers: Default::default(),
+                    }],
+                );
+            }
+        };
+        open(&mut app, &mut fit);
+        press(&mut app, &mut fit, Key::End);
+        press(&mut app, &mut fit, Key::Enter);
+        let warning = tileset_warning_id();
+        assert_eq!(ctx.data(|data| data.get_temp::<i64>(warning)), Some(other));
+        press(&mut app, &mut fit, Key::Escape);
+        assert_eq!(ctx.data(|data| data.get_temp::<i64>(warning)), None);
+        assert_eq!(
+            app.project.as_ref().unwrap().layer(key, 0).unwrap()["__tilesetDefUid"],
+            uid
+        );
+        open(&mut app, &mut fit);
+        press(&mut app, &mut fit, Key::End);
+        press(&mut app, &mut fit, Key::Enter);
+        assert_eq!(
+            ctx.data(|data| data.get_temp::<i64>(warning)),
+            Some(other)
+        );
+        press(&mut app, &mut fit, Key::Enter);
+        assert_eq!(ctx.data(|data| data.get_temp::<i64>(warning)), None);
+        assert_eq!(
+            app.project.as_ref().unwrap().layer(key, 0).unwrap()["__tilesetDefUid"],
+            other
+        );
     }
     #[test]
     fn outward_travel_closes_at_thirty_pixels_but_return_travel_reduces_debt() {

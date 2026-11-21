@@ -318,17 +318,7 @@ impl EditorApp {
         if self.layer == index {
             return;
         }
-        let icon = match layer["__type"].as_str() {
-            Some("Entities") => egui::include_image!("../../assets/icons/entity.png"),
-            Some("IntGrid") => egui::include_image!("../../assets/icons/intGrid.png"),
-            Some("AutoLayer") => egui::include_image!("../../assets/icons/autoLayer.svg"),
-            _ => egui::include_image!("../../assets/icons/tile.png"),
-        };
-        self.quick_notification = Some((
-            text(layer, "__identifier", "").to_owned(),
-            Some(icon),
-            Instant::now(),
-        ));
+        self.quick_notification = Some(notifications::layer_notification(layer));
         self.finish_gesture();
         self.finish_stroke();
         // Preserve a directly selected entity when its inspector closes.
@@ -466,39 +456,35 @@ impl EditorApp {
         let Some(def) = project.tileset(uid) else {
             return;
         };
+        let current = self.selected_tile_ids_for(uid);
         if load {
-            if let Some(saved) = def["savedSelections"].as_array().and_then(|a| {
-                a.iter().find(|v| {
-                    v["ids"]
-                        .as_array()
-                        .is_some_and(|ids| ids.contains(&json!(self.tile_id)))
-                })
-            }) {
-                let ids = saved["ids"]
-                    .as_array()
-                    .unwrap()
-                    .iter()
-                    .filter_map(Value::as_i64)
-                    .map(|v| v as i32)
-                    .collect::<Vec<_>>();
-                let current = self.selected_tile_ids_for(uid);
+            if let Some(saved) = current
+                .first()
+                .and_then(|&id| library::saved_selection_for(def, id))
+            {
+                let ids = library::saved_selection_ids(saved);
                 if current.len() != ids.len() || current.iter().any(|id| !ids.contains(id)) {
-                    self.random_tiles = saved["mode"] == "Random";
+                    let random = saved["mode"] == "Random";
                     // Keyboard recall selects the tool value directly; unlike
                     // picker navigation, it preserves the brush transform.
                     let flips = self.flips;
                     if self.set_atlas_selection(uid, ids) {
+                        self.random_tiles = random;
+                        self.flips = flips;
                         palette_popout::request_focus(ctx, uid, false);
+                        let count = self.selected_tile_ids_for(uid).len();
+                        if count > 1 {
+                            self.notify_quick(locale::format_ctx(
+                                ctx,
+                                "Loaded selection of {count} tiles",
+                                &[("count", &count.to_string())],
+                            ));
+                        }
                     }
-                    self.flips = flips;
                 }
             }
         } else {
-            let ids = self
-                .selected_tile_ids_for(uid)
-                .into_iter()
-                .map(|id| json!(id))
-                .collect::<Vec<_>>();
+            let ids = current.into_iter().map(|id| json!(id)).collect::<Vec<_>>();
             let mut selections = def["savedSelections"]
                 .as_array()
                 .cloned()
@@ -512,10 +498,26 @@ impl EditorApp {
                 selections
                     .push(json!({"ids":ids,"mode":if self.random_tiles{"Random"}else{"Stamp"}}));
             }
-            self.edit("Tile selection saved", |p| {
-                p.update_tileset_definition(uid, &json!({"savedSelections":selections}))
-            });
+            if self
+                .edit("Tile selection saved", |p| {
+                    p.update_tileset_definition(uid, &json!({"savedSelections":selections}))
+                })
+                .is_some()
+            {
+                self.report_saved_tile_selection();
+            }
         }
+    }
+
+    fn flip_tile_brush(&mut self, ctx: &egui::Context, axis: i32) {
+        self.flips ^= axis;
+        let label = match (axis, self.flips & axis != 0) {
+            (1, true) => "X-flip: ON",
+            (1, false) => "X-flip: off",
+            (_, true) => "Y-flip: ON",
+            (_, false) => "Y-flip: off",
+        };
+        self.notify_quick(locale::tr_ctx(ctx, label).into());
     }
 
     fn change_entity_depth(&mut self, up: bool, extreme: bool) {
@@ -658,7 +660,10 @@ impl EditorApp {
     pub(super) fn shortcuts(&mut self, ctx: &egui::Context) {
         let selector_open = ui_fields::enum_picker::is_open(ctx)
             || self.panel == Some(Panel::World) && Self::world_selector_open(ctx)
-            || self.world_context.menu_open();
+            || self.world_context.menu_open()
+            || self.layer_context_menu.is_some()
+            || egui::Popup::is_id_open(ctx, Self::layer_filter_popup_id())
+            || palette_popout::tileset_selector_open(ctx);
         track_zoom_keys(ctx, self.command_palette || selector_open);
         if selector_open {
             return;
@@ -917,29 +922,7 @@ impl EditorApp {
             .iter()
             .position(|&k| k == key)
             {
-                let filter = self.settings.value["layerFilter"].as_str().unwrap_or("");
-                let visible = self.project.as_ref().and_then(|project| {
-                    let level = self.selected.and_then(|key| project.level(key))?;
-                    level["layerInstances"]
-                        .as_array()?
-                        .iter()
-                        .enumerate()
-                        .filter(|(_, layer)| {
-                            layer["layerDefUid"]
-                                .as_i64()
-                                .and_then(|uid| project.layer_def(uid))
-                                .is_some_and(|def| {
-                                    def["hideInList"] != true
-                                        && (filter.is_empty()
-                                            || def["uiFilterTags"].as_array().is_some_and(|tags| {
-                                                tags.iter().any(|tag| tag == filter)
-                                            }))
-                                })
-                        })
-                        .nth(index)
-                        .map(|(i, _)| i)
-                });
-                if let Some(index) = visible {
+                if let Some(&index) = self.visible_layer_indices(false).get(index) {
                     self.switch_layer(index);
                 }
                 continue;
@@ -1005,7 +988,11 @@ impl EditorApp {
                     self.toggle_zen_mode(ctx);
                 }
                 Key::R if modifiers.shift => self.render_auto = !self.render_auto,
-                Key::R if tile_tool => self.random_tiles = !self.random_tiles,
+                Key::R if tile_tool => {
+                    self.random_tiles = !self.random_tiles;
+                    let label = if self.random_tiles { "Random mode" } else { "Stamp mode" };
+                    self.notify_quick(locale::tr_ctx(ctx, label).into());
+                }
                 Key::T if modifiers.shift => self.tile_stacking = !self.tile_stacking,
                 Key::E if modifiers.shift => {
                     self.set_empty_selection(!self.settings.bool("emptySpaceSelection"));
@@ -1016,10 +1003,12 @@ impl EditorApp {
                 Key::H if modifiers.shift && cfg!(target_os = "macos") => {
                     self.set_details(!self.details)
                 }
-                Key::X if tile_tool => self.flips ^= 1,
-                Key::Y if tile_tool => self.flips ^= 2,
-                Key::H if modifiers.shift && tile_tool => self.flips ^= 1,
-                Key::V if modifiers.shift && tile_tool => self.flips ^= 2,
+                Key::X | Key::H if tile_tool && (key == Key::X || modifiers.shift) => {
+                    self.flip_tile_brush(ctx, 1);
+                }
+                Key::Y | Key::V if tile_tool && (key == Key::Y || modifiers.shift) => {
+                    self.flip_tile_brush(ctx, 2);
+                }
                 Key::S if modifiers.shift || !save_tile_shortcut_needs_shift(navigation) => {
                     self.tile_selection_memory(ctx, false)
                 }
@@ -1349,24 +1338,73 @@ mod tests {
         let ctx = egui::Context::default();
         app.tile_rect = [0, 0, 3, 1];
         app.atlas_selection = Some((atlas, vec![0, 2]));
+        app.random_tiles = true;
         app.tile_selection_memory(&ctx, false);
         assert_eq!(
             app.project.as_ref().unwrap().tileset(atlas).unwrap()["savedSelections"][0]["ids"],
             json!([0, 2])
         );
+        assert_eq!(
+            app.canvas_notices.len(),
+            1,
+            "memory save acknowledges the selection"
+        );
         app.atlas_selection = None;
-        app.tile_id = 2;
+        app.tile_id = 1;
         app.tile_rect = [2, 0, 1, 1];
         app.flips = 3;
+        app.random_tiles = false;
         app.tile_selection_memory(&ctx, true);
         assert_eq!(app.atlas_selection, Some((atlas, vec![0, 2])));
         assert_eq!(app.tile_rect, [0, 0, 3, 1]);
         assert_eq!(app.flips, 3);
-        assert_eq!(palette_popout::take_focus(&ctx, atlas), Some(false));
-        app.random_tiles = true;
-        app.tile_selection_memory(&ctx, true);
         assert!(app.random_tiles);
+        assert_eq!(palette_popout::take_focus(&ctx, atlas), Some(false));
+        assert!(
+            matches!(&app.quick_notification, Some((text, None, _)) if text == "Loaded selection of 2 tiles")
+        );
+        app.quick_notification = None;
+        app.random_tiles = false;
+        app.tile_selection_memory(&ctx, true);
+        assert!(!app.random_tiles);
         assert_eq!(palette_popout::take_focus(&ctx, atlas), None);
+        assert!(app.quick_notification.is_none());
+    }
+    #[test]
+    fn tile_keyboard_mode_and_flip_changes_show_source_notifications() {
+        let (mut app, _) = atlas_app();
+        let ctx = egui::Context::default();
+        for (key, expected) in [
+            (Key::R, "Random mode"),
+            (Key::R, "Stamp mode"),
+            (Key::X, "X-flip: ON"),
+            (Key::Y, "Y-flip: ON"),
+            (Key::X, "X-flip: off"),
+        ] {
+            let events = [true, false]
+                .map(|pressed| egui::Event::Key {
+                    key,
+                    physical_key: None,
+                    pressed,
+                    repeat: false,
+                    modifiers: egui::Modifiers::NONE,
+                })
+                .to_vec();
+            let _ = ctx.run(
+                egui::RawInput {
+                    events,
+                    ..Default::default()
+                },
+                |ctx| app.shortcuts(ctx),
+            );
+            assert!(
+                matches!(&app.quick_notification, Some((name, None, _)) if name == expected),
+                "{expected}"
+            );
+            app.quick_notification = None;
+        }
+        assert_eq!(app.flips, 2);
+        assert!(!app.random_tiles);
     }
     #[test]
     fn atlas_navigation_preserves_sparse_mask_and_wraps_as_a_group() {
@@ -1540,7 +1578,8 @@ mod tests {
             .unwrap();
         let mut app = EditorApp::empty();
         app.set_project(p);
-        app.settings.value["layerFilter"] = json!("Map");
+        let project = app.project.as_ref().unwrap();
+        app.settings.set_ui_state_int("LayerUIFilter", project.json["iid"].as_str(), 0);
         let ctx = egui::Context::default();
         for (key, expected) in [(Key::F1, visible), (Key::Num1, 0)] {
             let raw = egui::RawInput {

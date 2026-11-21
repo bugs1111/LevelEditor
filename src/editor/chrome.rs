@@ -3,6 +3,7 @@ use egui::emath::GuiRounding as _;
 
 pub(super) const SIDEBAR_WIDTH: f32 = 300.;
 pub(super) const ZEN_EDGE_WIDTH: f32 = 17.;
+const SIDEBAR_GUIDE_FILL: Color32 = Color32::from_rgb(39, 63, 47);
 
 #[derive(Default)]
 pub(super) struct ZenSidebar {
@@ -162,7 +163,115 @@ pub(super) fn paint_keycap(ui: &egui::Ui, rect: Rect, label: &str, tint: Color32
         .text(pos, Align2::CENTER_CENTER, label, font, Color32::WHITE);
 }
 
-fn source_tooltip(response: &egui::Response, text: &str, keys: &[&str], right: bool) {
+fn empty_layer_list(ui: &mut egui::Ui) {
+    let (rect, _) =
+        ui.allocate_exact_size(egui::vec2(ui.available_width() - 2., 100.), Sense::hover());
+    egui::Image::new(egui::include_image!("../../assets/img/stripes.png"))
+        .texture_options(egui::TextureOptions::NEAREST_REPEAT)
+        .uv(Rect::from_min_size(egui::Pos2::ZERO, rect.size() / 8.))
+        .paint_at(ui, rect);
+    ui.painter()
+        .rect_stroke(rect, 0., Stroke::new(1., theme::MEDIUM), StrokeKind::Inside);
+    let caption = egui::WidgetText::from(
+        RichText::new(locale::tr(ui, "No layer"))
+            .font(FontId::new(
+                19.067,
+                egui::FontFamily::Name("panel-title".into()),
+            ))
+            .italics()
+            .color(theme::LIGHT),
+    )
+    .into_galley(ui, None, rect.width(), egui::TextStyle::Body);
+    let center = egui::pos2(rect.center().x, rect.top() + 44.5);
+    ui.painter()
+        .galley(center - caption.size() * 0.5, caption, theme::LIGHT);
+}
+
+fn sidebar_guide(ui: &mut egui::Ui, kind: &str, empty: bool) {
+    let hints: &[(&[&str], &str)] = if empty {
+        &[(&[], "Need at least 1 layer")]
+    } else {
+        match kind {
+            "Entities" => &[(&["ALT"], "Pick"), (&["CTRL", "ALT"], "Copy")],
+            "IntGrid" | "Tiles" => &[(&["SHIFT"], "Rectangle"), (&["ALT"], "Pick")],
+            _ => return,
+        }
+    };
+    let key_width = |key: &str| match key {
+        "ALT" => 26.625,
+        "CTRL" if !cfg!(target_os = "macos") => 34.78125,
+        _ => 26.,
+    };
+    let color = Color32::from_rgb(121, 221, 138);
+    let font = FontId::new(13.2, egui::FontFamily::Name("panel-title".into()));
+    let guide = egui::Frame::new()
+        .fill(SIDEBAR_GUIDE_FILL)
+        .inner_margin(egui::Margin {
+            left: 4,
+            right: 4,
+            top: 5,
+            bottom: 6,
+        })
+        .show(ui, |ui| {
+            ui.set_min_width(ui.available_width());
+            ui.spacing_mut().interact_size.y = 0.;
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing = egui::vec2(3., 1.);
+                for (keys, label) in hints {
+                    let caption = egui::WidgetText::from(
+                        RichText::new(locale::tr(ui, label))
+                            .font(font.clone())
+                            .italics()
+                            .color(color),
+                    )
+                    .into_galley(
+                        ui,
+                        Some(egui::TextWrapMode::Extend),
+                        f32::INFINITY,
+                        egui::TextStyle::Body,
+                    );
+                    let mouse_size = if keys.is_empty() { 0. } else { 17.15625 };
+                    let keys_width = keys.iter().map(|key| key_width(key) + 1.).sum::<f32>();
+                    let width = 1. + keys_width + mouse_size + caption.size().x + 8.;
+                    let height = if keys.is_empty() { 16.15625 } else { 20.0625 };
+                    let (rect, _) =
+                        ui.allocate_exact_size(egui::vec2(width, height), Sense::hover());
+                    ui.painter()
+                        .rect_filled(rect, 3., Color32::from_rgb(60, 97, 72));
+                    let mut x = rect.left() + 1.;
+                    for key in *keys {
+                        let w = key_width(key);
+                        let cap =
+                            Rect::from_min_size(egui::pos2(x, rect.top()), egui::vec2(w, 20.));
+                        paint_shortcut(ui, cap.expand(1.), key, false);
+                        x += w + 1.;
+                    }
+                    if mouse_size > 0. {
+                        egui::Image::new(egui::include_image!("../../assets/icons/mouseLeft.png"))
+                            .texture_options(egui::TextureOptions::NEAREST)
+                            .paint_at(
+                                ui,
+                                Rect::from_min_size(
+                                    egui::pos2(x, rect.top()),
+                                    Vec2::splat(mouse_size),
+                                ),
+                            );
+                    }
+                    ui.painter()
+                        .galley(egui::pos2(x + mouse_size, rect.top()), caption, color);
+                }
+            });
+        })
+        .response
+        .rect;
+    let edge = Stroke::new(1., Color32::from_rgb(94, 171, 107));
+    ui.painter().hline(guide.x_range(), guide.top() + 0.5, edge);
+    ui.painter()
+        .hline(guide.x_range(), guide.bottom() - 0.5, edge);
+    ui.add_space(16.);
+}
+
+pub(super) fn source_tooltip(response: &egui::Response, text: &str, keys: &[&str], right: bool) {
     if !response.hovered() || !response.enabled() {
         return;
     }
@@ -426,14 +535,92 @@ fn toolbar_button(
 }
 
 impl EditorApp {
-    pub(super) fn visible_layer_indices(&self) -> Vec<usize> {
+    pub(super) fn layer_filter_popup_id() -> egui::Id {
+        egui::Id::new("layer-filter-popup")
+    }
+
+    fn layer_filter_dropdown(ui: &mut egui::Ui, tags: &[String], selected: &mut i64) {
+        let all = locale::tr(ui, "- Show all layers -");
+        let name = tags.get(*selected as usize).map_or(all, String::as_str);
+        let width = ui.available_width() - 2.;
+        let (rect, response) = ui.allocate_exact_size(egui::vec2(width, 28.), Sense::click());
+        response.widget_info(|| {
+            egui::WidgetInfo::labeled(egui::WidgetType::ComboBox, ui.is_enabled(), name)
+        });
+        let id = Self::layer_filter_popup_id();
+        let open = egui::Popup::is_id_open(ui.ctx(), id);
+        let stroke = if open || response.hovered() {
+            Color32::WHITE
+        } else {
+            Color32::from_rgb(115, 127, 157)
+        };
+        let painter = ui.painter();
+        painter.rect(
+            rect,
+            3.,
+            theme::DARK,
+            Stroke::new(1., stroke),
+            StrokeKind::Inside,
+        );
+        let text_rect = rect.shrink2(egui::vec2(7., 0.));
+        painter
+            .with_clip_rect(text_rect.with_max_x(rect.right() - 20.))
+            .text(
+                text_rect.left_center(),
+                Align2::LEFT_CENTER,
+                name,
+                FontId::proportional(12.),
+                theme::LIGHT,
+            );
+        let arrow = rect.right_center() - egui::vec2(9., 0.);
+        painter.add(egui::Shape::line(
+            vec![
+                arrow + egui::vec2(-4., -2.),
+                arrow + egui::vec2(0., 2.),
+                arrow + egui::vec2(4., -2.),
+            ],
+            Stroke::new(1.5, theme::LIGHT),
+        ));
+
+        let options = std::iter::once(all)
+            .chain(tags.iter().map(String::as_str))
+            .map(|label| (label, Color32::WHITE))
+            .collect::<Vec<_>>();
+        if let Some(picked) =
+            panels::source_controls::select_popup(&response, id, (*selected + 1) as usize, &options)
+        {
+            *selected = picked as i64 - 1;
+        }
+    }
+
+    fn layer_filter_tags(&self) -> Vec<&str> {
+        let mut tags = self
+            .project
+            .as_ref()
+            .and_then(|p| p.json["defs"]["layers"].as_array())
+            .into_iter()
+            .flatten()
+            .flat_map(|definition| definition["uiFilterTags"].as_array().into_iter().flatten())
+            .filter_map(Value::as_str)
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+        tags.sort_by_key(|tag| tag.to_lowercase());
+        tags
+    }
+
+    pub(super) fn visible_layer_indices(&self, include_active: bool) -> Vec<usize> {
         let Some(project) = &self.project else {
             return vec![];
         };
         let Some(level) = self.selected.and_then(|k| project.level(k)) else {
             return vec![];
         };
-        let filter = self.settings.value["layerFilter"].as_str().unwrap_or("");
+        let selected =
+            self.settings
+                .ui_state_int("LayerUIFilter", project.json["iid"].as_str(), -1);
+        let tags = self.layer_filter_tags();
+        let filter = tags.get(selected as usize).copied();
         level["layerInstances"]
             .as_array()
             .into_iter()
@@ -443,17 +630,118 @@ impl EditorApp {
                 let d = l["layerDefUid"]
                     .as_i64()
                     .and_then(|uid| project.layer_def(uid));
-                *i == self.layer
+                (include_active && *i == self.layer)
                     || d.is_some_and(|d| {
                         d["hideInList"] != true
-                            && (filter.is_empty()
-                                || d["uiFilterTags"]
+                            && filter.is_none_or(|filter| {
+                                d["uiFilterTags"]
                                     .as_array()
-                                    .is_some_and(|a| a.iter().any(|t| t == filter)))
+                                    .is_some_and(|a| a.iter().any(|t| t == filter))
+                            })
                     })
             })
             .map(|(i, _)| i)
             .collect()
+    }
+
+    fn layer_filter_controls(&mut self, ui: &mut egui::Ui, project_iid: Option<&str>) {
+        let tags = self
+            .layer_filter_tags()
+            .into_iter()
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+        let stored = self.settings.ui_state_int("LayerUIFilter", project_iid, -1);
+        if tags.is_empty() {
+            if stored >= 0 {
+                self.settings.delete_ui_state("LayerUIFilter", project_iid);
+            }
+            return;
+        }
+        let old = tags.get(stored as usize).map_or(-1, |_| stored);
+        let mut selected = old;
+        if tags.len() > 3 {
+            Self::layer_filter_dropdown(ui, &tags, &mut selected);
+        } else {
+            egui::Frame::new()
+                .fill(theme::MEDIUM)
+                .inner_margin(1)
+                .show(ui, |ui| {
+                    ui.set_min_width(ui.available_width());
+                    ui.horizontal_wrapped(|ui| {
+                        ui.spacing_mut().item_spacing = egui::vec2(1., 1.);
+                        let font = FontId::proportional(10.667);
+                        let all = locale::tr(ui, "All");
+                        for (index, tag) in std::iter::once(all)
+                            .chain(tags.iter().map(String::as_str))
+                            .enumerate()
+                        {
+                            let index = index as i64 - 1;
+                            let active = index == selected;
+                            let foreground = if active {
+                                Color32::BLACK
+                            } else {
+                                Color32::WHITE
+                            };
+                            let galley = ui.painter().layout_no_wrap(
+                                tag.to_owned(),
+                                font.clone(),
+                                foreground,
+                            );
+                            let width = galley.size().x.max(2. * font.size) + 14.;
+                            let (rect, response) =
+                                ui.allocate_exact_size(egui::vec2(width, 23.), Sense::click());
+                            response.widget_info(|| {
+                                egui::WidgetInfo::selected(
+                                    egui::WidgetType::SelectableLabel,
+                                    true,
+                                    active,
+                                    tag,
+                                )
+                            });
+                            let border = if active || response.hovered() {
+                                theme::ACCENT
+                            } else {
+                                theme::LIGHT
+                            };
+                            ui.painter().rect(
+                                rect,
+                                3.,
+                                if active {
+                                    theme::ACCENT
+                                } else {
+                                    Color32::TRANSPARENT
+                                },
+                                Stroke::new(1., border),
+                                StrokeKind::Inside,
+                            );
+                            ui.painter().galley(
+                                rect.center() - galley.size() * 0.5,
+                                galley,
+                                foreground,
+                            );
+                            if response.clicked() {
+                                selected = index;
+                            }
+                        }
+                    });
+                });
+        }
+        ui.add_space(1.);
+        if selected != old {
+            if selected < 0 {
+                self.settings.delete_ui_state("LayerUIFilter", project_iid);
+            } else {
+                self.settings
+                    .set_ui_state_int("LayerUIFilter", project_iid, selected);
+            }
+            let eligible = self.visible_layer_indices(false);
+            if !eligible.contains(&self.layer)
+                && let Some(&first) = eligible.first()
+            {
+                self.switch_layer(first);
+            }
+            ui.ctx().request_repaint();
+        }
     }
 
     fn update_zen_sidebar(&mut self, ctx: &egui::Context) {
@@ -527,15 +815,161 @@ impl EditorApp {
         self.quick_notification = Some((locale::tr_ctx(ctx, label).into(), None, Instant::now()));
     }
 
+    fn layer_context_menu(
+        &mut self,
+        response: &egui::Response,
+        index: usize,
+        uid: i64,
+        auto: bool,
+        mac_context: bool,
+    ) {
+        if (response.secondary_clicked() || mac_context && response.clicked())
+            && let Some(pos) = response.interact_pointer_pos()
+        {
+            self.layer_context_menu = Some((uid, pos));
+        }
+        let Some((_, anchor)) = self.layer_context_menu.filter(|(target, _)| *target == uid) else {
+            return;
+        };
+        let ctx = &response.ctx;
+        let screen = ctx.content_rect();
+        let height = if auto { 118. } else { 79. };
+        let y = if anchor.y >= screen.top() + screen.height() * 0.7 {
+            anchor.y - 10. - height
+        } else {
+            anchor.y + 10.
+        };
+        let pos = egui::pos2(
+            anchor.x,
+            y.clamp(
+                screen.top() + 16.,
+                (screen.bottom() - 16. - height).max(screen.top() + 16.),
+            ),
+        );
+        let id = response.id.with("layer-context");
+        let menu = egui::Modal::new(id)
+            .area(
+                egui::Area::new(id)
+                    .kind(egui::UiKind::Modal)
+                    .order(egui::Order::Foreground)
+                    .sense(Sense::hover())
+                    .fixed_pos(pos)
+                    .fade_in(false),
+            )
+            .backdrop_color(Color32::TRANSPARENT)
+            .frame(
+                panels::source_controls::context_menu_frame(&ctx.style())
+                    .stroke(Stroke::new(1., Color32::BLACK))
+                    .shadow(egui::epaint::Shadow {
+                        offset: [0, 4],
+                        blur: 16,
+                        spread: 0,
+                        color: Color32::BLACK,
+                    }),
+            )
+            .show(ctx, |ui| {
+                let actions = [
+                    (
+                        "Toggle visibility",
+                        egui::include_image!("../../assets/icons/visible.png"),
+                        None,
+                    ),
+                    (
+                        "Edit rules",
+                        egui::include_image!("../../assets/icons/rule.svg"),
+                        Some(Panel::Rules),
+                    ),
+                    (
+                        "Edit layer settings",
+                        egui::include_image!("../../assets/icons/edit.svg"),
+                        Some(Panel::Layers),
+                    ),
+                ];
+                let font = FontId::proportional(13.333);
+                let rows = actions
+                    .into_iter()
+                    .filter(|(_, _, panel)| auto || *panel != Some(Panel::Rules))
+                    .map(|(text, icon, panel)| {
+                        let text = locale::tr(ui, text).to_uppercase();
+                        let caption =
+                            ui.painter()
+                                .layout_no_wrap(text, font.clone(), theme::ACCENT);
+                        (caption, icon, panel)
+                    })
+                    .collect::<Vec<_>>();
+                let width = 70.
+                    + rows
+                        .iter()
+                        .map(|(caption, _, _)| caption.size().x)
+                        .fold(0., f32::max);
+                ui.set_width(width);
+                ui.spacing_mut().item_spacing.y = 0.;
+                for (i, (caption, icon, panel)) in rows.into_iter().enumerate() {
+                    let border = f32::from(i != 0);
+                    let (rect, item) =
+                        ui.allocate_exact_size(egui::vec2(width, 38. + border), Sense::click());
+                    item.widget_info(|| {
+                        egui::WidgetInfo::labeled(egui::WidgetType::Button, true, caption.text())
+                    });
+                    let painter = ui.painter();
+                    let color = if item.hovered() {
+                        painter.rect_filled(rect, 0., theme::ACCENT);
+                        Color32::BLACK
+                    } else {
+                        theme::ACCENT
+                    };
+                    if i != 0 {
+                        painter.hline(
+                            rect.x_range(),
+                            rect.top() + 0.5,
+                            Stroke::new(1., theme::MEDIUM),
+                        );
+                    }
+                    let left = egui::pos2(rect.left() + 20., rect.top() + 8. + border);
+                    egui::Image::new(icon)
+                        .tint(Color32::WHITE.gamma_multiply(0.7))
+                        .paint_at(ui, Rect::from_min_size(left, Vec2::splat(22.)));
+                    let label = left + egui::vec2(30., 11. - caption.size().y * 0.5);
+                    painter.galley_with_override_text_color(label, caption, color);
+                    if item.clicked() {
+                        if let Some(panel) = panel {
+                            self.switch_layer(index);
+                            self.definition_uid = Some(uid);
+                            self.show_panel(Some(panel));
+                        } else if let Some(key) = self.selected {
+                            self.toggle_layer_visibility(
+                                key,
+                                index,
+                                ui.input(|i| i.modifiers.shift),
+                            );
+                        }
+                        self.layer_context_menu = None;
+                        ui.ctx().request_repaint();
+                    }
+                }
+            });
+        if menu.should_close() || menu.backdrop_response.secondary_clicked() {
+            self.layer_context_menu = None;
+            ctx.request_repaint();
+        }
+    }
+
     pub(super) fn sidebar(&mut self, ctx: &egui::Context) {
         self.update_zen_sidebar(ctx);
         if self.project.is_none() || self.zen && (!self.zen_sidebar.revealed || self.world) {
+            self.layer_visibility_press = None;
+            self.layer_context_menu = None;
             return;
         }
         show_sidebar(ctx, self.zen,
             |ui| {
                 if self.is_busy() || self.pending.is_some() {
+                    self.layer_context_menu = None;
                     ui.disable();
+                    if self.save_failure.is_some() {
+                        // The modal supplies the dimming for the sidebar.
+                        ui.set_opacity(1.);
+                    }
                 }
                 ui.spacing_mut().item_spacing = Vec2::ZERO;
                 ui.horizontal(|ui| {
@@ -699,99 +1133,27 @@ impl EditorApp {
                 let project_iid = self.project.as_ref().unwrap().json["iid"]
                     .as_str()
                     .map(str::to_owned);
+                let no_layers = self.project.as_ref().is_some_and(|p| {
+                    p.json["defs"]["layers"].as_array().is_none_or(Vec::is_empty)
+                });
                 egui::ScrollArea::vertical()
                     .id_salt(("source-layer-list", project_iid.as_deref()))
                     .max_height(250.)
                     .auto_shrink([false, true])
+                    .scroll_source(egui::scroll_area::ScrollSource {
+                        drag: false,
+                        ..Default::default()
+                    })
                     .show(ui, |ui| {
-                        ui.set_min_height(100.);
-                        let tags = self.project.as_ref().unwrap().json["defs"]["layers"]
-                            .as_array()
-                            .into_iter()
-                            .flatten()
-                            .flat_map(|d| {
-                                d["uiFilterTags"]
-                                    .as_array()
-                                    .into_iter()
-                                    .flatten()
-                                    .filter_map(Value::as_str)
-                            })
-                            .map(str::to_owned)
-                            .collect::<std::collections::BTreeSet<_>>();
-                        let mut tags = tags.into_iter().collect::<Vec<_>>();
-                        tags.sort_by_key(|tag| tag.to_lowercase());
-                        if !tags.is_empty() {
-                            let mut selected = self.settings.ui_state_int(
-                                "LayerUIFilter",
-                                project_iid.as_deref(),
-                                -1,
-                            );
-                            let old = selected;
-                            if tags.len() > 3 {
-                                egui::ComboBox::from_id_salt("layer-filter")
-                                    .selected_text(
-                                        tags.get(selected as usize)
-                                            .map(String::as_str)
-                                            .unwrap_or(locale::tr(ui, "- Show all layers -")),
-                                    )
-                                    .width(285.)
-                                    .show_ui(ui, |ui| {
-                                        ui.selectable_value(
-                                            &mut selected,
-                                            -1,
-                                            locale::tr(ui, "- Show all layers -"),
-                                        );
-                                        for (index, tag) in tags.iter().enumerate() {
-                                            ui.selectable_value(&mut selected, index as i64, tag);
-                                        }
-                                    });
-                            } else {
-                                ui.horizontal_wrapped(|ui| {
-                                    ui.selectable_value(&mut selected, -1, locale::tr(ui, "All"));
-                                    for (index, tag) in tags.iter().enumerate() {
-                                        ui.selectable_value(&mut selected, index as i64, tag);
-                                    }
-                                });
-                            }
-                            if selected != old {
-                                if selected < 0 {
-                                    self.settings
-                                        .delete_ui_state("LayerUIFilter", project_iid.as_deref());
-                                } else {
-                                    self.settings.set_ui_state_int(
-                                        "LayerUIFilter",
-                                        project_iid.as_deref(),
-                                        selected,
-                                    );
-                                }
-                            }
-                            let filter = tags.get(selected as usize).cloned().unwrap_or_default();
-                            self.settings.value["layerFilter"] = filter.clone().into();
-                            if selected != old && !filter.is_empty() {
-                                let first = self.project.as_ref().and_then(|p| {
-                                    p.level(self.selected?)?["layerInstances"]
-                                        .as_array()?
-                                        .iter()
-                                        .enumerate()
-                                        .find_map(|(index, layer)| {
-                                            let def =
-                                                p.layer_def(layer["layerDefUid"].as_i64()?)?;
-                                            (def["hideInList"] != true
-                                                && def["uiFilterTags"].as_array().is_some_and(
-                                                    |tags| tags.iter().any(|tag| tag == &filter),
-                                                ))
-                                            .then_some(index)
-                                        })
-                                });
-                                if let Some(index) = first {
-                                    self.switch_layer(index);
-                                }
-                            }
-                        } else {
-                            self.settings.value["layerFilter"] = "".into();
+                        if no_layers {
+                            empty_layer_list(ui);
+                            return;
                         }
+                        ui.set_min_height(100.);
+                        self.layer_filter_controls(ui, project_iid.as_deref());
+                        let shortcut_layers = self.visible_layer_indices(false);
                         let layers = self
-                            .visible_layer_indices()
+                            .visible_layer_indices(true)
                             .into_iter()
                             .filter_map(|i| {
                                 let p = self.project.as_ref()?;
@@ -807,46 +1169,96 @@ impl EditorApp {
                                 ))
                             })
                             .collect::<Vec<_>>();
-                        for (shortcut, (index, uid, name, kind, def)) in layers.iter().enumerate() {
+                        let mut visibility_rows = Vec::with_capacity(layers.len());
+                        let dismissing_menu = self.layer_context_menu.is_some();
+                        for (index, uid, name, kind, def) in &layers {
                             let active = self.layer == *index;
-                            let color = def["uiColor"]
-                                .as_str()
-                                .map(theme::color)
-                                .unwrap_or(theme::LIGHT);
-                            let fill = if active {
-                                color
-                            } else {
-                                Color32::from_rgb(
-                                    ((u16::from(color.r()) + u16::from(theme::DARK.r())) / 2) as u8,
-                                    ((u16::from(color.g()) + u16::from(theme::DARK.g())) / 2) as u8,
-                                    ((u16::from(color.b()) + u16::from(theme::DARK.b())) / 2) as u8,
-                                )
+                            let visible = self
+                                .selected
+                                .is_some_and(|key| self.layer_visible(key, *index));
+                            let alpha = if visible { 1. } else { 0.4 };
+                            let custom = def["uiColor"].as_str().map(theme::color);
+                            let (fill, foreground, rail) = match (custom, active) {
+                                (Some(color), true) => {
+                                    let luminance = 299 * u32::from(color.r())
+                                        + 587 * u32::from(color.g())
+                                        + 114 * u32::from(color.b());
+                                    let foreground = if luminance >= 127_500 {
+                                        Color32::BLACK
+                                    } else {
+                                        Color32::WHITE
+                                    };
+                                    (color, foreground, Some(Color32::WHITE))
+                                }
+                                (Some(color), false) => (
+                                    theme::DARK.lerp_to_gamma(color, 0.5),
+                                    color.lerp_to_gamma(Color32::WHITE, 0.3),
+                                    Some(color),
+                                ),
+                                (None, true) => (theme::ACCENT, Color32::BLACK, None),
+                                (None, false) => (theme::MEDIUM, Color32::WHITE, None),
                             };
                             let (rect, response) = ui.allocate_exact_size(
-                                egui::vec2(ui.available_width(), 31.5),
+                                egui::vec2(ui.available_width(), 31.),
                                 Sense::click(),
                             );
-                            ui.painter().rect_filled(rect, 0.0, fill);
-                            if active {
+                            let row = Rect::from_min_max(
+                                rect.min,
+                                rect.max - egui::vec2(2., 0.),
+                            );
+                            let fade = |color| theme::DARK.lerp_to_gamma(color, alpha);
+                            if active && custom.is_none() {
+                                let shadow = egui::epaint::Shadow {
+                                    offset: [0, 0],
+                                    blur: 4,
+                                    spread: 0,
+                                    color: Color32::from_rgb(170, 0, 0).gamma_multiply(alpha),
+                                };
+                                ui.painter().add(shadow.as_shape(row, 0.));
+                            }
+                            ui.painter().rect_filled(rect, 0., fade(fill));
+                            if let Some(color) = rail {
+                                let rail = Rect::from_min_max(
+                                    egui::pos2(row.right() - 4., row.top()),
+                                    row.max,
+                                );
+                                ui.painter().rect_filled(rail, 0., fade(color));
+                            }
+                            if active && custom.is_some() {
                                 ui.painter().rect_stroke(
-                                    rect.shrink(1.0),
-                                    0.0,
-                                    Stroke::new(1.0_f32, Color32::WHITE),
+                                    row.shrink(1.),
+                                    0.,
+                                    Stroke::new(1., fade(Color32::WHITE)),
+                                    StrokeKind::Inside,
+                                );
+                            } else if active {
+                                ui.painter().rect_stroke(
+                                    row,
+                                    0.,
+                                    Stroke::new(1., fade(Color32::from_rgb(255, 223, 77))),
+                                    StrokeKind::Inside,
+                                );
+                            } else if ui.is_enabled() && ui.rect_contains_pointer(row) {
+                                ui.painter().rect_stroke(
+                                    row,
+                                    0.,
+                                    Stroke::new(2., fade(fill.lerp_to_gamma(Color32::WHITE, 0.65))),
                                     StrokeKind::Inside,
                                 );
                             }
-                            let foreground = if active {
-                                Color32::WHITE
-                            } else {
-                                color.lerp_to_gamma(Color32::WHITE, 0.3)
-                            };
-                            ui.painter().text(
-                                rect.left_center() + egui::vec2(8.0, 0.0),
-                                Align2::LEFT_CENTER,
-                                format!("F{}", shortcut + 1),
-                                FontId::proportional(11.0),
-                                foreground,
-                            );
+                            let opacity = ui.opacity();
+                            ui.multiply_opacity(alpha);
+                            if let Some(shortcut) =
+                                shortcut_layers.iter().take(10).position(|i| i == index)
+                            {
+                                ui.painter().text(
+                                    rect.left_center() + egui::vec2(8., 0.),
+                                    Align2::LEFT_CENTER,
+                                    format!("F{}", shortcut + 1),
+                                    FontId::new(10.667, egui::FontFamily::Name("body-bold".into())),
+                                    foreground.gamma_multiply(0.5),
+                                );
+                            }
                             let image = match kind.as_str() {
                                 "Entities" => egui::include_image!("../../assets/icons/entity.png"),
                                 "IntGrid" => egui::include_image!("../../assets/icons/intGrid.png"),
@@ -855,46 +1267,38 @@ impl EditorApp {
                                 }
                                 _ => egui::include_image!("../../assets/icons/tile.png"),
                             };
-                            egui::Image::new(image).tint(foreground).paint_at(
+                            egui::Image::new(image).paint_at(
                                 ui,
-                                Rect::from_min_size(
-                                    rect.min + egui::vec2(29.0, 6.0),
-                                    Vec2::splat(20.0),
+                                Rect::from_center_size(
+                                    rect.left_center() + egui::vec2(41.1, 0.),
+                                    Vec2::splat(20.8),
                                 ),
                             );
                             ui.painter().text(
-                                rect.left_center() + egui::vec2(57.0, 0.0),
+                                rect.left_center() + egui::vec2(59.5, 0.),
                                 Align2::LEFT_CENTER,
                                 name,
-                                FontId::proportional(14.0),
+                                FontId::proportional(13.333),
                                 foreground,
                             );
-                            let eye = Rect::from_center_size(
-                                rect.right_center() - egui::vec2(15.0, 0.0),
-                                Vec2::splat(23.0),
+                            let eye = Rect::from_min_max(
+                                egui::pos2(row.right() - 28.8, row.top()),
+                                row.max,
                             );
+                            visibility_rows.push((*index, row, eye));
                             let eye_response =
                                 ui.interact(eye, ui.id().with(("visible", uid)), Sense::click());
+                            if eye_response.hovered() {
+                                ui.painter().rect_filled(eye, 3., Color32::WHITE);
+                            }
                             egui::Image::new(
-                                if !self
-                                    .selected
-                                    .is_some_and(|key| self.layer_visible(key, *index))
-                                {
-                                    egui::include_image!("../../assets/icons/hidden.png")
-                                } else {
+                                if visible {
                                     egui::include_image!("../../assets/icons/visible.png")
+                                } else {
+                                    egui::include_image!("../../assets/icons/hidden.png")
                                 },
                             )
-                            .paint_at(ui, eye);
-                            if eye_response.clicked()
-                                && let Some(key) = self.selected
-                            {
-                                self.toggle_layer_visibility(
-                                    key,
-                                    *index,
-                                    ui.input(|i| i.modifiers.shift),
-                                );
-                            }
+                            .paint_at(ui, Rect::from_center_size(eye.center(), Vec2::splat(20.8)));
                             let auto = kind == "AutoLayer"
                                 || def["autoRuleGroups"]
                                     .as_array()
@@ -903,6 +1307,9 @@ impl EditorApp {
                                 rect.right_center() - egui::vec2(51.0, 0.0),
                                 egui::vec2(43.0, 26.0),
                             );
+                            let mut menu_response = response.union(eye_response);
+                            let mac_context = cfg!(target_os = "macos")
+                                && ui.input(|input| input.modifiers.ctrl);
                             if auto {
                                 let r = ui.interact(
                                     rule_rect,
@@ -925,13 +1332,14 @@ impl EditorApp {
                                     FontId::proportional(11.),
                                     Color32::WHITE,
                                 );
-                                if r.clicked() {
+                                if r.clicked() && !mac_context {
                                     self.switch_layer(*index);
                                     self.definition_uid = Some(*uid);
                                     self.show_panel(Some(Panel::Rules));
                                 }
+                                menu_response = menu_response.union(r);
                             }
-                            if response.clicked()
+                            if response.clicked() && !mac_context
                                 && !eye.contains(
                                     ui.input(|i| i.pointer.interact_pos().unwrap_or_default()),
                                 )
@@ -942,21 +1350,13 @@ impl EditorApp {
                             {
                                 self.switch_layer(*index);
                             }
-                            response
-                                .on_hover_text(text(def, "doc", ""))
-                                .context_menu(|ui| {
-                                    if ui.button(locale::tr(ui, "Edit layer settings")).clicked() {
-                                        self.definition_uid = Some(*uid);
-                                        self.show_panel(Some(Panel::Layers));
-                                        ui.close();
-                                    }
-                                    if auto && ui.button(locale::tr(ui, "Edit rules")).clicked() {
-                                        self.definition_uid = Some(*uid);
-                                        self.show_panel(Some(Panel::Rules));
-                                        ui.close();
-                                    }
-                                });
+                            ui.set_opacity(opacity);
+                            response.on_hover_text(text(def, "doc", ""));
+                            self.layer_context_menu(&menu_response, *index, *uid, auto, mac_context);
                             ui.add_space(1.);
+                        }
+                        if !dismissing_menu {
+                            self.handle_layer_visibility(ui, &visibility_rows);
                         }
                     });
                 let kind = self
@@ -964,89 +1364,7 @@ impl EditorApp {
                     .and_then(|key| self.project.as_ref()?.layer(key, self.layer))
                     .map(|layer| text(layer, "__type", "").to_owned())
                     .unwrap_or_default();
-                let hints: &[(&[&str], &str)] = match kind.as_str() {
-                    "Entities" => &[(&["ALT"], "Pick"), (&["CTRL", "ALT"], "Copy")],
-                    "IntGrid" | "Tiles" => &[(&["SHIFT"], "Rectangle"), (&["ALT"], "Pick")],
-                    _ => &[],
-                };
-                if !hints.is_empty() {
-                    let chip_height = if matches!(kind.as_str(), "Entities" | "IntGrid") {
-                        21.
-                    } else {
-                        23.5
-                    };
-                    egui::Frame::new()
-                        .fill(Color32::from_rgb(39, 64, 48))
-                        .stroke(Stroke::new(1_f32, Color32::from_rgb(94, 171, 107)))
-                        .inner_margin(4)
-                        .show(ui, |ui| {
-                            ui.set_min_width(ui.available_width());
-                            ui.horizontal_wrapped(|ui| {
-                                ui.spacing_mut().item_spacing = egui::vec2(4., 0.);
-                                for (keys, label) in hints {
-                                    let translated = locale::tr(ui, label);
-                                    let font = FontId::new(
-                                        14.,
-                                        egui::FontFamily::Name("panel-title".into()),
-                                    );
-                                    let label_width = if translated == *label {
-                                        label.len() as f32 * 6.5
-                                    } else {
-                                        ui.painter()
-                                            .layout_no_wrap(
-                                                translated.into(),
-                                                font.clone(),
-                                                Color32::WHITE,
-                                            )
-                                            .size()
-                                            .x
-                                    };
-                                    let width =
-                                        keys.iter().map(|key| shortcut_width(ui, key)).sum::<f32>()
-                                            + 16.
-                                            + label_width
-                                            + 6.;
-                                    let (rect, _) = ui.allocate_exact_size(
-                                        egui::vec2(width, chip_height),
-                                        Sense::hover(),
-                                    );
-                                    ui.painter().rect_filled(
-                                        rect,
-                                        2.,
-                                        Color32::from_rgb(60, 97, 72),
-                                    );
-                                    let mut x = rect.left();
-                                    for key in *keys {
-                                        let w = shortcut_width(ui, key);
-                                        let cap = Rect::from_min_size(
-                                            egui::pos2(x, rect.top()),
-                                            egui::vec2(w, chip_height),
-                                        );
-                                        paint_shortcut(ui, cap, key, false);
-                                        x += w;
-                                    }
-                                    egui::Image::new(egui::include_image!(
-                                        "../../assets/icons/mouseLeft.png"
-                                    ))
-                                    .paint_at(
-                                        ui,
-                                        Rect::from_min_size(
-                                            egui::pos2(x, rect.top() + 1.),
-                                            Vec2::splat(16.),
-                                        ),
-                                    );
-                                    ui.painter().text(
-                                        egui::pos2(x + 17., rect.center().y),
-                                        Align2::LEFT_CENTER,
-                                        translated,
-                                        font,
-                                        Color32::from_rgb(121, 221, 138),
-                                    );
-                                }
-                            });
-                        });
-                    ui.add_space(16.);
-                }
+                sidebar_guide(ui, &kind, no_layers);
                 self.library_palette(ctx, ui);
             });
     }
@@ -2502,7 +2820,7 @@ mod tests {
                 .shapes
                 .iter()
                 .find_map(|shape| match &shape.shape {
-                    egui::Shape::Rect(rect) if rect.fill == Color32::from_rgb(39, 64, 48) => {
+                    egui::Shape::Rect(rect) if rect.fill == SIDEBAR_GUIDE_FILL => {
                         Some(rect.rect.top())
                     }
                     _ => None,
@@ -2931,25 +3249,25 @@ mod tests {
         assert_eq!(ctx.available_rect().left(), 300.);
         assert_eq!(
             area.rect().top(),
-            281.,
-            "source five-row sidebar starts its atlas at y281"
+            276.,
+            "source five-row sidebar starts its atlas at y276"
         );
         let shapes = output.unwrap().shapes;
         let guide = shapes
             .iter()
             .find_map(|s| match &s.shape {
-                egui::Shape::Rect(r) if r.fill == Color32::from_rgb(39, 64, 48) => Some(r.rect),
+                egui::Shape::Rect(r) if r.fill == SIDEBAR_GUIDE_FILL => Some(r.rect),
                 _ => None,
             })
             .unwrap();
         assert_eq!(
             guide,
-            Rect::from_min_size(egui::pos2(0., 202.5), egui::vec2(300., 33.5))
+            Rect::from_min_size(egui::pos2(0., 200.), egui::vec2(300., 31.0625))
         );
         let rows = shapes
             .iter()
             .filter_map(|s| match &s.shape {
-                egui::Shape::Rect(r) if r.rect.width() == 300. && r.rect.height() == 31.5 => {
+                egui::Shape::Rect(r) if r.rect.width() == 300. && r.rect.height() == 31. => {
                     Some(r.rect)
                 }
                 _ => None,
@@ -2957,7 +3275,7 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(rows.len(), 5);
         for (i, row) in rows.iter().enumerate() {
-            assert_eq!(row.top(), 40. + 32.5 * i as f32);
+            assert_eq!(row.top(), 40. + 32. * i as f32);
         }
     }
     #[test]

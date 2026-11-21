@@ -218,7 +218,7 @@ pub(super) fn measure(ctx: &egui::Context, text: &str, scale: f32, max_width: f3
     font.layout(text, max_width / scale.max(0.001)).0 * scale
 }
 // h2d.Text.getBoundsRec(forSize=true) uses the baseline for its last line.
-pub(super) fn measure_flow(ctx: &egui::Context, text: &str, scale: f32, max_width: f32) -> Vec2 {
+pub(crate) fn measure_flow(ctx: &egui::Context, text: &str, scale: f32, max_width: f32) -> Vec2 {
     let (font, dpi_scale) = regular(ctx);
     let scale = scale * dpi_scale;
     let mut size = font.layout(text, max_width / scale.max(0.001)).0;
@@ -228,7 +228,7 @@ pub(super) fn measure_flow(ctx: &egui::Context, text: &str, scale: f32, max_widt
     size * scale
 }
 #[allow(clippy::too_many_arguments)]
-pub(super) fn paint(
+pub(crate) fn paint(
     ctx: &egui::Context,
     painter: &Painter,
     assets: &mut Assets,

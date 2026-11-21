@@ -391,10 +391,10 @@ impl EditorApp {
         let Some(key) = self.selected else {
             return;
         };
-        let Some(layer) = project.layer(key, self.layer) else {
-            return;
-        };
-        if layer["__type"] == "AutoLayer" {
+        let Some(layer) = project
+            .layer(key, self.layer)
+            .filter(|layer| layer["__type"] != "AutoLayer")
+        else {
             let mut rect = ui.available_rect_before_wrap();
             rect.min.y += 1.0;
             if rect.is_positive() {
@@ -406,7 +406,7 @@ impl EditorApp {
                     .hline(rect.x_range(), rect.top(), Stroke::new(1., theme::MEDIUM));
             }
             return;
-        }
+        };
         let layer_uid = layer["layerDefUid"].as_i64().unwrap_or(-1);
         let project_iid = project.json["iid"].as_str();
         let search_keys = match text(layer, "__type", "") {
