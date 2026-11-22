@@ -13,6 +13,11 @@ pull:
 run *args:
     exec scripts/run "$@"
 
+# 用已安装的 Godot 打开地图导入演示
+[positional-arguments]
+demo-godot *args:
+    exec godot --editor --path importer/godot "$@"
+
 # 在 Mac 上构建指定平台和模式的便携目录
 [positional-arguments]
 build *args:

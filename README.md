@@ -100,6 +100,21 @@ macOS 应用包中的可执行文件是 `/Applications/LevelEditor.app/Contents/
 
 MCP 保存使用工程的备份设置，范围为 LDtk 项目文档及其外部关卡。工具列表和参数以客户端查询到的 MCP schema 为准。
 
+## Godot 地图导入
+
+配套 Godot 插件在 [`importer/godot/`](importer/godot/README.md)，与 Rust 编辑器在同一仓库独立维护。将其 `addons/ldtk-importer/` 复制到游戏的 `addons/` 并启用插件后，Godot 可把 `.ldtk` 导入为场景和 `TileMapLayer`；实体与碰撞通过游戏自己的导入后脚本适配。
+
+打开本仓库的最小验证工程或运行真实导入检查，使用自己已有的 Godot：
+
+```sh
+just demo-godot
+python3 importer/godot/tests/run.py
+```
+
+等待首次导入完成后按 `F5` 运行示例场景。
+
+安装方法、测试版本、上游来源与限制见 [Godot importer 文档](importer/godot/README.md)。
+
 ## 检查
 
 ```sh

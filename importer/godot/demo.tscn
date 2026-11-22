@@ -1,0 +1,11 @@
+[gd_scene load_steps=2 format=3]
+
+[ext_resource type="PackedScene" path="res://tests/maps/smoke.ldtk" id="1_map"]
+
+[node name="Demo" type="Node2D"]
+
+[node name="Map" parent="." instance=ExtResource("1_map")]
+
+[node name="Camera2D" type="Camera2D" parent="."]
+position = Vector2(96, 40)
+zoom = Vector2(8, 8)
