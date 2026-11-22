@@ -42,7 +42,7 @@ func _ready() -> void:
 just demo-godot
 ```
 
-Godot 打开后，等导入完成再按 `F5`。演示使用仓库自带的 `Typical_2D_platformer_example.ldtk`，显示主关卡地形、玩家和怪物。这是静态预览。命令把演示工程生成到 `.tools/godot-platformer-demo/`，并使用仓库内的原版地图和图集。
+Godot 打开后，等导入完成，再点击编辑器右上角的 ▶「运行项目」。快捷键以按钮提示为准，例如 macOS 上可能显示 `⌘B`。演示使用仓库自带的 `Typical_2D_platformer_example.ldtk`，显示主关卡地形、玩家和怪物。这是静态预览。命令把演示工程生成到 `.tools/godot-platformer-demo/`，并使用仓库内的原版地图和图集。
 
 如需打开最小验证工程，可在 Godot 项目管理器中导入本目录的 `project.godot`。`tests/maps/smoke.ldtk` 包含两块测试图块和 `PlayerSpawn` 实体。
 

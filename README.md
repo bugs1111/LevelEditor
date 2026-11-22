@@ -111,7 +111,7 @@ just demo-godot
 python3 importer/godot/tests/run.py
 ```
 
-等待首次导入完成后按 `F5` 查看横版地图、玩家和怪物的预览。
+等待首次导入完成后，点击 Godot 编辑器右上角的 ▶「运行项目」，即可查看横版地图、玩家和怪物。快捷键以按钮提示为准。
 
 安装方法、测试版本、上游来源与限制见 [Godot importer 文档](importer/godot/README.md)。
 

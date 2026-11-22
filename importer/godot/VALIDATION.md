@@ -21,7 +21,7 @@ The final run passed six scenarios / twelve engine invocations:
 
 Every project is installed in a temporary directory with spaces by copying only the addon plus test project resources. Source `.ldtk`, `.ldtkl` and PNG hashes are unchanged by import. Import and load subprocesses must exit successfully, without SCRIPT ERROR, ERROR, or invalid-UID warnings. The real Entity Post-Import callback checks non-null and empty enum arrays as `Array[String]`; scalar metadata records that result in the packed scene.
 
-The test runner also starts the default `demo.tscn` scene in its own headless Godot invocation after the first import. Use `just demo-godot` to open the demo project in the editor and `F5` to run that scene.
+The test runner also starts the default `demo.tscn` scene of the minimal project in a separate headless Godot invocation after the first import. To view the platformer demo, run `just demo-godot` and select ▶ Run Project in the editor toolbar. The tooltip shows the shortcut for your configuration.
 
 Raw logs and machine-readable results are at `.tools/godot-importer/`; the directory is intentionally not committed. The test fixture also loaded successfully through the existing LevelEditor MCP `Project::load` and exposed its definitions; this is a document-load check, not a second Rust build or an exhaustive format validation.
 
