@@ -13,10 +13,10 @@ pull:
 run *args:
     exec scripts/run "$@"
 
-# 用已安装的 Godot 打开地图导入演示
+# 用已安装的 Godot 打开 LDtk 横版地图演示
 [positional-arguments]
 demo-godot *args:
-    exec godot --editor --path importer/godot "$@"
+    exec python3 importer/godot/run_demo.py "$@"
 
 # 在 Mac 上构建指定平台和模式的便携目录
 [positional-arguments]

@@ -34,7 +34,7 @@ func _ready() -> void:
 
 上游 Post-Import 模板在 `addons/ldtk-importer/post-import/`。插件的节点类型及导入选项沿用上游，游戏专用行为由游戏项目维护。
 
-## 打开验证工程
+## 打开横版演示
 
 在仓库根目录执行，确保已安装的 Godot 可以通过 `godot` 命令调用。
 
@@ -42,9 +42,9 @@ func _ready() -> void:
 just demo-godot
 ```
 
-打开后等 Godot 完成导入，按 `F5` 运行示例，查看从 `.ldtk` 导入的两块图块。在文件系统面板打开 `tests/maps/smoke.ldtk` 可以查看地图及 `PlayerSpawn` 实体数据。
+Godot 打开后，等导入完成再按 `F5`。演示使用仓库自带的 `Typical_2D_platformer_example.ldtk`，显示主关卡地形、玩家和怪物。这是静态预览。命令把演示工程生成到 `.tools/godot-platformer-demo/`，并使用仓库内的原版地图和图集。
 
-也可在 Godot 项目管理器中导入本目录的 `project.godot`。两色 PNG 图集专为测试生成。
+如需打开最小验证工程，可在 Godot 项目管理器中导入本目录的 `project.godot`。`tests/maps/smoke.ldtk` 包含两块测试图块和 `PlayerSpawn` 实体。
 
 无窗口验证使用相同的本机 Godot，不下载或复制引擎：
 
