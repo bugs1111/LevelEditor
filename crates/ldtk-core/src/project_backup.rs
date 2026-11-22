@@ -5,6 +5,37 @@ pub struct BackupInfo {
     pub timestamp: String,
     pub crash: bool,
 }
+impl BackupInfo {
+    /// The timestamp in a backup directory is local time, including for old backups.
+    #[cfg(any(unix, windows))]
+    pub fn age_in_seconds(&self, now: std::time::SystemTime) -> Option<u64> {
+        let number =
+            |range: std::ops::Range<usize>| self.timestamp.get(range)?.parse::<libc::c_int>().ok();
+        // SAFETY: tm consists of integers and, on some platforms, a nullable zone pointer.
+        let mut date: libc::tm = unsafe { std::mem::zeroed() };
+        date.tm_year = number(0..4)? - 1900;
+        date.tm_mon = number(5..7)? - 1;
+        date.tm_mday = number(8..10)?;
+        date.tm_hour = number(11..13)?;
+        date.tm_min = number(14..16)?;
+        date.tm_sec = number(17..19)?;
+        date.tm_isdst = -1;
+        #[cfg(windows)]
+        unsafe extern "C" {
+            #[link_name = "_mktime64"]
+            fn mktime(date: *mut libc::tm) -> i64;
+        }
+        #[cfg(unix)]
+        use libc::mktime;
+        // SAFETY: date is a writable, initialized tm with a local calendar time.
+        let seconds = u64::try_from(unsafe { mktime(&mut date) }).ok()?;
+        now.duration_since(std::time::UNIX_EPOCH)
+            .ok()?
+            .as_secs()
+            .checked_sub(seconds)
+    }
+}
+
 // Only these two root keys are needed to discover backups. Unknown document
 // content is consumed with IgnoredAny, including large strings and tile arrays.
 #[derive(Default)]
@@ -217,6 +248,82 @@ fn discover_backups(path: &Path, id: &str, relative: Option<&str>) -> Result<Vec
     Ok(out)
 }
 
+fn is_crash_backup(path: &Path, iid: &str) -> bool {
+    path.parent()
+        .and_then(Path::file_name)
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| {
+            [iid, "backup"].into_iter().any(|id| {
+                valid_backup_name(name, id) && name[id.len() + 20..].starts_with("_crash")
+            })
+        })
+}
+
+fn remove_restored_crash(
+    backup: &Path,
+    original: &Path,
+    external_paths: &[PathBuf],
+) -> std::io::Result<()> {
+    let directory = backup.parent().expect("saved crash backup directory");
+    let real_directory = fs::canonicalize(directory)?;
+    if fs::canonicalize(original)?.starts_with(&real_directory) {
+        return Err(std::io::Error::other(
+            "the restored project is inside the recovery directory",
+        ));
+    }
+    let mut files = BTreeSet::from([backup.to_path_buf()]);
+    for relative in external_paths {
+        if !relative
+            .components()
+            .all(|part| matches!(part, Component::Normal(_)))
+            || !relative
+                .extension()
+                .and_then(|ext| ext.to_str())
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("ldtkl"))
+        {
+            return Err(std::io::Error::other(
+                "an external level is outside the recovery file layout",
+            ));
+        }
+        files.insert(directory.join(relative));
+    }
+    let folders = files
+        .iter()
+        .flat_map(|path| {
+            path.ancestors()
+                .skip(1)
+                .take_while(|path| path.starts_with(directory))
+        })
+        .collect::<BTreeSet<_>>();
+    for folder in &folders {
+        if !fs::symlink_metadata(folder)?.is_dir() {
+            return Err(std::io::Error::other(
+                "a recovery folder is a symbolic link",
+            ));
+        }
+        for entry in fs::read_dir(folder)? {
+            let entry = entry?;
+            let kind = entry.file_type()?;
+            let path = entry.path();
+            if !(kind.is_file() && files.contains(&path)
+                || kind.is_dir() && folders.contains(path.as_path()))
+            {
+                return Err(std::io::Error::other(format!(
+                    "unrecognized recovery file: {}",
+                    path.display()
+                )));
+            }
+        }
+    }
+    for file in &files {
+        fs::remove_file(file)?;
+    }
+    for folder in folders.into_iter().rev() {
+        fs::remove_dir(folder)?;
+    }
+    Ok(())
+}
+
 #[cfg(any(unix, windows))]
 pub(super) fn local_backup_timestamp(seconds: u64) -> Option<String> {
     let seconds = libc::time_t::try_from(seconds).ok()?;
@@ -312,12 +419,24 @@ impl Project {
     ) -> Result<(Self, SaveReport)> {
         let original = absolute(original.as_ref())?;
         let mut restored = Self::load_backup(backup, &original)?;
+        let backup = restored.path.clone().expect("loaded backup path");
+        let crash = is_crash_backup(&backup, restored.json["iid"].as_str().unwrap_or(""));
+        let recovery_levels = if crash {
+            restored.external_levels.keys().map(PathBuf::from).collect()
+        } else {
+            Vec::new()
+        };
         // Capture the original before any replacement, independently of the backed-up settings.
         let mut safety = restored.clone();
         safety.path = Some(original.clone());
-        safety.backup()?;
+        safety.backup_with_progress(crash.then_some(backup.as_path()), &mut |_, _, _| {})?;
         restored.save_document(&original, false)?;
-        let report = restored.configured_exports_report();
+        let mut report = restored.configured_exports_report();
+        if crash && let Err(error) = remove_restored_crash(&backup, &original, &recovery_levels) {
+            report.warnings.push(format!(
+                "Project restored; could not remove crash backup: {error}"
+            ));
+        }
         Ok((restored, report))
     }
     /// Change the extension of the saved file without publishing unsaved edits.

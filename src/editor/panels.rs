@@ -406,26 +406,15 @@ impl EditorApp {
         };
         let iid = text(&project.json, "iid", "").to_owned();
         let read_only = project.is_backup();
-        let original_key = egui::Id::new(("backup-original", iid.clone()));
         let browser_key = egui::Id::new(("backup-browser", iid.clone()));
         let rename_key = egui::Id::new(("project-rename", iid));
         if read_only {
             ui.heading(locale::tr(ui, "Backup preview"));
             ui.label(locale::tr(ui, "This backup is read-only. Restore it to replace the original project, or save a new copy."));
-            let original = ui
-                .ctx()
-                .data_mut(|data| data.get_temp::<PathBuf>(original_key));
+            let original = self.backup_original(ui.ctx());
             ui.horizontal(|ui| {
-                if source_controls::button(ui, "Locate original project…").clicked()
-                    && let Some(original) = FileDialog::new()
-                        .add_filter("LDtk project", &["ldtk", "json"])
-                        .pick_file()
-                {
-                    ui.ctx()
-                        .data_mut(|data| data.insert_temp(original_key, original.clone()));
-                    if let Some(backup) = self.project.as_ref().and_then(|p| p.path.clone()) {
-                        self.request(ui.ctx(), Action::OpenBackup { backup, original });
-                    }
+                if source_controls::button(ui, "Locate original project…").clicked() {
+                    self.locate_backup_original(ui.ctx());
                 }
                 if source_controls::button(ui, "Save copy as…").clicked() {
                     self.save(true);
@@ -437,19 +426,8 @@ impl EditorApp {
                     "Original: {path}",
                     &[("path", &original.display().to_string())],
                 ));
-                if source_controls::button(ui, "Restore this backup…").clicked()
-                    && let Some(backup) = self.project.as_ref().and_then(|p| p.path.clone())
-                {
-                    ui.ctx().data_mut(|data| {
-                        data.insert_temp(
-                            browser_key,
-                            BackupBrowser {
-                                original,
-                                backups: vec![],
-                                restore: Some(backup),
-                            },
-                        )
-                    });
+                if source_controls::button(ui, "Restore this backup…").clicked() {
+                    self.confirm_preview_restore(ui.ctx());
                 }
             }
         } else {
@@ -501,7 +479,6 @@ impl EditorApp {
             return;
         };
         let iid = text(&project.json, "iid", "").to_owned();
-        let original_key = egui::Id::new(("backup-original", iid.clone()));
         let browser_key = egui::Id::new(("backup-browser", iid.clone()));
         let rename_key = egui::Id::new(("project-rename", iid));
         if let Some(mut name) = ui
@@ -554,7 +531,7 @@ impl EditorApp {
                     egui::ScrollArea::vertical().max_height(360.0).show(ui,|ui|{
                         for backup in &browser.backups{ui.horizontal(|ui|{
                             ui.label(format!("{}{}",backup.timestamp,if backup.crash{locale::tr(ui, " (crash recovery)")}else{""}));
-                            if source_controls::button(ui,"Open").clicked(){ui.ctx().data_mut(|data|data.insert_temp(original_key,browser.original.clone()));self.request(ui.ctx(),Action::OpenBackup{backup:backup.path.clone(),original:browser.original.clone()});close=true;}
+                            if source_controls::button(ui,"Open").clicked(){self.request(ui.ctx(),Action::OpenBackup{backup:backup.path.clone(),original:browser.original.clone()});close=true;}
                             if source_controls::button(ui,"Restore…").clicked(){browser.restore=Some(backup.path.clone());}
                         });}
                     });

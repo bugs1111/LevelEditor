@@ -34,7 +34,7 @@ fn in_application_directory(path: &Path) -> bool {
         })
 }
 
-pub(super) fn suggest_backups(project: &Project) -> bool {
+pub(super) fn recommends_backups(project: &Project) -> bool {
     let Some(path) = &project.path else {
         return false;
     };
@@ -42,9 +42,97 @@ pub(super) fn suggest_backups(project: &Project) -> bool {
         && project.json["backupOnSave"] != true
         && !project.is_backup()
         && project.level_keys().len() >= 8
+}
+
+pub(super) fn suggest_backups(project: &Project) -> bool {
+    recommends_backups(project)
         && !project.json["flags"]
             .as_array()
             .is_some_and(|flags| flags.iter().any(|f| f == "IgnoreBackupSuggest"))
+}
+
+pub(super) fn backup_original_key(backup: &Path) -> egui::Id {
+    egui::Id::new(("backup-original", backup))
+}
+
+const RESTORE_PREVIEW: &str = "restore-backup-preview";
+
+impl EditorApp {
+    pub(super) fn backup_original(&self, ctx: &egui::Context) -> Option<PathBuf> {
+        let backup = self.project.as_ref()?.path.as_deref()?;
+        ctx.data(|data| data.get_temp(backup_original_key(backup)))
+    }
+
+    pub(super) fn locate_backup_original(&mut self, ctx: &egui::Context) {
+        let Some(backup) = self.project.as_ref().and_then(|p| p.path.clone()) else {
+            return;
+        };
+        let mut dialog = FileDialog::new().add_filter("LDtk project", &["ldtk", "json"]);
+        if let Some(parent) = backup.parent() {
+            dialog = dialog.set_directory(parent);
+        }
+        if let Some(original) = dialog.pick_file() {
+            self.request(ctx, Action::OpenBackup { backup, original });
+        }
+    }
+
+    pub(super) fn confirm_preview_restore(&mut self, ctx: &egui::Context) {
+        if let Some(backup) = self.project.as_ref().and_then(|p| p.path.clone())
+            && let Some(original) = self.backup_original(ctx)
+        {
+            self.show_panel(None);
+            ctx.data_mut(|data| data.insert_temp(egui::Id::new(RESTORE_PREVIEW), (backup, original)));
+        }
+    }
+
+    pub(super) fn backup_restore_open(ctx: &egui::Context) -> bool {
+        ctx.data(|data| data.get_temp::<(PathBuf, PathBuf)>(egui::Id::new(RESTORE_PREVIEW)).is_some())
+    }
+
+    pub(super) fn preview_backup_restore_dialog(&mut self, ctx: &egui::Context) {
+        let id = egui::Id::new(RESTORE_PREVIEW);
+        let Some((backup, original)) = ctx.data(|data| data.get_temp::<(PathBuf, PathBuf)>(id)) else {
+            return;
+        };
+        if self.project.as_ref().and_then(|p| p.path.as_ref()) != Some(&backup) {
+            ctx.data_mut(|data| data.remove::<(PathBuf, PathBuf)>(id));
+            return;
+        }
+        let modal = egui::Modal::new(id)
+            .frame(dialog_frame(20))
+            .backdrop_color(Color32::from_black_alpha(140))
+            .show(ctx, |ui| {
+                ui.set_width((ctx.content_rect().width() - 40.).clamp(0., 358.));
+                ui.set_min_height(120.);
+                ui.spacing_mut().item_spacing = egui::vec2(2., 14.);
+                ui.visuals_mut().override_text_color = Some(Color32::WHITE);
+                ui.style_mut()
+                    .text_styles
+                    .insert(egui::TextStyle::Body, FontId::proportional(14.667));
+                ui.label(locale::tr(ui, "WARNING: restoring this backup will REPLACE the original project file with this version."));
+                ui.label(locale::tr(ui, "Are you sure?"));
+                ui.horizontal(|ui| {
+                    let size = egui::vec2((ui.available_width() - 2.) * 0.5, 35.);
+                    let confirm = button(ui, "CONFIRM", size, false, 13.333).clicked();
+                    let cancel = button(ui, "CANCEL", size, true, 13.333).clicked();
+                    (confirm, cancel)
+                }).inner
+            });
+        let (confirm, cancel) = modal.inner;
+        let cancel = cancel || modal.should_close();
+        let confirm = confirm || ctx.input_mut(|input| input.consume_key(egui::Modifiers::NONE, Key::Enter));
+        if confirm || cancel {
+            ctx.data_mut(|data| data.remove::<(PathBuf, PathBuf)>(id));
+        }
+        if confirm && !cancel {
+            if original.is_file() {
+                self.request(ctx, Action::RestoreBackup { backup, original });
+            } else {
+                self.status = "Sorry, but I can't restore this backup: I can't locate the original project file.".into();
+                self.status_error = true;
+            }
+        }
+    }
 }
 
 pub(super) fn dialog_frame(padding: i8) -> egui::Frame {

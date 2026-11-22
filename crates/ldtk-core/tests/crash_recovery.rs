@@ -3,6 +3,63 @@ use serde_json::{Value, json};
 use std::fs;
 
 #[test]
+fn restored_crash_backup_is_removed_after_publishing_its_external_levels() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("game.ldtk");
+    let mut project = Project::new();
+    project.json["externalLevels"] = json!(true);
+    project.save(&source).unwrap();
+    project.json["customMemory"] = json!("recovered");
+    let backup = project.write_crash_recovery(dir.path()).unwrap();
+    let backup_folder = backup.parent().unwrap();
+    let restored = Project::restore_backup(&backup, &source).unwrap();
+    assert_eq!(restored.json["customMemory"], "recovered");
+    assert_eq!(Project::load(&source).unwrap().external_levels.len(), 1);
+    assert!(!backup_folder.exists());
+}
+
+#[test]
+fn restoring_a_crash_backup_preserves_unrelated_files_in_its_directory() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("game.ldtk");
+    let mut project = Project::new();
+    project.save(&source).unwrap();
+    project.json["customMemory"] = json!("recovered");
+    let backup = project.write_crash_recovery(dir.path()).unwrap();
+    let note = backup.with_file_name("notes.txt");
+    fs::write(&note, b"keep").unwrap();
+    let (restored, report) = Project::restore_backup_with_exports(&backup, &source).unwrap();
+    assert_eq!(restored.json["customMemory"], "recovered");
+    assert_eq!(report.warnings.len(), 1);
+    assert_eq!(fs::read(&note).unwrap(), b"keep");
+    assert!(backup.is_file());
+}
+
+#[test]
+fn failed_restore_keeps_the_crash_backup_even_when_older_than_the_retention_limit() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("game.ldtk");
+    let mut project = Project::new();
+    project.save(&source).unwrap();
+    let before = fs::read(&source).unwrap();
+    project.set_external_levels(true).unwrap();
+    project.json["backupRelPath"] = json!("history");
+    project.json["backupLimit"] = json!(1);
+    let backup = project.write_crash_recovery(dir.path()).unwrap();
+    let earlier = dir.path().join("history").join(format!(
+        "{}_2024-01-04_11-00-00_crash",
+        project.json["iid"].as_str().unwrap()
+    ));
+    fs::rename(backup.parent().unwrap(), &earlier).unwrap();
+    let backup = earlier.join("game.ldtk");
+    let recovery_bytes = fs::read(&backup).unwrap();
+    fs::write(dir.path().join("game"), b"blocks external levels").unwrap();
+    assert!(Project::restore_backup(&backup, &source).is_err());
+    assert_eq!(fs::read(&source).unwrap(), before);
+    assert_eq!(fs::read(&backup).unwrap(), recovery_bytes);
+}
+
+#[test]
 fn crash_captures_current_memory_and_external_levels_without_touching_source() {
     let dir = tempfile::tempdir().unwrap();
     let source = dir.path().join("game.ldtk");

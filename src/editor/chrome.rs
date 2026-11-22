@@ -271,28 +271,35 @@ fn sidebar_guide(ui: &mut egui::Ui, kind: &str, empty: bool) {
     ui.add_space(16.);
 }
 
-pub(super) fn source_tooltip(response: &egui::Response, text: &str, keys: &[&str], right: bool) {
-    if !response.hovered() || !response.enabled() {
-        return;
-    }
-    let mut tooltip =
-        egui::Tooltip::for_widget(response)
-            .width(0.)
-            .gap(if right { 10. } else { 8. });
+pub(super) fn source_tooltip_popup<'a>(
+    response: &'a egui::Response,
+    placement: Option<egui::emath::RectAlign>,
+    padding: egui::Margin,
+) -> egui::Tooltip<'a> {
+    use egui::emath::RectAlign;
+
+    let screen = response.ctx.content_rect();
+    let target = response.rect;
+    let above = target.height() <= 48. && target.top() >= screen.top() + 40.
+        || target.bottom() + 8. >= screen.bottom() - 150.;
+    let align_right = target.left() >= screen.left() + screen.width() * 0.7;
+    let align = placement.unwrap_or(match (above, align_right) {
+        (true, true) => RectAlign::TOP_END,
+        (true, false) => RectAlign::TOP_START,
+        (false, true) => RectAlign::BOTTOM_END,
+        (false, false) => RectAlign::BOTTOM_START,
+    });
+    let mut tooltip = egui::Tooltip::for_widget(response)
+        .width(0.)
+        .gap(if placement.is_some() { 10. } else { 8. });
     tooltip.popup = tooltip
         .popup
-        .align(if right {
-            egui::emath::RectAlign::RIGHT_START
-        } else if response.rect.top() >= 40. {
-            egui::emath::RectAlign::TOP_START
-        } else {
-            egui::emath::RectAlign::BOTTOM_START
-        })
+        .align(align)
         .frame(
             egui::Frame::new()
                 .fill(Color32::from_rgb(60, 97, 72))
                 .corner_radius(4)
-                .inner_margin(egui::Margin::symmetric(18, 12))
+                .inner_margin(padding)
                 .shadow(egui::epaint::Shadow {
                     offset: [0, 8],
                     blur: 16,
@@ -300,6 +307,18 @@ pub(super) fn source_tooltip(response: &egui::Response, text: &str, keys: &[&str
                     color: Color32::from_black_alpha(77),
                 }),
         );
+    tooltip
+}
+
+pub(super) fn source_tooltip(response: &egui::Response, text: &str, keys: &[&str], right: bool) {
+    if !response.hovered() || !response.enabled() {
+        return;
+    }
+    let tooltip = source_tooltip_popup(
+        response,
+        right.then_some(egui::emath::RectAlign::RIGHT_START),
+        egui::Margin::symmetric(18, 12),
+    );
     tooltip.show(|ui| {
         let text = locale::tr(ui, text);
         let (heading, body) = text

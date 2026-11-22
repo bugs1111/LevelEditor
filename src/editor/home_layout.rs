@@ -479,6 +479,7 @@ impl EditorApp {
             theme::LIGHT,
         );
         self.home_support_dialog(ctx);
+        self.home_backup_delete_dialog(ctx);
         self.recent_directory_color_dialog(ctx);
         if let Some(action) = action {
             self.request(ctx, action);
@@ -847,8 +848,8 @@ impl EditorApp {
                         let mut backup = child(
                             ui,
                             Rect::from_min_size(
-                                egui::pos2(row.right() - 78., row.top() + padding_y),
-                                egui::vec2(54., row.height() - 2. * padding_y),
+                                egui::pos2(row.right() - 63., row.top() + padding_y),
+                                egui::vec2(29., row.height() - 2. * padding_y),
                             ),
                             &format!("recent-backups-{}", path.display()),
                         );

@@ -671,7 +671,10 @@ impl EditorApp {
         if update_dialog::is_open(ctx) {
             return;
         }
-        if world_form_dialog::is_open(ctx) {
+        if world_form_dialog::is_open(ctx)
+            || Self::backup_restore_open(ctx)
+            || Self::home_backup_delete_open(ctx)
+        {
             return;
         }
         if help::changelog_is_open(ctx)

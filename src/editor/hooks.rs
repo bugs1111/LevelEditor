@@ -161,6 +161,7 @@ impl EditorApp {
         let Some(mut project) = self.project.clone() else {
             return;
         };
+        self.last_chance = None;
         let (tx, rx) = mpsc::channel();
         self.saving = Some(rx);
         self.save_attempt = Some(path.clone());

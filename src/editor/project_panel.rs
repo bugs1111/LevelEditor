@@ -15,7 +15,7 @@ fn project_row<R>(
     let response = if matches!(key, "exportLevelBg" | "pngFilePattern") {
         source_controls::form_row_left_aligned(ui, label, key, 250., body)
     } else {
-        source_controls::form_row(ui, label, key, 250., body)
+        source_controls::form_grid_row(ui, label, key, egui::vec2(250., 30.), body)
     };
     ui.add_space(10.);
     response
@@ -23,10 +23,11 @@ fn project_row<R>(
 
 fn project_heading(ui: &mut egui::Ui, name: &str) {
     source_controls::form_heading(ui, name);
-    ui.add_space(10.);
+    ui.add_space(13.);
 }
 
 fn project_checkbox(ui: &mut egui::Ui, values: &Value, patch: &mut Value, key: &str) {
+    ui.add_space(4.);
     let mut value = values[key].as_bool().unwrap_or(false);
     if source_checkbox(ui, &mut value, "").changed() {
         patch[key] = json!(value);
@@ -92,7 +93,7 @@ fn project_choice(
     patch: &mut Value,
     key: &str,
     choices: &[(&str, &str)],
-) {
+) -> bool {
     let current = text(values, key, choices[0].0);
     let selected = choices
         .iter()
@@ -142,7 +143,7 @@ fn project_choice(
         ],
         Stroke::new(1., ui.visuals().text_color()),
     ));
-    if let Some(picked) = source_controls::searchable_select_popup(
+    if let Some((picked, by_enter)) = source_controls::searchable_select_popup(
         &response,
         response.id.with(key),
         selected,
@@ -150,6 +151,9 @@ fn project_choice(
     ) && choices[picked].0 != current
     {
         patch[key] = json!(choices[picked].0);
+        by_enter
+    } else {
+        false
     }
 }
 
@@ -158,9 +162,9 @@ impl EditorApp {
         let Some(project) = self.project.as_ref() else {
             return;
         };
-        if project.is_backup() {
-            self.backup_project_controls(ui);
-            return;
+        let read_only = project.is_backup();
+        if read_only && ui.is_enabled() {
+            ui.disable();
         }
         let iid = text(&project.json, "iid", "").to_owned();
         let path = project.path.clone();
@@ -185,6 +189,13 @@ impl EditorApp {
                 .inner
                 .on_hover_text(locale::tr(ui, label))
             };
+            if read_only {
+                source_controls::add_sized_button(
+                    ui,
+                    [(ui.available_width() - 44.).max(30.), 42.],
+                    egui::Button::new(locale::tr(ui, "RESTORE THIS BACKUP")).fill(theme::DARK),
+                );
+            }
             for (label, image, save_as) in [
                 (
                     "SAVE PROJECT",
@@ -196,12 +207,12 @@ impl EditorApp {
                     egui::include_image!("../../assets/icons/saveAs.svg"),
                     true,
                 ),
-            ] {
+            ].into_iter().filter(|_| !read_only) {
                 if action(ui, !self.is_busy(), image, label).clicked() {
                     self.save(save_as);
                 }
             }
-            if action(
+            if !read_only && action(
                 ui,
                 path.is_some() && !self.is_busy(),
                 egui::include_image!("../../assets/icons/rename.svg"),
@@ -238,6 +249,9 @@ impl EditorApp {
             {
                 self.locate_project_path(path.clone(), true);
             }
+            if read_only {
+                return;
+            }
             source_menu(ui, |ui| {
                 if source_controls::button(ui, "Browse backups…").clicked() {
                     match self.project.as_ref().unwrap().list_backups() {
@@ -268,7 +282,7 @@ impl EditorApp {
                 }
             });
         });
-        ui.add_space(18.);
+        ui.add_space(21.);
         project_heading(ui, "Extra files");
         let mut patch = json!({});
         let project = self.project.as_ref().unwrap();
@@ -388,6 +402,7 @@ impl EditorApp {
         });
         let extension_changed = project_row(ui, "Use .ldtk extension", "useAppExtension", |ui| {
             let enabled = path.is_some() && !self.is_busy();
+            ui.add_space(4.);
             let response = ui
                 .add_enabled_ui(enabled, |ui| source_checkbox(ui, &mut use_ldtk, ""))
                 .inner;
@@ -395,23 +410,45 @@ impl EditorApp {
             response.changed()
         });
         project_row(ui, "Backup on save", "backup", |ui| {
+            ui.spacing_mut().item_spacing.x = 0.;
             project_checkbox(ui, values, &mut patch, "backupOnSave");
             if values["backupOnSave"].as_bool().unwrap_or(false) {
                 let custom = values["backupRelPath"].as_str();
-                if source_controls::button(
+                let directory = project.backup_directory();
+                let caption = locale::tr(ui, "Max backup files:");
+                let font = FontId::proportional(14.667);
+                let muted = Color32::from_rgb(156, 157, 161);
+                let caption_width = ui
+                    .painter()
+                    .layout_no_wrap(caption.to_owned(), font.clone(), muted)
+                    .size()
+                    .x;
+                let locate_width = if directory.is_some() { 30. } else { 0. };
+                let reset_width = if custom.is_some() { 26. } else { 0. };
+                let reserved_width = caption_width + locate_width + reset_width + 32. + 6.;
+                let width = ((ui.available_width() - reserved_width) * 0.5).max(44.);
+                let directory_label = if custom.is_some() {
+                    "[Custom dir]"
+                } else {
+                    "[Default dir]"
+                };
+                if source_controls::add_sized_button(
                     ui,
-                    if custom.is_some() {
-                        "[Custom dir]"
-                    } else {
-                        "[Default dir]"
-                    },
+                    [width, 33.],
+                    egui::Button::new(
+                        RichText::new(locale::tr(ui, directory_label).to_uppercase())
+                            .size(13.333)
+                            .color(Color32::WHITE),
+                    )
+                    .fill(theme::LIGHT)
+                    .truncate(),
                 )
                 .on_hover_text(custom.unwrap_or_else(|| locale::tr(ui, "Project backup folder")))
                 .clicked()
                 {
                     let mut dialog = FileDialog::new();
-                    if let Some(dir) = project
-                        .backup_directory()
+                    if let Some(dir) = directory
+                        .clone()
                         .filter(|dir| dir.is_dir())
                         .or_else(|| {
                             path.as_ref()
@@ -424,16 +461,76 @@ impl EditorApp {
                         patch["backupRelPath"] = json!(dir.to_string_lossy());
                     }
                 }
-                if custom.is_some() && source_controls::small_button(ui, "Reset").clicked() {
+                if custom.is_some()
+                    && ui
+                        .scope(|ui| {
+                            ui.spacing_mut().button_padding.x = 2.;
+                            source_controls::add_sized_button(
+                                ui,
+                                [reset_width, 33.],
+                                egui::Button::image(
+                                    egui::Image::new(egui::include_image!("../../assets/icons/reset.svg"))
+                                        .fit_to_exact_size(Vec2::splat(16.)),
+                                )
+                                .fill(theme::LIGHT),
+                            )
+                        })
+                    .inner
+                    .on_hover_text(locale::tr(ui, "Reset destination folder to default"))
+                    .clicked()
+                {
                     patch["backupRelPath"] = Value::Null;
                 }
-                if let Some(dir) = project.backup_directory()
+                if let Some(dir) = directory
                     && project_locate_button(ui, false)
                 {
                     locate = Some((dir, false));
                 }
-                ui.label(locale::tr(ui, "Max backup files:"));
-                project_number(ui, project, &mut patch, "backupLimit", 3, 50);
+                ui.add_space(3.);
+                ui.label(RichText::new(caption).font(font).color(muted));
+                ui.add_space(3.);
+                let limit = values["backupLimit"].as_i64().unwrap_or(10).to_string();
+                if let Some(draft) = source_controls::number_input_sized(
+                    ui,
+                    "backupLimit",
+                    &limit,
+                    source_controls::NumberStyle::Plain { placeholder: None },
+                    width,
+                ) && let Ok(value) = draft.trim().parse::<i64>()
+                {
+                    patch["backupLimit"] = json!(value.clamp(3, 50));
+                }
+            } else if project_dialogs::recommends_backups(project) {
+                ui.add_space(3.);
+                let (rect, response) = ui.allocate_exact_size(Vec2::splat(28.), Sense::hover());
+                let red = Color32::from_rgb(227, 77, 0);
+                ui.painter().add(
+                    egui::epaint::Shadow {
+                        offset: [0, 0],
+                        blur: 10,
+                        spread: 0,
+                        color: red.gamma_multiply(0.8),
+                    }
+                    .as_shape(rect, 14.),
+                );
+                ui.painter().circle(
+                    rect.center(),
+                    12.5,
+                    Color32::from_rgb(121, 17, 5),
+                    Stroke::new(3., red),
+                );
+                ui.painter().text(
+                    rect.center(),
+                    Align2::CENTER_CENTER,
+                    "!",
+                    FontId::new(20., egui::FontFamily::Name("heading".into())),
+                    theme::ACCENT,
+                );
+                source_controls::help_tooltip(
+                    response.on_hover_cursor(egui::CursorIcon::Help),
+                    "It's recommended to enable backups for large or important projects.",
+                    false,
+                );
             }
         });
         if values.get("jsonStyle").is_some() {
@@ -458,7 +555,7 @@ impl EditorApp {
                 project_checkbox(ui, values, &mut patch, "minifyJson");
             });
         }
-        project_row(
+        let identifier_confirmed = project_row(
             ui,
             "Identifers format convention",
             "identifierStyle",
@@ -480,12 +577,17 @@ impl EditorApp {
                             "\"my_IdEnTifIeR_1\" -- I wON't cHaNge yOuR leTteR caSe",
                         ),
                     ],
-                );
+                )
             },
         );
-        let chosen_style = patch
-            .as_object_mut()
-            .and_then(|patch| patch.remove("identifierStyle"));
+        // The preview's Enter event also confirms the warning opened by the selector.
+        let chosen_style = if identifier_confirmed {
+            None
+        } else {
+            patch
+                .as_object_mut()
+                .and_then(|patch| patch.remove("identifierStyle"))
+        };
         let opened_confirmation = chosen_style.is_some();
         if let Some(style) = chosen_style {
             ui.ctx()
@@ -511,7 +613,10 @@ impl EditorApp {
 
         project_heading(ui, "User custom commands");
         project_row(ui, "Custom commands", "Custom commands", |ui| {
-            ui.vertical(|ui| self.source_project_commands(ui));
+            ui.vertical(|ui| {
+                self.source_project_commands(ui);
+                ui.add_space(5.);
+            });
         });
 
         project_heading(ui, "Workspace settings");
@@ -603,6 +708,9 @@ impl EditorApp {
         }
         ui.add_space(16.);
         self.source_project_advanced(ui);
+        if read_only {
+            return;
+        }
         self.backup_project_dialogs(ui);
         self.confirm_source_identifier_style(
             ui.ctx(),
@@ -878,14 +986,24 @@ impl EditorApp {
             commands.remove(index);
             modified = true;
         }
-        if source_controls::add_sized_button(
-            ui,
-            [ui.available_width(), 30.],
-            egui::Button::new(RichText::new("+").color(Color32::WHITE)).fill(SOURCE_ORANGE),
-        )
-        .on_hover_text(locale::tr(ui, "Add command"))
-        .clicked()
-        {
+        let add_label = locale::tr(ui, "Add command");
+        let add = ui
+            .scope(|ui| {
+                ui.spacing_mut().button_padding.y = 4.;
+                source_controls::add_sized_button(
+                    ui,
+                    [ui.available_width(), 30.],
+                    egui::Button::image(
+                        egui::Image::new(egui::include_image!("../../assets/icons/add.svg"))
+                            .fit_to_exact_size(Vec2::splat(22.)),
+                    )
+                    .fill(SOURCE_ORANGE),
+                )
+            })
+            .inner
+            .on_hover_text(add_label);
+        add.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, add_label));
+        if add.clicked() {
             commands.push(json!({"when":"Manual","command":""}));
             modified = true;
         }
@@ -1075,7 +1193,8 @@ mod tests {
         let png = label(&output, "Export as PNG").unwrap();
         let row_step = png.center().y - separate_files.center().y;
         assert!((37. ..=42.).contains(&row_step), "row step is {row_step}px");
-        let add_command = label(&output, "+").expect("Add command").center();
+        let commands = label(&output, "Custom commands").unwrap();
+        let add_command = egui::pos2(400., commands.center().y);
         fn action_rect(shape: &egui::Shape, center: egui::Pos2) -> Option<Rect> {
             match shape {
                 egui::Shape::Rect(rect)
@@ -1094,10 +1213,69 @@ mod tests {
             .iter()
             .find_map(|shape| action_rect(&shape.shape, add_command))
             .expect("orange add command button");
+        assert!(add_rect.width() > 500., "add command fills the value column");
+    }
+
+    #[test]
+    fn project_form_aligns_labels_and_spaces_sections_like_the_preview() {
+        let (mut app, ctx) = editor();
+        let values = &mut app.project.as_mut().unwrap().json;
+        values["backupOnSave"] = json!(false);
+        values["jsonStyle"] = json!("Full");
+        let output = frame(&mut app, &ctx, vec![]);
+        let bounds = |name| label(&output, name).unwrap();
+        let json = bounds("JSON indent style");
+        let external = bounds("Save levels to separate files");
+        assert!((json.right() - external.right()).abs() <= 1.);
+
+        let section_top = |name| bounds(name).top();
+        for (before, after, distance) in [
+            ("EXTRA FILES", "PROJECT SETTINGS", 217.),
+            ("PROJECT SETTINGS", "USER CUSTOM COMMANDS", 217.),
+            ("USER CUSTOM COMMANDS", "WORKSPACE SETTINGS", 102.),
+        ] {
+            let actual = section_top(after) - section_top(before);
+            assert!(
+                (actual - distance).abs() <= 1.,
+                "{before} to {after}: {actual}"
+            );
+        }
+    }
+
+    #[test]
+    fn backup_row_warns_at_eight_levels_and_expands_its_controls_when_enabled() {
+        let (mut app, ctx) = editor();
+        let dir = tempfile::tempdir().unwrap();
+        let project = app.project.as_mut().unwrap();
+        project.save(dir.path().join("Backup.ldtk")).unwrap();
+        project.json["backupOnSave"] = json!(false);
+        project.json["flags"] = json!(["IgnoreBackupSuggest"]);
+        for index in 1..7 {
+            project
+                .add_level(None, &format!("Level_{index}"), 256, 256)
+                .unwrap();
+        }
+        assert!(label(&frame(&mut app, &ctx, vec![]), "!").is_none());
+        app.project
+            .as_mut()
+            .unwrap()
+            .add_level(None, "Eighth", 256, 256)
+            .unwrap();
+        let output = frame(&mut app, &ctx, vec![]);
+        assert!(label(&output, "!").is_some());
+
+        let backup = label(&output, "Backup on save").unwrap();
+        click(&mut app, &ctx, egui::pos2(282., backup.center().y + 3.));
+        let output = frame(&mut app, &ctx, vec![]);
+        assert!(label(&output, "!").is_none());
+        assert!(label(&output, "[DEFAULT DIR]").is_some());
+        let count_label = label(&output, "Max backup files:").unwrap();
+        let offset = count_label.left() - backup.right();
         assert!(
-            add_rect.width() > 500. && (add_rect.center().x - add_command.x).abs() < 1.,
-            "add command fills the value column and centers its label"
+            offset > 250.,
+            "backup directory and count field share the available width: {offset}"
         );
+        assert!(count_label.right() < label(&output, "10").unwrap().left());
     }
 
     #[test]
@@ -1506,6 +1684,48 @@ mod tests {
     }
 
     #[test]
+    fn source_project_identifier_search_applies_on_enter_and_can_be_restored() {
+        let (mut app, ctx) = editor();
+        app.panel = Some(Panel::Project);
+        app.project
+            .as_mut()
+            .unwrap()
+            .add_entity_def("My_entity", 16, 16)
+            .unwrap();
+        let before = app.project.as_ref().unwrap().json.clone();
+        let output = frame(&mut app, &ctx, vec![]);
+        click(
+            &mut app,
+            &ctx,
+            label(
+                &output,
+                "\"My_identifier_1\" -- First letter is always uppercase, the rest is up to you",
+            )
+            .unwrap()
+            .center(),
+        );
+        frame(&mut app, &ctx, vec![egui::Event::Text("lowercase".into())]);
+        let output = frame(
+            &mut app,
+            &ctx,
+            vec![egui::Event::Key {
+                key: egui::Key::Enter,
+                physical_key: Some(egui::Key::Enter),
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
+        );
+        let project = app.project.as_ref().unwrap();
+        assert_eq!(project.json["identifierStyle"], "Lowercase");
+        assert_eq!(project.json["defs"]["entities"][0]["identifier"], "my_entity");
+        assert!(label(&output, "WARNING!").is_none());
+        assert!(app.last_chance.is_some());
+        app.restore_last_chance();
+        assert_eq!(app.project.as_ref().unwrap().json, before);
+    }
+
+    #[test]
     fn source_project_checkbox_edits_are_undoable() {
         let (mut app, ctx) = editor();
         app.project
@@ -1523,7 +1743,7 @@ mod tests {
                 egui::Shape::Rect(rect)
                     if (rect.rect.width() - 24.).abs() < 1.
                         && (rect.rect.height() - 24.).abs() < 1.
-                        && (rect.rect.center().y - label.center().y).abs() < 1.
+                        && rect.rect.y_range().contains(label.center().y)
                         && rect.rect.left() > label.right() =>
                 {
                     Some(rect.rect.center())
@@ -1548,7 +1768,7 @@ mod tests {
         let (mut app, ctx) = editor();
         let before = app.project.as_ref().unwrap().json.clone();
         let output = frame(&mut app, &ctx, vec![]);
-        let pos = label(&output, "+").expect("Add command").center();
+        let pos = egui::pos2(400., label(&output, "Custom commands").unwrap().center().y);
         click(&mut app, &ctx, pos);
         assert_eq!(
             app.project.as_ref().unwrap().json["customCommands"],

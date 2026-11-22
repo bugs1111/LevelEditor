@@ -786,6 +786,7 @@ fn backup_browser_load_and_restore_use_original_assets_and_preserve_external_lev
     );
     assert_eq!(restored.json["defs"]["tilesets"][0]["relPath"], "art.png");
     assert_eq!(Project::load(path).unwrap().external_levels.len(), 1);
+    assert_eq!(fs::read(backup).unwrap(), before);
 }
 #[test]
 fn rename_moves_external_tree_and_meta_after_success_and_rejects_collisions() {

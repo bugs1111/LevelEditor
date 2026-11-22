@@ -895,6 +895,10 @@ impl EditorApp {
         if self.is_busy() || !self.settle_deferred_auto_paint() {
             return false;
         }
+        if !save_as && self.project.as_ref().is_some_and(Project::is_backup) {
+            self.report_canvas_notice(notifications::CanvasNotice::CannotSaveBackup);
+            return false;
+        }
         self.finish_gesture();
         self.finish_stroke();
         let Some(project) = &self.project else {
@@ -1446,6 +1450,7 @@ impl EditorApp {
             self.show_panel(None);
         }
         self.dialogs(ctx, level_point_picker_was_open);
+        self.preview_backup_restore_dialog(ctx);
         self.world_form_dialog(ctx);
         self.resource_dialog(ctx);
         self.service_dialogs(ctx);

@@ -76,6 +76,7 @@ fn source_panel_header(
     width: f32,
     header_height: f32,
     heading: &str,
+    backup_locked: bool,
 ) -> bool {
     let rules = panel == Panel::Rules;
     let (rect, header) = ui.allocate_exact_size(egui::vec2(width, header_height), Sense::hover());
@@ -119,17 +120,19 @@ fn source_panel_header(
         rect.right_top() + egui::vec2(-21. - close_width, 8.),
         egui::vec2(close_width, if rules { close_width } else { 38. }),
     );
-    let close = ui
-        .interact(close_rect, header.id.with("close"), Sense::click())
-        .on_hover_cursor(egui::CursorIcon::PointingHand);
+    let sense = if backup_locked { Sense::hover() } else { Sense::click() };
+    let close = ui.interact(close_rect, header.id.with("close"), sense);
+    if !backup_locked {
+        close.clone().on_hover_cursor(egui::CursorIcon::PointingHand);
+    }
     close.widget_info(|| {
         egui::WidgetInfo::labeled(
             egui::WidgetType::Button,
-            close.enabled(),
+            close.enabled() && !backup_locked,
             locale::tr(ui, "Close"),
         )
     });
-    let hovered = close.hovered();
+    let hovered = !backup_locked && close.hovered();
     ui.painter().rect_filled(
         close_rect.translate(egui::vec2(0., 1.)),
         3.,
@@ -142,13 +145,23 @@ fn source_panel_header(
         Stroke::new(1., if hovered { Color32::WHITE } else { theme::MEDIUM }),
         StrokeKind::Inside,
     );
+    let color = if backup_locked {
+        Color32::from_white_alpha(51)
+    } else if hovered {
+        Color32::BLACK
+    } else {
+        Color32::WHITE
+    };
     egui::Image::new(egui::include_image!("../../assets/icons/close.png"))
-        .tint(if hovered { Color32::BLACK } else { Color32::WHITE })
+        .tint(color)
         .paint_at(
             ui,
             Rect::from_center_size(close_rect.center(), Vec2::splat(close_icon_size)),
         );
-    close.clicked()
+    if backup_locked {
+        source_controls::disabled_hatch(ui, close_rect);
+    }
+    !backup_locked && close.clicked()
 }
 
 fn orange(ui: &mut egui::Ui, label: &str, size: Vec2) -> egui::Response {
@@ -435,6 +448,11 @@ impl EditorApp {
             width
         };
         let rules = panel == Panel::Rules;
+        let backup_locked = matches!(
+            panel,
+            Panel::Project | Panel::World | Panel::Level | Panel::Layers | Panel::Entities
+                | Panel::Fields | Panel::Enums | Panel::Tilesets | Panel::Rules
+        ) && self.project.as_ref().is_some_and(Project::is_backup);
         let heading = if rules {
             self.project
                 .as_ref()
@@ -487,7 +505,7 @@ impl EditorApp {
                 ui.set_min_height(height);
                 ui.spacing_mut().item_spacing = egui::vec2(0., 0.);
                 egui::Frame::new()
-                    .fill(if panel == Panel::World {
+                    .fill(if panel == Panel::World && !backup_locked {
                         theme::DARK
                     } else {
                         theme::MEDIUM
@@ -524,6 +542,7 @@ impl EditorApp {
                                         width,
                                         header_height,
                                         &heading,
+                                        false,
                                     );
                                     egui::Frame::new()
                                         .inner_margin(egui::Margin {
@@ -540,7 +559,21 @@ impl EditorApp {
                             return;
                         }
                         let mut contents = |ui: &mut egui::Ui, width: f32| {
-                            close |= source_panel_header(ui, panel, width, header_height, &heading);
+                            close |= source_panel_header(
+                                ui, panel, width, header_height, &heading, backup_locked,
+                            );
+                            if backup_locked {
+                                let cursor = ui.cursor().min;
+                                source_controls::disabled_hatch(
+                                    ui,
+                                    Rect::from_min_max(
+                                        cursor,
+                                        egui::pos2(cursor.x + width, screen.bottom()),
+                                    ),
+                                );
+                                ui.visuals_mut().disabled_alpha = 0.2;
+                                ui.disable();
+                            }
                             let world_panel = panel == Panel::World;
                             egui::Frame::new()
                                 .inner_margin(if world_panel {
@@ -726,6 +759,35 @@ impl EditorApp {
         } else {
             width
         };
+        if backup_locked {
+            let body = Rect::from_min_max(
+                egui::pos2(0., top + header_height),
+                egui::pos2(right, screen.bottom()),
+            );
+            if ctx.pointer_hover_pos().is_some_and(|pos| body.contains(pos)) {
+                ctx.set_cursor_icon(egui::CursorIcon::NotAllowed);
+            }
+            let notice = locale::tr_ctx(ctx, "This panel is disabled for backup files.");
+            let galley = dimmer.layout(
+                notice.to_owned(),
+                FontId::proportional(14.667),
+                Color32::WHITE,
+                (right - 48.).max(0.),
+            );
+            let center = egui::pos2(width.min(right) * 0.5, top + height * 0.5);
+            let rect = Rect::from_center_size(center, galley.size() + Vec2::splat(32.));
+            dimmer.add(
+                egui::epaint::Shadow {
+                    offset: [0, 0],
+                    blur: 16,
+                    spread: 0,
+                    color: Color32::from_black_alpha(102),
+                }
+                .as_shape(rect, 4.),
+            );
+            dimmer.rect_filled(rect, 4., Color32::from_rgb(101, 148, 255));
+            dimmer.galley(rect.min + Vec2::splat(16.), galley, Color32::WHITE);
+        }
         if let Some(shade) = shade {
             let canvas_left = (screen.left() + chrome::SIDEBAR_WIDTH).min(screen.right());
             let mask = Rect::from_min_max(egui::pos2(canvas_left, screen.top()), screen.max);
@@ -3174,6 +3236,45 @@ mod tests {
     use super::*;
 
     #[test]
+    fn backup_panels_keep_the_form_visible_under_the_read_only_notice() {
+        let ctx = egui::Context::default();
+        theme::configure(&ctx);
+        let dir = tempfile::tempdir().unwrap();
+        let mut project = Project::new();
+        let original = dir.path().join("Map.ldtk");
+        project.save(&original).unwrap();
+        let backup = project.backup().unwrap().unwrap().join("Map.ldtk");
+        let mut app = EditorApp::empty();
+        app.set_project(Project::load(backup).unwrap());
+        let before = app.project.as_ref().unwrap().json.clone();
+        for panel in [Panel::Project, Panel::Layers, Panel::Help] {
+            app.show_panel(Some(panel));
+            let mut out = egui::FullOutput::default();
+            for pressed in [true, false] {
+                let pos = egui::pos2(294., 240.);
+                out = ctx.run(
+                    egui::RawInput {
+                        screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1440., 900.))),
+                        events: vec![
+                            egui::Event::PointerMoved(pos),
+                            egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE },
+                        ],
+                        ..Default::default()
+                    },
+                    |ctx| { app.source_panel(ctx, panel); },
+                );
+            }
+            let label = |name| out.shapes.iter().any(|shape| matches!(&shape.shape, egui::Shape::Text(text) if text.galley.text() == name));
+            assert_eq!(label("This panel is disabled for backup files."), panel != Panel::Help);
+            if panel == Panel::Project {
+                assert!(label("Backup on save"));
+                assert!(label("RESTORE THIS BACKUP"));
+            }
+            assert_eq!(app.project.as_ref().unwrap().json, before);
+        }
+    }
+
+    #[test]
     fn modal_panel_uses_the_source_canvas_mask_and_keeps_recovery_above_it() {
         let ctx = egui::Context::default();
         theme::configure(&ctx);
@@ -3242,7 +3343,7 @@ mod tests {
                     for padding in [0., 6.] {
                         ui.spacing_mut().button_padding.y = padding;
                         let top = ui.next_widget_position().y;
-                        assert!(!source_panel_header(ui, panel, 400., height, title(panel)));
+                        assert!(!source_panel_header(ui, panel, 400., height, title(panel), false));
                         assert_eq!(ui.next_widget_position().y, top + height, "{panel:?}");
                     }
                 }

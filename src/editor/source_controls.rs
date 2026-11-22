@@ -85,6 +85,21 @@ pub(in crate::app) fn number_input(
     current: &str,
     style: NumberStyle,
 ) -> Option<String> {
+    let width = if matches!(style, NumberStyle::Plain { placeholder: None }) {
+        60.
+    } else {
+        90.
+    };
+    number_input_sized(ui, key, current, style, width)
+}
+
+pub(in crate::app) fn number_input_sized(
+    ui: &mut egui::Ui,
+    key: &str,
+    current: &str,
+    style: NumberStyle,
+    width: f32,
+) -> Option<String> {
     let percent = !matches!(style, NumberStyle::Plain { .. });
     let slider = matches!(style, NumberStyle::PercentSlider { .. });
     let mut immediate = None;
@@ -146,11 +161,6 @@ pub(in crate::app) fn number_input(
         if let Some(placeholder) = placeholder {
             edit = edit.hint_text(locale::tr(ui, placeholder));
         }
-        let width = if percent || placeholder.is_some() {
-            90.
-        } else {
-            60.
-        };
         let response = ui.add_sized([width, 33.], edit);
         if slider && response.enabled() {
             if pressed
@@ -526,13 +536,31 @@ fn form_row_inner<R>(
 ) -> R {
     let row = |ui: &mut egui::Ui| {
         ui.spacing_mut().item_spacing.x = 8.;
-        property_label_layout(ui, label, key, label_size, layout);
-        ui.allocate_ui_with_layout(
-            egui::vec2(ui.available_width(), label_size.y),
+        let highlighted = property_label_layout(ui, label, key, label_size, layout);
+        let background = highlighted.then(|| ui.painter().add(egui::Shape::Noop));
+        let width = ui.available_width();
+        let value = ui.allocate_ui_with_layout(
+            egui::vec2(width, label_size.y),
             egui::Layout::left_to_right(egui::Align::Center),
             body,
-        )
-        .inner
+        );
+        if let Some(background) = background {
+            let rect = Rect::from_min_size(
+                value.response.rect.min,
+                egui::vec2(width, value.response.rect.height()),
+            );
+            ui.painter().set(
+                background,
+                egui::Shape::rect_filled(rect, 3., Color32::from_rgb(60, 97, 72)),
+            );
+            ui.painter().rect_stroke(
+                rect.expand(2.),
+                3.,
+                Stroke::new(1., Color32::from_rgb(94, 171, 107)),
+                egui::StrokeKind::Outside,
+            );
+        }
+        value.inner
     };
     if layout == FormLabel::TopAligned {
         ui.horizontal_top(row)
@@ -606,7 +634,7 @@ fn property_label_layout(
     key: &str,
     label_size: Vec2,
     layout: FormLabel,
-) {
+) -> bool {
     let wrap = matches!(layout, FormLabel::Wrapped | FormLabel::TopAligned);
     let top_aligned = layout == FormLabel::TopAligned;
     let left_aligned = layout == FormLabel::LeftAligned;
@@ -675,13 +703,7 @@ fn property_label_layout(
             rect.center().y - galley.size().y * 0.5,
         )
     };
-    ui.painter()
-        .with_clip_rect(
-            Rect::from_min_max(rect.min, egui::pos2(right, rect.bottom()))
-                .intersect(ui.clip_rect()),
-        )
-        .galley(position, galley, color);
-    if let Some(help) = info {
+    let highlighted = if let Some(help) = info {
         let badge = Rect::from_center_size(
             egui::pos2(
                 rect.right() - 12.,
@@ -698,48 +720,72 @@ fn property_label_layout(
                 .max_rect(badge)
                 .layout(egui::Layout::left_to_right(egui::Align::Center)),
         );
-        help_badge(&mut child, help);
-    } else if let Some(help) = help_text(key, label) {
-        help_tooltip(response, help);
+        help_badge(&mut child, help, key == "simplifiedExport").hovered()
+    } else {
+        if let Some(help) = help_text(key, label) {
+            help_tooltip(response, help, false);
+        }
+        false
+    };
+    let painter = ui.painter().with_clip_rect(
+        Rect::from_min_max(rect.min, egui::pos2(right, rect.bottom())).intersect(ui.clip_rect()),
+    );
+    if highlighted && !left_aligned {
+        painter.galley_with_override_text_color(position, galley, HELP_GREEN);
+    } else {
+        painter.galley(position, galley, color);
     }
+    highlighted
 }
 
-fn help_tooltip(response: egui::Response, help: &str) -> egui::Response {
-    response.on_hover_ui(|ui| {
-        egui::Frame::new()
-            .fill(Color32::from_rgb(60, 97, 72))
-            .inner_margin(egui::Margin::same(10))
-            .show(ui, |ui| {
-                ui.set_max_width(250.);
+pub(in crate::app) fn help_tooltip(
+    response: egui::Response,
+    help: &str,
+    below: bool,
+) -> egui::Response {
+    if response.hovered() && response.ctx.input(|input| input.focused) {
+        chrome::source_tooltip_popup(
+            &response,
+            below.then_some(egui::emath::RectAlign::BOTTOM_START),
+            egui::Margin {
+                left: 10,
+                right: 30,
+                top: 10,
+                bottom: 10,
+            },
+        )
+        .show(|ui| {
+            ui.set_max_width(250.);
+            ui.spacing_mut().item_spacing.y = 0.;
+            let text = locale::tr(ui, help).replace("\\n", "\n");
+            for (row, paragraph) in text.lines().enumerate() {
+                if row > 0 {
+                    ui.add_space(7.);
+                }
                 let mut job = egui::text::LayoutJob::default();
-                for (index, part) in locale::tr(ui, help)
-                    .replace("\\n", "\n")
-                    .split("**")
-                    .enumerate()
-                {
+                for (index, part) in paragraph.split("**").enumerate() {
+                    let bold = index % 2 == 1;
                     job.append(
                         part,
                         0.,
                         egui::TextFormat {
-                            font_id: if index % 2 == 1 {
-                                FontId::new(15., egui::FontFamily::Name("heading".into()))
+                            font_id: if bold {
+                                FontId::new(17.6, egui::FontFamily::Name("heading".into()))
                             } else {
-                                FontId::proportional(15.)
+                                FontId::proportional(14.667)
                             },
-                            color: if index % 2 == 1 {
-                                Color32::WHITE
-                            } else {
-                                Color32::from_rgb(121, 221, 138)
-                            },
+                            color: if bold { Color32::WHITE } else { HELP_GREEN },
                             ..Default::default()
                         },
                     );
                 }
                 ui.label(job);
-            });
-    })
+            }
+        });
+    }
+    response
 }
-fn help_badge(ui: &mut egui::Ui, help: &str) -> egui::Response {
+fn help_badge(ui: &mut egui::Ui, help: &str, below: bool) -> egui::Response {
     let (rect, response) = ui.allocate_exact_size(egui::vec2(24., 16.), Sense::hover());
     let hovered = response.hovered();
     ui.painter().rect_filled(
@@ -762,7 +808,7 @@ fn help_badge(ui: &mut egui::Ui, help: &str) -> egui::Response {
             Color32::from_rgba_unmultiplied(30, 34, 41, 115)
         },
     );
-    help_tooltip(response.on_hover_cursor(egui::CursorIcon::Help), help)
+    help_tooltip(response.on_hover_cursor(egui::CursorIcon::Help), help, below)
 }
 
 pub(super) fn field_instance_label(
@@ -798,7 +844,7 @@ pub(super) fn field_instance_label(
             egui::vec2(24., 16.),
         );
         let mut child = ui.new_child(egui::UiBuilder::new().max_rect(badge));
-        help_badge(&mut child, help);
+        help_badge(&mut child, help, false);
     }
     response.on_hover_text(name)
 }
@@ -817,7 +863,7 @@ pub(in crate::app) fn select_popup(
     selected: usize,
     options: &[(&str, Color32)],
 ) -> Option<usize> {
-    select_popup_contents(response, id, selected, options, false)
+    select_popup_contents(response, id, selected, options, false).map(|(index, _)| index)
 }
 
 pub(in crate::app) fn searchable_select_popup(
@@ -825,7 +871,7 @@ pub(in crate::app) fn searchable_select_popup(
     id: egui::Id,
     selected: usize,
     options: &[(&str, Color32)],
-) -> Option<usize> {
+) -> Option<(usize, bool)> {
     select_popup_contents(response, id, selected, options, true)
 }
 
@@ -835,7 +881,7 @@ fn select_popup_contents(
     selected: usize,
     options: &[(&str, Color32)],
     searchable: bool,
-) -> Option<usize> {
+) -> Option<(usize, bool)> {
     let last_option = options.len().checked_sub(1)?;
     let ctx = &response.ctx;
     let open = egui::Popup::is_id_open(ctx, id);
@@ -937,7 +983,7 @@ fn select_popup_contents(
         };
         let mut cursor = visible[index];
         if confirm {
-            choice = Some(cursor);
+            choice = Some((cursor, true));
             ui.close();
         }
         egui::ScrollArea::vertical()
@@ -976,7 +1022,7 @@ fn select_popup_contents(
                         if highlighted { Color32::BLACK } else { color },
                     );
                     if option.clicked() {
-                        choice = Some(index);
+                        choice = Some((index, false));
                         ui.close();
                     }
                 }
@@ -1126,7 +1172,7 @@ pub(in crate::app) fn checkbox(ui: &mut egui::Ui, value: &mut bool, label: &str)
         }
         let response = ui.checkbox(value, locale::tr(ui, label));
         let response = if let Some(help) = help_text(label, label) {
-            help_tooltip(response, help)
+            help_tooltip(response, help, false)
         } else {
             response
         };
@@ -1141,6 +1187,82 @@ pub(in crate::app) fn checkbox(ui: &mut egui::Ui, value: &mut bool, label: &str)
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn form_help_follows_preview_anchor_and_uses_png_export_description() {
+        fn popup_rect(shape: &egui::Shape) -> Option<Rect> {
+            match shape {
+                egui::Shape::Rect(rect) if rect.fill == Color32::from_rgb(60, 97, 72) => {
+                    Some(rect.rect)
+                }
+                egui::Shape::Vec(shapes) => shapes.iter().find_map(popup_rect),
+                _ => None,
+            }
+        }
+        for (key, label, left, top, above, right_aligned) in [
+            ("png", "Export as PNG", 40., 280., true, false),
+            ("simplifiedExport", "Super simple export ❤", 40., 280., false, false),
+            ("jsonStyle", "JSON indent style", 525., 285., true, true),
+            ("jsonStyle", "JSON indent style", 40., 8., false, false),
+        ] {
+            let ctx = egui::Context::default();
+            theme::configure(&ctx);
+            ctx.style_mut(|style| style.interaction.tooltip_delay = 0.);
+            let cell = Rect::from_min_size(egui::pos2(left, top), egui::vec2(250., 30.));
+            let screen = Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(900., 700.));
+            let badge = Rect::from_center_size(
+                egui::pos2(cell.right() - 12., cell.center().y),
+                egui::vec2(24., 16.),
+            );
+            let mut output = egui::FullOutput::default();
+            for index in 0..5 {
+                output = ctx.run(
+                    egui::RawInput {
+                        screen_rect: Some(screen),
+                        events: if index == 0 {
+                            vec![egui::Event::PointerMoved(badge.center())]
+                        } else {
+                            vec![]
+                        },
+                        time: Some(f64::from(index) * 0.25),
+                        ..Default::default()
+                    },
+                    |ctx| {
+                        egui::CentralPanel::default().show(ctx, |ui| {
+                            ui.scope_builder(egui::UiBuilder::new().max_rect(cell), |ui| {
+                                property_label_with_width(ui, label, key, cell.width());
+                            });
+                        });
+                    },
+                );
+            }
+            let popup = output
+                .shapes
+                .iter()
+                .find_map(|shape| popup_rect(&shape.shape))
+                .unwrap_or_else(|| panic!("{key} hover did not show its help"));
+            let gap = if above {
+                badge.top() - popup.bottom()
+            } else {
+                popup.top() - badge.bottom()
+            };
+            let expected_gap = if key == "simplifiedExport" { 10. } else { 8. };
+            assert!((gap - expected_gap).abs() <= 1., "{key} gap was {gap}");
+            let offset = if right_aligned {
+                popup.right() - badge.right()
+            } else {
+                popup.left() - badge.left()
+            };
+            assert!(offset.abs() <= 1., "{key} horizontal offset was {offset}");
+            if key == "png" {
+                assert!(output.shapes.iter().any(|shape| matches!(
+                    &shape.shape,
+                    egui::Shape::Text(text) if text.galley.job.text.contains("flattened")
+                )));
+            }
+        }
+    }
+
     #[test]
     fn narrow_property_label_cannot_paint_over_the_previous_column() {
         let ctx = egui::Context::default();

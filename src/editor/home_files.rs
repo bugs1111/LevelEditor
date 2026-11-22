@@ -21,6 +21,110 @@ fn index(ctx: &egui::Context) -> Arc<Mutex<BackupIndex>> {
 fn read_backups(path: &Path) -> Vec<ldtk_core::BackupInfo> {
     Project::list_backups_at(path).unwrap_or_default()
 }
+const DELETE_CRASH_BACKUPS: &str = "delete-home-crash-backups";
+
+fn backup_labels(
+    ui: &egui::Ui,
+    entry: &ldtk_core::BackupInfo,
+    age: Option<u64>,
+) -> (String, Option<String>) {
+    let stamp = &entry.timestamp;
+    let date = (|| {
+        let month = stamp.get(5..7)?.parse::<usize>().ok()?;
+        let month_name = [
+            "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+        ]
+        .get(month.checked_sub(1)?)?;
+        let day = stamp.get(8..10)?.parse::<u8>().ok()?;
+        let ordinal = match day {
+            1 => "st",
+            2 => "nd",
+            3 => "rd",
+            _ => "th",
+        };
+        Some(locale::format(
+            ui,
+            "{month_name} {day}{ordinal} {year} at {hour}:{minute}",
+            &[
+                ("month_name", month_name),
+                ("month", &month.to_string()),
+                ("day", &day.to_string()),
+                ("ordinal", ordinal),
+                ("year", stamp.get(..4)?),
+                ("hour", stamp.get(11..13)?),
+                ("minute", stamp.get(14..16)?),
+            ],
+        ))
+    })()
+    .unwrap_or_else(|| stamp.clone());
+    let title = if entry.crash {
+        locale::tr(ui, "Crash recovery").to_owned()
+    } else {
+        match age {
+            Some(seconds @ 0..=59) => locale::format(
+                ui,
+                "{count} seconds ago",
+                &[("count", &seconds.to_string())],
+            ),
+            Some(60..=119) => locale::tr(ui, "1 minute ago").to_owned(),
+            Some(seconds @ 120..=3599) => locale::format(
+                ui,
+                "{count} minutes ago",
+                &[("count", &(seconds / 60).to_string())],
+            ),
+            Some(3600..=7199) => locale::tr(ui, "1 hour ago").to_owned(),
+            Some(seconds @ 7200..=86399) => locale::format(
+                ui,
+                "{count} hours ago",
+                &[("count", &(seconds / 3600).to_string())],
+            ),
+            _ => date.clone(),
+        }
+    };
+    let subtitle = (title != date).then_some(date);
+    (title.to_uppercase(), subtitle)
+}
+
+fn backup_menu_row(
+    ui: &mut egui::Ui,
+    width: f32,
+    title: &str,
+    subtitle: Option<&str>,
+    fill: Color32,
+) -> bool {
+    let (rect, response) = ui.allocate_exact_size(
+        egui::vec2(width, if subtitle.is_some() { 48. } else { 32. }),
+        Sense::click(),
+    );
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, title));
+    ui.painter().rect_filled(
+        rect,
+        0.,
+        if response.hovered() {
+            theme::LIGHT
+        } else {
+            fill
+        },
+    );
+    let name_pos = rect.left_top() + egui::vec2(20., 16.);
+    ui.painter().text(
+        name_pos,
+        Align2::LEFT_CENTER,
+        title,
+        FontId::proportional(13.333),
+        theme::ACCENT,
+    );
+    if let Some(subtitle) = subtitle {
+        ui.painter().text(
+            name_pos + egui::vec2(0., 16.),
+            Align2::LEFT_CENTER,
+            subtitle,
+            FontId::proportional(12.),
+            Color32::from_rgb(115, 127, 157),
+        );
+    }
+    response.clicked()
+}
 pub(super) fn prepare(ctx: &egui::Context, paths: Vec<PathBuf>) {
     let state = index(ctx);
     let mut guard = state.lock().unwrap();
@@ -81,31 +185,156 @@ impl EditorApp {
         let loading = state.loading;
         drop(state);
         if let Some(entries) = entries.filter(|e| !e.is_empty()) {
-            ui.menu_button(locale::tr(ui, "Backups"), |ui| {
-                for entry in entries {
-                    let title = if entry.crash {
-                        locale::format(
-                            ui,
-                            "Crash recovery · {timestamp}",
-                            &[("timestamp", &entry.timestamp)],
-                        )
-                    } else {
-                        entry.timestamp
-                    };
-                    if ui.button(title).clicked() {
-                        self.request(
-                            ui.ctx(),
-                            Action::OpenBackup {
-                                backup: entry.path,
-                                original: path.to_owned(),
-                            },
-                        );
+            let button = |ui: &mut egui::Ui| {
+                ui.spacing_mut().button_padding = egui::vec2(2., 0.);
+                panels::source_controls::add_sized_button(
+                    ui,
+                    ui.max_rect().size(),
+                    egui::Button::image(
+                        egui::Image::new(egui::include_image!("../../assets/icons/history.svg"))
+                            .fit_to_exact_size(Vec2::splat(24.)),
+                    )
+                    .fill(theme::LIGHT),
+                )
+            };
+            let button = button(ui).on_hover_text(locale::tr(ui, "Backups"));
+            button.widget_info(|| {
+                egui::WidgetInfo::labeled(egui::WidgetType::Button, true, locale::tr(ui, "Backups"))
+            });
+            egui::Popup::menu(&button)
+                .anchor(Rect::from_pos(button.rect.left_top() + egui::vec2(2., 8.)))
+                .align(egui::emath::RectAlign::TOP_START)
+                .frame(panels::source_controls::context_menu_frame(
+                    &ui.ctx().style(),
+                ))
+                .show(|ui| {
+                    ui.spacing_mut().item_spacing.y = 0.;
+                    let now = std::time::SystemTime::now();
+                    let labels = entries
+                        .iter()
+                        .map(|entry| backup_labels(ui, entry, entry.age_in_seconds(now)))
+                        .collect::<Vec<_>>();
+                    let crashes = entries
+                        .iter()
+                        .filter(|entry| entry.crash)
+                        .map(|entry| entry.path.clone())
+                        .collect::<Vec<_>>();
+                    let delete = locale::tr(ui, "Delete all crash recovery files").to_uppercase();
+                    let width = labels
+                        .iter()
+                        .flat_map(|(title, subtitle)| {
+                            std::iter::once(title.as_str()).chain(subtitle.as_deref())
+                        })
+                        .chain((!crashes.is_empty()).then_some(delete.as_str()))
+                        .map(|label| {
+                            ui.painter()
+                                .layout_no_wrap(
+                                    label.to_owned(),
+                                    FontId::proportional(13.333),
+                                    Color32::WHITE,
+                                )
+                                .size()
+                                .x
+                        })
+                        .fold(0., f32::max)
+                        + 40.;
+                    for (entry, (title, subtitle)) in entries.into_iter().zip(labels) {
+                        let fill = if entry.crash {
+                            Color32::from_rgb(60, 97, 72)
+                        } else {
+                            theme::DARK
+                        };
+                        if backup_menu_row(ui, width, &title, subtitle.as_deref(), fill) {
+                            self.request(
+                                ui.ctx(),
+                                Action::OpenBackup {
+                                    backup: entry.path,
+                                    original: path.to_owned(),
+                                },
+                            );
+                            ui.close();
+                        }
+                    }
+                    if !crashes.is_empty()
+                        && backup_menu_row(ui, width, &delete, None, Color32::from_rgb(121, 17, 5))
+                    {
+                        ui.ctx().data_mut(|data| {
+                            data.insert_temp(
+                                egui::Id::new(DELETE_CRASH_BACKUPS),
+                                (path.to_owned(), crashes),
+                            )
+                        });
                         ui.close();
                     }
-                }
-            });
+                });
         } else if loading {
             ui.spinner();
+        }
+    }
+
+    pub(super) fn home_backup_delete_open(ctx: &egui::Context) -> bool {
+        ctx.data(|data| {
+            data.get_temp::<(PathBuf, Vec<PathBuf>)>(egui::Id::new(DELETE_CRASH_BACKUPS))
+                .is_some()
+        })
+    }
+
+    pub(super) fn home_backup_delete_dialog(&mut self, ctx: &egui::Context) {
+        let id = egui::Id::new(DELETE_CRASH_BACKUPS);
+        let Some((project, files)) = ctx.data(|data| data.get_temp::<(PathBuf, Vec<PathBuf>)>(id))
+        else {
+            return;
+        };
+        let modal = egui::Modal::new(id)
+            .frame(project_dialogs::dialog_frame(20).fill(Color32::from_rgb(121, 17, 5)))
+            .show(ctx, |ui| {
+                ui.set_width((ctx.content_rect().width() - 40.).clamp(0., 358.));
+                let name = project.file_stem().unwrap_or_default().to_string_lossy();
+                ui.label(locale::format(
+                    ui,
+                    "Delete all crash recovery files project {name}?",
+                    &[("name", &name)],
+                ));
+                ui.horizontal(|ui| {
+                    let size = egui::vec2((ui.available_width() - 2.) * 0.5, 35.);
+                    let confirm =
+                        project_dialogs::button(ui, "CONFIRM", size, false, 13.333).clicked();
+                    let cancel =
+                        project_dialogs::button(ui, "CANCEL", size, true, 13.333).clicked();
+                    (confirm, cancel)
+                })
+                .inner
+            });
+        let (confirm, cancel) = modal.inner;
+        let cancel = cancel || modal.should_close();
+        let confirm = confirm
+            || modal.is_top_modal
+                && ctx.input_mut(|input| input.consume_key(egui::Modifiers::NONE, Key::Enter));
+        if confirm || cancel {
+            ctx.data_mut(|data| data.remove::<(PathBuf, Vec<PathBuf>)>(id));
+        }
+        if confirm && !cancel {
+            let result = Project::list_backups_at(&project)
+                .map_err(|error| error.to_string())
+                .and_then(|entries| {
+                    for entry in entries
+                        .into_iter()
+                        .filter(|entry| entry.crash && files.contains(&entry.path))
+                    {
+                        if let Err(error) = std::fs::remove_file(&entry.path)
+                            && error.kind() != std::io::ErrorKind::NotFound
+                        {
+                            return Err(format!("{}: {error}", entry.path.display()));
+                        }
+                    }
+                    Ok(())
+                });
+            index(ctx).lock().unwrap().paths.clear();
+            ctx.request_repaint();
+            if let Err(error) = result {
+                self.status = error;
+                self.status_error = true;
+            }
         }
     }
     pub(super) fn recent_file_menu(&mut self, ui: &mut egui::Ui, path: &Path) {
@@ -172,6 +401,38 @@ impl EditorApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn backup_menu_labels_distinguish_recent_old_and_crash_backups_in_both_languages() {
+        let ctx = egui::Context::default();
+        let _ = ctx.run(egui::RawInput::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                let mut entry = ldtk_core::BackupInfo {
+                    path: "World.ldtk".into(),
+                    timestamp: "2024-01-06_13-15-00".into(),
+                    crash: false,
+                };
+                let date = "Jan 6th 2024 at 13:15";
+                assert_eq!(backup_labels(ui, &entry, None), (date.to_uppercase(), None));
+                assert_eq!(
+                    backup_labels(ui, &entry, Some(120)),
+                    ("2 MINUTES AGO".into(), Some(date.into()))
+                );
+                entry.crash = true;
+                assert_eq!(
+                    backup_labels(ui, &entry, Some(120)),
+                    ("CRASH RECOVERY".into(), Some(date.into()))
+                );
+                locale::set(ctx, locale::Language::SimplifiedChinese);
+                assert_eq!(
+                    backup_labels(ui, &entry, None),
+                    ("崩溃恢复".into(), Some("2024年1月6日 13:15".into()))
+                );
+                locale::set(ctx, locale::Language::English);
+            });
+        });
+    }
+
     #[test]
     fn home_backup_index_reads_metadata_without_building_a_project_or_its_large_ignored_data() {
         use std::io::Write;

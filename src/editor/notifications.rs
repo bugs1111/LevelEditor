@@ -22,6 +22,7 @@ pub(super) enum CanvasNotice {
     SavedProject(String),
     SavedTileSelection,
     SavingFailed,
+    CannotSaveBackup,
     NothingToSelect,
     LinkOpened,
     LinkCopied,
@@ -58,6 +59,7 @@ impl CanvasNotice {
             Self::SavedProject(_) => locale::tr_ctx(ctx, SAVED_PROJECT_TITLE).into(),
             Self::SavedTileSelection => locale::tr_ctx(ctx, "Saved selection").into(),
             Self::SavingFailed => locale::tr_ctx(ctx, "Saving failed!").into(),
+            Self::CannotSaveBackup => locale::tr_ctx(ctx, "Cannot save over a backup file.").into(),
             Self::NothingToSelect => locale::tr_ctx(ctx, "Nothing to select").into(),
             Self::LinkOpened => locale::tr_ctx(ctx, "Opening url...").into(),
             Self::LinkCopied => locale::tr_ctx(ctx, "Copied to clipboard.").into(),
@@ -249,6 +251,7 @@ impl EditorApp {
                 let (fill, edge) = match entry.notice {
                     CanvasNotice::EntityLimit { .. }
                     | CanvasNotice::SavingFailed
+                    | CanvasNotice::CannotSaveBackup
                     | CanvasNotice::NothingToSelect
                     | CanvasNotice::LocateMissingPath => ([87, 0, 0], [255, 0, 0]),
                     CanvasNotice::SavedProject(_) | CanvasNotice::ValueReset => {
@@ -325,6 +328,7 @@ impl EditorApp {
     }
 
     pub(super) fn canvas_notifications(&mut self, ctx: &egui::Context, rect: Rect) {
+        self.backup_preview_banner(ctx, rect);
         if self.pending_auto_layer_rebuild {
             let viewport = ctx.content_rect();
             egui::Area::new(egui::Id::new("rebuild-auto-layers"))
@@ -512,6 +516,72 @@ impl EditorApp {
                         });
                 });
         }
+    }
+
+    fn backup_preview_banner(&mut self, ctx: &egui::Context, rect: Rect) {
+        let Some(project) = self.project.as_ref().filter(|project| project.is_backup()) else {
+            return;
+        };
+        let date = project.path.as_deref()
+            .and_then(std::path::Path::parent)
+            .and_then(std::path::Path::file_name)
+            .and_then(std::ffi::OsStr::to_str)
+            .and_then(|name| {
+                let iid = text(&project.json, "iid", "");
+                name.strip_prefix(iid).or_else(|| name.strip_prefix("backup"))
+            })
+            .and_then(|date| date.strip_prefix('_'))
+            .and_then(|date| Some(format!("{} {}", date.get(..10)?, date.get(11..19)?.replace('-', ":"))));
+        let linked = self.backup_original(ctx).is_some();
+        let busy = self.is_busy();
+        egui::Area::new(egui::Id::new("backup-preview-banner"))
+            .fixed_pos(rect.left_top())
+            .order(egui::Order::Foreground)
+            .show(ctx, |ui| {
+                egui::Frame::new()
+                    .fill(Color32::from_rgb(101, 148, 255))
+                    .inner_margin(egui::Margin::symmetric(0, 8))
+                    .show(ui, |ui| {
+                        ui.set_width(rect.width());
+                        ui.set_min_height(86.);
+                        let width = rect.width().min(600.);
+                        let buttons = (width * 0.44).min(250.);
+                        ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = 0.;
+                            ui.add_space((rect.width() - width) * 0.5);
+                            ui.vertical(|ui| {
+                                ui.set_width((width - buttons - 16.).max(0.));
+                                let description = if linked {
+                                    "This file is a BACKUP: you cannot edit or modify to it in any way. You may only restore it to replace the original project."
+                                } else {
+                                    "The images are not displayed properly because the location of the original project represented by this backup is unknown."
+                                };
+                                ui.label(RichText::new(locale::tr(ui, description)).size(12.).strong().color(Color32::WHITE));
+                                if let Some(date) = &date {
+                                    ui.label(RichText::new(date).size(12.).strong().color(Color32::WHITE));
+                                }
+                            });
+                            ui.add_space(16.);
+                            ui.vertical(|ui| {
+                                ui.spacing_mut().item_spacing.y = 2.;
+                                ui.add_enabled_ui(!busy, |ui| {
+                                    if !linked && project_dialogs::button(
+                                        ui, "LOCATE THE ORIGINAL PROJECT", egui::vec2(buttons, 40.), true, 13.333
+                                    ).clicked() {
+                                        self.locate_backup_original(ctx);
+                                    }
+                                    ui.add_enabled_ui(linked, |ui| {
+                                        if project_dialogs::button(
+                                            ui, "RESTORE THIS BACKUP", egui::vec2(buttons, 40.), !linked, 13.333
+                                        ).clicked() {
+                                            self.confirm_preview_restore(ctx);
+                                        }
+                                    });
+                                });
+                            });
+                        });
+                    });
+            });
     }
 }
 

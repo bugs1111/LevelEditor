@@ -130,18 +130,21 @@ impl EditorApp {
             self.loading = None;
             match result {
                 Ok(loaded) => {
+                    let read_only = loaded.project.is_backup();
                     if self.loading_progress.is_some() {
                         ctx.request_repaint();
                     }
-                    if let Some(original) = loaded.backup_original {
-                        let iid = text(&loaded.project.json, "iid", "").to_owned();
+                    if let Some(original) = loaded.backup_original
+                        && let Some(backup) = loaded.project.path.as_deref()
+                        && read_only
+                    {
                         ctx.data_mut(|d| {
-                            d.insert_temp(egui::Id::new(("backup-original", iid)), original)
+                            d.insert_temp(project_dialogs::backup_original_key(backup), original)
                         });
                     }
                     self.set_project(loaded.project);
-                    self.dirty = loaded.migrated;
-                    if loaded.migrated
+                    self.dirty = loaded.migrated && !read_only;
+                    if self.dirty
                         && let Some(project) = &self.project
                     {
                         for key in project.level_keys() {
@@ -450,10 +453,12 @@ impl EditorApp {
         let ctx = ctx.clone();
         std::thread::spawn(move || {
             let result = (|| {
-                let mut project = if restore {
-                    Project::restore_backup(&backup, &original)
+                let (mut project, warnings) = if restore {
+                    Project::restore_backup_with_exports(&backup, &original)
+                        .map(|(project, report)| (project, report.warnings))
                 } else {
                     Project::load_backup(&backup, &original)
+                        .map(|project| (project, Vec::new()))
                 }
                 .map_err(|e| e.to_string())?;
                 let migrated = project.migrate_to_current().map_err(|e| e.to_string())?;
@@ -465,7 +470,7 @@ impl EditorApp {
                 Ok(LoadedProject {
                     project,
                     migrated,
-                    warnings: Vec::new(),
+                    warnings,
                     backup_original: Some(original),
                 })
             })();
@@ -713,7 +718,9 @@ mod creation_tests {
         theme::configure(&ctx);
         let mut app = EditorApp::empty();
         app.set_project(Project::new());
+        app.last_chance = Some(("Identifier style changed".into(), Instant::now()));
         app.save_async_at(path.clone());
+        assert!(app.last_chance.is_none());
 
         let until = Instant::now() + std::time::Duration::from_secs(5);
         while app.saving.is_some() && Instant::now() < until {
@@ -854,14 +861,69 @@ mod creation_tests {
         let backup_a = p.backup().unwrap().unwrap().join("A.ldtk");
         p.save(&b).unwrap();
         let backup_b = p.backup().unwrap().unwrap().join("B.ldtk");
-        let key = egui::Id::new(("backup-original", text(&p.json, "iid", "").to_owned()));
         let ctx = egui::Context::default();
         let mut app = EditorApp::empty();
         for (backup, original) in [(backup_a, a), (backup_b, b)] {
+            let key = project_dialogs::backup_original_key(&backup);
             app.backup_async(&ctx, backup, original.clone(), false);
             wait(&mut app, &ctx);
             assert_eq!(ctx.data_mut(|d| d.get_temp::<PathBuf>(key)), Some(original));
             assert!(app.project.as_ref().unwrap().is_backup());
         }
+    }
+
+    #[test]
+    fn backup_preview_confirms_before_restoring_the_linked_original() {
+        let dir = tempfile::tempdir().unwrap();
+        let original = dir.path().join("Backup.ldtk");
+        let mut project = Project::new();
+        project.json["levels"][0]["identifier"] = serde_json::json!("Archived");
+        project.save(&original).unwrap();
+        let backup = project.backup().unwrap().unwrap().join("Backup.ldtk");
+        project.json["levels"][0]["identifier"] = serde_json::json!("Current");
+        project.save(&original).unwrap();
+
+        let ctx = egui::Context::default();
+        let mut app = EditorApp::empty();
+        app.set_project(Project::load(&backup).unwrap());
+        app.repaint = Some(ctx.clone());
+        assert!(app.backup_original(&ctx).is_none());
+        let archived = std::fs::read(&backup).unwrap();
+        app.save(false);
+        assert!(matches!(
+            app.canvas_notices.last().map(|entry| &entry.notice),
+            Some(notifications::CanvasNotice::CannotSaveBackup)
+        ));
+        assert!(!app.is_busy());
+        assert!(!EditorApp::backup_restore_open(&ctx));
+        assert_eq!(std::fs::read(&backup).unwrap(), archived);
+        app.backup_async(&ctx, backup, original.clone(), false);
+        wait(&mut app, &ctx);
+        assert_eq!(app.backup_original(&ctx).as_ref(), Some(&original));
+        app.save(false);
+        assert!(!app.is_busy());
+        assert!(!EditorApp::backup_restore_open(&ctx));
+        for (key, expected) in [(Key::Escape, "Current"), (Key::Enter, "Archived")] {
+            app.confirm_preview_restore(&ctx);
+            assert!(EditorApp::backup_restore_open(&ctx));
+            let _ = ctx.run(egui::RawInput::default(), |ctx| app.preview_backup_restore_dialog(ctx));
+            let _ = ctx.run(
+                egui::RawInput {
+                    events: vec![egui::Event::Key {
+                        key,
+                        physical_key: Some(key),
+                        pressed: true,
+                        repeat: false,
+                        modifiers: egui::Modifiers::NONE,
+                    }],
+                    ..Default::default()
+                },
+                |ctx| app.preview_backup_restore_dialog(ctx),
+            );
+            assert!(!EditorApp::backup_restore_open(&ctx));
+            wait(&mut app, &ctx);
+            assert_eq!(Project::load(&original).unwrap().json["levels"][0]["identifier"], expected);
+        }
+        assert!(!app.project.as_ref().unwrap().is_backup());
     }
 }

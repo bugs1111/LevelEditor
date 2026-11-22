@@ -504,7 +504,7 @@ impl Project {
         }
         if make_backup && candidate.json["backupOnSave"].as_bool().unwrap_or(false) {
             candidate.path = Some(path.clone());
-            candidate.backup_with_progress(&mut |done, total, label| {
+            candidate.backup_with_progress(None, &mut |done, total, label| {
                 progress(SaveStage::Backup, done, total, label);
             })?;
         }
@@ -1520,11 +1520,12 @@ impl Project {
     }
     /// Copy the currently saved project and external documents, retaining backupLimit copies.
     pub fn backup(&self) -> Result<Option<PathBuf>> {
-        self.backup_with_progress(&mut |_, _, _| {})
+        self.backup_with_progress(None, &mut |_, _, _| {})
     }
 
     fn backup_with_progress(
         &self,
+        restoring_from: Option<&Path>,
         progress: &mut impl FnMut(usize, usize, Option<&str>),
     ) -> Result<Option<PathBuf>> {
         let Some(path) = &self.path else {
@@ -1665,7 +1666,11 @@ impl Project {
         let mut backups = self.list_backups()?;
         let mut directories = BTreeSet::new();
         backups.retain(|backup| directories.insert(backup.path.parent().unwrap().to_path_buf()));
-        let limit = self.json["backupLimit"].as_u64().unwrap_or(10) as usize;
+        let mut limit = self.json["backupLimit"].as_u64().unwrap_or(10) as usize;
+        if let Some(source) = restoring_from.and_then(Path::parent) {
+            backups.retain(|backup| !same_existing_file(backup.path.parent().unwrap(), source));
+            limit = limit.max(1);
+        }
         for backup in backups.into_iter().skip(limit) {
             let old = backup.path.parent().unwrap().to_path_buf();
             fs::remove_dir_all(&old).map_err(|source| Error::Io { path: old, source })?;
@@ -1898,6 +1903,7 @@ pub struct SaveReport {
     pub export_errors: Vec<String>,
     /// Resource problems to log separately from the success or failure of an export.
     pub export_diagnostics: Vec<String>,
+    pub warnings: Vec<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
