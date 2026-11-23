@@ -202,10 +202,40 @@ impl Project {
     /// Reports completed external level reads; inline-only projects emit no updates.
     pub fn load_with_progress(
         path: impl AsRef<Path>,
-        mut progress: impl FnMut(usize, usize),
+        progress: impl FnMut(usize, usize),
     ) -> Result<Self> {
-        let path = absolute(path.as_ref())?;
-        let mut project = Self::from_json(read_json(&path)?)?;
+        Self::read_documents(path.as_ref(), progress, None)
+    }
+
+    /// Bind the watch baseline to the same document bytes that were parsed.
+    pub fn load_with_snapshot(path: impl AsRef<Path>) -> Result<(Self, FilesystemSnapshot)> {
+        let mut snapshot = FilesystemSnapshot {
+            files: BTreeMap::new(),
+        };
+        let project = Self::read_documents(path.as_ref(), |_, _| {}, Some(&mut snapshot))?;
+        project.snapshot_resources(&mut snapshot)?;
+        if !snapshot.changed_files()?.is_empty() {
+            return Err(Error::Invalid(
+                "Project files changed during reload. Try reloading again.".into(),
+            ));
+        }
+        Ok((project, snapshot))
+    }
+
+    fn read_documents(
+        path: &Path,
+        mut progress: impl FnMut(usize, usize),
+        mut snapshot: Option<&mut FilesystemSnapshot>,
+    ) -> Result<Self> {
+        let path = absolute(path)?;
+        let (json, bytes) = read_json_with_bytes(&path)?;
+        if let Some(snapshot) = &mut snapshot {
+            snapshot
+                .files
+                .insert(path.clone(), Some(bytes_fingerprint(&bytes)));
+        }
+        drop(bytes);
+        let mut project = Self::from_json(json)?;
         let mut fingerprints = BTreeMap::new();
         let keys = project.level_keys();
         let mut total = 0;
@@ -229,6 +259,9 @@ impl Project {
                     Err(error) if project.json["externalLevels"] == true => {
                         let (repaired, value, bytes) =
                             recover_renamed_external_level(&path, &rel, stub, error)?;
+                        if let Some(snapshot) = &mut snapshot {
+                            snapshot.files.insert(absolute(&external)?, None);
+                        }
                         project.level_stub_mut(key).expect("enumerated level")["externalRelPath"] =
                             Value::String(repaired.clone());
                         project.repaired_external_paths = true;
@@ -249,15 +282,24 @@ impl Project {
                     )));
                 }
                 let value = Arc::new(value);
-                if project.json["jsonVersion"] == "1.5.4" {
-                    fingerprints.insert(
-                        external,
-                        ExternalLevelFingerprint {
-                            length: bytes.len(),
-                            bytes: bytes_fingerprint(&bytes),
-                            level: Arc::downgrade(&value),
-                        },
-                    );
+                let cache_level = project.json["jsonVersion"] == "1.5.4";
+                if cache_level || snapshot.is_some() {
+                    let fingerprint = bytes_fingerprint(&bytes);
+                    if let Some(snapshot) = &mut snapshot {
+                        snapshot
+                            .files
+                            .insert(absolute(&external)?, Some(fingerprint));
+                    }
+                    if cache_level {
+                        fingerprints.insert(
+                            external,
+                            ExternalLevelFingerprint {
+                                length: bytes.len(),
+                                bytes: fingerprint,
+                                level: Arc::downgrade(&value),
+                            },
+                        );
+                    }
                 }
                 project.external_levels.0.insert(rel, value);
                 done += 1;
@@ -1343,12 +1385,17 @@ fn stage_file(
 }
 
 #[derive(Default)]
-struct StagedSave {
+pub(crate) struct StagedSave {
     files: Vec<StagedFile>,
 }
 
 impl StagedSave {
-    fn add(&mut self, target: PathBuf, bytes: &[u8], preserve_identical: bool) -> Result<()> {
+    pub(crate) fn add(
+        &mut self,
+        target: PathBuf,
+        bytes: &[u8],
+        preserve_identical: bool,
+    ) -> Result<()> {
         let original_bytes = existing_file_bytes(&target)?;
         if preserve_identical
             && original_bytes.as_deref() == Some(bytes)
@@ -1373,7 +1420,11 @@ impl StagedSave {
         Ok(())
     }
 
-    fn publish(self) -> Result<()> {
+    pub(crate) fn targets(&self) -> impl Iterator<Item = &PathBuf> {
+        self.files.iter().map(|file| &file.target)
+    }
+
+    pub(crate) fn publish(self) -> Result<()> {
         for (index, file) in self.files.iter().enumerate() {
             if let Err(source) = fs::rename(&file.staged.0, &file.target) {
                 let failure = Error::Io {
@@ -1509,6 +1560,14 @@ impl FilesystemSnapshot {
 }
 impl Project {
     pub fn filesystem_snapshot(&self) -> Result<FilesystemSnapshot> {
+        let mut snapshot = FilesystemSnapshot {
+            files: BTreeMap::new(),
+        };
+        self.snapshot_resources(&mut snapshot)?;
+        Ok(snapshot)
+    }
+
+    fn snapshot_resources(&self, snapshot: &mut FilesystemSnapshot) -> Result<()> {
         let mut paths = BTreeSet::new();
         if let Some(path) = &self.path {
             paths.insert(path.clone());
@@ -1518,11 +1577,13 @@ impl Project {
                 collect_resource_paths(level, base, &mut paths)?;
             }
         }
-        let files = paths
-            .into_iter()
-            .map(|path| Ok((path.clone(), file_fingerprint(&path)?)))
-            .collect::<Result<_>>()?;
-        Ok(FilesystemSnapshot { files })
+        for path in paths {
+            if let std::collections::btree_map::Entry::Vacant(entry) = snapshot.files.entry(path) {
+                let fingerprint = file_fingerprint(entry.key())?;
+                entry.insert(fingerprint);
+            }
+        }
+        Ok(())
     }
     /// Copy the currently saved project and external documents, retaining backupLimit copies.
     pub fn backup(&self) -> Result<Option<PathBuf>> {

@@ -196,19 +196,7 @@ pub(super) struct Session {
 
 impl Session {
     pub(super) fn open(path: PathBuf) -> ldtk_core::Result<Self> {
-        // Find the external files before taking the snapshot. Load the editable
-        // copy against that snapshot so an edit during loading cannot go unnoticed.
-        let discovered = Project::load(&path)?;
-        let snapshot = discovered.filesystem_snapshot()?;
-        let project = Project::load(&path)?;
-        if discovered.json != project.json
-            || discovered.external_levels != project.external_levels
-            || !snapshot.changed_files()?.is_empty()
-        {
-            return Err(ldtk_core::Error::Invalid(
-                "Project files changed during reload. Try reloading again.".into(),
-            ));
-        }
+        let (project, snapshot) = Project::load_with_snapshot(&path)?;
         Ok(Self {
             path,
             project,

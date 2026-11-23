@@ -252,6 +252,39 @@ fn gamemaker_matches_original_experimental_room_schema() {
     assert_eq!(room["layers"][0]["resourceType"], "?");
 }
 #[test]
+fn a_late_level_failure_keeps_previous_png_and_simplified_exports() {
+    let mut p = project();
+    p.json["imageExportMode"] = json!("OneImagePerLevel");
+    let invalid = p.add_level(None, "Invalid", 32, 16).unwrap();
+    p.level_mut(invalid).unwrap()["pxWid"] = json!(0);
+    let dir = tempfile::tempdir().unwrap();
+    let png = dir.path().join("Level_0.png");
+    fs::write(&png, b"previous PNG").unwrap();
+    assert!(p.export_png(dir.path()).is_err());
+    assert_eq!(fs::read(&png).unwrap(), b"previous PNG");
+
+    let first = dir.path().join("Level_0");
+    fs::create_dir_all(&first).unwrap();
+    fs::write(first.join("data.json"), b"previous JSON").unwrap();
+    assert!(p.export_simplified(dir.path()).is_err());
+    assert_eq!(fs::read(first.join("data.json")).unwrap(), b"previous JSON");
+    assert_eq!(fs::read_dir(first).unwrap().count(), 1);
+    assert!(!dir.path().join("Invalid/data.json").exists());
+}
+
+#[test]
+fn repeated_png_filenames_across_levels_are_rejected_before_publication() {
+    let mut p = project();
+    p.add_level(None, "Second", 32, 16).unwrap();
+    p.json["imageExportMode"] = json!("OneImagePerLevel");
+    p.json["pngFilePattern"] = json!("shared");
+    let dir = tempfile::tempdir().unwrap();
+    let error = p.export_png(dir.path()).unwrap_err();
+    assert!(error.to_string().contains("duplicate export output"));
+    assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 0);
+}
+
+#[test]
 fn configured_exports_report_errors_after_publishing_document() {
     let mut p = project();
     p.json["simplifiedExport"] = json!(true);

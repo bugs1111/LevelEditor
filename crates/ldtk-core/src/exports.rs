@@ -1,5 +1,5 @@
 //! Filesystem exporters ported from the pinned LDtk exporters and ProjectSaver.
-use crate::project::{atomic_save, relative_to};
+use crate::project::{StagedSave, relative_to};
 use crate::{Error, LevelKey, Project, Result};
 use image::{GenericImage, Rgba, RgbaImage};
 use serde_json::{Value, json};
@@ -73,25 +73,42 @@ fn safe_name(name: &str) -> Result<&str> {
         Ok(name)
     }
 }
-fn publish(outputs: Vec<(PathBuf, Vec<u8>)>) -> Result<Vec<PathBuf>> {
-    let mut seen = std::collections::BTreeSet::new();
-    for (p, _) in &outputs {
-        if !seen.insert(p.clone()) {
+#[derive(Default)]
+struct ExportBatch {
+    seen: HashSet<PathBuf>,
+    staged: StagedSave,
+}
+
+impl ExportBatch {
+    fn add(&mut self, path: PathBuf, bytes: &[u8]) -> Result<()> {
+        if !self.seen.insert(path.clone()) {
             return Err(Error::Invalid(format!(
                 "duplicate export output {}",
-                p.display()
+                path.display()
             )));
         }
-        if let Some(parent) = p.parent() {
+        if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).map_err(|source| Error::Io {
                 path: parent.into(),
                 source,
             })?;
         }
+        self.staged.add(path, bytes, false)
     }
-    let paths = outputs.iter().map(|o| o.0.clone()).collect();
-    atomic_save(outputs)?;
-    Ok(paths)
+
+    fn publish(self) -> Result<Vec<PathBuf>> {
+        let paths = self.staged.targets().cloned().collect();
+        self.staged.publish()?;
+        Ok(paths)
+    }
+}
+
+fn publish(outputs: Vec<(PathBuf, Vec<u8>)>) -> Result<Vec<PathBuf>> {
+    let mut batch = ExportBatch::default();
+    for (path, bytes) in outputs {
+        batch.add(path, &bytes)?;
+    }
+    batch.publish()
 }
 fn bytes(v: &Value) -> Result<Vec<u8>> {
     serde_json::to_vec_pretty(v).map_err(|e| Error::Invalid(e.to_string()))
@@ -114,8 +131,7 @@ fn color(v: &str) -> Rgba<u8> {
 }
 fn png(img: &RgbaImage) -> Result<Vec<u8>> {
     let mut out = Cursor::new(Vec::new());
-    image::DynamicImage::ImageRgba8(img.clone())
-        .write_to(&mut out, image::ImageFormat::Png)
+    img.write_to(&mut out, image::ImageFormat::Png)
         .map_err(|e| Error::Invalid(e.to_string()))?;
     Ok(out.into_inner())
 }
@@ -247,7 +263,17 @@ impl Project {
         dir: impl AsRef<Path>,
         mut progress: impl FnMut(usize, usize),
     ) -> Result<Vec<PathBuf>> {
-        let mut out = Vec::new();
+        let mut batch = ExportBatch::default();
+        self.stage_csv(dir.as_ref(), &mut batch, &mut progress)?;
+        batch.publish()
+    }
+
+    fn stage_csv(
+        &self,
+        dir: &Path,
+        batch: &mut ExportBatch,
+        mut progress: impl FnMut(usize, usize),
+    ) -> Result<()> {
         let keys = self.level_keys();
         let total = keys.len();
         if total > 0 {
@@ -280,19 +306,18 @@ impl Project {
                     }
                     text.push('\n');
                 }
-                out.push((
-                    dir.as_ref()
-                        .join(name)
+                batch.add(
+                    dir.join(name)
                         .join(format!("{}.csv", safe_name(s(li, "__identifier"))?)),
-                    text.into_bytes(),
-                ));
+                    text.as_bytes(),
+                )?;
             }
             progress(index + 1, total);
         }
         if total > 0 {
             progress(0, 0);
         }
-        publish(out)
+        Ok(())
     }
     pub fn export_simplified(&self, dir: impl AsRef<Path>) -> Result<Vec<PathBuf>> {
         self.export_simplified_with_progress(dir, |_, _| {})
@@ -311,7 +336,7 @@ impl Project {
         diagnostics: &mut Vec<String>,
     ) -> Result<Vec<PathBuf>> {
         let dir = dir.as_ref();
-        let mut out = Vec::new();
+        let mut batch = ExportBatch::default();
         let keys = self.level_keys();
         let count = keys.len();
         let total = count * 3;
@@ -342,18 +367,17 @@ impl Project {
                 }
             }
             let simple = json!({"identifier":l["identifier"],"uniqueIdentifer":l["iid"],"x":l["worldX"],"y":l["worldY"],"width":l["pxWid"],"height":l["pxHei"],"bgColor":l["__bgColor"],"neighbourLevels":l["__neighbours"],"customFields":fields(l),"layers":layers,"entities":entities});
-            out.push((
+            batch.add(
                 dir.join(safe_name(s(l, "identifier"))?).join("data.json"),
-                bytes(&simple)?,
-            ));
+                &bytes(&simple)?,
+            )?;
             progress(index + 1, total);
         }
-        let mut paths = publish(out)?;
-        paths.extend(self.export_csv_with_progress(dir, |done, phase_total| {
+        self.stage_csv(dir, &mut batch, |done, phase_total| {
             if phase_total > 0 && done > 0 {
                 progress(count + done, total);
             }
-        })?);
+        })?;
         for (index, key) in keys.into_iter().enumerate() {
             let l = self.level(key).unwrap();
             let options = PngExportOptions {
@@ -361,19 +385,20 @@ impl Project {
                 include_background: self.json["exportLevelBg"].as_bool().unwrap_or(true),
                 file_pattern: Some("%layer_name".into()),
             };
-            paths.extend(self.export_level_png(
+            self.stage_level_png(
                 key,
                 &dir.join(safe_name(s(l, "identifier"))?),
                 &options,
                 true,
                 diagnostics,
-            )?);
+                &mut batch,
+            )?;
             progress(count * 2 + index + 1, total);
         }
         if total > 0 {
             progress(0, 0);
         }
-        Ok(paths)
+        batch.publish()
     }
     pub fn export_png(&self, dir: impl AsRef<Path>) -> Result<Vec<PathBuf>> {
         self.export_png_with_progress(dir, |_, _| {})
@@ -422,57 +447,58 @@ impl Project {
         progress: &mut impl FnMut(usize, usize),
         diagnostics: &mut Vec<String>,
     ) -> Result<Vec<PathBuf>> {
-        let mut paths = Vec::new();
+        let mut batch = ExportBatch::default();
         let keys = self.level_keys();
         let total = keys.len();
         if total > 0 {
             progress(0, total);
         }
         for (index, key) in keys.into_iter().enumerate() {
-            paths.extend(self.export_level_png(key, dir.as_ref(), options, false, diagnostics)?);
+            self.stage_level_png(key, dir.as_ref(), options, false, diagnostics, &mut batch)?;
             progress(index + 1, total);
         }
         if total > 0 {
             progress(0, 0);
         }
-        Ok(paths)
+        batch.publish()
     }
-    fn export_level_png(
+    fn stage_level_png(
         &self,
         key: LevelKey,
         dir: &Path,
         options: &PngExportOptions,
         simple: bool,
         diagnostics: &mut Vec<String>,
-    ) -> Result<Vec<PathBuf>> {
+        batch: &mut ExportBatch,
+    ) -> Result<()> {
         let l = self
             .level(key)
             .ok_or_else(|| Error::Invalid("missing external level".into()))?;
         let (w, h) = dimensions(l)?;
-        let mut out = Vec::new();
         let name = safe_name(s(l, "identifier"))?;
         let background = if options.include_background {
             self.render_background(l, diagnostics)?
         } else {
             RgbaImage::new(w, h)
         };
-        let mut combined =
-            if options.include_background && options.mode == PngExportMode::LayersAndLevels {
-                RgbaImage::from_pixel(w, h, self.level_background_color(l))
-            } else {
-                background.clone()
-            };
-        let mut premultiplied = false;
         if options.include_background && options.mode != PngExportMode::OneImagePerLevel {
-            out.push((
+            batch.add(
                 dir.join(if simple {
                     "_bg.png".into()
                 } else {
                     format!("{name}_bg.png")
                 }),
-                png(&background)?,
-            ));
+                &png(&background)?,
+            )?;
         }
+        let mut combined = match options.mode {
+            PngExportMode::OneImagePerLayer => None,
+            PngExportMode::LayersAndLevels if options.include_background => {
+                Some(RgbaImage::from_pixel(w, h, self.level_background_color(l)))
+            }
+            _ => Some(background),
+        };
+        let mut premultiplied = false;
         for li in arr(&l["layerInstances"]).iter().rev() {
             let def = self.layer_def(n(li, "layerDefUid")).unwrap_or(li);
             let typ = s(li, "__type");
@@ -492,9 +518,9 @@ impl Project {
                 let layer_file = options.mode != PngExportMode::OneImagePerLevel;
                 let (image, placeholder) =
                     self.render_tile_layer(l, li, if layer_file { opacity } else { 1. })?;
-                if options.mode != PngExportMode::OneImagePerLayer {
+                if let Some(combined) = &mut combined {
                     if placeholder && opacity > 0. && !premultiplied {
-                        premultiply(&mut combined);
+                        premultiply(combined);
                         premultiplied = true;
                     }
                     let alpha = if options.mode == PngExportMode::LayersAndLevels || placeholder {
@@ -502,10 +528,10 @@ impl Project {
                     } else {
                         1.
                     };
-                    composite(&mut combined, &image, alpha, premultiplied);
+                    composite(combined, &image, alpha, premultiplied);
                 }
                 if layer_file {
-                    out.push((dir.join(format!("{file}.png")), png(&image)?));
+                    batch.add(dir.join(format!("{file}.png")), &png(&image)?)?;
                 }
             }
             if typ == "IntGrid" && options.mode != PngExportMode::OneImagePerLevel {
@@ -527,10 +553,10 @@ impl Project {
                         }
                     }
                 }
-                out.push((dir.join(format!("{file}-int.png")), png(&img)?));
+                batch.add(dir.join(format!("{file}-int.png")), &png(&img)?)?;
             }
         }
-        if options.mode != PngExportMode::OneImagePerLayer {
+        if let Some(combined) = combined {
             let filename = if simple {
                 "_composite".into()
             } else if options.mode == PngExportMode::OneImagePerLevel {
@@ -543,9 +569,9 @@ impl Project {
             } else {
                 name.to_owned()
             };
-            out.push((dir.join(format!("{filename}.png")), png(&combined)?));
+            batch.add(dir.join(format!("{filename}.png")), &png(&combined)?)?;
         }
-        publish(out)
+        Ok(())
     }
     fn png_name(&self, key: LevelKey, li: &Value, pattern: &str) -> Result<String> {
         let l = self.level(key).unwrap();

@@ -653,7 +653,17 @@ impl EditorApp {
         });
     }
 
+    #[cfg(test)]
     fn set_project(&mut self, project: Project) {
+        let snapshot = project.filesystem_snapshot().ok();
+        self.install_project(project, snapshot);
+    }
+
+    fn install_project(
+        &mut self,
+        project: Project,
+        snapshot: Option<ldtk_core::FilesystemSnapshot>,
+    ) {
         self.open_rule_groups = project.json["defs"]["layers"]
             .as_array()
             .into_iter()
@@ -766,10 +776,7 @@ impl EditorApp {
         self.last_chance = None;
         self.atlas_selection = None;
         self.preview_tile = None;
-        self.file_snapshot = self
-            .project
-            .as_ref()
-            .and_then(|p| p.filesystem_snapshot().ok());
+        self.file_snapshot = snapshot;
         if let Some(project) = &self.project
             && let Some(path) = &project.path
         {

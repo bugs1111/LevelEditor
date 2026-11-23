@@ -2,6 +2,7 @@ use super::*;
 
 pub(super) struct LoadedProject {
     pub project: Project,
+    snapshot: Option<ldtk_core::FilesystemSnapshot>,
     pub migrated: bool,
     pub warnings: Vec<String>,
     pub backup_original: Option<PathBuf>,
@@ -102,6 +103,7 @@ pub(super) fn prepare_project(
         }
     }
     Ok(LoadedProject {
+        snapshot: project.filesystem_snapshot().ok(),
         project,
         migrated: migrated || !repairs.is_empty(),
         warnings,
@@ -145,6 +147,7 @@ impl EditorApp {
                 let mut project = Project::new();
                 project.save(&path).map_err(|e| e.to_string())?;
                 Ok(LoadedProject {
+                    snapshot: project.filesystem_snapshot().ok(),
                     project,
                     migrated: false,
                     warnings: Vec::new(),
@@ -196,7 +199,7 @@ impl EditorApp {
                         self.render_auto = true;
                         self.settings.value["showDetails"] = true.into();
                     }
-                    self.set_project(loaded.project);
+                    self.install_project(loaded.project, loaded.snapshot);
                     self.dirty = loaded.migrated && !read_only;
                     if self.dirty
                         && let Some(project) = &self.project
@@ -470,6 +473,7 @@ impl EditorApp {
                     let output = available_import_path(&path);
                     report.project.save(&output)?;
                     Ok(LoadedProject {
+                        snapshot: report.project.filesystem_snapshot().ok(),
                         project: report.project,
                         migrated: false,
                         warnings: report.warnings,
@@ -536,6 +540,7 @@ impl EditorApp {
                         .map_err(|e| e.to_string())?;
                 }
                 Ok(LoadedProject {
+                    snapshot: project.filesystem_snapshot().ok(),
                     project,
                     migrated,
                     warnings,
