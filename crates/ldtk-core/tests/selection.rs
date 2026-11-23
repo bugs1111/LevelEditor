@@ -110,6 +110,42 @@ fn tile_stacked_paint_raises_identical_tile_instead_of_duplicating_it() {
     assert_eq!(tiles[1]["t"], 0);
 }
 #[test]
+fn interleaved_tile_stacks_keep_draw_order_and_instance_metadata() {
+    let mut project = tiles();
+    let original = json!([
+        {"px":[16,0],"id":"a"}, {"px":[0,0],"t":1,"src":[16,0],"f":0,"id":"first","a":0.3},
+        {"px":[16,0],"id":"b"}, {"px":[0,0],"t":1,"src":[16,0],"f":0,"id":"second"},
+        {"px":[16,0],"id":"c"}, {"px":[0,0],"t":2,"id":"top"}
+    ]);
+    let ids = |p: &Project| {
+        p.layer(K, 0).unwrap()["gridTiles"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|tile| tile["id"].as_str().unwrap().to_owned())
+            .collect::<Vec<_>>()
+    };
+    project.layer_mut(K, 0).unwrap()["gridTiles"] = original.clone();
+    project
+        .paint_tile(K, 0, 0, 0, 2, [0, 16], 0, false)
+        .unwrap();
+    assert_eq!(ids(&project), ["a", "first", "b", "c"]);
+    assert_eq!(project.layer(K, 0).unwrap()["gridTiles"][1]["a"], 0.3);
+
+    project.layer_mut(K, 0).unwrap()["gridTiles"] = original;
+    project
+        .paint_tile_stacked(K, 0, 0, 0, 1, [16, 0], 0, false, true)
+        .unwrap();
+    assert_eq!(ids(&project), ["a", "b", "second", "c", "top", "first"]);
+    project
+        .paint_tile_stacked(K, 0, 0, 0, 0, [0, 0], 0, true, true)
+        .unwrap();
+    assert_eq!(ids(&project), ["a", "b", "second", "c", "top"]);
+    project.paint_tile(K, 0, 0, 0, 0, [0, 0], 0, true).unwrap();
+    assert_eq!(ids(&project), ["a", "b", "c"]);
+}
+
+#[test]
 fn batch_intgrid_paint_is_atomic_and_last_write_wins() {
     let mut p = Project::new();
     p.add_layer("Grid", "IntGrid", 16).unwrap();

@@ -270,9 +270,45 @@ fn gamemaker_matches_original_experimental_room_schema() {
     let room: Value =
         serde_json::from_slice(&fs::read(t.path().join("Level_0.yy")).unwrap()).unwrap();
     assert_eq!(room["resourceType"], "GMRoom");
+    let inheritance: Vec<_> = room
+        .as_object()
+        .unwrap()
+        .keys()
+        .filter(|key| key.starts_with("inherit"))
+        .map(String::as_str)
+        .collect();
+    assert_eq!(
+        inheritance,
+        ["inheritCode", "inheritLayers", "inheritCreationOrder"]
+    );
     assert_eq!(room["roomSettings"]["Width"], 32);
     assert_eq!(room["layers"][0]["resourceType"], "?");
 }
+#[test]
+fn late_gamemaker_error_keeps_existing_room_and_discards_staged_files() {
+    let mut p = project();
+    p.json["defs"]["tilesets"] = json!([{"identifier":"Atlas"}]);
+    let last = p.add_level(None, "Last", 32, 16).unwrap();
+    p.level_mut(last).unwrap()["layerInstances"] =
+        json!([{"__type":"Tiles", "__tilesetDefUid":42}]);
+    let dir = tempfile::tempdir().unwrap();
+    let room = dir.path().join("Level_0.yy");
+    fs::write(&room, b"previous export").unwrap();
+
+    let mut progress = Vec::new();
+    let error = p
+        .export_gamemaker_with_progress(dir.path(), |done, total| {
+            progress.push((done, total));
+            assert_eq!(fs::read(&room).unwrap(), b"previous export");
+            assert!(!dir.path().join("Atlas.yy").exists());
+        })
+        .unwrap_err();
+    assert!(error.to_string().contains("no tileset"));
+    assert_eq!(progress, [(0, 2), (1, 2)]);
+    assert_eq!(fs::read(room).unwrap(), b"previous export");
+    assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1);
+}
+
 #[test]
 fn a_late_level_failure_keeps_previous_png_and_simplified_exports() {
     let mut p = project();

@@ -1,4 +1,5 @@
 //! Filesystem exporters ported from the pinned LDtk exporters and ProjectSaver.
+mod gamemaker;
 mod tiled;
 
 use crate::project::StagedSave;
@@ -106,13 +107,6 @@ impl ExportBatch {
     }
 }
 
-fn publish(outputs: Vec<(PathBuf, Vec<u8>)>) -> Result<Vec<PathBuf>> {
-    let mut batch = ExportBatch::default();
-    for (path, bytes) in outputs {
-        batch.add(path, &bytes)?;
-    }
-    batch.publish()
-}
 fn bytes(v: &Value) -> Result<Vec<u8>> {
     serde_json::to_vec_pretty(v).map_err(|e| Error::Invalid(e.to_string()))
 }
@@ -789,78 +783,6 @@ fn dimensions(l: &Value) -> Result<(u32, u32)> {
         return Err(Error::Invalid("invalid export image dimensions".into()));
     }
     Ok((w as u32, h as u32))
-}
-impl Project {
-    /// This preserves upstream's experimental/incomplete GMS2 schema, including empty entity layers.
-    pub fn export_gamemaker(&self, dir: impl AsRef<Path>) -> Result<Vec<PathBuf>> {
-        self.export_gamemaker_with_progress(dir, |_, _| {})
-    }
-    pub fn export_gamemaker_with_progress(
-        &self,
-        dir: impl AsRef<Path>,
-        mut progress: impl FnMut(usize, usize),
-    ) -> Result<Vec<PathBuf>> {
-        let dir = dir.as_ref();
-        let mut out = Vec::new();
-        for td in arr(&self.json["defs"]["tilesets"]) {
-            out.push((dir.join(format!("{}.yy",safe_name(s(td,"identifier"))?)),bytes(&json!({"name":td["identifier"],"tags":[],"resourceType":"GMRTileset","resourceVersion":"1.0"}))?));
-        }
-        let keys = self.level_keys();
-        let total = keys.len();
-        if total > 0 {
-            progress(0, total);
-        }
-        for (index, key) in keys.into_iter().enumerate() {
-            let l = self
-                .level(key)
-                .ok_or_else(|| Error::Invalid("missing external level".into()))?;
-            let mut layers = Vec::new();
-            for (i, li) in arr(&l["layerInstances"]).iter().enumerate() {
-                let typ = s(li, "__type");
-                let mut layer = json!({"resourceVersion":"1.0","resourceType":match typ{"IntGrid"=>"?","Entities"=>"GMRInstanceLayer",_=>"GMRTileLayer"},"name":li["__identifier"],"tags":[],"properties":[],"layers":[],"gridX":li["__gridSize"],"gridY":li["__gridSize"],"effectType":null,"effectEnabled":true,"userdefinedDepth":false,"inheritLayerDepth":false,"hierarchyFrozen":false,"inheritLayerSettings":false,"depth":i*100,"visible":true});
-                if typ == "Entities" {
-                    layer["instances"] = json!([]);
-                }
-                if typ == "Tiles" {
-                    let cw = n(li, "__cWid").max(0) as usize;
-                    let ch = n(li, "__cHei").max(0) as usize;
-                    let grid = n(li, "__gridSize").max(1);
-                    let mut tiles = vec![2147483648u32; cw * ch];
-                    for t in arr(&li["gridTiles"]) {
-                        let x = t["px"][0].as_i64().unwrap_or(0) / grid;
-                        let y = t["px"][1].as_i64().unwrap_or(0) / grid;
-                        if x >= 0 && y >= 0 && (x as usize) < cw && (y as usize) < ch {
-                            let cell = &mut tiles[x as usize + y as usize * cw];
-                            if *cell == 2147483648 {
-                                *cell = n(t, "t") as u32;
-                            }
-                        }
-                    }
-                    layer["tiles"] =
-                        json!({"SerialiseWidth":cw,"SerialiseHeight":ch,"TileSerialiseData":tiles});
-                    layer["x"] = json!(n(li, "__pxTotalOffsetX"));
-                    layer["y"] = json!(n(li, "__pxTotalOffsetY"));
-                    let td = li["__tilesetDefUid"]
-                        .as_i64()
-                        .and_then(|uid| self.tileset(uid))
-                        .ok_or_else(|| Error::Invalid("GMS tile layer has no tileset".into()))?;
-                    layer["tilesetId"] =
-                        json!({"name":td["identifier"],"path":format!("{}.yy",s(td,"identifier"))});
-                }
-                layers.push(layer);
-            }
-            let room = json!({"name":l["identifier"],"resourceType":"GMRoom","resourceVersion":"1.0","tags":[],"parent":{"name":"","path":""},"isDnd":false,"inheritCode":false,"inheritLayers":false,"inheritCreationOrder":false,"instanceCreationOrder":[],"volume":1,"creationCodeFile":"","sequenceId":null,"layers":layers,"views":[],"physicsSettings":{"inheritPhysicsSettings":false,"PhysicsWorld":false,"PhysicsWorldGravityX":0,"PhysicsWorldGravityY":10,"PhysicsWorldPixToMetres":0.1},"roomSettings":{"Width":l["pxWid"],"Height":l["pxHei"],"persistent":false,"inheritRoomSettings":false},"viewSettings":{"enableViews":false,"inheritViewSettings":false,"clearDisplayBuffer":true,"clearViewBackground":false}});
-            out.push((
-                dir.join(format!("{}.yy", safe_name(s(l, "identifier"))?)),
-                bytes(&room)?,
-            ));
-            progress(index + 1, total);
-        }
-        if total > 0 {
-            progress(0, 0);
-        }
-        publish(out)
-    }
 }
 /// Decode project images. Aseprite frames are packed into LDtk's square atlas grid.
 pub fn load_image_rgba(path: &Path) -> Result<RgbaImage> {

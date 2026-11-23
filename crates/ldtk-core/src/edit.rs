@@ -351,84 +351,64 @@ impl Project {
             .get("gridTiles")
             .and_then(Value::as_array)
             .ok_or_else(|| invalid("gridTiles must be an array"))?;
-        if tiles.iter().any(|tile| {
-            !tile.is_object()
-                || tile
-                    .get("px")
-                    .and_then(Value::as_array)
-                    .is_none_or(|p| p.len() != 2 || p.iter().any(|v| v.as_i64().is_none()))
-        }) {
-            return Err(invalid("tile pixel coordinates must be integer pairs"));
+        let px = [x * grid, y * grid];
+        let target = px.map(i64::from);
+        let mut indices = Vec::new();
+        for (index, tile) in tiles.iter().enumerate() {
+            let coords = tile["px"]
+                .as_array()
+                .and_then(|coords| match coords.as_slice() {
+                    [x, y] => Some([x.as_i64()?, y.as_i64()?]),
+                    _ => None,
+                })
+                .ok_or_else(|| invalid("tile pixel coordinates must be integer pairs"))?;
+            if coords == target {
+                indices.push(index);
+            }
         }
-        let px = json!([x * grid, y * grid]);
-        let indices: Vec<usize> = tiles
-            .iter()
-            .enumerate()
-            .filter_map(|(i, tile)| (tile["px"] == px).then_some(i))
-            .collect();
         if erase && indices.is_empty() {
             return Ok(false);
         }
-        if stack && erase {
-            self.layer_mut(key, layer_index).expect("validated layer")["gridTiles"]
-                .as_array_mut()
-                .expect("validated tiles")
-                .remove(*indices.last().expect("nonempty stack"));
-            return Ok(true);
-        }
-        if !erase && indices.len() == 1 {
-            let tile = &tiles[indices[0]];
+        if !erase && let [index] = indices.as_slice() {
+            let tile = &tiles[*index];
             if tile["t"] == tile_id && tile["src"] == json!(src) && tile["f"] == flips {
                 return Ok(false);
             }
         }
-        if stack && !erase {
-            let mut replacement = indices
+        let matching = if stack && !erase {
+            indices
                 .iter()
-                .find_map(|&i| {
-                    let tile = &tiles[i];
-                    (tile["t"] == tile_id && tile["f"] == flips).then(|| tile.clone())
-                })
-                .unwrap_or_else(|| json!({"a":1,"d":[y*width+x]}));
-            replacement["px"] = px.clone();
-            replacement["src"] = json!(src);
-            replacement["t"] = json!(tile_id);
-            replacement["f"] = json!(flips);
-            let tiles = self.layer_mut(key, layer_index).expect("validated layer")["gridTiles"]
-                .as_array_mut()
-                .expect("validated tiles");
-            if let Some(i) = tiles
-                .iter()
-                .position(|t| t["px"] == px && t["t"] == tile_id && t["f"] == flips)
-            {
-                tiles.remove(i);
-            }
-            tiles.push(replacement);
-            return Ok(true);
-        }
-        let mut replacement = indices
-            .first()
-            .map(|&i| tiles[i].clone())
-            .unwrap_or_else(|| json!({"a":1,"d":[y*width+x]}));
-        if !erase {
-            replacement["px"] = px;
-            replacement["src"] = json!(src);
-            replacement["t"] = json!(tile_id);
-            replacement["f"] = json!(flips);
-        }
+                .copied()
+                .find(|&i| tiles[i]["t"] == tile_id && tiles[i]["f"] == flips)
+        } else {
+            None
+        };
         let tiles = self.layer_mut(key, layer_index).expect("validated layer")["gridTiles"]
             .as_array_mut()
             .expect("validated tiles");
-        if let Some(&first) = indices.first() {
-            for &index in indices.iter().rev() {
-                tiles.remove(index);
+        if erase {
+            if stack {
+                tiles.remove(*indices.last().expect("nonempty stack"));
+            } else {
+                remove_tile_indices(tiles, &indices);
             }
-            if !erase {
-                tiles.insert(first, replacement);
-            }
-        } else {
-            tiles.push(replacement);
+            return Ok(true);
         }
+
+        let tile = if !stack && let Some((&first, rest)) = indices.split_first() {
+            remove_tile_indices(tiles, rest);
+            &mut tiles[first]
+        } else {
+            let tile = matching
+                .map(|index| tiles.remove(index))
+                .unwrap_or_else(|| json!({"a":1,"d":[y*width+x]}));
+            tiles.push(tile);
+            tiles.last_mut().expect("just pushed")
+        };
+        tile["px"] = json!(px);
+        tile["src"] = json!(src);
+        tile["t"] = json!(tile_id);
+        tile["f"] = json!(flips);
         Ok(true)
     }
 
@@ -658,6 +638,25 @@ fn build_entity(project: &Project, definition: &Value, uid: i64) -> Result<Value
         "__smartColor":definition.get("color").cloned().unwrap_or(json!("#FFFFFF")),
         "iid":uuid::Uuid::new_v4().to_string(),"width":width,"height":height,"defUid":uid,"px":[0,0],"fieldInstances":fields
     }))
+}
+
+/// Indices are in draw order. Compact once when a cell contains multiple tiles.
+fn remove_tile_indices(tiles: &mut Vec<Value>, indices: &[usize]) {
+    match indices {
+        [] => {}
+        [index] => {
+            tiles.remove(*index);
+        }
+        _ => {
+            let mut remove = indices.iter().copied().peekable();
+            let mut index = 0;
+            tiles.retain(|_| {
+                let keep = remove.next_if_eq(&index).is_none();
+                index += 1;
+                keep
+            });
+        }
+    }
 }
 
 fn active_auto_rules(definition: &Value) -> bool {
