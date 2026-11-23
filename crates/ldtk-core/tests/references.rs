@@ -107,3 +107,33 @@ fn move_limited_entity_across_layers_rewrites_reference_metadata() {
         p.layer(KEY, 0).unwrap()["iid"]
     );
 }
+
+#[test]
+fn moving_an_entity_refreshes_legacy_and_array_fields_in_definition_order() {
+    let (mut p, _, iid) = populated();
+    let scalar = p
+        .add_field_definition(None, "Target", "EntityRef", false)
+        .unwrap();
+    let array = p
+        .add_field_definition(None, "Targets", "EntityRef", true)
+        .unwrap();
+    let target = json!({"id":"V_String","params":[iid],"extra":true});
+    let missing = json!({"id":"V_String","params":["missing"]});
+    p.json["levels"][1]["fieldInstances"] = json!([
+        {"defUid":array, "realEditorValues":[target, missing, null, target]},
+        {"defUid":scalar, "realEditorValue":target}
+    ]);
+
+    p.move_entity(KEY, 0, 0, 48, 32).unwrap();
+    let fields = &p.json["levels"][1]["fieldInstances"];
+    let reference = json!({
+        "entityIid":iid, "layerIid":p.layer(KEY,0).unwrap()["iid"],
+        "levelIid":p.level(KEY).unwrap()["iid"], "worldIid":p.json["dummyWorldIid"]
+    });
+    assert_eq!(fields[0]["defUid"], scalar);
+    assert_eq!(fields[0]["__value"], reference);
+    assert_eq!(fields[0]["realEditorValues"], json!([target]));
+    assert_eq!(fields[1]["defUid"], array);
+    assert_eq!(fields[1]["__value"], json!([reference, null, reference]));
+    assert_eq!(fields[1]["realEditorValues"], json!([target, null, target]));
+}

@@ -2,7 +2,7 @@
 use crate::workflow::{alloc_uid, invalid, valid_identifier, visit_fields_mut};
 use crate::{Error, LevelKey, Project, Result};
 use serde_json::{Value, json};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 /// One source editor array action, preserving every untouched ValueWrapper.
 #[derive(Debug, Clone, PartialEq)]
@@ -222,7 +222,7 @@ fn wrapper(d: &Value, v: &Value, depth: usize) -> Result<Value> {
     }
     Ok(json!({"id":id,"params":[raw]}))
 }
-fn value_from_raw(p: &Project, d: &Value, raw: Value) -> Result<Value> {
+fn value_from_raw(d: &Value, raw: Value) -> Result<Value> {
     if raw.is_null() {
         return Ok(Value::Null);
     }
@@ -280,34 +280,6 @@ fn value_from_raw(p: &Project, d: &Value, raw: Value) -> Result<Value> {
                 return Err(invalid("invalid coordinate count"));
             }
         }
-        "EntityRef" => {
-            let id = raw
-                .as_str()
-                .ok_or_else(|| invalid("invalid entity reference wrapper"))?;
-            let mut found = None;
-            for key in p.level_keys() {
-                let level = p.level(key).ok_or_else(|| invalid("level not loaded"))?;
-                if let Some(layers) = level["layerInstances"].as_array() {
-                    for l in layers {
-                        if l["entityInstances"]
-                            .as_array()
-                            .is_some_and(|es| es.iter().any(|e| e["iid"] == id))
-                        {
-                            let wiid = key.world.map_or_else(
-                                || p.json["dummyWorldIid"].clone(),
-                                |w| p.json["worlds"][w]["iid"].clone(),
-                            );
-                            found = Some(
-                                json!({"entityIid":id,"layerIid":l["iid"],"levelIid":level["iid"],"worldIid":wiid}),
-                            );
-                        }
-                    }
-                }
-            }
-            found.unwrap_or_else(
-                || json!({"entityIid":id,"layerIid":"?","levelIid":"?","worldIid":"?"}),
-            )
-        }
         s if s.starts_with("LocalEnum.") || s.starts_with("ExternEnum.") => raw,
         _ => json!(escape(
             raw.as_str()
@@ -315,26 +287,52 @@ fn value_from_raw(p: &Project, d: &Value, raw: Value) -> Result<Value> {
         )),
     })
 }
-fn enum_definition<'a>(p: &'a Project, d: &Value) -> Option<&'a Value> {
-    let name = base(d).split_once('.').map(|(_, name)| name).unwrap_or("");
-    let uid = d["type"]
-        .as_str()
-        .and_then(|s| s.strip_prefix("F_Enum("))
-        .and_then(|s| s.strip_suffix(')'))
-        .and_then(|s| s.parse::<i64>().ok());
-    ["enums", "externalEnums"].iter().find_map(|group| {
-        p.json["defs"][*group]
+#[derive(Clone, Copy)]
+struct FieldEnums<'a> {
+    groups: [&'a Value; 2],
+    identifier_style: &'a str,
+}
+
+impl<'a> FieldEnums<'a> {
+    fn from_project(p: &'a Project) -> Self {
+        Self {
+            groups: [&p.json["defs"]["enums"], &p.json["defs"]["externalEnums"]],
+            identifier_style: p.json["identifierStyle"].as_str().unwrap_or("Capitalize"),
+        }
+    }
+
+    fn definitions(self) -> impl Iterator<Item = &'a Value> {
+        self.groups
+            .into_iter()
+            .filter_map(Value::as_array)
+            .flatten()
+    }
+
+    fn field_value(self, d: &Value, value: &Value) -> Option<&'a Value> {
+        let name = base(d).split_once('.').map(|(_, name)| name).unwrap_or("");
+        let uid = d["type"]
+            .as_str()
+            .and_then(|s| s.strip_prefix("F_Enum("))
+            .and_then(|s| s.strip_suffix(')'))
+            .and_then(|s| s.parse::<i64>().ok());
+        let definition = self
+            .definitions()
+            .find(|e| uid.map_or_else(|| e["identifier"] == name, |uid| e["uid"] == uid))?;
+        self.value(definition["uid"].as_i64()?, value.as_str()?)
+    }
+
+    fn value(self, uid: i64, value: &str) -> Option<&'a Value> {
+        let definition = self.definitions().find(|e| e["uid"] == uid)?;
+        let value = if definition["externalRelPath"].is_string() {
+            value.to_owned()
+        } else {
+            crate::naming::cleanup(value, self.identifier_style)
+        };
+        definition["values"]
             .as_array()?
             .iter()
-            .find(|e| uid.map_or_else(|| e["identifier"] == name, |uid| e["uid"] == uid))
-    })
-}
-fn enum_field_value<'a>(p: &'a Project, d: &Value, value: &Value) -> Option<&'a Value> {
-    let uid = enum_definition(p, d)?["uid"].as_i64()?;
-    p.enum_value(uid, value.as_str()?)
-}
-fn enum_has_value(p: &Project, d: &Value, value: &Value) -> bool {
-    enum_field_value(p, d, value).is_some()
+            .find(|v| v["id"] == value)
+    }
 }
 impl Project {
     /// The source level tint before or after blending it 45% toward white.
@@ -366,7 +364,9 @@ impl Project {
                     kind if kind.starts_with("LocalEnum.") || kind.starts_with("ExternEnum.") => {
                         values
                             .iter()
-                            .find_map(|value| enum_field_value(self, def, value))
+                            .find_map(|value| {
+                                FieldEnums::from_project(self).field_value(def, value)
+                            })
                             .and_then(|value| parse_color(&value["color"]))
                     }
                     _ => None,
@@ -403,24 +403,15 @@ impl Project {
     /// Original EnumDef.getValue: local enums normalize a lookup, external enums compare verbatim.
     /// Stored legacy wrappers keep their original strings when this lookup succeeds.
     pub fn enum_value(&self, uid: i64, value: &str) -> Option<&Value> {
-        let definition = ["enums", "externalEnums"].iter().find_map(|kind| {
-            self.json["defs"][*kind]
-                .as_array()?
-                .iter()
-                .find(|e| e["uid"] == uid)
-        })?;
-        let value = if definition["externalRelPath"].is_string() {
-            value.to_owned()
-        } else {
-            self.cleanup_identifier(value)
-        };
-        definition["values"]
-            .as_array()?
-            .iter()
-            .find(|v| v["id"] == value)
+        FieldEnums::from_project(self).value(uid, value)
     }
 }
-fn refresh_field(p: &Project, d: &Value, f: &mut Value) -> Result<()> {
+fn refresh_field(
+    enums: FieldEnums<'_>,
+    refs: &BTreeMap<String, Value>,
+    d: &Value,
+    f: &mut Value,
+) -> Result<()> {
     let values = f["realEditorValues"]
         .as_array()
         .cloned()
@@ -437,25 +428,35 @@ fn refresh_field(p: &Project, d: &Value, f: &mut Value) -> Result<()> {
         if base(d).contains("Enum.")
             && let Some(value) = values.get_mut(i)
             && !value.is_null()
-            && !enum_has_value(p, d, &wrapper_value(value, 2))
+            && enums.field_value(d, &wrapper_value(value, 2)).is_none()
         {
             *value = Value::Null;
         }
         let v = values.get(i).unwrap_or(&Value::Null);
         out.push(if v.is_null() {
-            p.field_default_value(d)?
+            field_default_value(enums, d)?
         } else {
-            value_from_raw(p, d, wrapper_value(v, 2))?
+            let raw = wrapper_value(v, 2);
+            if base(d) == "EntityRef" && !raw.is_null() {
+                let iid = raw
+                    .as_str()
+                    .ok_or_else(|| invalid("invalid entity reference wrapper"))?;
+                refs.get(iid).cloned().unwrap_or_else(
+                    || json!({"entityIid":iid, "layerIid":"?", "levelIid":"?", "worldIid":"?"}),
+                )
+            } else {
+                value_from_raw(d, raw)?
+            }
         });
     }
     f["__identifier"] = d["identifier"].clone();
     f["__type"] = d["__type"].clone();
     f["__value"] = if array(d) {
-        json!(out)
+        Value::Array(out)
     } else {
         out.into_iter().next().unwrap_or(Value::Null)
     };
-    f["realEditorValues"] = json!(values);
+    f["realEditorValues"] = Value::Array(values);
     f["__tile"] = Value::Null;
     if d["editorDisplayMode"] == "EntityTile" || d["editorDisplayMode"] == "LevelTile" {
         let v = if array(d) {
@@ -466,22 +467,24 @@ fn refresh_field(p: &Project, d: &Value, f: &mut Value) -> Result<()> {
         if base(d) == "Tile" {
             f["__tile"] = v.clone();
         } else if base(d).contains("Enum.") {
-            f["__tile"] = enum_field_value(p, d, v)
+            f["__tile"] = enums
+                .field_value(d, v)
                 .map(|value| value["tileRect"].clone())
                 .unwrap_or(Value::Null);
         }
     }
     Ok(())
 }
-pub(crate) fn refresh_field_values(p: &mut Project) -> Result<()> {
+pub(crate) fn refresh_field_values(p: &mut Project, refs: &BTreeMap<String, Value>) -> Result<()> {
     for definition in field_defs(p) {
         if base(&definition).contains("Enum.")
             && !definition["defaultOverride"].is_null()
-            && !enum_has_value(
-                p,
-                &definition,
-                &wrapper_value(&definition["defaultOverride"], 1),
-            )
+            && FieldEnums::from_project(p)
+                .field_value(
+                    &definition,
+                    &wrapper_value(&definition["defaultOverride"], 1),
+                )
+                .is_none()
             && let Some(uid) = definition["uid"].as_i64()
             && let Some(definition) = field_def_mut(p, uid)
         {
@@ -489,16 +492,25 @@ pub(crate) fn refresh_field_values(p: &mut Project) -> Result<()> {
         }
     }
     let defs = field_defs(p);
-    let context = p.clone();
+    let mut order = HashMap::with_capacity(defs.len());
+    for (index, def) in defs.iter().enumerate() {
+        order.entry(&def["uid"]).or_insert(index);
+    }
+    // Field conversion reads enum definitions while mutating the level documents.
+    let enums = FieldEnums::from_project(p);
+    let groups = enums.groups.map(Value::clone);
+    let style = enums.identifier_style.to_owned();
+    let enums = FieldEnums {
+        groups: groups.each_ref(),
+        identifier_style: &style,
+    };
     for key in p.level_keys() {
         let level = p
             .level_mut(key)
             .ok_or_else(|| invalid("level not loaded"))?;
         let sort = |fields: &mut Vec<Value>| {
             fields.sort_by_key(|f| {
-                defs.iter()
-                    .position(|d| d["uid"] == f["defUid"])
-                    .unwrap_or(usize::MAX)
+                order.get(&f["defUid"]).copied().unwrap_or(usize::MAX)
             });
         };
         if let Some(fields) = level["fieldInstances"].as_array_mut() {
@@ -517,8 +529,8 @@ pub(crate) fn refresh_field_values(p: &mut Project) -> Result<()> {
         }
         let mut error = None;
         visit_fields_mut(level, |f| {
-            if let Some(d) = defs.iter().find(|d| d["uid"] == f["defUid"])
-                && let Err(e) = refresh_field(&context, d, f)
+            if let Some(&index) = order.get(&f["defUid"])
+                && let Err(e) = refresh_field(enums, refs, &defs[index], f)
             {
                 error = Some(e);
             }
@@ -562,35 +574,39 @@ fn fields_at_mut<'a>(
             .ok_or_else(|| invalid("level fields missing"))
     }
 }
+fn field_default_value(enums: FieldEnums<'_>, d: &Value) -> Result<Value> {
+    let kind = base(d);
+    if ["Point", "FilePath", "EntityRef"].contains(&kind) {
+        return Ok(Value::Null);
+    }
+    let raw = if !d["defaultOverride"].is_null() {
+        wrapper_value(&d["defaultOverride"], 1)
+    } else if d["canBeNull"] == true {
+        Value::Null
+    } else {
+        match kind {
+            "Int" | "Float" | "Color" => json!(0),
+            "Bool" => json!(false),
+            "String" | "Multilines" => json!(""),
+            _ => Value::Null,
+        }
+    };
+    if kind.contains("Enum.") && !raw.is_null() {
+        return Ok(enums
+            .field_value(d, &raw)
+            .map(|value| value["id"].clone())
+            .unwrap_or(Value::Null));
+    }
+    value_from_raw(d, raw)
+}
 impl Project {
     /// Resolve the default value for a scalar field or one element of an array field.
     pub fn field_default_value(&self, d: &Value) -> Result<Value> {
-        let kind = base(d);
-        if ["Point", "FilePath", "EntityRef"].contains(&kind) {
-            return Ok(Value::Null);
-        }
-        let raw = if !d["defaultOverride"].is_null() {
-            wrapper_value(&d["defaultOverride"], 1)
-        } else if d["canBeNull"] == true {
-            Value::Null
-        } else {
-            match kind {
-                "Int" | "Float" | "Color" => json!(0),
-                "Bool" => json!(false),
-                "String" | "Multilines" => json!(""),
-                _ => Value::Null,
-            }
-        };
-        if kind.contains("Enum.") && !raw.is_null() {
-            return Ok(enum_field_value(self, d, &raw)
-                .map(|value| value["id"].clone())
-                .unwrap_or(Value::Null));
-        }
-        value_from_raw(self, d, raw)
+        field_default_value(FieldEnums::from_project(self), d)
     }
     pub fn make_field_instance(&self, d: &Value) -> Result<Value> {
         let mut f = json!({"defUid":d["uid"],"__identifier":d["identifier"],"__type":d["__type"],"__value":null,"__tile":null,"realEditorValues":[]});
-        refresh_field(self, d, &mut f)?;
+        refresh_field(FieldEnums::from_project(self), &BTreeMap::new(), d, &mut f)?;
         Ok(f)
     }
     pub fn set_field_value(
@@ -694,7 +710,6 @@ impl Project {
                     *value = Value::Null;
                 }
             }
-            refresh_field(p, &d, &mut f)?;
             *fields_at_mut(p, key, entity)?
                 .iter_mut()
                 .find(|f| f["defUid"] == uid)
@@ -764,7 +779,6 @@ impl Project {
                 .ok_or_else(|| invalid("field instance not found"))?;
             let old = f.clone();
             f["realEditorValues"] = json!(wrappers);
-            refresh_field(p, &d, &mut f)?;
             *fields_at_mut(p, key, entity)?
                 .iter_mut()
                 .find(|f| f["defUid"] == uid)

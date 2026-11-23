@@ -839,16 +839,40 @@ impl Project {
             p.refresh_auto_and_derived()
         })
     }
+    fn entity_reference_index(&self, keys: &[LevelKey]) -> Result<BTreeMap<String, Value>> {
+        let mut refs = BTreeMap::new();
+        for &key in keys {
+            let level = self
+                .level(key)
+                .ok_or_else(|| invalid("all external levels must be loaded"))?;
+            let world_iid = match key.world {
+                Some(world) => &self.json["worlds"][world]["iid"],
+                None => &self.json["dummyWorldIid"],
+            };
+            for layer in level["layerInstances"].as_array().into_iter().flatten() {
+                for entity in layer["entityInstances"].as_array().into_iter().flatten() {
+                    let Some(iid) = entity["iid"].as_str() else {
+                        continue;
+                    };
+                    let reference = json!({
+                        "entityIid": iid, "layerIid": layer["iid"],
+                        "levelIid": level["iid"], "worldIid": world_iid
+                    });
+                    if refs.insert(iid.to_owned(), reference).is_some() {
+                        return Err(invalid("duplicate entity IID"));
+                    }
+                }
+            }
+        }
+        Ok(refs)
+    }
+
     /// Refresh exported values after structural edits, including references in other external documents.
     pub fn refresh_derived_data(&mut self) -> Result<()> {
         self.refresh_level_names()?;
-        crate::field_edit::refresh_field_values(self)?;
         let keys = self.level_keys();
-        for key in &keys {
-            if self.level(*key).is_none() {
-                return Err(invalid("all external levels must be loaded"));
-            }
-        }
+        let refs = self.entity_reference_index(&keys)?;
+        crate::field_edit::refresh_field_values(self, &refs)?;
         let layer_defs = self.json["defs"]["layers"]
             .as_array()
             .cloned()
@@ -880,14 +904,8 @@ impl Project {
             .as_str()
             .or_else(|| self.json["bgColor"].as_str())
             .map(str::to_owned);
-        let mut refs = BTreeMap::new();
         for key in &keys {
             let world = container(self, key.world)?;
-            let world_iid = if key.world.is_some() {
-                world["iid"].clone()
-            } else {
-                self.json["dummyWorldIid"].clone()
-            };
             let free = world["worldLayout"]
                 .as_str()
                 .is_none_or(|l| l == "Free" || l == "GridVania");
@@ -895,7 +913,6 @@ impl Project {
             if let Some(bg) = level["bgColor"].as_str().or(default_bg.as_deref()) {
                 level["__bgColor"] = json!(bg);
             }
-            let level_iid = level["iid"].clone();
             let uid = level["uid"].clone();
             let wx = level["worldX"].as_i64().unwrap_or(0);
             let wy = level["worldY"].as_i64().unwrap_or(0);
@@ -924,7 +941,6 @@ impl Project {
                             .unwrap_or(Value::Null);
                     }
                     layer["levelId"] = uid.clone();
-                    let liid = layer["iid"].clone();
                     let g = layer["__gridSize"].as_i64().unwrap_or(1).max(1);
                     if let Some(entities) = layer["entityInstances"].as_array_mut() {
                         for e in entities {
@@ -964,7 +980,6 @@ impl Project {
                                 e.remove("__worldX");
                                 e.remove("__worldY");
                             }
-                            if let Some(i) = e["iid"].as_str() && refs.insert(i.to_owned(),json!({"entityIid":i,"layerIid":liid,"levelIid":level_iid,"worldIid":world_iid})).is_some(){return Err(invalid("duplicate entity IID"));}
                         }
                     }
                 }
