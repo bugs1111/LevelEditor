@@ -395,28 +395,141 @@ pub(super) fn source_tooltip(response: &egui::Response, text: &str, keys: &[&str
     });
 }
 
-fn icon(
+fn canvas_option_heading(ui: &mut egui::Ui, title: &str, color: Color32) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(34., 18.), Sense::hover());
+    ui.painter().text(
+        rect.center(),
+        Align2::CENTER_CENTER,
+        locale::tr(ui, title),
+        FontId::new(12., egui::FontFamily::Name("panel-title".into())),
+        color,
+    );
+    response
+}
+
+fn canvas_option(
     ui: &mut egui::Ui,
     source: egui::ImageSource<'static>,
-    size: Vec2,
-    fill: Color32,
+    active: bool,
+    supported: bool,
+    visual: bool,
     tip: &str,
     keys: &[&str],
-    tip_right: bool,
 ) -> egui::Response {
-    let response = ui
-        .scope(|ui| {
-            ui.spacing_mut().button_padding = Vec2::ZERO;
-            ui.add_sized(
-                size,
-                egui::Button::image(egui::Image::new(source).fit_to_exact_size(Vec2::splat(22.0)))
-                    .fill(fill)
-                    .corner_radius(0)
-                    .stroke(Stroke::NONE),
-            )
-        })
-        .inner;
-    source_tooltip(&response, tip, keys, tip_right);
+    let (rect, response) = ui.allocate_exact_size(Vec2::splat(34.), Sense::click());
+    let label = tip
+        .trim_start_matches("**")
+        .split("**")
+        .next()
+        .unwrap_or(tip);
+    response.widget_info(|| {
+        egui::WidgetInfo::selected(
+            egui::WidgetType::Checkbox,
+            true,
+            active,
+            locale::tr(ui, label),
+        )
+    });
+    let (fill, border, glow, faded_icon) = match (visual, active) {
+        (true, true) => (
+            [101, 148, 255],
+            [141, 211, 255],
+            [101, 148, 255],
+            [255, 255, 255],
+        ),
+        (true, false) => (
+            [30, 54, 111],
+            [101, 148, 255],
+            [101, 148, 255],
+            [76, 112, 201],
+        ),
+        (false, true) => (
+            [60, 97, 72],
+            [207, 221, 64],
+            [121, 221, 138],
+            [255, 255, 255],
+        ),
+        (false, false) => (
+            [39, 63, 47],
+            [94, 171, 107],
+            [121, 221, 138],
+            [199, 205, 98],
+        ),
+    };
+    let rgb = |[r, g, b]: [u8; 3]| Color32::from_rgb(r, g, b);
+    let painter = ui.painter();
+    let opacity = if active { 1. } else { 0.66 };
+    if active {
+        painter.add(
+            egui::epaint::Shadow {
+                offset: [0, 0],
+                blur: 4,
+                spread: 0,
+                color: rgb(glow),
+            }
+            .as_shape(rect, 3.),
+        );
+    }
+    painter.rect_filled(rect, 3., rgb(fill).gamma_multiply(opacity));
+    if !supported {
+        egui::Image::new(egui::include_image!("../../assets/img/stripes.png"))
+            .texture_options(egui::TextureOptions::NEAREST_REPEAT)
+            .uv(Rect::from_min_size(egui::Pos2::ZERO, rect.size() / 8.))
+            .tint(Color32::WHITE.gamma_multiply(opacity))
+            .corner_radius(3)
+            .paint_at(ui, rect);
+    }
+    if active {
+        for inset in 1..=10 {
+            painter.rect_stroke(
+                rect.shrink(inset as f32),
+                (3 - inset).max(0) as f32,
+                Stroke::new(1., rgb(border).gamma_multiply((12 - inset) as f32 / 16.)),
+                egui::StrokeKind::Inside,
+            );
+        }
+    }
+    let border = if response.hovered() && supported {
+        Color32::WHITE
+    } else {
+        rgb(border)
+    };
+    painter.rect_stroke(
+        rect,
+        3.,
+        Stroke::new(1., border.gamma_multiply(opacity)),
+        egui::StrokeKind::Inside,
+    );
+    let icon_opacity = if !supported {
+        0.2
+    } else if active || visual {
+        1.
+    } else {
+        0.6
+    };
+    egui::Image::new(source)
+        .tint(rgb(faded_icon).gamma_multiply(icon_opacity))
+        .paint_at(ui, Rect::from_center_size(rect.center(), Vec2::splat(24.)));
+    let response = response.on_hover_cursor(if supported {
+        egui::CursorIcon::PointingHand
+    } else {
+        egui::CursorIcon::NotAllowed
+    });
+    // The source rebuilds the option tips after a click. Hovering again requires re-entering the row.
+    let tooltip_lock = response.id.with("tooltip-dismissed");
+    let contains_pointer = response.contains_pointer();
+    let clicked = response.clicked();
+    let dismissed = ui.data_mut(|data| {
+        if !contains_pointer {
+            data.remove::<bool>(tooltip_lock);
+        } else if clicked {
+            data.insert_temp(tooltip_lock, true);
+        }
+        data.get_temp::<bool>(tooltip_lock).unwrap_or(false)
+    });
+    if !dismissed {
+        source_tooltip(&response, tip, keys, true);
+    }
     response
 }
 
@@ -1469,22 +1582,25 @@ impl EditorApp {
         if self.project.is_none() || self.zen && (!self.zen_sidebar.revealed || self.world) {
             return;
         }
+        let tiles = self
+            .selected
+            .and_then(|key| self.project.as_ref()?.layer(key, self.layer))
+            .is_some_and(|layer| layer["__type"] == "Tiles");
         egui::Area::new(egui::Id::new("editing-options"))
             .fixed_pos(rect.left_top() + egui::vec2(0.0, 46.0))
             .order(egui::Order::Foreground)
+            .fade_in(false)
             .interactable(self.camera_drag.is_none())
-            .show(ctx, |ui| {
-                ui.spacing_mut().item_spacing = egui::vec2(0.0, 2.0);
-                ui.set_width(34.0);
-                let label_font = FontId::new(12., egui::FontFamily::Name("panel-title".into()));
-                ui.add(
-                    egui::Label::new(
-                        RichText::new(locale::tr(ui, "Visuals"))
-                            .font(label_font.clone())
-                            .color(Color32::from_rgb(94, 146, 240)),
-                    )
-                    .extend(),
-                )
+            .show(ctx, |parent| {
+                let mut frame = egui::Frame::new()
+                    .fill(theme::DARK)
+                    .inner_margin(egui::Margin { left: 0, right: 3, top: 3, bottom: 3 })
+                    .corner_radius(egui::CornerRadius { nw: 0, ne: 4, sw: 0, se: 4 })
+                    .begin(parent);
+                let ui = &mut frame.content_ui;
+                ui.spacing_mut().item_spacing = egui::vec2(0., 1.);
+                ui.set_width(34.);
+                canvas_option_heading(ui, "Visuals", Color32::from_rgb(101, 148, 255))
                 .on_hover_ui(|ui| {
                     let cache = self.assets.stats();
                     ui.set_max_width(ui.spacing().tooltip_width);
@@ -1510,14 +1626,22 @@ impl EditorApp {
                         0,
                     ),
                     (
-                        egui::include_image!("../../assets/icons/gridOn.svg"),
+                        if self.grid {
+                            egui::include_image!("../../assets/icons/gridOn.svg")
+                        } else {
+                            egui::include_image!("../../assets/icons/gridOff.svg")
+                        },
                         self.grid,
                         "**Grid** Show the layer grid. In supported layer types, hiding the grid will also allow free positioning of elements.",
                         &["G"][..],
                         1,
                     ),
                     (
-                        egui::include_image!("../../assets/icons/showDetailsOn.svg"),
+                        if self.details {
+                            egui::include_image!("../../assets/icons/showDetailsOn.svg")
+                        } else {
+                            egui::include_image!("../../assets/icons/showDetailsOff.svg")
+                        },
                         self.details,
                         "**Show/hide details** When enabled, shows all elements in layers (tiles, entities, intGrid etc.), or only tiles otherwise.",
                         if cfg!(target_os = "macos") { &["SHIFT", "H"][..] } else { &["CTRL", "H"][..] },
@@ -1545,19 +1669,7 @@ impl EditorApp {
                         5,
                     ),
                 ] {
-                    if icon(
-                        ui,
-                        source,
-                        Vec2::splat(34.0),
-                        if enabled {
-                            Color32::from_rgb(94, 146, 240)
-                        } else {
-                            Color32::from_rgb(34, 50, 87)
-                        },
-                        tip,
-                        keys,
-                        true,
-                    )
+                    if canvas_option(ui, source, enabled, action != 5 || tiles, true, tip, keys)
                     .clicked()
                     {
                         match action {
@@ -1565,57 +1677,48 @@ impl EditorApp {
                                 self.toggle_zen_mode(ctx);
                                 self.zen_sidebar.revealed = self.zen;
                             }
-                            1 => self.grid = !self.grid,
+                            1 => self.set_grid(!self.grid),
                             2 => self.set_details(!self.details),
                             3 => self.set_single_layer_mode(!self.single_layer),
-                            4 => self.render_auto = !self.render_auto,
-                            _ => self.tile_tags = !self.tile_tags,
+                            4 => self.set_auto_layer_rendering(!self.render_auto, false),
+                            _ => self.set_tile_enum_overlays(!self.tile_tags),
                         }
                     }
                 }
-                ui.add_space(6.0);
-                ui.add(
-                    egui::Label::new(
-                        RichText::new(locale::tr(ui, "Editing"))
-                            .font(label_font)
-                            .color(Color32::from_rgb(207, 221, 64)),
-                    )
-                    .extend(),
-                );
-                if icon(
+                ui.add_space(8.);
+                canvas_option_heading(ui, "Editing", Color32::from_rgb(207, 221, 64));
+                let select_empty = self.settings.bool("emptySpaceSelection");
+                if canvas_option(
                     ui,
-                    egui::include_image!("../../assets/icons/emptySpaceOn.png"),
-                    Vec2::splat(34.0),
-                    if self.settings.bool("emptySpaceSelection") {
-                        Color32::from_rgb(110, 144, 57)
+                    if select_empty {
+                        egui::include_image!("../../assets/icons/emptySpaceOn.png")
                     } else {
-                        theme::MEDIUM
+                        egui::include_image!("../../assets/icons/emptySpaceOff.png")
                     },
+                    select_empty,
+                    true,
+                    false,
                     "**Select empty spaces** If this option is enabled when you select a level area with ALT+SHIFT+click, the selection will also include EMPTY grid cells.",
                     &["SHIFT", "E"],
-                    true,
                 )
                 .clicked()
                 {
-                    self.set_empty_selection(!self.settings.bool("emptySpaceSelection"));
+                    self.set_empty_selection(!select_empty);
                 }
-                if icon(
+                if canvas_option(
                     ui,
-                    egui::include_image!("../../assets/icons/stack.svg"),
-                    Vec2::splat(34.0),
-                    if self.tile_stacking {
-                        Color32::from_rgb(110, 144, 57)
-                    } else {
-                        theme::MEDIUM
-                    },
+                    egui::include_image!("../../assets/icons/tile.png"),
+                    self.tile_stacking,
+                    tiles,
+                    false,
                     "**Tile stacking** Only applies to Tiles layers. If this option is enabled, you will be able to stack multiple tiles in a single grid cell.",
                     &["SHIFT", "T"],
-                    true,
                 )
                 .clicked()
                 {
-                    self.tile_stacking = !self.tile_stacking;
+                    self.set_tile_stacking(!self.tile_stacking);
                 }
+                frame.end(parent);
             });
     }
 
@@ -2241,7 +2344,7 @@ mod tests {
     }
 
     #[test]
-    fn command_w_closes_only_the_project_when_modifiers_are_released_in_the_same_frame() {
+    fn command_w_closes_project_or_exits_home_when_modifiers_are_released_in_the_same_frame() {
         for (has_project, dirty) in [(true, false), (true, true), (false, false)] {
             let ctx = egui::Context::default();
             theme::configure(&ctx);
@@ -2280,12 +2383,13 @@ mod tests {
             let output = ctx.run(input, |ctx| {
                 eframe::App::update(&mut app, ctx, &mut eframe::Frame::_new_kittest())
             });
-            assert!(!app.allow_close);
-            assert!(
-                !output.viewport_output[&egui::ViewportId::ROOT]
+            assert_eq!(app.allow_close, !has_project);
+            assert_eq!(
+                output.viewport_output[&egui::ViewportId::ROOT]
                     .commands
                     .iter()
-                    .any(|cmd| matches!(cmd, egui::ViewportCommand::Close))
+                    .any(|cmd| matches!(cmd, egui::ViewportCommand::Close)),
+                !has_project
             );
             if dirty {
                 assert!(matches!(app.pending, Some(Action::Close)));
@@ -2663,7 +2767,12 @@ mod tests {
                     .unwrap()
                     .rect();
                 assert_eq!(rect.min, egui::pos2(0., 34.), "{panel:?}");
-                assert_eq!(rect.width(), panels::source_panel_width(panel), "{panel:?}");
+                let width = panels::source_panel_width(panel);
+                if matches!(panel, Panel::Project | Panel::Level) {
+                    assert!((width..=width + 10.).contains(&rect.width()), "{panel:?}: {rect:?}");
+                } else {
+                    assert_eq!(rect.width(), width, "{panel:?}");
+                }
             }
             app_click(&mut app, &ctx, pos);
             app_frame(&mut app, &ctx, vec![]);
@@ -2833,6 +2942,387 @@ mod tests {
     }
 
     #[test]
+    fn lone_rule_group_starts_expanded_and_its_collapse_resets_on_project_reload() {
+        let ctx = egui::Context::default();
+        theme::configure(&ctx);
+        let mut project = Project::new();
+        let layer = project.add_layer("Ground", "IntGrid", 16).unwrap();
+        let atlas = project.ensure_embedded_icons().unwrap();
+        project
+            .update_layer_properties(layer, &serde_json::json!({"tilesetDefUid":atlas}))
+            .unwrap();
+        let group = project.add_auto_rule_group(layer, "Terrain").unwrap();
+        project.add_auto_rule(layer, group, 1).unwrap();
+        let rules = |output: &egui::FullOutput| {
+            output.shapes.iter().any(|shape| {
+                matches!(&shape.shape, egui::Shape::Text(text) if text.galley.text() == "1-1")
+            })
+        };
+        let mut app = EditorApp::empty();
+        app.set_project(project.clone());
+        app.show_panel(Some(Panel::Rules));
+        app_frame(&mut app, &ctx, vec![]);
+        let output = app_frame(&mut app, &ctx, vec![]);
+        assert!(rules(&output), "a loaded single group starts expanded");
+        let header = output
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) if text.galley.text() == "Terrain" => {
+                    Some(text.pos + text.galley.size() * 0.5)
+                }
+                _ => None,
+            })
+            .expect("Terrain group header");
+        app_click(&mut app, &ctx, header);
+        assert!(!rules(&app_frame(&mut app, &ctx, vec![])));
+        app.show_panel(None);
+        app_frame(&mut app, &ctx, vec![]);
+        app.show_panel(Some(Panel::Rules));
+        assert!(!rules(&app_frame(&mut app, &ctx, vec![])));
+        assert_eq!(app.project.as_ref().unwrap().json, project.json);
+        assert!(!app.dirty);
+
+        app.set_project(project);
+        app.show_panel(Some(Panel::Rules));
+        assert!(rules(&app_frame(&mut app, &ctx, vec![])));
+    }
+
+    #[test]
+    fn rule_row_rejects_redundant_flips_and_enables_perlin_from_its_settings() {
+        let ctx = egui::Context::default();
+        theme::configure(&ctx);
+        ctx.style_mut(|style| style.animation_time = 0.);
+        let mut project = Project::new();
+        let layer = project.add_layer("Ground", "IntGrid", 16).unwrap();
+        let atlas = project.ensure_embedded_icons().unwrap();
+        project
+            .update_layer_properties(layer, &serde_json::json!({"tilesetDefUid":atlas}))
+            .unwrap();
+        let group = project.add_auto_rule_group(layer, "Terrain").unwrap();
+        let rule_id = project.add_auto_rule(layer, group, 3).unwrap();
+        project
+            .update_auto_rule(
+                layer,
+                group,
+                rule_id,
+                &serde_json::json!({"pattern":[0,0,0,1,0,0,0,0,0],"chance":0.0}),
+            )
+            .unwrap();
+        let rule = |app: &EditorApp| {
+            app.project.as_ref().unwrap().layer_def(layer).unwrap()["autoRuleGroups"][0]["rules"][0]
+                .clone()
+        };
+        let mut app = EditorApp::empty();
+        app.set_project(project);
+        app.show_panel(Some(Panel::Rules));
+        app_frame(&mut app, &ctx, vec![]);
+        let output = app_frame(&mut app, &ctx, vec![]);
+        let control = |label| {
+            output
+                .shapes
+                .iter()
+                .find_map(|shape| match &shape.shape {
+                    egui::Shape::Text(text) if text.galley.text() == label => {
+                        Some(text.pos + text.galley.size() * 0.5)
+                    }
+                    _ => None,
+                })
+                .unwrap()
+        };
+        assert!(output.shapes.iter().any(|shape| {
+            matches!(&shape.shape, egui::Shape::Rect(button) if
+                button.stroke.color == Color32::from_rgb(0, 157, 255))
+        }), "the enabled stop flag shows the source blue outline");
+        assert_eq!(rule(&app)["chance"], 0.0);
+        app_click(&mut app, &ctx, control("Y"));
+        assert_eq!(rule(&app)["flipY"], false);
+        assert!(!app.dirty);
+        app_click(&mut app, &ctx, control("X"));
+        assert_eq!(rule(&app)["flipX"], true);
+        let pos = control("P");
+        for pressed in [true, false] {
+            app_frame(
+                &mut app,
+                &ctx,
+                vec![
+                    egui::Event::PointerMoved(pos),
+                    egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Secondary,
+                        pressed,
+                        modifiers: Default::default(),
+                    },
+                ],
+            );
+        }
+        assert_eq!(rule(&app)["perlinActive"], true);
+        let output = app_frame(&mut app, &ctx, vec![]);
+        let random = output.shapes.iter().find_map(|shape| match &shape.shape {
+            egui::Shape::Text(text) if text.galley.text().eq_ignore_ascii_case("Random") => {
+                Some(text.pos + text.galley.size() * 0.5)
+            }
+            _ => None,
+        }).expect("Perlin randomize button");
+        assert!(random.x < pos.x && random.y < pos.y);
+        assert!(output.shapes.iter().any(|shape| {
+            matches!(&shape.shape, egui::Shape::Rect(cell) if
+                cell.fill == Color32::from_rgba_unmultiplied(179, 247, 0, 77))
+        }));
+        let seed = rule(&app)["perlinSeed"].clone();
+        app_click(&mut app, &ctx, random);
+        assert_ne!(rule(&app)["perlinSeed"], seed);
+        assert!(rule(&app)["perlinSeed"].as_i64().is_some_and(|n| (0..99_999_999).contains(&n)));
+    }
+
+    #[test]
+    fn wizard_managed_rules_ignore_row_input_but_keep_the_assistant_available() {
+        let ctx = egui::Context::default();
+        theme::configure(&ctx);
+        let mut project = Project::new();
+        let layer = project.add_layer("Ground", "IntGrid", 16).unwrap();
+        let atlas = project.ensure_embedded_icons().unwrap();
+        project
+            .update_layer_properties(layer, &serde_json::json!({"tilesetDefUid":atlas}))
+            .unwrap();
+        let group = project.add_auto_rule_group(layer, "Terrain").unwrap();
+        project.add_auto_rule(layer, group, 3).unwrap();
+        project.add_auto_rule(layer, group, 3).unwrap();
+        project
+            .update_auto_rule_group(layer, group, &serde_json::json!({"usesWizard":true}))
+            .unwrap();
+        let mut app = EditorApp::empty();
+        app.set_project(project.clone());
+        app.open_rule_groups.insert((layer, group));
+        app.show_panel(Some(Panel::Rules));
+        app_frame(&mut app, &ctx, vec![]);
+        let output = app_frame(&mut app, &ctx, vec![]);
+        let center = |label: &str| {
+            output
+                .shapes
+                .iter()
+                .find_map(|shape| match &shape.shape {
+                    egui::Shape::Text(text) if text.galley.text().eq_ignore_ascii_case(label) => {
+                        Some(text.pos + text.galley.size() * 0.5)
+                    }
+                    _ => None,
+                })
+                .expect(label)
+        };
+        let perlin = center("P");
+        app_click(&mut app, &ctx, perlin);
+        assert!(!app.dirty);
+        assert_eq!(app.project.as_ref().unwrap().json, project.json);
+        let preview = egui::pos2(100., perlin.y - 14.);
+        app_click(&mut app, &ctx, preview);
+        assert!(app.rule_draft.is_none());
+        assert!(app.rule_hover.is_none());
+        app_click(&mut app, &ctx, center("Edit rules"));
+        let wizard = app_frame(&mut app, &ctx, vec![]);
+        assert!(ctx.memory(|memory| memory.top_modal_layer().is_some()));
+        let cancel = wizard.shapes.iter().find_map(|shape| match &shape.shape {
+            egui::Shape::Text(text) if text.galley.text() == "CANCEL" => {
+                Some(text.pos + text.galley.size() * 0.5)
+            }
+            _ => None,
+        }).expect("Assistant cancel button");
+        app_click(&mut app, &ctx, cancel);
+        app_frame(&mut app, &ctx, vec![]);
+        assert!(ctx.memory(|memory| memory.top_modal_layer().is_none()));
+        assert_eq!(app.panel, Some(Panel::Rules));
+        assert_eq!(app.project.as_ref().unwrap().json, project.json);
+    }
+
+    #[test]
+    fn hovered_rule_has_direct_insert_targets_above_and_below() {
+        let ctx = egui::Context::default();
+        theme::configure(&ctx);
+        let mut project = Project::new();
+        let layer = project.add_layer("Ground", "IntGrid", 16).unwrap();
+        let atlas = project.ensure_embedded_icons().unwrap();
+        project
+            .update_layer_properties(layer, &serde_json::json!({"tilesetDefUid":atlas}))
+            .unwrap();
+        let group = project.add_auto_rule_group(layer, "Terrain").unwrap();
+        let original = project.add_auto_rule(layer, group, 1).unwrap();
+        project
+            .update_auto_rule(layer, group, original, &serde_json::json!({"pattern":[1]}))
+            .unwrap();
+        let neighbor = project.add_auto_rule(layer, group, 1).unwrap();
+        let mut app = EditorApp::empty();
+        app.set_project(project);
+        app.show_panel(Some(Panel::Rules));
+        app_frame(&mut app, &ctx, vec![]);
+        app_frame(&mut app, &ctx, vec![]);
+        app_click(&mut app, &ctx, egui::pos2(135., 241.));
+        assert_eq!(app.last_rule_list_row, Some(original));
+        for original_index in [1, 0] {
+            let pointer = egui::Event::PointerMoved(egui::pos2(135., 241.));
+            app_frame(&mut app, &ctx, vec![pointer.clone()]);
+            let output = app_frame(&mut app, &ctx, vec![pointer]);
+            let mut points = output
+                .shapes
+                .iter()
+                .filter_map(|shape| match &shape.shape {
+                    egui::Shape::Rect(rect)
+                        if rect.rect.size() == egui::Vec2::splat(18.)
+                            && rect.rect.center().x > 320.
+                            && rect.rect.center().x < 350. =>
+                    {
+                        Some(rect.rect.center())
+                    }
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            points.sort_by(|a, b| a.y.total_cmp(&b.y));
+            points.dedup();
+            assert_eq!(
+                points.len(),
+                2,
+                "the hovered row exposes both insertion positions"
+            );
+            let target = points[1 - original_index];
+            app_frame(&mut app, &ctx, vec![egui::Event::PointerMoved(target)]);
+            app_click(&mut app, &ctx, target);
+            assert!(
+                app.rule_draft.is_some(),
+                "insertion opens the new rule editor"
+            );
+            let def = app.project.as_ref().unwrap().layer_def(layer).unwrap();
+            let rules = def["autoRuleGroups"][0]["rules"].as_array().unwrap();
+            assert_eq!(rules.len(), 3);
+            assert_eq!(rules[original_index]["uid"], original);
+            assert_eq!(
+                rules[1 - original_index]["uid"],
+                app.last_rule_list_row.unwrap()
+            );
+            assert_eq!(rules[2]["uid"], neighbor);
+            app.finish_rule_edit();
+            app_frame(&mut app, &ctx, vec![]);
+        }
+        app_click(&mut app, &ctx, egui::pos2(135., 241.));
+        assert_eq!(app.last_rule_list_row, Some(original));
+        app.show_panel(None);
+        app_frame(&mut app, &ctx, vec![]);
+        app.show_panel(Some(Panel::Rules));
+        assert_eq!(app.last_rule_list_row, None);
+    }
+    #[test]
+    fn remapping_a_rule_group_waits_for_the_name_confirmation() {
+        let ctx = egui::Context::default();
+        theme::configure(&ctx);
+        let mut project = Project::new();
+        let layer = project.add_layer("Ground", "IntGrid", 16).unwrap();
+        let atlas = project.ensure_embedded_icons().unwrap();
+        project
+            .update_layer_properties(layer, &serde_json::json!({"tilesetDefUid": atlas}))
+            .unwrap();
+        let group = project.add_auto_rule_group(layer, "Terrain").unwrap();
+        project.add_auto_rule(layer, group, 3).unwrap();
+        let mut app = EditorApp::empty();
+        app.set_project(project.clone());
+        app.show_panel(Some(Panel::Rules));
+        let button = |frame: &egui::FullOutput, label: &str| {
+            frame
+                .shapes
+                .iter().rev()
+                .find_map(|shape| match &shape.shape {
+                    egui::Shape::Text(text) if text.galley.text().eq_ignore_ascii_case(label) => {
+                        Some(text.pos + text.galley.size() * 0.5)
+                    }
+                    _ => None,
+                })
+                .expect(label)
+        };
+        app_frame(&mut app, &ctx, vec![]);
+        app_frame(&mut app, &ctx, vec![]);
+        app_click(&mut app, &ctx, egui::pos2(333., 195.));
+        let menu = app_frame(&mut app, &ctx, vec![]);
+        app_click(&mut app, &ctx, button(&menu, "Duplicate and remap"));
+        let remap = app_frame(&mut app, &ctx, vec![]);
+        assert!(ctx.memory(|memory| memory.top_modal_layer().is_some()));
+        let confirm = button(&remap, "CONFIRM");
+        app_click(&mut app, &ctx, confirm);
+        let name = app_frame(&mut app, &ctx, vec![]);
+        button(&name, "NAME THIS NEW GROUP");
+        assert!(!app.dirty);
+        assert_eq!(app.project.as_ref().unwrap().json, project.json);
+        app_click(&mut app, &ctx, button(&name, "CANCEL"));
+        let remap = app_frame(&mut app, &ctx, vec![]);
+        assert!(ctx.memory(|memory| memory.top_modal_layer().is_some()));
+        app_click(&mut app, &ctx, button(&remap, "CONFIRM"));
+        let name = app_frame(&mut app, &ctx, vec![]);
+        app_click(&mut app, &ctx, button(&name, "VALIDATE"));
+        app_frame(&mut app, &ctx, vec![]);
+        assert!(app.dirty);
+        let groups = app.project.as_ref().unwrap().layer_def(layer).unwrap()["autoRuleGroups"]
+            .as_array()
+            .unwrap();
+        assert_eq!(groups.len(), 2);
+        assert_eq!(groups[0], project.layer_def(layer).unwrap()["autoRuleGroups"][0]);
+        assert_eq!(groups[1]["name"], "Terrain copy");
+    }
+
+    #[test]
+    fn optional_auto_layer_rules_are_edited_in_rules_and_not_in_the_palette() {
+        let ctx = egui::Context::default();
+        theme::configure(&ctx);
+        let mut project = Project::new();
+        let layer = project.add_layer("Ground", "IntGrid", 16).unwrap();
+        let atlas = project.ensure_embedded_icons().unwrap();
+        project
+            .update_layer_properties(layer, &serde_json::json!({"tilesetDefUid":atlas}))
+            .unwrap();
+        let group = project
+            .add_auto_rule_group(layer, "Optional terrain")
+            .unwrap();
+        project
+            .update_auto_rule_group(layer, group, &serde_json::json!({"isOptional":true}))
+            .unwrap();
+        let other = project.add_level(None, "Other", 256, 256).unwrap();
+        let mut app = EditorApp::empty();
+        app.set_project(project);
+        let selected = app.selected.unwrap();
+        app_frame(&mut app, &ctx, vec![]);
+        let output = app_frame(&mut app, &ctx, vec![]);
+        assert!(!output.shapes.iter().any(|shape| {
+            matches!(&shape.shape, egui::Shape::Text(text)
+                if matches!(text.galley.text(), "Display auto-layer tiles" | "Optional terrain"))
+        }));
+
+        app.show_panel(Some(Panel::Rules));
+        app_frame(&mut app, &ctx, vec![]);
+        let output = app_frame(&mut app, &ctx, vec![]);
+        let label = output
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) if text.galley.text() == "Optional terrain" => {
+                    assert!(text.galley.job.sections[0].format.italics);
+                    Some(text.pos + egui::vec2(-25.5, text.galley.size().y * 0.5))
+                }
+                _ => None,
+            })
+            .expect("group is visible in the Rules panel");
+        app_click(&mut app, &ctx, label);
+        let project = app.project.as_ref().unwrap();
+        assert_eq!(
+            project.layer(selected, 0).unwrap()["optionalRules"],
+            serde_json::json!([group])
+        );
+        assert_eq!(
+            project.layer(other, 0).unwrap()["optionalRules"],
+            serde_json::json!([])
+        );
+        let enabled = app_frame(&mut app, &ctx, vec![]);
+        assert!(enabled.shapes.iter().any(|shape| {
+            matches!(&shape.shape, egui::Shape::Text(text)
+                if text.galley.text() == "Optional terrain"
+                    && !text.galley.job.sections[0].format.italics)
+        }));
+    }
+
+    #[test]
     fn sidebar_layer_list_keeps_source_height_limits_and_scrolls_its_rows() {
         let guide_top = |output: &egui::FullOutput| {
             output
@@ -2961,6 +3451,30 @@ mod tests {
         assert_eq!(app.panel, Some(Panel::Rules));
         assert_eq!(app.definition_uid, Some(uid));
         assert!(!app.dirty);
+    }
+
+    #[test]
+    fn unassigned_tile_layer_warns_until_the_level_has_a_tileset() {
+        let mut project = Project::new();
+        project.add_layer("Ground", "Tiles", 16).unwrap();
+        let key = project.level_keys()[0];
+        let mut app = EditorApp::empty();
+        app.set_project(project);
+        let ctx = egui::Context::default();
+        theme::configure(&ctx);
+        let warns = |out: &egui::FullOutput| {
+            out.shapes.iter().any(|shape| {
+                matches!(&shape.shape, egui::Shape::Text(text)
+                    if text.galley.text() == "This tile layer has no Tileset.")
+            })
+        };
+        assert!(warns(&app_frame(&mut app, &ctx, vec![])));
+        let project = app.project.as_mut().unwrap();
+        let atlas = project.ensure_embedded_icons().unwrap();
+        project
+            .set_layer_tileset_override(key, 0, Some(atlas), ldtk_core::TilesetRemap::TileIds, false)
+            .unwrap();
+        assert!(!warns(&app_frame(&mut app, &ctx, vec![])));
     }
 
     #[test]

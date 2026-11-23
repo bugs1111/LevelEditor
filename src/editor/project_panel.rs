@@ -108,41 +108,8 @@ fn project_choice(
     } else {
         ui.available_width()
     };
-    let (rect, response) = ui.allocate_exact_size(egui::vec2(width, 30.), Sense::click());
     let title = options.get(selected).map_or(current, |option| option.0);
-    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::ComboBox, true, title));
-    ui.painter().rect(
-        rect,
-        2.,
-        theme::DARK,
-        Stroke::new(
-            1.,
-            if response.hovered() {
-                theme::ACCENT
-            } else {
-                theme::LIGHT
-            },
-        ),
-        StrokeKind::Inside,
-    );
-    ui.painter()
-        .with_clip_rect(rect.with_max_x(rect.right() - 18.))
-        .text(
-            rect.left_center() + egui::vec2(5., 0.),
-            Align2::LEFT_CENTER,
-            title,
-            FontId::proportional(13.33),
-            ui.visuals().text_color(),
-        );
-    let arrow = rect.right_center() - egui::vec2(8., 0.);
-    ui.painter().add(egui::Shape::line(
-        vec![
-            arrow + egui::vec2(-3., -1.5),
-            arrow + egui::vec2(0., 1.5),
-            arrow + egui::vec2(3., -1.5),
-        ],
-        Stroke::new(1., ui.visuals().text_color()),
-    ));
+    let response = source_controls::searchable_select_button(ui, width, title);
     if let Some((picked, by_enter)) = source_controls::searchable_select_popup(
         &response,
         response.id.with(key),
@@ -1802,7 +1769,7 @@ mod tests {
         };
         click(&mut app, &ctx, label(&output, manual).unwrap().center());
         frame(&mut app, &ctx, vec![]);
-        let output = frame(&mut app, &ctx, vec![egui::Event::Text("loading".into())]);
+        let output = frame(&mut app, &ctx, vec![egui::Event::Text("  LdNg  ".into())]);
         assert!(label(&output, "Run after saving").is_none());
         click(&mut app, &ctx, label(&output, "Run after loading").unwrap().center());
         assert_eq!(

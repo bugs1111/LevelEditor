@@ -9,6 +9,12 @@ fn changelog_entries() -> &'static [ChangelogEntry] {
     static ENTRIES: std::sync::OnceLock<Vec<ChangelogEntry>> = std::sync::OnceLock::new();
     ENTRIES.get_or_init(|| parse_changelog(include_str!("../../assets/CHANGELOG.md")))
 }
+
+pub(super) fn latest_changelog_heading() -> (&'static str, &'static str) {
+    let latest = &changelog_entries()[0];
+    (latest.version, latest.title)
+}
+
 fn parse_changelog(source: &'static str) -> Vec<ChangelogEntry> {
     source
         .trim_start_matches("# ")
@@ -94,6 +100,7 @@ fn request_video_thumbnails(ctx: &egui::Context) {
             .timeout_global(Some(std::time::Duration::from_secs(5)))
             .build();
         let agent: ureq::Agent = config.into();
+        let mut loaded = false;
         for (id, _) in VIDEO_GUIDES {
             let url = format!("https://img.youtube.com/vi/{id}/0.jpg");
             let Ok(mut response) = agent.get(&url).call() else {
@@ -108,10 +115,17 @@ fn request_video_thumbnails(ctx: &egui::Context) {
                 continue;
             };
             if matches!(image::guess_format(&bytes), Ok(image::ImageFormat::Jpeg)) {
+                loaded = true;
                 ctx.include_bytes(format!("bytes://help-videos/{id}.jpg"), bytes);
                 ctx.data_mut(|data| data.insert_temp(egui::Id::new(("help-video", id)), true));
                 ctx.request_repaint();
             }
+        }
+        if !loaded {
+            ctx.data_mut(|data| {
+                data.insert_temp(egui::Id::new("help-video-thumbnails-unavailable"), true);
+            });
+            ctx.request_repaint();
         }
     });
 }
@@ -373,9 +387,12 @@ impl EditorApp {
     pub(super) fn help_contents(&mut self, ui: &mut egui::Ui) {
         request_video_thumbnails(ui.ctx());
         let width = ui.available_width();
+        let unavailable = ui.data(|data| {
+            data.get_temp::<bool>(egui::Id::new("help-video-thumbnails-unavailable"))
+        }) == Some(true);
+        let docs_width = if unavailable { 179. } else { 265.5 };
         ui.horizontal_top(|ui| {
             ui.spacing_mut().item_spacing.x = 16.;
-            let docs_width = ((width - 16.) * 0.316).round();
             ui.with_layout(egui::Layout::top_down_justified(egui::Align::Min), |ui| {
                 ui.set_width(docs_width);
                 ui.add_space(2.);
@@ -496,7 +513,7 @@ impl EditorApp {
 
         ui.horizontal_top(|ui| {
             ui.spacing_mut().item_spacing.x = 16.;
-            let column = (width - 16.) * 0.5;
+            let column = 420.;
             ui.vertical(|ui| {
                 ui.set_width(column);
                 help_section(
@@ -790,33 +807,73 @@ mod tests {
     use super::*;
 
     #[test]
-    fn help_reserves_the_original_width_for_video_guides() {
+    fn help_keeps_both_shortcut_columns_at_the_original_positions_in_narrow_windows() {
         let ctx = egui::Context::default();
         theme::configure(&ctx);
         ctx.data_mut(|data| {
             data.insert_temp(egui::Id::new("help-video-thumbnails-requested"), true)
         });
         let mut app = EditorApp::empty();
-        let output = ctx.run(
-            egui::RawInput {
-                screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(856., 850.))),
-                ..Default::default()
-            },
-            |ctx| {
-                egui::CentralPanel::default()
-                    .frame(egui::Frame::NONE)
-                    .show(ctx, |ui| app.help_contents(ui));
-            },
+        app.set_project(ldtk_core::Project::new());
+        app.panel = Some(Panel::Help);
+        let mut draw = |width, events| {
+            ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(width, 600.),
+                    )),
+                    events,
+                    ..Default::default()
+                },
+                |ctx| assert!(app.source_panel(ctx, Panel::Help)),
+            )
+        };
+        let heading_x = |output: &egui::FullOutput, heading: &str| {
+            output
+                .shapes
+                .iter()
+                .find_map(|shape| match &shape.shape {
+                    egui::Shape::Text(text) if text.galley.text() == heading => Some(text.pos.x),
+                    _ => None,
+                })
+                .expect(heading)
+        };
+        for width in [1100., 800.] {
+            draw(width, vec![]);
+            draw(width, vec![]);
+            let output = draw(width, vec![]);
+            for (heading, expected) in [
+                ("VIDEO GUIDES", 301.5),
+                ("MOST IMPORTANT COMMANDS", 20.),
+                ("EDITING COMMANDS", 456.),
+            ] {
+                let x = heading_x(&output, heading);
+                assert!(
+                    (x - expected).abs() < 1.,
+                    "{heading} starts at {x} with window width {width}"
+                );
+            }
+        }
+        ctx.data_mut(|data| {
+            data.insert_temp(egui::Id::new("help-video-thumbnails-unavailable"), true);
+        });
+        let unavailable = draw(800., vec![]);
+        assert!((heading_x(&unavailable, "VIDEO GUIDES") - 215.).abs() < 1.);
+        assert!((heading_x(&unavailable, "EDITING COMMANDS") - 456.).abs() < 1.);
+        draw(
+            800.,
+            vec![
+                egui::Event::PointerMoved(egui::pos2(500., 320.)),
+                egui::Event::MouseWheel {
+                    unit: egui::MouseWheelUnit::Point,
+                    delta: egui::vec2(-240., 0.),
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ],
         );
-        let video_heading = output
-            .shapes
-            .iter()
-            .find_map(|shape| match &shape.shape {
-                egui::Shape::Text(text) if text.galley.text() == "VIDEO GUIDES" => Some(text.pos.x),
-                _ => None,
-            })
-            .expect("video guides heading");
-        assert!((280. ..=284.).contains(&video_heading), "video guides start at {video_heading}");
+        let scrolled = draw(800., vec![]);
+        assert!(heading_x(&scrolled, "EDITING COMMANDS") < 440.);
     }
 
     #[test]

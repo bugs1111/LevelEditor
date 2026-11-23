@@ -36,8 +36,8 @@ fn main() -> eframe::Result {
     let path = first.map(PathBuf::from);
     let options = eframe::NativeOptions {
         viewport: eframe::egui::ViewportBuilder::default()
-            .with_inner_size([1440.0, 900.0])
-            .with_min_inner_size([900.0, 600.0])
+            // Match the original's normal window bounds when maximization is unavailable.
+            .with_inner_size([800.0, 600.0])
             .with_maximized(true)
             .with_app_id("io.ldtk.rust-port")
             .with_icon(
@@ -47,6 +47,8 @@ fn main() -> eframe::Result {
             .with_title("LevelEditor"),
         renderer: eframe::Renderer::Wgpu,
         wgpu_options: app::native_gpu_config(),
+        #[cfg(target_os = "macos")]
+        event_loop_builder: Some(Box::new(platform_files::configure_quit)),
         ..Default::default()
     };
     eframe::run_native(

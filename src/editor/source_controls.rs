@@ -47,8 +47,15 @@ pub(in crate::app) fn edit_text(
 #[derive(Clone, Copy)]
 pub(in crate::app) enum NumberStyle {
     Plain { placeholder: Option<&'static str> },
+    Float,
     Percent,
     PercentSlider { min: f64, max: f64 },
+    IntegerSlider {
+        min: f64,
+        max: f64,
+        speed: f64,
+        placeholder: Option<&'static str>,
+    },
 }
 
 pub(in crate::app) fn step_number(ui: &mut egui::Ui, id: egui::Id, draft: &mut String) -> bool {
@@ -85,7 +92,7 @@ pub(in crate::app) fn number_input(
     current: &str,
     style: NumberStyle,
 ) -> Option<String> {
-    let width = if matches!(style, NumberStyle::Plain { placeholder: None }) {
+    let width = if matches!(style, NumberStyle::Plain { placeholder: None } | NumberStyle::Float) {
         60.
     } else {
         90.
@@ -100,17 +107,22 @@ pub(in crate::app) fn number_input_sized(
     style: NumberStyle,
     width: f32,
 ) -> Option<String> {
-    let percent = !matches!(style, NumberStyle::Plain { .. });
-    let slider = matches!(style, NumberStyle::PercentSlider { .. });
+    let percent = matches!(style, NumberStyle::Percent | NumberStyle::PercentSlider { .. });
+    let slider_bounds = match style {
+        NumberStyle::PercentSlider { min, max } => Some((min, max, 0.4)),
+        NumberStyle::IntegerSlider { min, max, speed, .. } => Some((min, max, speed)),
+        _ => None,
+    };
+    let slider = slider_bounds.is_some();
     let mut immediate = None;
     let mut previewing = false;
     let id = ui.make_persistent_id(key);
     let typed = edit_text(ui, key, current, |ui, draft, id| {
         let gesture = id.with("slider-start");
-        let (pressed, held, released, position) = ui.input(|input| {
+        let (press_origin, held, released, position) = ui.input(|input| {
             let pointer = &input.pointer;
             (
-                pointer.primary_pressed(),
+                pointer.press_origin().filter(|_| pointer.primary_pressed()),
                 pointer.primary_down(),
                 pointer.primary_released(),
                 pointer.interact_pos(),
@@ -120,13 +132,13 @@ pub(in crate::app) fn number_input_sized(
             .data(|data| data.get_temp::<f32>(gesture))
             .zip(position)
             .map_or(0., |(start, current)| current.x - start);
-        let mut preview = match style {
-            NumberStyle::PercentSlider { min, max }
+        let mut preview = match slider_bounds {
+            Some((min, max, speed))
                 if ui.is_enabled() && (held || released) && distance.abs() >= 3. =>
             {
                 let start = current.parse::<f64>().unwrap_or(0.);
                 Some(
-                    (start + f64::from(distance) * 0.4 + 0.5)
+                    (start + f64::from(distance) * speed + if percent { 0.5 } else { 0. })
                         .floor()
                         .clamp(min, max)
                         .to_string(),
@@ -135,7 +147,7 @@ pub(in crate::app) fn number_input_sized(
             _ => None,
         };
         previewing = preview.is_some();
-        if !previewing && step_number(ui, id, draft) {
+        if !previewing && !matches!(style, NumberStyle::Float) && step_number(ui, id, draft) {
             immediate = Some(draft.clone());
         }
         let text = preview.as_mut().unwrap_or(draft);
@@ -145,7 +157,11 @@ pub(in crate::app) fn number_input_sized(
             .vertical_align(egui::Align::Center)
             .margin(egui::Margin {
                 left: 8,
-                right: if percent { 22 } else { 8 },
+                right: if percent || slider && ui.is_enabled() {
+                    22
+                } else {
+                    8
+                },
                 top: 0,
                 bottom: 0,
             })
@@ -155,22 +171,22 @@ pub(in crate::app) fn number_input_sized(
             edit = edit.text_color(theme::ACCENT);
         }
         let placeholder = match style {
-            NumberStyle::Plain { placeholder } => placeholder,
+            NumberStyle::Plain { placeholder }
+            | NumberStyle::IntegerSlider { placeholder, .. } => placeholder,
             _ => None,
         };
         if let Some(placeholder) = placeholder {
             edit = edit.hint_text(locale::tr(ui, placeholder));
         }
         let response = ui.add_sized([width, 33.], edit);
-        if slider && response.enabled() {
-            if pressed
-                && response.is_pointer_button_down_on()
-                && let Some(position) = position
-            {
-                ui.data_mut(|data| data.insert_temp(gesture, position.x));
-            }
+        if slider
+            && response.enabled()
+            && response.is_pointer_button_down_on()
+            && let Some(origin) = press_origin
+        {
+            ui.data_mut(|data| data.insert_temp(gesture, origin.x));
         }
-        if percent {
+        if percent || slider && response.enabled() {
             let (icon, size) = if slider && response.enabled() {
                 (egui::include_image!("../../assets/icons/slide.svg"), 18.)
             } else {
@@ -429,6 +445,29 @@ pub(in crate::app) fn help_card(
         Rect::from_min_size(rect.left_top() + Vec2::splat(6.), Vec2::splat(48.)),
     );
     rect
+}
+
+pub(in crate::app) fn scroll_style() -> egui::style::ScrollStyle {
+    egui::style::ScrollStyle {
+        bar_width: 10.,
+        bar_inner_margin: 0.,
+        bar_outer_margin: 0.,
+        ..egui::style::ScrollStyle::solid()
+    }
+}
+
+pub(in crate::app) fn scroll_visuals(ui: &mut egui::Ui) -> egui::Visuals {
+    let content_visuals = ui.visuals().clone();
+    let visuals = ui.visuals_mut();
+    visuals.clip_rect_margin = 0.;
+    visuals.extreme_bg_color = theme::MEDIUM;
+    visuals.widgets.inactive.bg_fill = Color32::from_rgb(115, 127, 157);
+    visuals.widgets.hovered.bg_fill = theme::TEXT;
+    visuals.widgets.active.bg_fill = theme::TEXT;
+    visuals.widgets.inactive.corner_radius = 0.into();
+    visuals.widgets.hovered.corner_radius = 0.into();
+    visuals.widgets.active.corner_radius = 0.into();
+    content_visuals
 }
 
 /// Uppercase source form title and its divider.
@@ -857,6 +896,341 @@ pub(in crate::app) fn context_menu_frame(style: &egui::Style) -> egui::Frame {
         .inner_margin(0.)
 }
 
+pub(super) const FORM_OPTION_HIGHLIGHT: Color32 = Color32::from_rgb(30, 144, 255);
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum FormSelectAppearance {
+    Normal,
+    Unassigned,
+    Required,
+}
+
+fn select_navigation(ui: &egui::Ui, home_and_end: bool) -> Vec<Key> {
+    ui.input_mut(|input| {
+        let mut keys = Vec::new();
+        input.events.retain(|event| {
+            let egui::Event::Key {
+                key,
+                modifiers,
+                pressed: true,
+                ..
+            } = event
+            else {
+                return true;
+            };
+            if modifiers.matches_logically(egui::Modifiers::NONE)
+                && (matches!(key, Key::ArrowUp | Key::ArrowDown | Key::Enter)
+                    || home_and_end && matches!(key, Key::Home | Key::End))
+            {
+                keys.push(*key);
+                false
+            } else {
+                true
+            }
+        });
+        keys
+    })
+}
+
+fn select_highlight(keys: &[Key], mut index: usize, last: usize) -> (usize, bool) {
+    for key in keys {
+        index = match key {
+            Key::ArrowUp => index.saturating_sub(1),
+            Key::ArrowDown => (index + 1).min(last),
+            Key::Home => 0,
+            Key::End => last,
+            Key::Enter => return (index, true),
+            _ => index,
+        };
+    }
+    (index, false)
+}
+
+/// Each option can introduce a heading before its selectable row.
+pub(super) fn form_select(
+    ui: &mut egui::Ui,
+    salt: impl std::hash::Hash + Copy,
+    height: f32,
+    options: &[(&str, Option<&str>)],
+    current: Option<usize>,
+    name: &str,
+    appearance: FormSelectAppearance,
+) -> Option<usize> {
+    let id = ui.make_persistent_id(egui::Id::new(salt));
+    let mut selected = None;
+    let highlighted_id = id.with("highlighted");
+    let open = egui::ComboBox::is_open(ui.ctx(), id);
+    let mut highlighted = current.unwrap_or(0);
+    let mut keyboard_moved = false;
+    if open {
+        highlighted = ui
+            .data(|data| data.get_temp(highlighted_id))
+            .unwrap_or(highlighted);
+        let last = options.len().saturating_sub(1);
+        let keys = select_navigation(ui, true);
+        let (next, enter) = select_highlight(&keys, highlighted.min(last), last);
+        highlighted = next;
+        keyboard_moved = keys.first().is_some_and(|key| *key != Key::Enter);
+        if enter {
+            selected = options.get(highlighted).map(|_| highlighted);
+            egui::Popup::close_all(ui.ctx());
+        }
+    }
+    let previous_style = ui.style().clone();
+    let font = FontId::proportional(13.333);
+    let text_height = ui.fonts_mut(|fonts| fonts.row_height(&font));
+    let spacing = ui.spacing_mut();
+    spacing.interact_size.y = height;
+    spacing.button_padding =
+        egui::vec2(9., (height - text_height.max(spacing.icon_width)) * 0.5);
+    let inactive = !open && !ui.memory(|memory| memory.has_focus(id));
+    let invalid = inactive && appearance == FormSelectAppearance::Required;
+    let striped = inactive && appearance == FormSelectAppearance::Unassigned;
+    if striped {
+        let rect = Rect::from_min_size(
+            ui.available_rect_before_wrap().min,
+            egui::vec2(ui.available_width(), height),
+        );
+        ui.painter().rect_filled(rect, 3., theme::LIGHT);
+        let interior = rect.shrink(1.);
+        egui::Image::new(egui::include_image!("../../assets/img/stripes.png"))
+            .texture_options(egui::TextureOptions::NEAREST_REPEAT)
+            .uv(Rect::from_min_size(egui::Pos2::ZERO, interior.size() / 8.))
+            .paint_at(ui, interior);
+    }
+    let widgets = &mut ui.visuals_mut().widgets;
+    for (style, border) in [
+        (&mut widgets.inactive, Color32::from_rgb(115, 127, 157)),
+        (&mut widgets.hovered, Color32::WHITE),
+        (&mut widgets.active, Color32::WHITE),
+        (&mut widgets.open, Color32::WHITE),
+    ] {
+        style.weak_bg_fill = if invalid {
+            Color32::from_rgb(121, 17, 5)
+        } else if striped {
+            Color32::TRANSPARENT
+        } else {
+            theme::LIGHT
+        };
+        style.bg_stroke = Stroke::new(
+            1.,
+            if invalid {
+                Color32::from_rgb(227, 77, 0)
+            } else {
+                border
+            },
+        );
+        style.fg_stroke.color = Color32::WHITE;
+        style.expansion = 0.;
+        style.corner_radius = 3.into();
+    }
+    const ROW_HEIGHT: f32 = 17.;
+    let rows = options.len() + options.iter().filter(|(_, heading)| heading.is_some()).count();
+    let screen = ui.ctx().content_rect();
+    let anchor = ui.next_widget_position().y;
+    let available = (anchor - screen.top()).max(screen.bottom() - anchor - height) - 2.;
+    let popup_height = (rows as f32 * ROW_HEIGHT).clamp(ROW_HEIGHT, available.max(ROW_HEIGHT));
+    egui::ComboBox::from_id_salt(salt)
+        .width(ui.available_width())
+        .height(popup_height)
+        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+        .truncate()
+        .icon(|ui, rect, visuals, _| {
+            let center = rect.center();
+            ui.painter().add(egui::Shape::line(
+                vec![
+                    center + egui::vec2(-3., -1.5),
+                    center + egui::vec2(0., 1.5),
+                    center + egui::vec2(3., -1.5),
+                ],
+                Stroke::new(1.5, visuals.text_color()),
+            ));
+        })
+        .selected_text(RichText::new(name).font(font.clone()))
+        .popup_style(egui::style::StyleModifier::new(|style| {
+            style.spacing.menu_margin = egui::Margin::ZERO;
+            style.visuals.window_fill = theme::LIGHT;
+            style.visuals.window_stroke = Stroke::new(1., Color32::from_gray(118));
+            style.visuals.menu_corner_radius = 2.into();
+            style.visuals.popup_shadow = egui::epaint::Shadow::NONE;
+        }))
+        .show_ui(ui, |ui| {
+            ui.spacing_mut().item_spacing.y = 0.;
+            let start = ui.next_widget_position();
+            if let Some(pointer) = ui.input(|input| {
+                input
+                    .pointer
+                    .hover_pos()
+                    .filter(|_| input.pointer.is_moving())
+            }) && ui.clip_rect().contains(pointer)
+                && pointer.y >= start.y
+            {
+                let row = ((pointer.y - start.y) / ROW_HEIGHT) as usize;
+                let mut position = 0;
+                if let Some(index) = options.iter().position(|(_, heading)| {
+                    position += 1 + usize::from(heading.is_some());
+                    position - 1 == row
+                }) {
+                    highlighted = index;
+                }
+            }
+            let mut indent = 9.;
+            for (index, &(name, heading)) in options.iter().enumerate() {
+                if let Some(heading) = heading {
+                    let (rect, _) = ui.allocate_exact_size(
+                        egui::vec2(ui.available_width(), ROW_HEIGHT),
+                        Sense::hover(),
+                    );
+                    ui.painter().with_clip_rect(rect.intersect(ui.clip_rect())).text(
+                        rect.left_center() + egui::vec2(11., 0.),
+                        Align2::LEFT_CENTER,
+                        heading,
+                        FontId::new(13.333, egui::FontFamily::Name("body-bold".into())),
+                        Color32::WHITE,
+                    );
+                    indent = 30.;
+                }
+                let (rect, response) = ui.allocate_exact_size(
+                    egui::vec2(ui.available_width(), ROW_HEIGHT),
+                    Sense::click(),
+                );
+                let active = index == highlighted;
+                response.widget_info(|| {
+                    egui::WidgetInfo::selected(
+                        egui::WidgetType::SelectableLabel,
+                        ui.is_enabled(),
+                        active,
+                        name,
+                    )
+                });
+                let painter = ui.painter().with_clip_rect(rect.intersect(ui.clip_rect()));
+                if active {
+                    painter.rect_filled(rect, 0., FORM_OPTION_HIGHLIGHT);
+                    if keyboard_moved || !open {
+                        response.scroll_to_me(None);
+                    }
+                }
+                painter.text(
+                    rect.left_center() + egui::vec2(indent, 0.),
+                    Align2::LEFT_CENTER,
+                    name,
+                    font.clone(),
+                    if active {
+                        Color32::WHITE
+                    } else {
+                        theme::ACCENT
+                    },
+                );
+                if response.clicked() {
+                    selected = Some(index);
+                    ui.close();
+                }
+            }
+            ui.data_mut(|data| data.insert_temp(highlighted_id, highlighted));
+        });
+    ui.set_style(previous_style);
+    selected
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum TilesetChoice {
+    Unassigned,
+    Existing(i64),
+    EmbeddedIcons,
+}
+
+pub(super) fn grouped_tileset_choices<'a>(
+    ui: &egui::Ui,
+    tilesets: &'a [Value],
+) -> Vec<(TilesetChoice, (&'a str, Option<&'a str>))> {
+    let internal_icons = locale::tr(ui, "⚙ Internal icons by FinalBossBlues");
+    let mut groups = std::collections::BTreeMap::<Option<&str>, Vec<(TilesetChoice, &str)>>::new();
+    for tileset in tilesets {
+        let Some(uid) = tileset["uid"].as_i64() else {
+            continue;
+        };
+        let label = if tileset["embedAtlas"] == "LdtkIcons" {
+            internal_icons
+        } else {
+            text(tileset, "identifier", locale::tr(ui, "Tileset"))
+        };
+        let choice = (TilesetChoice::Existing(uid), label);
+        let mut tags = tileset["tags"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .peekable();
+        if tags.peek().is_none() {
+            groups.entry(None).or_default().push(choice);
+        }
+        for tag in tags {
+            let group = groups.entry(Some(tag)).or_default();
+            if group.last() != Some(&choice) {
+                group.push(choice);
+            }
+        }
+    }
+    let mut groups: Vec<_> = groups.into_iter().collect();
+    groups.sort_by_cached_key(|(tag, _)| tag.map(str::to_lowercase));
+    let single_group = groups.len() == 1;
+    let mut candidates = Vec::new();
+    for (tag, choices) in groups {
+        let heading = if single_group {
+            locale::tr(ui, "All tilesets")
+        } else {
+            tag.unwrap_or_else(|| locale::tr(ui, "Untagged"))
+        };
+        candidates.extend(choices.into_iter().enumerate().map(|(index, (choice, label))| {
+            (choice, (label, (index == 0).then_some(heading)))
+        }));
+    }
+    if !tilesets.iter().any(|tileset| tileset["embedAtlas"] == "LdtkIcons") {
+        candidates.push((
+            TilesetChoice::EmbeddedIcons,
+            (internal_icons, Some(locale::tr(ui, "Integrated LDtk tilesets"))),
+        ));
+    }
+    candidates
+}
+
+pub(super) fn tileset_picker(
+    ui: &mut egui::Ui,
+    width: f32,
+    tilesets: &[Value],
+    current: Option<i64>,
+    placeholder: &str,
+    required: bool,
+) -> Option<TilesetChoice> {
+    let salt = ("form-tileset", placeholder);
+    let placeholder = locale::tr(ui, placeholder);
+    let mut candidates = vec![(TilesetChoice::Unassigned, (placeholder, None))];
+    candidates.extend(grouped_tileset_choices(ui, tilesets));
+    let selection = current.map_or(TilesetChoice::Unassigned, TilesetChoice::Existing);
+    let index = candidates.iter().position(|(choice, _)| *choice == selection);
+    let options: Vec<_> = candidates.iter().map(|(_, label)| *label).collect();
+    let title = index.map_or(placeholder, |i| options[i].0);
+    let appearance = if required {
+        FormSelectAppearance::Required
+    } else if current.is_none() {
+        FormSelectAppearance::Unassigned
+    } else {
+        FormSelectAppearance::Normal
+    };
+    let width = width.max(40.);
+    ui.allocate_ui_with_layout(
+        egui::vec2(width, 29.),
+        egui::Layout::left_to_right(egui::Align::Center),
+        |ui| {
+            ui.set_max_width(width);
+            form_select(ui, salt, 29., &options, index, title, appearance)
+        },
+    )
+        .inner
+        .map(|index| candidates[index].0)
+        .filter(|choice| *choice != selection)
+}
+
 pub(in crate::app) fn select_popup(
     response: &egui::Response,
     id: egui::Id,
@@ -864,6 +1238,50 @@ pub(in crate::app) fn select_popup(
     options: &[(&str, Color32)],
 ) -> Option<usize> {
     select_popup_contents(response, id, selected, options, false).map(|(index, _)| index)
+}
+
+pub(super) fn searchable_select_button(
+    ui: &mut egui::Ui,
+    width: f32,
+    title: &str,
+) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(width, 30.), Sense::click());
+    response.widget_info(|| {
+        egui::WidgetInfo::labeled(egui::WidgetType::ComboBox, response.enabled(), title)
+    });
+    ui.painter().rect(
+        rect,
+        2.,
+        theme::DARK,
+        Stroke::new(
+            1.,
+            if response.hovered() {
+                theme::ACCENT
+            } else {
+                theme::LIGHT
+            },
+        ),
+        StrokeKind::Inside,
+    );
+    ui.painter()
+        .with_clip_rect(rect.with_max_x(rect.right() - 18.))
+        .text(
+            rect.left_center() + egui::vec2(5., 0.),
+            Align2::LEFT_CENTER,
+            title,
+            FontId::proportional(13.33),
+            ui.visuals().text_color(),
+        );
+    let arrow = rect.right_center() - egui::vec2(8., 0.);
+    ui.painter().add(egui::Shape::line(
+        vec![
+            arrow + egui::vec2(-3., -1.5),
+            arrow + egui::vec2(0., 1.5),
+            arrow + egui::vec2(3., -1.5),
+        ],
+        Stroke::new(1., ui.visuals().text_color()),
+    ));
+    response
 }
 
 pub(in crate::app) fn searchable_select_popup(
@@ -884,6 +1302,10 @@ fn select_popup_contents(
 ) -> Option<(usize, bool)> {
     let last_option = options.len().checked_sub(1)?;
     let ctx = &response.ctx;
+    if !response.enabled() {
+        egui::Popup::close_id(ctx, id);
+        return None;
+    }
     let open = egui::Popup::is_id_open(ctx, id);
     let cursor_id = id.with("highlighted");
     let search_id = id.with("search");
@@ -924,16 +1346,7 @@ fn select_popup_contents(
                 .fold(response.rect.width(), f32::max)
                 .min(ctx.content_rect().width());
 
-        let (home, end, down, up, confirm) = ui.input_mut(|input| {
-            let mut pressed = |key| input.consume_key(egui::Modifiers::NONE, key);
-            (
-                !searchable && pressed(Key::Home),
-                !searchable && pressed(Key::End),
-                pressed(Key::ArrowDown),
-                pressed(Key::ArrowUp),
-                pressed(Key::Enter),
-            )
-        });
+        let navigation = select_navigation(ui, !searchable);
         let mut search = String::new();
         if searchable {
             search = ui
@@ -944,19 +1357,26 @@ fn select_popup_contents(
                 egui::TextEdit::singleline(&mut search)
                     .id(search_id)
                     .hint_text(locale::tr(ui, "Search"))
-                    .font(font.clone()),
+                    .font(FontId::proportional(13.333))
+                    .margin(egui::Margin::symmetric(9, 0))
+                    .vertical_align(egui::Align::Center),
             );
             if !open {
                 edit.request_focus();
             }
             ui.data_mut(|data| data.insert_temp(search_id, search.clone()));
         }
-        let search = search.to_lowercase();
+        let search = search.trim().to_lowercase();
         let visible = options
             .iter()
             .enumerate()
             .filter_map(|(index, (label, _))| {
-                (search.is_empty() || label.to_lowercase().contains(&search)).then_some(index)
+                let label = label.to_lowercase();
+                let mut label_chars = label.chars();
+                search
+                    .chars()
+                    .all(|needle| label_chars.by_ref().any(|ch| ch == needle))
+                    .then_some(index)
             })
             .collect::<Vec<_>>();
         let Some(last) = visible.len().checked_sub(1) else {
@@ -970,17 +1390,7 @@ fn select_popup_contents(
             .iter()
             .position(|&index| index == previous)
             .unwrap_or(0);
-        let index = if home {
-            0
-        } else if end {
-            last
-        } else if down {
-            (index + 1).min(last)
-        } else if up {
-            index.saturating_sub(1)
-        } else {
-            index
-        };
+        let (index, confirm) = select_highlight(&navigation, index, last);
         let mut cursor = visible[index];
         if confirm {
             choice = Some((cursor, true));
@@ -1187,6 +1597,62 @@ pub(in crate::app) fn checkbox(ui: &mut egui::Ui, value: &mut bool, label: &str)
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn form_select_replays_navigation_keys_in_input_order() {
+        let ctx = egui::Context::default();
+        let draw = |events| {
+            let mut selected = None;
+            let _ = ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(400., 300.),
+                    )),
+                    events,
+                    ..Default::default()
+                },
+                |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        selected = form_select(
+                            ui,
+                            "test-picker",
+                            29.,
+                            &[("First", None), ("Second", None), ("Third", None)],
+                            Some(2),
+                            "Third",
+                            FormSelectAppearance::Normal,
+                        );
+                    });
+                },
+            );
+            selected
+        };
+        draw(vec![]);
+        let pos = egui::pos2(40., 20.);
+        for pressed in [true, false] {
+            draw(vec![
+                egui::Event::PointerMoved(pos),
+                egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ]);
+        }
+        let events = [Key::Home, Key::ArrowDown, Key::Enter]
+            .into_iter()
+            .map(|key| egui::Event::Key {
+                key,
+                physical_key: Some(key),
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            })
+            .collect();
+        assert_eq!(draw(events), Some(1));
+    }
 
     #[test]
     fn form_help_follows_preview_anchor_and_uses_png_export_description() {

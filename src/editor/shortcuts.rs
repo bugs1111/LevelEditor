@@ -9,6 +9,33 @@ pub(super) fn save_tile_shortcut_needs_shift(navigation: &str) -> bool {
 }
 use serde_json::json;
 
+fn fullscreen_key(platform: &str, key: Key, modifiers: egui::Modifiers) -> bool {
+    match (key, modifiers.alt, modifiers.shift, modifiers.ctrl, modifiers.mac_cmd) {
+        (Key::F, false, true, true, false) => platform != "macos",
+        (Key::F, false, true, false, true)
+        | (Key::F, false, false, true, true)
+        | (Key::Enter, false, false, false, true) => platform == "macos",
+        (Key::F11, false, false, false, false)
+        | (Key::Enter, true, false, false, false) => platform == "windows",
+        _ => false,
+    }
+}
+
+fn project_search_key(key: Key, modifiers: egui::Modifiers) -> bool {
+    !modifiers.alt
+        && !(cfg!(target_os = "macos") && modifiers.ctrl)
+        && (key != Key::F || !modifiers.shift)
+}
+
+fn mac_window_key(platform: &str, key: Key, modifiers: egui::Modifiers) -> bool {
+    platform == "macos"
+        && matches!(key, Key::H | Key::M)
+        && modifiers.mac_cmd
+        && !modifiers.ctrl
+        && !modifiers.alt
+        && !modifiers.shift
+}
+
 #[derive(Clone, Copy, Default)]
 struct HeldZoomKeys {
     equals: bool,
@@ -394,8 +421,11 @@ impl EditorApp {
         self.normalize_palette();
     }
 
-    fn fullscreen(&self, ctx: &egui::Context) {
+    fn fullscreen(&mut self, ctx: &egui::Context) {
         let active = ctx.input(|i| i.viewport().fullscreen.unwrap_or(false));
+        if !active {
+            self.report_canvas_notice(notifications::CanvasNotice::EnteredFullscreen);
+        }
         ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(!active));
     }
 
@@ -631,40 +661,142 @@ impl EditorApp {
             .into_iter()
             .flatten()
             .collect();
-        let mut pointer = rect.center();
-        if self.world
+        let level_origin = if self.world
             && let (Some(project), Some(level)) = (&self.project, self.selected)
-            && let Some((_, bounds)) = canvas::placements(project, level)
-                .into_iter()
-                .find(|(key, _)| *key == level)
         {
-            // The original reconstructs a page coordinate from the current
-            // level render, whose origin is snapped to a backing pixel.
-            let density = f64::from(ctx.pixels_per_point());
-            let zoom = f64::from(self.viewport.zoom) * density;
-            let page_coordinate = |axis: usize, extent: f32, min: f32| {
-                let world = f64::from(self.viewport.center[axis]) - f64::from(bounds[axis]);
-                let offset = world * zoom;
-                let origin = (f64::from(extent) * density * 0.5 - offset).round();
-                (f64::from(min) + (origin + offset) / density).trunc() as f32
-            };
-            pointer = egui::pos2(
-                page_coordinate(0, rect.width(), rect.left()),
-                page_coordinate(1, rect.height(), rect.top()),
-            );
-        }
+            navigation::level_world_origin(project, level)
+        } else {
+            [0.; 2]
+        };
+        let pointer = self.viewport.level_point_page(
+            rect,
+            level_origin,
+            self.viewport.center,
+            ctx.pixels_per_point(),
+        );
         self.zoom_from_input(ctx, rect, pointer, deltas);
         ctx.request_repaint();
     }
 
+    fn canvas_display_shortcut(&mut self, key: Key, modifiers: egui::Modifiers) -> bool {
+        if modifiers.alt || (cfg!(target_os = "macos") && modifiers.ctrl) {
+            return false;
+        }
+        match (key, modifiers.command, modifiers.shift) {
+            (Key::H, true, false) if !cfg!(target_os = "macos") => self.set_details(!self.details),
+            (Key::H, false, true) if cfg!(target_os = "macos") => self.set_details(!self.details),
+            (Key::G, false, false) => self.set_grid(!self.grid),
+            (Key::R, false, true) => self.set_auto_layer_rendering(!self.render_auto, true),
+            (Key::T, false, true) => self.set_tile_stacking(!self.tile_stacking),
+            (Key::E, false, true) => {
+                self.set_empty_selection(!self.settings.bool("emptySpaceSelection"));
+            }
+            (Key::A, false, shift)
+                if shift
+                    || !single_layer_shortcut_needs_shift(text(
+                        &self.settings.value,
+                        "navigationKeys",
+                        "Wasd",
+                    )) =>
+            {
+                self.set_single_layer_mode(!self.single_layer);
+            }
+            _ => return false,
+        }
+        true
+    }
+
+    fn open_project_search(&mut self) {
+        if !self.command_palette {
+            self.search_index = 0;
+            self.search_show_all = false;
+        }
+        self.command_palette = true;
+        self.search_focus = false;
+    }
+
+    fn dismiss_project_search(&mut self, ctx: &egui::Context, modifiers: egui::Modifiers) {
+        self.command_palette = false;
+        ctx.input_mut(|input| input.consume_key(modifiers, Key::Escape));
+        ctx.memory_mut(|memory| {
+            if let Some(id) = memory.focused() {
+                memory.surrender_focus(id);
+            }
+        });
+    }
+
+    fn application_settings_shortcut(&mut self, key: Key, modifiers: egui::Modifiers) -> bool {
+        if key != Key::F12 || modifiers.any() {
+            return false;
+        }
+        if self.panel != Some(Panel::Settings) {
+            self.show_panel(Some(Panel::Settings));
+        }
+        true
+    }
+
+    fn toolbar_panel_shortcut(&mut self, key: Key, modifiers: egui::Modifiers) -> bool {
+        if modifiers.alt || modifiers.command || modifiers.ctrl {
+            return false;
+        }
+        let panel = match (key, modifiers.shift) {
+            (Key::P, false) => Panel::Project,
+            (Key::C, false) => Panel::Level,
+            (Key::L, false) => Panel::Layers,
+            (Key::E, false) => Panel::Entities,
+            (Key::U, false) => Panel::Enums,
+            (Key::T, false) => Panel::Tilesets,
+            (Key::H, false) => Panel::Help,
+            (Key::Backtick, false) | (Key::W, true) => Panel::World,
+            (Key::W, false)
+                if matches!(
+                    self.settings.value["navigationKeys"].as_str(),
+                    Some("Arrows" | "Zqsd")
+                ) =>
+            {
+                Panel::World
+            }
+            _ => return false,
+        };
+        self.toggle_toolbar_panel(panel);
+        true
+    }
+
     pub(super) fn shortcuts(&mut self, ctx: &egui::Context) {
+        let window_key = ctx.input_mut(|input| {
+            let pressed = input.events.iter().find_map(|event| match event {
+                egui::Event::Key { key, pressed: true, repeat: false, modifiers, .. }
+                    if fullscreen_key(std::env::consts::OS, *key, *modifiers)
+                        || mac_window_key(std::env::consts::OS, *key, *modifiers) =>
+                {
+                    Some((*key, *modifiers))
+                }
+                _ => None,
+            });
+            pressed.and_then(|(key, modifiers)| {
+                (input.focused && input.consume_key(modifiers, key)).then_some(key)
+            })
+        });
+        match window_key {
+            #[cfg(target_os = "macos")]
+            Some(Key::H) => {
+                if let Some(main_thread) = objc2::MainThreadMarker::new() {
+                    objc2_app_kit::NSApplication::sharedApplication(main_thread).hide(None);
+                }
+            }
+            #[cfg(target_os = "macos")]
+            Some(Key::M) => ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true)),
+            Some(_) => self.fullscreen(ctx),
+            None => {}
+        }
+        let world_context_open = self.world_context.menu_open();
         let selector_open = ui_fields::enum_picker::is_open(ctx)
             || self.panel == Some(Panel::World) && Self::world_selector_open(ctx)
-            || self.world_context.menu_open()
+            || self.panel == Some(Panel::Layers) && egui::Popup::is_any_open(ctx)
             || self.layer_context_menu.is_some()
             || egui::Popup::is_id_open(ctx, Self::layer_filter_popup_id())
             || palette_popout::tileset_selector_open(ctx);
-        track_zoom_keys(ctx, self.command_palette || selector_open);
+        track_zoom_keys(ctx, self.command_palette || selector_open || world_context_open);
         if selector_open {
             return;
         }
@@ -672,6 +804,7 @@ impl EditorApp {
             return;
         }
         if world_form_dialog::is_open(ctx)
+            || Self::definition_removal_open(ctx)
             || Self::backup_restore_open(ctx)
             || Self::home_backup_delete_open(ctx)
         {
@@ -718,27 +851,62 @@ impl EditorApp {
         {
             return;
         }
-        if !self.resource_missing.is_empty() {
-            if self.external_changes.is_none()
-                && let Some(save_as) = ctx.input(|input| {
-                    input.events.iter().find_map(|event| match event {
-                        egui::Event::Key {
-                            key: Key::S,
-                            pressed: true,
-                            repeat: false,
-                            modifiers,
-                            ..
-                        } if modifiers.command
-                            && !modifiers.alt
-                            && !(cfg!(target_os = "macos") && modifiers.ctrl) =>
-                        {
-                            Some(modifiers.shift)
+        let missing_resources = !self.resource_missing.is_empty();
+        if world_context_open || missing_resources {
+            let allow_search = world_context_open && !missing_resources && self.project.is_some();
+            let allow_canvas_shortcuts = world_context_open
+                && !missing_resources
+                && !self.command_palette
+                && !ctx.wants_keyboard_input();
+            for event in ctx.input(|input| input.events.clone()) {
+                let egui::Event::Key {
+                    key,
+                    pressed: true,
+                    repeat: false,
+                    modifiers,
+                    ..
+                } = event
+                else {
+                    continue;
+                };
+                if key == Key::Escape && world_context_open && self.command_palette {
+                    self.dismiss_project_search(ctx, modifiers);
+                    break;
+                }
+                if !missing_resources && self.application_settings_shortcut(key, modifiers) {
+                    break;
+                }
+                if modifiers.command
+                    && !modifiers.alt
+                    && !(cfg!(target_os = "macos") && modifiers.ctrl)
+                {
+                    match key {
+                        Key::S if self.external_changes.is_none() => {
+                            self.save(modifiers.shift);
+                            break;
                         }
-                        _ => None,
-                    })
-                })
-            {
-                self.save(save_as);
+                        Key::W | Key::Q
+                            if world_context_open && !missing_resources && !modifiers.shift =>
+                        {
+                            let action = if key == Key::W { Action::Close } else { Action::Quit };
+                            self.request(ctx, action);
+                            break;
+                        }
+                        Key::F | Key::K | Key::P
+                            if allow_search && project_search_key(key, modifiers) =>
+                        {
+                            self.open_project_search();
+                            break;
+                        }
+                        _ => {}
+                    }
+                }
+                if allow_canvas_shortcuts {
+                    if self.toolbar_panel_shortcut(key, modifiers) {
+                        break;
+                    }
+                    self.canvas_display_shortcut(key, modifiers);
+                }
             }
             return;
         }
@@ -805,13 +973,7 @@ impl EditorApp {
                     continue;
                 }
                 if self.command_palette {
-                    self.command_palette = false;
-                    ctx.input_mut(|input| input.consume_key(modifiers, Key::Escape));
-                    ctx.memory_mut(|memory| {
-                        if let Some(id) = memory.focused() {
-                            memory.surrender_focus(id);
-                        }
-                    });
+                    self.dismiss_project_search(ctx, modifiers);
                     continue;
                 }
                 self.chain_entity = None;
@@ -840,43 +1002,38 @@ impl EditorApp {
                 }
                 continue;
             }
-            if key == Key::F12 {
-                self.finish_gesture();
-                self.show_panel(Some(Panel::Settings));
+            if self.application_settings_shortcut(key, modifiers) {
                 continue;
             }
-            if (key == Key::F11 && !cfg!(target_os = "macos"))
-                || (modifiers.command && key == Key::Enter)
-                || (modifiers.command && modifiers.shift && key == Key::F)
-                || (modifiers.command && modifiers.mac_cmd && modifiers.ctrl && key == Key::F)
+            if key == Key::Enter
+                && !modifiers.any()
+                && self.project.is_none()
+                && self.panel.is_none()
+                && !egui::Popup::is_any_open(ctx)
+                && ctx.memory(|mem| mem.top_modal_layer().is_none())
+                && let Some(path) = self.settings.most_recent_project().map(Path::to_owned)
+                && ctx.input_mut(|input| input.focused && input.consume_key(modifiers, key))
             {
-                self.fullscreen(ctx);
-                continue;
+                self.request(ctx, Action::Open(path));
+                break;
             }
             if modifiers.command {
+                if self.canvas_display_shortcut(key, modifiers) {
+                    continue;
+                }
                 match key {
                     Key::S => {
                         self.save(modifiers.shift);
                     }
                     Key::O => self.request(ctx, Action::Browse),
                     Key::N => self.request(ctx, Action::New),
-                    Key::W => self.request(ctx, Action::Close),
-                    Key::Q => self.request(ctx, Action::Quit),
-                    Key::F | Key::K | Key::P if self.project.is_some() => {
-                        if !self.command_palette {
-                            self.search_index = 0;
-                            self.search_show_all = false;
-                        }
-                        self.command_palette = true;
-                        self.search_focus = false;
+                    Key::W if self.project.is_some() => self.request(ctx, Action::Close),
+                    Key::W | Key::Q => self.request(ctx, Action::Quit),
+                    Key::F | Key::K | Key::P
+                        if self.project.is_some() && project_search_key(key, modifiers) =>
+                    {
+                        self.open_project_search();
                     }
-                    Key::M if cfg!(target_os = "macos") => {
-                        ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true))
-                    }
-                    Key::H if cfg!(target_os = "macos") => {
-                        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false))
-                    }
-                    Key::H => self.set_details(!self.details),
                     Key::R => {
                         self.finish_gesture();
                         self.run_manual_command();
@@ -941,32 +1098,16 @@ impl EditorApp {
                 }
                 continue;
             }
-            if !focus {
-                let panel = match key {
-                    Key::P => Some(Panel::Project),
-                    Key::C => Some(Panel::Level),
-                    Key::L if !modifiers.shift => Some(Panel::Layers),
-                    Key::E if !modifiers.shift => Some(Panel::Entities),
-                    Key::U => Some(Panel::Enums),
-                    Key::T if !modifiers.shift => Some(Panel::Tilesets),
-                    Key::H if !modifiers.shift => Some(Panel::Help),
-                    Key::Backtick => Some(Panel::World),
-                    Key::W
-                        if modifiers.shift || self.settings.value["navigationKeys"] != "Wasd" =>
-                    {
-                        Some(Panel::World)
-                    }
-                    _ => None,
-                };
-                if let Some(panel) = panel {
-                    self.toggle_toolbar_panel(panel);
-                    continue;
-                }
+            if self.toolbar_panel_shortcut(key, modifiers) {
+                continue;
             }
             if self
                 .panel
                 .is_some_and(|p| !matches!(p, Panel::Entity | Panel::World))
             {
+                continue;
+            }
+            if self.canvas_display_shortcut(key, modifiers) {
                 continue;
             }
             let navigation = self.settings.value["navigationKeys"]
@@ -995,27 +1136,15 @@ impl EditorApp {
                 .and_then(|key| self.project.as_ref()?.layer(key, self.layer))
                 .is_some_and(|layer| layer["__type"] == "Tiles");
             match key {
-                Key::G => self.grid = !self.grid,
                 Key::Tab if !modifiers.any() => {
                     ctx.input_mut(|input| input.consume_key(modifiers, Key::Tab));
                     ctx.memory_mut(|memory| memory.move_focus(egui::FocusDirection::None));
                     self.toggle_zen_mode(ctx);
                 }
-                Key::R if modifiers.shift => self.render_auto = !self.render_auto,
-                Key::R if tile_tool => {
+                Key::R if tile_tool && !modifiers.any() => {
                     self.random_tiles = !self.random_tiles;
                     let label = if self.random_tiles { "Random mode" } else { "Stamp mode" };
                     self.notify_quick(locale::tr_ctx(ctx, label).into());
-                }
-                Key::T if modifiers.shift => self.tile_stacking = !self.tile_stacking,
-                Key::E if modifiers.shift => {
-                    self.set_empty_selection(!self.settings.bool("emptySpaceSelection"));
-                }
-                Key::A if modifiers.shift || !single_layer_shortcut_needs_shift(navigation) => {
-                    self.set_single_layer_mode(!self.single_layer)
-                }
-                Key::H if modifiers.shift && cfg!(target_os = "macos") => {
-                    self.set_details(!self.details)
                 }
                 Key::X | Key::H if tile_tool && (key == Key::X || modifiers.shift) => {
                     self.flip_tile_brush(ctx, 1);
@@ -1086,6 +1215,70 @@ mod tests {
         (app, ctx)
     }
 
+    #[test]
+    fn enter_on_home_opens_the_most_recent_project_when_no_modal_is_open() {
+        let directory = tempfile::tempdir().unwrap();
+        let latest = directory.path().join("Newest.ldtk");
+        let older = directory.path().join("Older.ldtk");
+        Project::new().save(&latest).unwrap();
+        Project::new().save(&older).unwrap();
+        let ctx = egui::Context::default();
+        theme::configure(&ctx);
+        let mut app = EditorApp::empty();
+        app.settings.value["recentProjects"] = serde_json::json!([latest, older]);
+        let changelog = egui::Id::new("release-notes-open");
+        ctx.data_mut(|data| data.insert_temp(changelog, true));
+        keyboard_zoom_frame(
+            &mut app,
+            &ctx,
+            1.,
+            true,
+            vec![key_event(
+                Key::Enter,
+                Key::Enter,
+                true,
+                egui::Modifiers::NONE,
+            )],
+        );
+        assert!(app.loading.is_none() && app.project.is_none());
+
+        ctx.data_mut(|data| data.insert_temp(changelog, false));
+        keyboard_zoom_frame(
+            &mut app,
+            &ctx,
+            2.,
+            true,
+            vec![key_event(
+                Key::Enter,
+                Key::Enter,
+                false,
+                egui::Modifiers::NONE,
+            )],
+        );
+        keyboard_zoom_frame(
+            &mut app,
+            &ctx,
+            3.,
+            true,
+            vec![key_event(
+                Key::Enter,
+                Key::Enter,
+                true,
+                egui::Modifiers::NONE,
+            )],
+        );
+        assert!(app.loading.is_some());
+        let until = Instant::now() + std::time::Duration::from_secs(5);
+        while app.loading.is_some() && Instant::now() < until {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+            app.poll_services(&ctx);
+        }
+        assert_eq!(
+            app.project.as_ref().and_then(|p| p.path.as_ref()),
+            Some(&latest)
+        );
+    }
+
     fn key_event(
         key: Key,
         physical: Key,
@@ -1099,6 +1292,215 @@ mod tests {
             repeat: false,
             modifiers,
         }
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn fullscreen_only_accepts_the_original_linux_chord() {
+        let (mut app, ctx) = keyboard_zoom_editor();
+        let ctrl = egui::Modifiers { ctrl: true, command: true, ..Default::default() };
+        let ctrl_shift = egui::Modifiers { shift: true, ..ctrl };
+        for (key, modifiers, expected) in [
+            (Key::F11, egui::Modifiers::NONE, false),
+            (Key::Enter, ctrl, false),
+            (Key::F, egui::Modifiers { alt: true, ..ctrl_shift }, false),
+            (Key::F, ctrl_shift, true),
+        ] {
+            let output = ctx.run(
+                egui::RawInput {
+                    focused: true,
+                    modifiers,
+                    events: vec![key_event(key, key, true, modifiers)],
+                    ..Default::default()
+                },
+                |ctx| app.shortcuts(ctx),
+            );
+            let toggled = output.viewport_output[&egui::ViewportId::ROOT]
+                .commands.iter().any(|command| matches!(command, egui::ViewportCommand::Fullscreen(true)));
+            assert_eq!(toggled, expected, "{key:?} {modifiers:?}");
+            assert!(!app.command_palette, "{key:?} {modifiers:?} opened search");
+            let _ = ctx.run(
+                egui::RawInput {
+                    focused: true,
+                    events: vec![key_event(key, key, false, modifiers)],
+                    ..Default::default()
+                },
+                |ctx| app.shortcuts(ctx),
+            );
+        }
+    }
+
+    #[test]
+    fn mac_window_shortcuts_require_unmodified_command() {
+        let cmd = egui::Modifiers {
+            command: true,
+            mac_cmd: true,
+            ..Default::default()
+        };
+        for key in [Key::H, Key::M] {
+            assert!(mac_window_key("macos", key, cmd));
+            assert!(!mac_window_key("windows", key, cmd));
+            assert!(!mac_window_key("linux", key, cmd));
+            for extra in [
+                egui::Modifiers { ctrl: true, ..cmd },
+                egui::Modifiers { alt: true, ..cmd },
+                egui::Modifiers { shift: true, ..cmd },
+                egui::Modifiers { ctrl: true, command: true, ..Default::default() },
+                egui::Modifiers::NONE,
+            ] {
+                assert!(!mac_window_key("macos", key, extra), "{key:?} {extra:?}");
+            }
+        }
+        assert!(!mac_window_key("macos", Key::F, cmd));
+    }
+
+    #[test]
+    fn fullscreen_shortcuts_follow_the_original_platform_bindings() {
+        let none = egui::Modifiers::NONE;
+        let ctrl = egui::Modifiers { ctrl: true, command: true, ..none };
+        let cmd = egui::Modifiers { mac_cmd: true, command: true, ..none };
+        let alt = egui::Modifiers { alt: true, ..none };
+        for (platform, key, modifiers, accepted) in [
+            ("windows", Key::F11, none, true),
+            ("windows", Key::F11, ctrl, false),
+            ("windows", Key::Enter, alt, true),
+            ("windows", Key::Enter, ctrl, false),
+            ("windows", Key::F, egui::Modifiers { shift: true, ..ctrl }, true),
+            ("macos", Key::F11, none, false),
+            ("macos", Key::Enter, cmd, true),
+            ("macos", Key::Enter, alt, false),
+            ("macos", Key::Enter, ctrl, false),
+            ("macos", Key::F, egui::Modifiers { ctrl: true, ..cmd }, true),
+            ("macos", Key::F, egui::Modifiers { shift: true, ..cmd }, true),
+            ("macos", Key::F, egui::Modifiers { ctrl: true, shift: true, ..cmd }, false),
+            ("macos", Key::F, egui::Modifiers { shift: true, ..ctrl }, false),
+        ] {
+            assert_eq!(
+                fullscreen_key(platform, key, modifiers),
+                accepted,
+                "{platform} {key:?} {modifiers:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn batched_blur_and_refocus_restore_shortcuts_without_a_click() {
+        let (mut app, ctx) = keyboard_zoom_editor();
+        ctx.data_mut(|data| {
+            data.insert_temp(egui::Id::new("help-video-thumbnails-requested"), true);
+        });
+        keyboard_zoom_frame(
+            &mut app,
+            &ctx,
+            2.,
+            true,
+            vec![
+                egui::Event::WindowFocused(false),
+                egui::Event::WindowFocused(true),
+            ],
+        );
+        assert!(app.clicktrap, "the refocus frame still guards canvas clicks");
+        keyboard_zoom_frame(&mut app, &ctx, 2.05, true, vec![]);
+        keyboard_zoom_frame(
+            &mut app,
+            &ctx,
+            2.1,
+            true,
+            vec![key_event(Key::H, Key::H, true, egui::Modifiers::NONE)],
+        );
+        assert_eq!(app.panel, Some(Panel::Help));
+
+        keyboard_zoom_frame(
+            &mut app,
+            &ctx,
+            3.,
+            false,
+            vec![
+                egui::Event::WindowFocused(true),
+                egui::Event::WindowFocused(false),
+            ],
+        );
+        keyboard_zoom_frame(&mut app, &ctx, 3.05, false, vec![]);
+        assert!(app.clicktrap, "the final blur guards the canvas until refocus");
+    }
+
+    #[test]
+    fn canvas_option_shortcuts_save_preferences_and_report_source_feedback() {
+        let (mut app, ctx) = keyboard_zoom_editor();
+        let mut project = Project::new();
+        let level = project.level_keys()[0];
+        project.add_layer("Ground", "IntGrid", 16).unwrap();
+        project.paint_int_grid(level, 0, 0, 0, 1).unwrap();
+        app.set_project(project);
+        let settings_dir = tempfile::tempdir().unwrap();
+        let settings = settings_dir.path().join("settings.json");
+        app.settings.path = Some(settings.clone());
+        app.capture_selection([0, 0, 1, 1]);
+        assert!(app.selection_group.is_some());
+
+        let mut time = 2.;
+        let mut press = |app: &mut EditorApp, key, modifiers| {
+            keyboard_zoom_frame(
+                app,
+                &ctx,
+                time,
+                true,
+                vec![key_event(key, key, true, modifiers)],
+            );
+            keyboard_zoom_frame(
+                app,
+                &ctx,
+                time + 0.05,
+                true,
+                vec![key_event(key, key, false, modifiers)],
+            );
+            time += 0.1;
+        };
+        let message = |app: &EditorApp| {
+            app.quick_notification
+                .as_ref()
+                .map(|notice| notice.0.clone())
+        };
+        let saved = || serde_json::from_slice::<Value>(&std::fs::read(&settings).unwrap()).unwrap();
+
+        press(&mut app, Key::G, egui::Modifiers::NONE);
+        assert!(!app.grid);
+        assert_eq!(message(&app).as_deref(), Some("Grid: off"));
+        assert_eq!(saved()["grid"], false);
+        assert!(app.selection_group.is_some());
+
+        press(&mut app, Key::T, egui::Modifiers::SHIFT);
+        assert!(!app.tile_stacking);
+        assert_eq!(message(&app).as_deref(), Some("Tile stacking: off"));
+        assert_eq!(saved()["tileStacking"], false);
+        assert!(app.selection_group.is_none());
+
+        press(&mut app, Key::E, egui::Modifiers::SHIFT);
+        assert_eq!(message(&app).as_deref(), Some("Select empty spaces: off"));
+        assert_eq!(saved()["emptySpaceSelection"], false);
+
+        let (key, modifiers) = if cfg!(target_os = "macos") {
+            (Key::H, egui::Modifiers::SHIFT)
+        } else {
+            (
+                Key::H,
+                egui::Modifiers {
+                    ctrl: true,
+                    command: true,
+                    ..Default::default()
+                },
+            )
+        };
+        press(&mut app, key, modifiers);
+        assert_eq!(message(&app).as_deref(), Some("Showing tiles only"));
+        assert_eq!(saved()["showDetails"], false);
+
+        let settings_before = std::fs::read(&settings).unwrap();
+        press(&mut app, Key::R, egui::Modifiers::SHIFT);
+        assert!(!app.render_auto);
+        assert_eq!(message(&app).as_deref(), Some("Auto-layers rendering: off"));
+        assert_eq!(std::fs::read(&settings).unwrap(), settings_before);
+        assert!(!app.dirty);
     }
 
     #[test]
@@ -1144,7 +1546,9 @@ mod tests {
             )],
         );
         assert!((app.viewport.zoom - zoom).abs() < 0.0001);
-        assert_eq!(app.viewport.center, start);
+        for (center, start) in app.viewport.center.into_iter().zip(start) {
+            assert!((center - start).abs() * zoom <= 2.);
+        }
 
         keyboard_zoom_frame(
             &mut app,

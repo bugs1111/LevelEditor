@@ -8,9 +8,9 @@ pub struct BackupInfo {
 impl BackupInfo {
     /// The timestamp in a backup directory is local time, including for old backups.
     #[cfg(any(unix, windows))]
-    pub fn age_in_seconds(&self, now: std::time::SystemTime) -> Option<u64> {
+    fn local_calendar(timestamp: &str) -> Option<(libc::tm, u64)> {
         let number =
-            |range: std::ops::Range<usize>| self.timestamp.get(range)?.parse::<libc::c_int>().ok();
+            |range: std::ops::Range<usize>| timestamp.get(range)?.parse::<libc::c_int>().ok();
         // SAFETY: tm consists of integers and, on some platforms, a nullable zone pointer.
         let mut date: libc::tm = unsafe { std::mem::zeroed() };
         date.tm_year = number(0..4)? - 1900;
@@ -29,10 +29,65 @@ impl BackupInfo {
         use libc::mktime;
         // SAFETY: date is a writable, initialized tm with a local calendar time.
         let seconds = u64::try_from(unsafe { mktime(&mut date) }).ok()?;
+        Some((date, seconds))
+    }
+
+    #[cfg(any(unix, windows))]
+    pub fn age_in_seconds(&self, now: std::time::SystemTime) -> Option<u64> {
+        let (_, seconds) = Self::local_calendar(&self.timestamp)?;
         now.duration_since(std::time::UNIX_EPOCH)
             .ok()?
             .as_secs()
             .checked_sub(seconds)
+    }
+
+    #[cfg(any(unix, windows))]
+    fn date_label(timestamp: &str) -> Option<String> {
+        let (mut date, seconds) = Self::local_calendar(timestamp)?;
+        let days = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+        let months = [
+            "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+        ];
+        let day = days.get(date.tm_wday as usize)?;
+        let month = months.get(date.tm_mon as usize)?;
+        let mut zone = [0_u8; 128];
+        #[cfg(unix)]
+        use libc::{strftime, timegm};
+        #[cfg(windows)]
+        unsafe extern "C" {
+            #[link_name = "_mkgmtime64"]
+            fn timegm(date: *mut libc::tm) -> i64;
+            fn strftime(
+                s: *mut libc::c_char,
+                max: usize,
+                fmt: *const libc::c_char,
+                date: *const libc::tm,
+            ) -> usize;
+        }
+        // SAFETY: zone is writable and strftime receives an initialized tm.
+        let length =
+            unsafe { strftime(zone.as_mut_ptr().cast(), zone.len(), c"%Z".as_ptr(), &date) };
+        let zone = String::from_utf8_lossy(&zone[..length]);
+        let mut label = format!(
+            "{day} {month} {:02} {:04} {:02}:{:02}:{:02}",
+            date.tm_mday,
+            date.tm_year + 1900,
+            date.tm_hour,
+            date.tm_min,
+            date.tm_sec
+        );
+        // SAFETY: timegm receives a valid tm and may normalize the writable copy.
+        let utc_seconds = i128::from(unsafe { timegm(&mut date) });
+        let offset = (utc_seconds - i128::from(seconds)) / 60;
+        let sign = if offset < 0 { '-' } else { '+' };
+        let minutes = offset.unsigned_abs();
+        label.push_str(&format!(" GMT{sign}{:02}{:02}", minutes / 60, minutes % 60));
+        if minutes == 0 && matches!(zone.as_ref(), "UTC" | "GMT" | "Coordinated Universal Time") {
+            label.push_str(" (Coordinated Universal Time)");
+        } else if !zone.is_empty() {
+            label.push_str(&format!(" ({zone})"));
+        }
+        Some(label)
     }
 }
 
@@ -362,6 +417,17 @@ impl Project {
         self.path
             .as_ref()
             .is_some_and(|path| backup_file(path, self.json["iid"].as_str().unwrap_or("")))
+    }
+    /// Local date and GMT offset shown when previewing a saved backup.
+    #[cfg(any(unix, windows))]
+    pub fn backup_date_label(&self) -> Option<String> {
+        let path = self.path.as_ref()?;
+        let name = path.parent()?.file_name()?.to_str()?;
+        let iid = self.json["iid"].as_str().unwrap_or("");
+        let prefix = [iid, "backup"]
+            .into_iter()
+            .find(|id| valid_backup_name(name, id))?;
+        BackupInfo::date_label(&name[prefix.len() + 1..])
     }
     pub fn list_backups(&self) -> Result<Vec<BackupInfo>> {
         let Some(path) = &self.path else {

@@ -23,6 +23,7 @@ impl EditorApp {
         key: LevelKey,
         press: egui::Pos2,
         level_pixel: [f32; 2],
+        marquee_cell: Option<[i32; 2]>,
     ) {
         let Some(index) = self.entity_index else {
             return;
@@ -48,7 +49,7 @@ impl EditorApp {
             entity["px"][0].as_i64().unwrap_or(0) as i32,
             entity["px"][1].as_i64().unwrap_or(0) as i32,
         ];
-        self.gesture = Some(if def["resizableX"] == true || def["resizableY"] == true {
+        let gesture = if def["resizableX"] == true || def["resizableY"] == true {
             tools::Gesture::EntityResize {
                 key,
                 layer: self.layer,
@@ -63,6 +64,26 @@ impl EditorApp {
                     i32::from(def["resizableY"] == true),
                 ],
             }
+        } else if let Some(cell) = marquee_cell {
+            // Shift starts SelectionTool with its rectangle mode already active.
+            if let Ok(group) = self.element_selection_group(
+                project,
+                key,
+                self.layer,
+                cell,
+                selection_click::Element::Entity(index),
+            ) {
+                self.set_selection_group(group);
+            }
+            tools::Gesture::Rectangle {
+                start: cell,
+                end: cell,
+                erase: false,
+                select: true,
+                entered_level: true,
+                started: Instant::now(),
+                world_end: level_pixel,
+            }
         } else {
             tools::Gesture::EntityMove {
                 key,
@@ -74,7 +95,8 @@ impl EditorApp {
                 origin,
                 moved: false,
             }
-        });
+        };
+        self.gesture = Some(gesture);
         self.panel = Some(Panel::Entity);
     }
 }

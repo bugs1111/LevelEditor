@@ -53,6 +53,7 @@ pub(super) enum Gesture {
         end: [i32; 2],
         erase: bool,
         select: bool,
+        entered_level: bool,
         started: Instant,
         world_end: [f32; 2],
     },
@@ -128,16 +129,23 @@ pub(super) fn stamp_cells(
 }
 
 pub(super) fn rectangle_tiles(
-    rect: [i32; 4],
+    origin: [i32; 2],
+    bounds: [i32; 4],
     tile: [i32; 4],
     scale: i32,
 ) -> Vec<([i32; 2], [i32; 2])> {
+    let [left, top, right, bottom] = bounds;
+    let start_x = left + (origin[0] - left).rem_euclid(scale);
+    let start_y = top + (origin[1] - top).rem_euclid(scale);
     let mut result = Vec::new();
-    for y in (0..rect[3]).step_by(scale as usize) {
-        for x in (0..rect[2]).step_by(scale as usize) {
+    for y in (start_y..bottom).step_by(scale as usize) {
+        for x in (start_x..right).step_by(scale as usize) {
             result.push((
-                [rect[0] + x, rect[1] + y],
-                [tile[0] + x / scale % tile[2], tile[1] + y / scale % tile[3]],
+                [x, y],
+                [
+                    tile[0] + (x - origin[0]) / scale % tile[2],
+                    tile[1] + (y - origin[1]) / scale % tile[3],
+                ],
             ));
         }
     }
@@ -359,6 +367,7 @@ impl EditorApp {
                 end,
                 erase,
                 select,
+                entered_level,
                 started,
                 world_end,
             } => {
@@ -370,6 +379,9 @@ impl EditorApp {
                         self.capture_selection_rectangle(r, true);
                     }
                     self.finish_stroke();
+                    return;
+                }
+                if !entered_level {
                     return;
                 }
                 if start == end && started.elapsed().as_secs_f32() <= 0.22 {
@@ -676,14 +688,12 @@ impl EditorApp {
     pub(super) fn cancel_gesture(&mut self) {
         self.cancel_level_resize();
         let gesture = self.gesture.take();
-        self.stroke = false;
-        self.last_cell = None;
+        self.clear_stroke_controls();
         self.async_paint = None;
         let pending = self.deferred_auto_paint.take();
         if pending.is_some() {
             self.dirty = self.stroke_was_dirty;
         }
-        self.painted_cells.clear();
         if let Some(project) = &mut self.project {
             self.history.cancel(project);
         }
@@ -706,31 +716,25 @@ impl EditorApp {
     }
 
     pub(super) fn pointer_lifecycle(&mut self, ctx: &egui::Context) -> bool {
-        if self.clicktrap
-            && ctx.input(|i| {
-                i.events
-                    .iter()
-                    .any(|event| matches!(event, egui::Event::WindowFocused(true)))
-            })
-        {
-            self.focus_frames = Some(2);
-        }
-        let lost = ctx.input(|i| {
-            i.events.iter().any(|event| {
-                matches!(
-                    event,
-                    egui::Event::PointerGone | egui::Event::WindowFocused(false)
-                )
-            })
+        let (lost_focus, pointer_gone, focus) = ctx.input(|input| {
+            let mut lost_focus = false;
+            let mut pointer_gone = false;
+            let mut focus = None;
+            for event in &input.events {
+                match event {
+                    egui::Event::WindowFocused(focused) => {
+                        lost_focus |= !focused;
+                        focus = Some(*focused);
+                    }
+                    egui::Event::PointerGone => pointer_gone = true,
+                    _ => {}
+                }
+            }
+            (lost_focus, pointer_gone, focus)
         });
+        let lost = lost_focus || pointer_gone;
         if lost {
-            if self.project.is_some()
-                && ctx.input(|i| {
-                    i.events
-                        .iter()
-                        .any(|e| matches!(e, egui::Event::WindowFocused(false)))
-                })
-            {
+            if lost_focus && self.project.is_some() {
                 self.clicktrap = true;
                 self.focus_frames = None;
                 self.zen_sidebar = chrome::ZenSidebar::default();
@@ -749,6 +753,10 @@ impl EditorApp {
             self.finish_stroke();
             self.camera_drag = None;
             ctx.input_mut(|i| i.pointer = Default::default());
+        }
+        // A rapid blur and refocus can arrive in the same input batch.
+        if self.clicktrap && focus == Some(true) {
+            self.focus_frames = Some(2);
         }
         lost
     }
@@ -840,29 +848,47 @@ impl EditorApp {
     }
 
     fn update_camera_drag(&mut self, ctx: &egui::Context, rect: Rect, pointer: egui::Pos2) {
-        let Some(drag) = self.camera_drag else {
+        let (Some(drag), Some(project), Some(key)) =
+            (self.camera_drag, self.project.as_ref(), self.selected)
+        else {
             return;
         };
-        // PanView reads both samples through the current camera, including the
-        // pointer position on release.
+        // Both samples use the current snapped world origin, including on release.
+        let density = ctx.pixels_per_point();
+        let offset = if self.world {
+            [0.; 2]
+        } else {
+            navigation::level_world_origin(project, key)
+        };
         let world_point = |pos: egui::Pos2| {
-            self.viewport
-                .to_world(pos.into(), rect.min.into(), rect.size().into())
-                .map(f32::round)
+            self.viewport.pointer_pixel(
+                pos.into(),
+                rect.min.into(),
+                rect.size().into(),
+                offset,
+                density,
+            )
         };
         let from = world_point(drag.previous);
         let to = world_point(pointer);
-        let physical_zoom = self.viewport.zoom * ctx.pixels_per_point();
+        let physical_zoom = self.viewport.zoom * density;
         if drag.button == egui::PointerButton::Secondary {
             let delta = -(to[1] - from[1]) * 0.006 * physical_zoom;
-            self.zoom_at_canvas(rect, drag.anchor, delta, ctx.pixels_per_point());
+            let world_anchor = world_point(drag.anchor);
+            let focus = [world_anchor[0] - offset[0], world_anchor[1] - offset[1]];
+            let level_origin = if self.world {
+                navigation::level_world_origin(project, key)
+            } else {
+                [0.; 2]
+            };
+            let anchor = self
+                .viewport
+                .level_point_page(rect, level_origin, focus, density);
+            self.zoom_at_canvas(rect, anchor, delta, density);
         } else {
             self.viewport.center[0] -= to[0] - from[0];
             self.viewport.center[1] -= to[1] - from[1];
-            if !self.world
-                && !self.camera_motion.is_active()
-                && let (Some(project), Some(key)) = (&self.project, self.selected)
-            {
+            if !self.world && !self.camera_motion.is_active() {
                 let bounds = canvas::bounds(project, key, false);
                 for (axis, pixels) in [450., 400.].into_iter().enumerate() {
                     let margin = pixels / physical_zoom;
@@ -1070,6 +1096,7 @@ impl EditorApp {
                     end: cell,
                     erase: false,
                     select: true,
+                    entered_level: true,
                     started: Instant::now(),
                     world_end: world,
                 });
@@ -1252,7 +1279,11 @@ impl EditorApp {
             self.camera_drag = None;
             return;
         }
-        if self.fit
+        #[cfg(target_os = "linux")]
+        let fitting_ready = self.startup_window.is_none();
+        #[cfg(not(target_os = "linux"))]
+        let fitting_ready = true;
+        if self.fit && fitting_ready
             && let (Some(project), Some(key)) = (&self.project, self.selected)
         {
             self.camera_motion.cancel();
@@ -1326,9 +1357,10 @@ impl EditorApp {
         let Some(pointer) = pointer else {
             return;
         };
+        let captured_eraser = self.stroke && self.stroke_erase && self.world_context.menu_open();
         if self.gesture.is_none()
             && (self.world || !self.picking_point())
-            && (!rect.contains(pointer) || !response.hovered())
+            && (!rect.contains(pointer) || !response.hovered() && !captured_eraser)
         {
             self.last_cell = None;
             return;
@@ -1337,6 +1369,14 @@ impl EditorApp {
             return;
         }
         if self.project.as_ref().is_some_and(Project::is_backup) {
+            if pressed
+                && response.interact_rect.contains(pointer)
+                && ctx
+                    .layer_id_at(pointer)
+                    .is_none_or(|layer| layer == response.layer_id)
+            {
+                self.report_canvas_notice(notifications::CanvasNotice::CannotEditBackup);
+            }
             return;
         }
         if self.gesture.is_none()
@@ -1473,16 +1513,18 @@ impl EditorApp {
         let Some(layer) = project.layer(key, self.layer) else {
             return;
         };
-        if layer["visible"] == false
-            || self
-                .hidden
-                .contains(&layer["layerDefUid"].as_i64().unwrap_or(-1))
-        {
+        let (local_world, _) =
+            self.canvas_pointer_pixels(project, key, rect, pointer, ctx.pixels_per_point());
+        if !self.canvas_layer_visible(key, self.layer) {
+            if pressed && primary && modifiers.alt && !modifiers.shift {
+                self.select_element_at(local_world, modifiers.command, Some(pointer));
+            } else {
+                self.finish_gesture();
+                self.finish_stroke();
+            }
             return;
         }
         let grid = number(layer, "__gridSize", 16.0).max(1.0);
-        let (local_world, _) =
-            self.canvas_pointer_pixels(project, key, rect, pointer, ctx.pixels_per_point());
         let local = canvas::pointer_to_layer(project, key, self.layer, &self.viewport, local_world);
         let cell = [
             (local[0] / grid).floor() as i32,
@@ -1491,25 +1533,6 @@ impl EditorApp {
         let width = number(layer, "__cWid", 0.0) as i32;
         let height = number(layer, "__cHei", 0.0) as i32;
         let kind = text(layer, "__type", "").to_owned();
-        if !matches!(self.gesture, Some(Gesture::Rectangle { select: true, .. }))
-            && !self.details
-            && kind == "IntGrid"
-            && !project
-                .layer_def(layer["layerDefUid"].as_i64().unwrap_or(-1))
-                .is_some_and(|d| {
-                    d["autoRuleGroups"]
-                        .as_array()
-                        .is_some_and(|r| !r.is_empty())
-                })
-        {
-            return;
-        }
-
-        if kind == "Entities" && !self.details {
-            self.finish_gesture();
-            self.finish_stroke();
-            return;
-        }
         let resize_positions: Vec<_> = if matches!(self.gesture, Some(Gesture::EntityResize { .. })) {
             let density = ctx.pixels_per_point();
             ctx.input(|input| {
@@ -1528,23 +1551,31 @@ impl EditorApp {
         } else {
             Vec::new()
         };
+        let rectangle_entered = matches!(
+            self.gesture,
+            Some(Gesture::Rectangle { entered_level: false, .. })
+        ) && (entity_tools::placement_in_level(project, key, local_world)
+            || ctx.input(|input| {
+                input.events.iter().any(|event| {
+                    let egui::Event::PointerMoved(pos) = event else {
+                        return false;
+                    };
+                    let (pixel, _) =
+                        self.canvas_pointer_pixels(project, key, rect, *pos, ctx.pixels_per_point());
+                    entity_tools::placement_in_level(project, key, pixel)
+                })
+            }));
         if let Some(gesture) = &mut self.gesture {
             match gesture {
                 Gesture::Rectangle {
                     end,
                     world_end,
-                    select,
+                    entered_level,
                     ..
                 } => {
                     *world_end = local_world;
-                    *end = if *select {
-                        cell
-                    } else {
-                        [
-                            cell[0].clamp(0, (width - 1).max(0)),
-                            cell[1].clamp(0, (height - 1).max(0)),
-                        ]
-                    };
+                    *end = cell;
+                    *entered_level |= rectangle_entered;
                 }
                 Gesture::SelectionMove {
                     end,
@@ -1624,7 +1655,6 @@ impl EditorApp {
             && primary
             && kind == "Entities"
             && !modifiers.alt
-            && !modifiers.shift
             && let Some(index) = self.entity_index
             && let Some(handle) =
                 self.resize_handle_at(key, self.layer, index, local_world)
@@ -1667,25 +1697,30 @@ impl EditorApp {
         } else {
             secondary || (cfg!(target_os = "macos") && modifiers.ctrl)
         };
-        if pressed
-            && primary
-            && !erase
-            && !modifiers.shift
-            && kind == "Entities"
-            && matches!(
-                self.generic_element_at(local_world, true),
-                Some((_, _, selection_click::Element::Point { .. }))
-            )
+        let entity_hit = if pressed && primary && !erase && kind == "Entities" {
+            self.generic_element_at(local_world, true)
+        } else {
+            None
+        };
+        if !modifiers.shift
+            && matches!(entity_hit, Some((_, _, selection_click::Element::Point { .. })))
         {
             self.select_element_at(local_world, false, Some(pointer));
             return;
         }
-        let entity_brush = kind == "Entities" && !modifiers.shift && self.stamp.is_none();
-        let entity_placement = entity_brush
+        let entity_marquee = modifiers.shift
             && pressed
+            && primary
             && !erase
-            && entity_tools::placement_in_level(project, key, local_world);
-        if !(entity_placement || entity_brush && erase)
+            && kind == "Entities"
+            && (entity_hit.is_some() || self.selection_contains_world(local_world));
+        let entity_brush = kind == "Entities" && !modifiers.alt && self.stamp.is_none();
+        let in_level = entity_tools::placement_in_level(project, key, local_world);
+        let entity_placement = entity_brush && pressed && !erase && in_level;
+        let grid_tool = matches!(kind.as_str(), "IntGrid" | "Tiles");
+        let grid_stroke = grid_tool && self.stamp.is_none();
+        let paint_rectangle = grid_tool && modifiers.shift;
+        if !(grid_stroke || paint_rectangle || entity_placement || entity_brush && erase)
             && (cell[0] < 0 || cell[1] < 0 || cell[0] >= width || cell[1] >= height)
         {
             self.last_cell = None;
@@ -1705,7 +1740,7 @@ impl EditorApp {
                 self.history.begin_layer(project, key, self.layer);
             }
             self.last_chance = None;
-            if !modifiers.alt {
+            if !modifiers.alt && !entity_marquee {
                 self.selection = None;
                 self.selection_group = None;
                 if kind != "Entities" {
@@ -1718,13 +1753,16 @@ impl EditorApp {
             self.stroke_was_dirty = self.dirty;
             self.stroke = true;
             self.stroke_erase = erase;
+            self.stroke_waiting_for_level = grid_stroke && !paint_rectangle && !in_level;
         }
-        if pressed && modifiers.shift {
+        if pressed && modifiers.shift && (!entity_brush || entity_marquee) {
+            let select = modifiers.alt || entity_marquee;
             self.gesture = Some(Gesture::Rectangle {
                 start: cell,
                 end: cell,
                 erase,
-                select: modifiers.alt,
+                select,
+                entered_level: select || in_level,
                 started: Instant::now(),
                 world_end: local_world,
             });
@@ -1772,10 +1810,22 @@ impl EditorApp {
                 self.selection = None;
                 self.selection_group = None;
                 self.place_entity(local, local_world);
-                self.start_created_entity_transform(key, pointer, local_world);
+                self.start_created_entity_transform(
+                    key,
+                    pointer,
+                    local_world,
+                    modifiers.shift.then_some(cell),
+                );
             }
-        } else if self.last_cell != Some(cell) {
-            self.paint_cells(&stroke_cells(self.last_cell.unwrap_or(cell), cell), erase);
+        } else {
+            // The source retains the last outside sample and begins painting
+            // when the pointer first moves into the level.
+            let was_waiting = self.stroke_waiting_for_level;
+            self.stroke_waiting_for_level &= !in_level;
+            if !self.stroke_waiting_for_level && (was_waiting || self.last_cell != Some(cell)) {
+                let cells = stroke_cells(self.last_cell.unwrap_or(cell), cell);
+                self.paint_cells(&cells, self.stroke_erase);
+            }
         }
         self.last_cell = Some(cell);
     }
@@ -1870,65 +1920,58 @@ impl EditorApp {
                 );
             }
         }
-        let Some(layer) = self
-            .selected
-            .and_then(|key| self.project.as_ref()?.layer(key, self.layer))
+        self.draw_selection_highlight(ui, rect);
+        let (
+            Some(Gesture::Rectangle { start, end, select, entered_level: true, .. }),
+            Some(project),
+            Some(key),
+        ) = (&self.gesture, &self.project, self.selected)
         else {
             return;
         };
-        let grid = number(layer, "__gridSize", 16.0);
-        let project = self.project.as_ref().unwrap();
-        let key = self.selected.unwrap();
-        let origin = self.viewport.level_render_canvas_origin(rect, ui.ctx().pixels_per_point());
-        let draw = |r: [i32; 4], select: bool| {
-            let layer_to_world = if select {
-                canvas::layer_to_pointer_world
-            } else {
-                canvas::layer_to_world
-            };
-            let min = self.viewport.to_screen(
-                layer_to_world(
-                    project,
-                    key,
-                    self.layer,
-                    &self.viewport,
-                    [r[0] as f32 * grid, r[1] as f32 * grid],
-                ),
-                origin,
-                rect.size().into(),
-            );
-            let max = self.viewport.to_screen(
-                layer_to_world(
-                    project,
-                    key,
-                    self.layer,
-                    &self.viewport,
-                    [(r[0] + r[2]) as f32 * grid, (r[1] + r[3]) as f32 * grid],
-                ),
-                origin,
-                rect.size().into(),
-            );
-            let screen = Rect::from_two_pos(min.into(), max.into());
-            let painter = ui.painter().with_clip_rect(rect);
-            if select {
-                let scale = screen.width() / (r[2] as f32 * grid);
-                preview::paint_pick_grid(&painter, screen, scale, Color32::WHITE, true);
-            } else {
-                painter.rect_stroke(
-                    screen,
-                    0.0,
-                    Stroke::new(2.0, Color32::WHITE),
-                    StrokeKind::Inside,
-                );
+        let Some(layer) = project.layer(key, self.layer) else {
+            return;
+        };
+        let color = if *select {
+            Color32::WHITE
+        } else {
+            match layer["__type"].as_str() {
+                Some("Tiles") => Color32::BLACK,
+                Some("IntGrid") => layer["layerDefUid"]
+                    .as_i64()
+                    .and_then(|uid| project.layer_def(uid))
+                    .and_then(|def| {
+                        canvas::values(&def["intGridValues"])
+                            .iter()
+                            .find(|value| value["value"] == self.int_value)
+                    })
+                    .and_then(|value| value["color"].as_str())
+                    .map_or(Color32::BLACK, theme::color),
+                _ => return,
             }
         };
-        self.draw_selection_highlight(ui, rect);
-        if let Some(Gesture::Rectangle {
-            start, end, select, ..
-        }) = self.gesture
-        {
-            draw(region(start, end), select);
-        }
+        let grid = number(layer, "__gridSize", 16.0);
+        let origin = self.viewport.level_render_canvas_origin(rect, ui.ctx().pixels_per_point());
+        let [x, y, width, height] = region(*start, *end);
+        let to_screen = |cell: [i32; 2]| {
+            self.viewport.to_screen(
+                canvas::layer_to_pointer_world(
+                    project,
+                    key,
+                    self.layer,
+                    &self.viewport,
+                    cell.map(|coordinate| coordinate as f32 * grid),
+                ),
+                origin,
+                rect.size().into(),
+            )
+        };
+        let screen = Rect::from_two_pos(
+            to_screen([x, y]).into(),
+            to_screen([x + width, y + height]).into(),
+        );
+        let scale = screen.width() / (width as f32 * grid);
+        preview::paint_pick_grid(&ui.painter().with_clip_rect(rect), screen, scale, color, true);
     }
 }
 
@@ -2013,6 +2056,45 @@ mod tests {
     }
 
     #[test]
+    fn int_grid_rectangle_preview_uses_the_palette_color_for_fill_and_edges() {
+        let mut project = Project::new();
+        project.add_layer("Ground", "IntGrid", 16).unwrap();
+        project.json["defs"]["layers"][0]["intGridValues"] =
+            json!([{"value":1,"identifier":"Solid","color":"#759944","groupUid":0}]);
+        let mut app = EditorApp::empty();
+        app.set_project(project);
+        app.int_value = 1;
+        app.viewport.center = [128.; 2];
+        app.viewport.zoom = 2.;
+        app.gesture = Some(Gesture::Rectangle {
+            start: [2, 2],
+            end: [4, 4],
+            erase: false,
+            select: false,
+            entered_level: true,
+            started: Instant::now(),
+            world_end: [64.; 2],
+        });
+        let ctx = egui::Context::default();
+        let canvas = Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(512., 512.));
+        let output = ctx.run(egui::RawInput::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| app.draw_tool_overlay(ui, canvas));
+        });
+        let color = theme::color("#759944");
+        assert!(output.shapes.iter().any(|shape| {
+            matches!(&shape.shape, egui::Shape::Rect(shape)
+                if shape.fill == color.gamma_multiply(0.35)
+                && shape.rect == Rect::from_min_max(egui::pos2(64., 64.), egui::pos2(160., 160.)))
+        }));
+        for expected in [Color32::BLACK, color] {
+            assert!(output.shapes.iter().any(|shape| {
+                matches!(&shape.shape, egui::Shape::Mesh(mesh) if mesh.vertices.len() == 8
+                    && mesh.vertices.iter().all(|vertex| vertex.color == expected))
+            }));
+        }
+    }
+
+    #[test]
     fn selection_rectangles_accumulate_without_selecting_gaps_or_duplicates() {
         let mut project = Project::new();
         let key = LevelKey {
@@ -2032,6 +2114,7 @@ mod tests {
                 end,
                 erase: false,
                 select: true,
+                entered_level: true,
                 started: Instant::now(),
                 world_end: [end[0] as f32 * 16. + 8., 24.],
             });
@@ -2073,6 +2156,7 @@ mod tests {
                 end,
                 erase: false,
                 select: true,
+                entered_level: true,
                 started: Instant::now(),
                 world_end: end.map(|cell| cell as f32 * 16. + 8.),
             });

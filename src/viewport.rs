@@ -60,38 +60,62 @@ impl Viewport {
             ((pixel - root) / zoom).round() as f32
         })
     }
-    fn zoom_at_level_center(
+    fn project_level_point(
+        &self,
+        zoom: f32,
+        canvas: Rect,
+        level_origin: [f32; 2],
+        point: [f32; 2],
+        pixels_per_point: f32,
+    ) -> [f64; 2] {
+        let density = f64::from(pixels_per_point);
+        let zoom = f64::from(zoom) * density;
+        let origin: [f32; 2] = canvas.min.into();
+        let size: [f32; 2] = canvas.size().into();
+        std::array::from_fn(|axis| {
+            let center = f64::from(self.center[axis]) - f64::from(level_origin[axis]);
+            let point = f64::from(point[axis]) - f64::from(level_origin[axis]);
+            let middle = f64::from(size[axis]) * density * 0.5;
+            let level_root = (middle - center * zoom).round();
+            (level_root + point * zoom) / density + f64::from(origin[axis])
+        })
+    }
+
+    pub fn level_point_page(
+        &self,
+        canvas: Rect,
+        level_origin: [f32; 2],
+        point: [f32; 2],
+        pixels_per_point: f32,
+    ) -> eframe::egui::Pos2 {
+        self.project_level_point(self.zoom, canvas, level_origin, point, pixels_per_point)
+            .map(|page| page.trunc() as f32)
+            .into()
+    }
+
+    pub fn zoom_at_level_point(
         &mut self,
         zoom: f32,
         canvas: Rect,
         level_origin: [f32; 2],
+        point: [f32; 2],
         pixels_per_point: f32,
     ) {
+        let before =
+            self.project_level_point(self.zoom, canvas, level_origin, point, pixels_per_point);
+        let after = self.project_level_point(zoom, canvas, level_origin, point, pixels_per_point);
         let density = f64::from(pixels_per_point);
         let origin: [f32; 2] = canvas.min.into();
-        let size: [f32; 2] = canvas.size().into();
         for axis in 0..2 {
-            let center = f64::from(self.center[axis]) - f64::from(level_origin[axis]);
-            let middle = f64::from(size[axis]) * density * 0.5;
             let origin = f64::from(origin[axis]);
-            let project = |zoom: f32| {
-                let focus = center * f64::from(zoom) * density;
-                let level_root = (middle - focus).round();
-                backing_pixel((level_root + focus) / density + origin, origin, density)
-            };
             // Camera.deltaZoomTo compares both page coordinates at the new
             // backing zoom. The world render origin cancels in the difference.
-            let delta = (project(zoom) - project(self.zoom)) / (f64::from(zoom) * density);
+            let pixels = backing_pixel(after[axis], origin, density)
+                - backing_pixel(before[axis], origin, density);
+            let delta = pixels / (f64::from(zoom) * density);
             self.center[axis] += delta as f32;
         }
         self.zoom = zoom;
-    }
-    pub fn zoom_to_at(&mut self, zoom: f32, cursor: [f32; 2], origin: [f32; 2], size: [f32; 2]) {
-        let before = self.to_world(cursor, origin, size);
-        self.zoom = zoom;
-        let after = self.to_world(cursor, origin, size);
-        self.center[0] += before[0] - after[0];
-        self.center[1] += before[1] - after[1];
     }
     pub fn fit(&mut self, bounds: [f32; 4], size: [f32; 2], pixels_per_point: f32) {
         self.center = fit_center(bounds);
@@ -306,7 +330,7 @@ impl CameraMotion {
             let step = (0.22 * view.zoom * pixels_per_point).max(0.1) * tmod;
             let zoom = (view.zoom + (*target - view.zoom) * step.min(1.0))
                 .clamp(0.03 / pixels_per_point, 32.0 / pixels_per_point);
-            view.zoom_at_level_center(zoom, canvas, level_origin, pixels_per_point);
+            view.zoom_at_level_point(zoom, canvas, level_origin, view.center, pixels_per_point);
             *remaining -= tmod;
             if (*target - view.zoom).abs() <= 0.04 * view.zoom || *remaining <= 0.0 {
                 self.zoom = None;
@@ -426,7 +450,9 @@ mod tests {
             center: [100.0, 200.0],
             zoom: 2.0,
         };
-        v.zoom_to_at(4.0, [800.0, 400.0], [300.0, 0.0], [800.0, 600.0]);
+        let canvas =
+            Rect::from_min_size(eframe::egui::pos2(300., 0.), eframe::egui::vec2(800., 600.));
+        v.zoom_at_level_point(4., canvas, [0.; 2], [150., 250.], 1.);
         near(
             v.to_world([800.0, 400.0], [300.0, 0.0], [800.0, 600.0]),
             [150.0, 250.0],

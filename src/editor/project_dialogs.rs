@@ -202,7 +202,17 @@ fn save_warning(ui: &mut egui::Ui, width: f32, message: String) {
         width - 18.,
     );
     let (rect, _) = ui.allocate_exact_size(egui::vec2(width, galley.size().y + 18.), Sense::hover());
-    let painter = ui.painter();
+    // The source's 66% black fill over the save dialog's dark red.
+    paint_warning(ui.painter(), rect, galley, Color32::from_rgb(41, 6, 2), Color32::WHITE);
+}
+
+pub(super) fn paint_warning(
+    painter: &egui::Painter,
+    rect: Rect,
+    galley: std::sync::Arc<egui::Galley>,
+    fill: Color32,
+    text_color: Color32,
+) {
     let dark_red = Color32::from_rgb(139, 0, 0);
     painter.add(
         egui::Shadow {
@@ -213,8 +223,7 @@ fn save_warning(ui: &mut egui::Ui, width: f32, message: String) {
         }
         .as_shape(rect, 0.),
     );
-    // The source's 66% black fill over the save dialog's dark red.
-    painter.rect_filled(rect, 0., Color32::from_rgb(41, 6, 2));
+    painter.rect_filled(rect, 0., fill);
 
     // Sample the 32 px CSS inset blur from each edge.
     let mut inset = egui::Mesh::default();
@@ -273,7 +282,7 @@ fn save_warning(ui: &mut egui::Ui, width: f32, message: String) {
             Color32::RED.gamma_multiply(0.16),
         );
     }
-    painter.galley(text, galley, Color32::WHITE);
+    painter.galley(text, galley, text_color);
 }
 
 impl EditorApp {

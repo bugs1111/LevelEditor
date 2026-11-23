@@ -7,6 +7,7 @@ pub(super) enum Field<'a> {
     LayerUi,
     RequiredEntities,
     ExcludedEntities,
+    ReferenceTargets,
 }
 
 impl Field<'_> {
@@ -16,6 +17,7 @@ impl Field<'_> {
             Self::LayerUi => "uiFilterTags",
             Self::RequiredEntities => "requiredTags",
             Self::ExcludedEntities => "excludedTags",
+            Self::ReferenceTargets => "allowedRefTags",
         }
     }
 }
@@ -90,11 +92,12 @@ pub(super) fn show(
     uid: i64,
     value: &Value,
 ) -> Option<Change> {
-    let is_filter = matches!(field, Field::RequiredEntities | Field::ExcludedEntities);
+    let layer_filter = matches!(field, Field::RequiredEntities | Field::ExcludedEntities);
+    let is_filter = layer_filter || matches!(field, Field::ReferenceTargets);
     let kind = match field {
         Field::Definition(kind) => kind,
         Field::LayerUi => "layers",
-        Field::RequiredEntities | Field::ExcludedEntities => "entities",
+        Field::RequiredEntities | Field::ExcludedEntities | Field::ReferenceTargets => "entities",
     };
     let key = if is_filter { "tags" } else { field.key() };
     let id = egui::Id::new((
@@ -119,7 +122,7 @@ pub(super) fn show(
         .flat_map(|def| def[key].as_array().into_iter().flatten())
         .filter_map(Value::as_str)
         .collect();
-    if kind == "entities" {
+    if kind == "entities" && !matches!(field, Field::ReferenceTargets) {
         for layer in project.json["defs"]["layers"]
             .as_array()
             .into_iter()
@@ -133,7 +136,7 @@ pub(super) fn show(
                 recalled.push(tag);
             }
         }
-        let current_layer = is_filter.then(|| project.layer_def(uid)).flatten();
+        let current_layer = layer_filter.then(|| project.layer_def(uid)).flatten();
         recalled.retain(|tag| {
             if let Some(layer) = current_layer {
                 !["requiredTags", "excludedTags"].into_iter().any(|key| {
@@ -147,6 +150,9 @@ pub(super) fn show(
         });
     } else {
         recalled.sort_by_cached_key(|tag| tag.to_lowercase());
+        if is_filter {
+            recalled.retain(|tag| !tags.iter().any(|value| value == *tag));
+        }
     }
     let mut unique = std::collections::HashSet::new();
     recalled.retain(|tag| unique.insert(*tag));

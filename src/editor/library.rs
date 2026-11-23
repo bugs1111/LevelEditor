@@ -13,11 +13,12 @@ fn palette_search(ui: &mut egui::Ui, search: &mut String, columns: &mut usize) {
             [width, 33.],
             egui::TextEdit::singleline(search)
                 .hint_text(locale::tr(ui, "Search…"))
+                .vertical_align(egui::Align::Center)
                 .margin(egui::Margin {
                     left: 28,
                     right: 8,
-                    top: 8,
-                    bottom: 8,
+                    top: 0,
+                    bottom: 0,
                 }),
         );
         egui::Image::new(egui::include_image!("../../assets/icons/search.svg")).paint_at(
@@ -128,33 +129,18 @@ fn directory_color_key() -> egui::Id {
     egui::Id::new("recent-directory-color")
 }
 impl EditorApp {
-    pub(super) fn directory_color_menu(&mut self, ui: &mut egui::Ui, path: &std::path::Path) {
-        if ui.button(locale::tr(ui, "Assign custom color")).clicked() {
-            let color = self.settings.dir_color(path);
-            ui.ctx().data_mut(|d| {
-                d.insert_temp(
-                    directory_color_key(),
-                    DirectoryColor {
-                        path: path.to_owned(),
-                        rgb: [(color >> 16) as u8, (color >> 8) as u8, color as u8],
-                        first: true,
-                    },
-                )
-            });
-            ui.close();
-        }
-        if self.settings.value["recentDirColors"]
-            .as_array()
-            .is_some_and(|colors| {
-                colors
-                    .iter()
-                    .any(|color| color["path"].as_str() == Some(path.to_string_lossy().as_ref()))
-            })
-            && ui.button(locale::tr(ui, "Reset assigned color")).clicked()
-        {
-            self.settings.force_dir_color(path, None);
-            ui.close();
-        }
+    pub(super) fn edit_recent_directory_color(&mut self, ctx: &egui::Context, path: &Path) {
+        let color = self.settings.dir_color(path);
+        ctx.data_mut(|data| {
+            data.insert_temp(
+                directory_color_key(),
+                DirectoryColor {
+                    path: path.to_owned(),
+                    rgb: [(color >> 16) as u8, (color >> 8) as u8, color as u8],
+                    first: true,
+                },
+            );
+        });
     }
     fn recent_directory_color_dialog(&mut self, ctx: &egui::Context) {
         let id = directory_color_key();
@@ -352,11 +338,13 @@ struct AtlasDrag {
     start: [i32; 2],
     button: egui::PointerButton,
 }
-enum AtlasPickerMode {
+enum AtlasPickerMode<'a> {
     Tiles,
     Definition,
     Rectangle,
-    EnumIcon,
+    Icon { opening: bool },
+    RuleWizard,
+    RuleRemap { tiles: &'a [i32], offset: [i32; 2] },
     RuleOutput { stamp: bool, opening: bool },
 }
 impl EditorApp {
@@ -407,6 +395,44 @@ impl EditorApp {
             }
             return;
         };
+        let tiles = layer["__type"] == "Tiles";
+        let atlas_uid = if tiles {
+            layer["overrideTilesetUid"]
+                .as_i64()
+                .or_else(|| layer["__tilesetDefUid"].as_i64())
+                .filter(|uid| project.tileset(*uid).is_some())
+        } else {
+            None
+        };
+        if tiles && atlas_uid.is_none() {
+            let mut palette = ui.available_rect_before_wrap();
+            palette.max.x -= 2.;
+            if palette.is_positive() {
+                egui::Image::new(egui::include_image!("../../assets/img/stripes.png"))
+                    .texture_options(egui::TextureOptions::NEAREST_REPEAT)
+                    .uv(Rect::from_min_size(egui::Pos2::ZERO, palette.size() / 8.))
+                    .paint_at(ui, palette);
+                let width = (palette.width() - 100.).max(40.).min(palette.width());
+                let galley = ui.painter().layout(
+                    locale::tr(ui, "This tile layer has no Tileset.").to_owned(),
+                    FontId::proportional(14.667),
+                    Color32::PLACEHOLDER,
+                    (width - 18.).max(1.),
+                );
+                let rect = Rect::from_center_size(
+                    palette.center(),
+                    egui::vec2(width, galley.size().y + 18.),
+                );
+                project_dialogs::paint_warning(
+                    &ui.painter().with_clip_rect(palette.intersect(ui.clip_rect())),
+                    rect,
+                    galley,
+                    Color32::from_black_alpha(168),
+                    Color32::from_rgb(227, 77, 0),
+                );
+            }
+            return;
+        }
         let layer_uid = layer["layerDefUid"].as_i64().unwrap_or(-1);
         let project_iid = project.json["iid"].as_str();
         let search_keys = match text(layer, "__type", "") {
@@ -468,9 +494,7 @@ impl EditorApp {
                     let project = self.project.as_ref().expect("selected project");
                     let layer = project.layer(key, self.layer).expect("selected layer");
                     let layer_type = text(layer, "__type", "");
-                    let mut optional_change = None;
                     let mut open_definition = None;
-                    let mut atlas_uid = None;
                     match layer_type {
                         "IntGrid" => {
                             if let Some(def) = project.layer_def(layer_uid) {
@@ -654,32 +678,6 @@ impl EditorApp {
                                         } else {
                                             egui::Frame::new().inner_margin(4).show(ui, draw);
                                         }
-                                    }
-                                }
-                                let groups = def["autoRuleGroups"]
-                                    .as_array()
-                                    .map(Vec::as_slice)
-                                    .unwrap_or(&[]);
-                                if !groups.is_empty() {
-                                    ui.separator();
-                                    ui.checkbox(
-                                        &mut self.render_auto,
-                                        locale::tr(ui, "Display auto-layer tiles"),
-                                    );
-                                }
-                                for group in groups.iter().filter(|g| g["isOptional"] == true) {
-                                    let uid = group["uid"].as_i64().unwrap_or(-1);
-                                    let mut enabled = layer["optionalRules"]
-                                        .as_array()
-                                        .is_some_and(|a| a.iter().any(|v| v.as_i64() == Some(uid)));
-                                    if ui
-                                        .checkbox(
-                                            &mut enabled,
-                                            text(group, "name", locale::tr(ui, "Optional rules")),
-                                        )
-                                        .changed()
-                                    {
-                                        optional_change = Some((uid, enabled));
                                     }
                                 }
                             }
@@ -878,34 +876,11 @@ impl EditorApp {
                                 }
                             }
                         }
-                        "Tiles" => {
-                            atlas_uid = layer["overrideTilesetUid"]
-                                .as_i64()
-                                .or_else(|| layer["__tilesetDefUid"].as_i64());
-                        }
                         _ => {}
                     }
                     if let Some(uid) = open_definition {
                         self.definition_uid = Some(uid);
                         self.show_panel(Some(Panel::Entities));
-                    }
-                    if let Some((uid, enabled)) = optional_change {
-                        let layer_index = self.layer;
-                        self.edit_level("Optional auto-layer rules changed", key, |p| {
-                            let layer = p.layer_mut(key, layer_index).ok_or_else(|| {
-                                ldtk_core::Error::Invalid("Layer is missing".into())
-                            })?;
-                            let mut groups = layer["optionalRules"]
-                                .as_array()
-                                .cloned()
-                                .unwrap_or_default();
-                            groups.retain(|v| v.as_i64() != Some(uid));
-                            if enabled {
-                                groups.push(serde_json::json!(uid));
-                            }
-                            layer["optionalRules"] = serde_json::json!(groups);
-                            p.rebuild_auto_layers(key)
-                        });
                     }
                     if let Some(uid) = atlas_uid {
                         self.restore_canvas_atlas_memory(ctx, uid);
@@ -1162,13 +1137,14 @@ impl EditorApp {
     pub(super) fn atlas_rect_picker(&mut self, ctx: &egui::Context, ui: &mut egui::Ui, uid: i64) {
         self.atlas_picker_mode(ctx, ui, uid, AtlasPickerMode::Rectangle);
     }
-    pub(super) fn atlas_enum_icon_picker(
+    pub(super) fn atlas_icon_picker(
         &mut self,
         ctx: &egui::Context,
         ui: &mut egui::Ui,
         uid: i64,
+        opening: bool,
     ) {
-        self.atlas_picker_mode(ctx, ui, uid, AtlasPickerMode::EnumIcon);
+        self.atlas_picker_mode(ctx, ui, uid, AtlasPickerMode::Icon { opening });
     }
     pub(super) fn atlas_rule_output_picker(
         &mut self,
@@ -1180,24 +1156,46 @@ impl EditorApp {
     ) -> bool {
         self.atlas_picker_mode(ctx, ui, uid, AtlasPickerMode::RuleOutput { stamp, opening })
     }
+    pub(super) fn atlas_rule_wizard_picker(&mut self, ctx: &egui::Context, ui: &mut egui::Ui, uid: i64) {
+        self.atlas_picker_mode(ctx, ui, uid, AtlasPickerMode::RuleWizard);
+    }
+    pub(super) fn atlas_rule_remap_picker(
+        &mut self,
+        ctx: &egui::Context,
+        ui: &mut egui::Ui,
+        uid: i64,
+        tiles: &[i32],
+        offset: [i32; 2],
+    ) -> bool {
+        self.atlas_picker_mode(ctx, ui, uid, AtlasPickerMode::RuleRemap { tiles, offset })
+    }
     fn atlas_picker_mode(
         &mut self,
         ctx: &egui::Context,
         ui: &mut egui::Ui,
         uid: i64,
-        mode: AtlasPickerMode,
+        mode: AtlasPickerMode<'_>,
     ) -> bool {
         let rule_picker = matches!(mode, AtlasPickerMode::RuleOutput { .. });
+        let wizard = matches!(mode, AtlasPickerMode::RuleWizard);
+        let remap = matches!(mode, AtlasPickerMode::RuleRemap { .. });
         let definition_preview = matches!(mode, AtlasPickerMode::Definition);
         let rectangle_only = !matches!(
             mode,
             AtlasPickerMode::Tiles
                 | AtlasPickerMode::Definition
+                | AtlasPickerMode::RuleWizard
                 | AtlasPickerMode::RuleOutput { stamp: false, .. }
         );
-        let modal_picker = rule_picker || matches!(mode, AtlasPickerMode::EnumIcon);
-        let focus_id = ui.make_persistent_id(("rule-atlas-focus", uid));
-        if matches!(mode, AtlasPickerMode::RuleOutput { opening: true, .. }) {
+        let icon_picker = matches!(mode, AtlasPickerMode::Icon { .. });
+        let focus_selection = rule_picker || icon_picker;
+        let modal_picker = focus_selection || wizard || remap;
+        let focus_id = ui.make_persistent_id(("modal-atlas-focus", uid));
+        if matches!(
+            mode,
+            AtlasPickerMode::RuleOutput { opening: true, .. }
+                | AtlasPickerMode::Icon { opening: true }
+        ) {
             ui.data_mut(|d| d.insert_temp(focus_id, true));
         }
         let Some(project) = &self.project else {
@@ -1247,7 +1245,13 @@ impl EditorApp {
         let natural = texture.size_vec2();
         let grid = AtlasGrid::new(&def, natural);
         let zoom_id = ui.make_persistent_id(("atlas-zoom", uid));
-        let mut zoom = ui.data_mut(|d| d.get_temp::<f32>(zoom_id)).unwrap_or(3.);
+        let mut zoom = ui.data_mut(|d| d.get_temp::<f32>(zoom_id)).unwrap_or_else(|| {
+            if remap {
+                (ui.available_width() / natural.x).min(ui.available_height() / natural.y).max(0.01)
+            } else {
+                3.
+            }
+        });
         if fitted {
             zoom = (ui.available_width() / natural.x)
                 .min(ui.available_height().max(8.) / natural.y)
@@ -1264,19 +1268,19 @@ impl EditorApp {
         });
         let pan_id = zoom_id.with("pan");
         let mut pan = ui.data_mut(|d| d.get_temp::<egui::PointerButton>(pan_id));
-        let preview = (definition_preview || canvas.is_some()).then(|| {
+        let preview = (definition_preview || wizard || remap || canvas.is_some()).then(|| {
             let size = egui::vec2(ui.available_width(), ui.available_height().max(80.));
             let (_, frame) = ui.allocate_space(size);
             let mut view = frame;
-            if definition_preview {
+            if definition_preview || wizard || remap {
                 ui.painter().rect(
                     frame,
                     0.,
                     theme::DARK,
-                    Stroke::new(1., Color32::WHITE),
+                    Stroke::new(1., if wizard { theme::LIGHT } else { Color32::WHITE }),
                     StrokeKind::Inside,
                 );
-                view = frame.shrink(1.);
+                view = frame.shrink(if wizard { 4. } else { 1. });
             }
             if let Some(definition) = &marking_enum {
                 let tools = Rect::from_min_max(egui::pos2(view.right() - 130., view.top()), view.max);
@@ -1298,7 +1302,8 @@ impl EditorApp {
             .map(|(rect, _)| *rect)
             .or_else(|| ui.data_mut(|d| d.get_temp::<Rect>(viewport_id)));
         let pointer = ui.input(|i| i.pointer.hover_pos());
-        let mut state = egui::scroll_area::State::load(ctx, scroll_id).unwrap_or_default();
+        let previous_scroll = egui::scroll_area::State::load(ctx, scroll_id);
+        let mut state = previous_scroll.unwrap_or_default();
         let frame = ctx.cumulative_frame_nr();
         let palette_opening = canvas.is_some()
             && ui.data_mut(|data| {
@@ -1312,12 +1317,15 @@ impl EditorApp {
         let mut viewport_size = Vec2::ZERO;
         if fitted {
             state.offset = Vec2::ZERO;
-        } else if rule_picker {
+        } else if focus_selection {
             viewport_size = ui.available_size();
             image_margin = viewport_size * egui::vec2(0.5, 0.25);
             if ui.data_mut(|d| d.remove_temp::<bool>(focus_id)).unwrap_or(false) {
-                state.offset = grid.selection_center(&self.selected_tile_ids_for(uid))
-                    .map_or(image_margin, |center| center * zoom);
+                if let Some(center) = grid.selection_center(&self.selected_tile_ids_for(uid)) {
+                    state.offset = center * zoom;
+                } else if rule_picker || previous_scroll.is_none() {
+                    state.offset = image_margin;
+                }
             }
         }
         let hovered = viewport.zip(pointer).filter(|(rect, pointer)| {
@@ -1457,7 +1465,7 @@ impl EditorApp {
                     egui::CursorIcon::Crosshair
                 });
             }
-            let (background, repeat) = if rule_picker || definition_preview || canvas.is_some() {
+            let (background, repeat) = if modal_picker || definition_preview || canvas.is_some() {
                 ui.painter().rect_filled(rect, 0., theme::MEDIUM);
                 (
                     egui::include_image!("../../assets/img/transparency.png"),
@@ -1562,7 +1570,7 @@ impl EditorApp {
             if panning {
                 drag = None;
             }
-            if rule_picker
+            if focus_selection
                 && !panning
                 && response.contains_pointer()
                 && let Some(pos) = pointer
@@ -1609,7 +1617,7 @@ impl EditorApp {
                     ((local.x / stride).floor() as i32).clamp(0, grid.columns - 1),
                     ((local.y / stride).floor() as i32).clamp(0, grid.rows - 1),
                 ];
-                let selection = if custom_mode {
+                let selection = if custom_mode || remap {
                     [cell[0], cell[1], 1, 1]
                 } else {
                     selection_between(active.start, cell)
@@ -1648,12 +1656,18 @@ impl EditorApp {
                         } else if rectangle_only {
                             picked = self.set_atlas_selection(uid, ids);
                         } else {
+                            let mut modifiers = ui.input(|i| i.modifiers);
+                            if wizard {
+                                modifiers.shift |= modifiers.ctrl || modifiers.command;
+                                modifiers.ctrl = false;
+                                modifiers.command = false;
+                            }
                             self.apply_atlas_mouse_selection(
                                 uid,
                                 ids,
                                 active.button == egui::PointerButton::Secondary,
-                                ui.input(|i| i.modifiers),
-                                self.panel.is_none() && !rule_picker,
+                                modifiers,
+                                self.panel.is_none() && !rule_picker && !wizard,
                             );
                         }
                     }
@@ -1714,7 +1728,38 @@ impl EditorApp {
                 let ids = self.selected_tile_ids_for(uid);
                 paint_palette_tile_cursor(ui, rect, grid, zoom, &ids, self.random_tiles, false);
             }
-            let selections = if definition_preview || canvas.is_some() {
+            if let AtlasPickerMode::RuleRemap { tiles, offset } = mode {
+                let valid = grid.columns > 0 && tiles.iter().all(|tile| {
+                    (0..grid.columns).contains(&(tile % grid.columns + offset[0]))
+                        && (0..grid.rows).contains(&(tile / grid.columns + offset[1]))
+                });
+                let target = |x, y| {
+                    let cell = grid.rectangle([x, y, 1, 1]);
+                    Rect::from_min_size(rect.min + cell.min.to_vec2() * zoom, cell.size() * zoom)
+                };
+                for &tile in tiles.iter().filter(|_| grid.columns > 0) {
+                    let (x, y) = (tile % grid.columns, tile / grid.columns);
+                    let (to_x, to_y) = (x + offset[0], y + offset[1]);
+                    let from = target(x, y);
+                    if offset != [0, 0] {
+                        ui.painter().rect_stroke(
+                            from, 0., Stroke::new(2., Color32::DARK_GREEN), StrokeKind::Inside,
+                        );
+                    }
+                    if (0..grid.columns).contains(&to_x) && (0..grid.rows).contains(&to_y) {
+                        let to = target(to_x, to_y);
+                        let ink = if valid { Color32::GREEN } else { Color32::RED };
+                        ui.painter().rect_stroke(to, 0., Stroke::new(2., ink), StrokeKind::Inside);
+                        if offset != [0, 0] {
+                            ui.painter().arrow(
+                                from.center(), to.center() - from.center(),
+                                Stroke::new(1., if valid { Color32::WHITE } else { ink }),
+                            );
+                        }
+                    }
+                }
+            }
+            let selections = if definition_preview || remap || canvas.is_some() {
                 Vec::new()
             } else if let Some((selected_uid, ids)) = &self.atlas_selection
                 && *selected_uid == uid
@@ -1821,7 +1866,7 @@ impl EditorApp {
                 .id_salt(("atlas-picker", uid))
                 .max_height(max_height)
                 .auto_shrink([!modal_picker, !modal_picker])
-                .scroll_bar_visibility(if rule_picker {
+                .scroll_bar_visibility(if focus_selection {
                     egui::scroll_area::ScrollBarVisibility::AlwaysHidden
                 } else {
                     egui::scroll_area::ScrollBarVisibility::VisibleWhenNeeded

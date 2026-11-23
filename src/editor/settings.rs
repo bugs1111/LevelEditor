@@ -148,6 +148,22 @@ impl Settings {
         }
         let _ = self.save();
     }
+
+    pub(super) fn most_recent_project(&self) -> Option<&Path> {
+        self.value["recentProjects"]
+            .as_array()?
+            .iter()
+            .filter_map(Value::as_str)
+            .find(|path| !path.is_empty())
+            .map(Path::new)
+    }
+
+    pub(super) fn default_project_dialog_dir(&self) -> Option<PathBuf> {
+        self.most_recent_project()
+            .and_then(Path::parent)
+            .map(Path::to_owned)
+            .or_else(|| std::env::current_exe().ok()?.parent().map(Path::to_owned))
+    }
     pub fn dir_color(&self, path: &Path) -> u32 {
         let path = path.to_string_lossy().replace('\\', "/");
         if let Some(color) = self.value["recentDirColors"]

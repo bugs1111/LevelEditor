@@ -178,8 +178,7 @@ impl EditorApp {
                     && (def["canSelectWhenInactive"] == false
                         || number(def, "inactiveOpacity", 1.) <= 0.))
                 || (!self.details
-                    && (layer["__type"] == "Entities"
-                        || layer["__type"] == "IntGrid" && def["tilesetDefUid"].is_null()))
+                    && !canvas::layer_visible_in_tiles_only(text(layer, "__type", ""), def))
             {
                 return None;
             }

@@ -5,6 +5,12 @@ pub(super) struct LoadedProject {
     pub migrated: bool,
     pub warnings: Vec<String>,
     pub backup_original: Option<PathBuf>,
+    keep_canvas_preview: bool,
+}
+
+pub(super) enum LoadFailure {
+    MissingProject(PathBuf),
+    Other(String),
 }
 
 pub(super) struct SavedProject {
@@ -27,6 +33,47 @@ fn save_folder_conflicts(path: &Path) -> bool {
     folder != path && std::fs::metadata(folder).is_ok_and(|metadata| !metadata.is_dir())
 }
 
+fn unreadable_auto_tile_caches(project: &Project) -> Vec<(LevelKey, usize, i64)> {
+    let mut repairs = Vec::new();
+    for key in project.level_keys() {
+        let Some(level) = project.level(key) else {
+            continue;
+        };
+        for (index, layer) in level["layerInstances"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .enumerate()
+        {
+            let Some(uid) = layer["layerDefUid"]
+                .as_i64()
+                .or_else(|| layer["layerDefId"].as_i64())
+            else {
+                continue;
+            };
+            let Some(definition) = project.layer_def(uid) else {
+                continue;
+            };
+            let has_auto_layer = definition["type"] == "AutoLayer"
+                || definition["type"] == "IntGrid"
+                    && (definition["tilesetDefUid"].is_i64()
+                        || definition["autoTilesetDefUid"].is_i64());
+            if has_auto_layer
+                && !layer["autoLayerTiles"].as_array().is_some_and(|tiles| {
+                    tiles.iter().all(|tile| {
+                        ["d", "px", "src"]
+                            .into_iter()
+                            .all(|field| tile[field][0].is_i64() && tile[field][1].is_i64())
+                    })
+                })
+            {
+                repairs.push((key, index, uid));
+            }
+        }
+    }
+    repairs
+}
+
 pub(super) fn prepare_project(
     mut project: Project,
     warnings: Vec<String>,
@@ -34,20 +81,20 @@ pub(super) fn prepare_project(
     let version = text(&project.json, "jsonVersion", "0.0");
     let mut parts = version.split('.').map(|p| p.parse::<u32>().unwrap_or(0));
     let modern = (parts.next().unwrap_or(0), parts.next().unwrap_or(0)) >= (1, 5);
-    let cached = modern
-        && project.level_keys().iter().all(|&key| {
-            project
-                .level(key)
-                .and_then(|l| l["layerInstances"].as_array())
-                .is_some_and(|layers| {
-                    layers
-                        .iter()
-                        .filter(|l| matches!(l["__type"].as_str(), Some("IntGrid" | "AutoLayer")))
-                        .all(|l| l["autoLayerTiles"].is_array())
-                })
-        });
+    let repairs = unreadable_auto_tile_caches(&project);
+    for &(key, index, _) in &repairs {
+        // Migration expects an array or null. The cache is derived from the source grid.
+        project.layer_mut(key, index).expect("enumerated layer")["autoLayerTiles"] = Value::Null;
+    }
     let migrated = project.migrate_to_current().map_err(|e| e.to_string())?;
-    if !cached {
+    if modern {
+        for &(key, _, uid) in &repairs {
+            project
+                .rebuild_auto_layer(key, uid)
+                .map_err(|e| e.to_string())?;
+        }
+        project.reconcile_cached_auto_tiles();
+    } else {
         for key in project.level_keys() {
             project
                 .rebuild_auto_layers(key)
@@ -56,9 +103,10 @@ pub(super) fn prepare_project(
     }
     Ok(LoadedProject {
         project,
-        migrated,
+        migrated: migrated || !repairs.is_empty(),
         warnings,
         backup_original: None,
+        keep_canvas_preview: false,
     })
 }
 
@@ -101,9 +149,10 @@ impl EditorApp {
                     migrated: false,
                     warnings: Vec::new(),
                     backup_original: None,
+                    keep_canvas_preview: false,
                 })
             })();
-            let _ = tx.send(result);
+            let _ = tx.send(result.map_err(LoadFailure::Other));
             ctx.request_repaint();
         });
     }
@@ -142,6 +191,11 @@ impl EditorApp {
                             d.insert_temp(project_dialogs::backup_original_key(backup), original)
                         });
                     }
+                    if !loaded.keep_canvas_preview {
+                        self.details = true;
+                        self.render_auto = true;
+                        self.settings.value["showDetails"] = true.into();
+                    }
                     self.set_project(loaded.project);
                     self.dirty = loaded.migrated && !read_only;
                     if self.dirty
@@ -160,9 +214,15 @@ impl EditorApp {
                         self.status_error = true;
                     }
                 }
-                Err(e) => {
+                Err(error) => {
                     self.loading_progress = None;
-                    self.status = format!("Open failed: {e}");
+                    self.status = match error {
+                        LoadFailure::MissingProject(path) => {
+                            self.remove_recent("recentProjects", &path);
+                            "Project file not found".into()
+                        }
+                        LoadFailure::Other(error) => format!("Open failed: {error}"),
+                    };
                     self.status_error = true;
                 }
             }
@@ -414,17 +474,22 @@ impl EditorApp {
                         migrated: false,
                         warnings: report.warnings,
                         backup_original: None,
+                        keep_canvas_preview: false,
                     })
                 })
-                .map_err(|e| e.to_string());
+                .map_err(|error| LoadFailure::Other(error.to_string()));
             let _ = tx.send(result);
             ctx.request_repaint();
         });
     }
 
     pub(super) fn browse_ogmo(&mut self, ctx: &egui::Context) {
-        let mut dialog = FileDialog::new().add_filter("Ogmo project", &["ogmo"]);
-        if let Some(dir) = self.settings.ui_dir(None, "ImportOgmo", None) {
+        let mut dialog = FileDialog::new().add_filter("Supported file types", &["ogmo"]);
+        if let Some(dir) = self
+            .settings
+            .ui_dir(None, "ImportOgmo", None)
+            .or_else(|| self.settings.default_project_dialog_dir())
+        {
             dialog = dialog.set_directory(dir);
         }
         if let Some(path) = dialog.pick_file() {
@@ -442,6 +507,9 @@ impl EditorApp {
         original: PathBuf,
         restore: bool,
     ) {
+        // Relinking or restoring the open backup reuses the original editor's preview state.
+        let keep_canvas_preview =
+            self.project.as_ref().and_then(|project| project.path.as_ref()) == Some(&backup);
         let (tx, rx) = mpsc::channel();
         self.loading = Some(rx);
         self.status = if restore {
@@ -472,9 +540,10 @@ impl EditorApp {
                     migrated,
                     warnings,
                     backup_original: Some(original),
+                    keep_canvas_preview,
                 })
             })();
-            let _ = tx.send(result);
+            let _ = tx.send(result.map_err(LoadFailure::Other));
             ctx.request_repaint();
         });
     }
@@ -640,6 +709,163 @@ mod creation_tests {
     }
 
     #[test]
+    fn opening_repairs_only_missing_or_malformed_auto_tile_caches() {
+        use serde_json::json;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("Cached.ldtk");
+        let mut project = Project::new();
+        let atlas = project
+            .add_tileset(&dir.path().join("Atlas.png"), 16, 32, 16)
+            .unwrap();
+        let affected = project.add_layer("Affected", "IntGrid", 16).unwrap();
+        let retained = project.add_layer("Retained", "IntGrid", 16).unwrap();
+        let level = project.level_keys()[0];
+        let second = project.add_level(None, "Untouched", 32, 32).unwrap();
+        let index_for = |project: &Project, key, uid| {
+            project.level(key).unwrap()["layerInstances"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .position(|layer| layer["layerDefUid"] == uid)
+                .unwrap()
+        };
+        let [affected_index, retained_index] =
+            [affected, retained].map(|uid| index_for(&project, level, uid));
+        let mut rule_ids = Vec::new();
+        for uid in [affected, retained] {
+            project.assign_tileset(uid, atlas).unwrap();
+            let group = project.add_auto_rule_group(uid, "Walls").unwrap();
+            let rule = project.add_auto_rule(uid, group, 1).unwrap();
+            project
+                .update_auto_rule(
+                    uid,
+                    group,
+                    rule,
+                    &json!({"pattern":[1],"tileRectsIds":[[0]]}),
+                )
+                .unwrap();
+            rule_ids.push(rule);
+        }
+        project
+            .paint_int_grid(level, affected_index, 0, 0, 1)
+            .unwrap();
+        let expected = project.layer(level, affected_index).unwrap()["autoLayerTiles"].clone();
+        assert_eq!(expected.as_array().unwrap().len(), 1);
+        let cached_tile = |rule| {
+            json!([{
+                "d":[rule,0],"t":1,"f":0,"a":1,"px":[0,0],"src":[16,0],"future":"keep"
+            }])
+        };
+        let valid = cached_tile(rule_ids[1]);
+        project.layer_mut(level, retained_index).unwrap()["autoLayerTiles"] = valid.clone();
+        let second_index = index_for(&project, second, affected);
+        project.layer_mut(second, second_index).unwrap()["autoLayerTiles"] =
+            cached_tile(rule_ids[0]);
+        project.set_external_levels(true).unwrap();
+        project.save(&path).unwrap();
+
+        let ext_file = |key: LevelKey| {
+            dir.path().join(
+                project.json["levels"][key.level]["externalRelPath"]
+                    .as_str()
+                    .unwrap(),
+            )
+        };
+        let original = std::fs::read(ext_file(level)).unwrap();
+        let mut untouched = std::fs::read(ext_file(second)).unwrap();
+        untouched.extend_from_slice(b" \n");
+        std::fs::write(ext_file(second), &untouched).unwrap();
+        for malformed in [
+            Value::Null,
+            json!({}),
+            json!([{"d":null,"px":[0,0],"src":[0,0]}]),
+        ] {
+            let mut corrupt: Value = serde_json::from_slice(&original).unwrap();
+            corrupt["layerInstances"][affected_index]["autoLayerTiles"] = malformed;
+            std::fs::write(ext_file(level), serde_json::to_vec(&corrupt).unwrap()).unwrap();
+            let mut loaded = prepare_project(Project::load(&path).unwrap(), Vec::new()).unwrap();
+            assert!(loaded.migrated);
+            assert_eq!(
+                loaded.project.layer(level, affected_index).unwrap()["autoLayerTiles"],
+                expected
+            );
+            assert_eq!(
+                loaded.project.layer(level, retained_index).unwrap()["autoLayerTiles"],
+                valid
+            );
+            assert_eq!(
+                loaded.project.layer(second, second_index).unwrap()["autoLayerTiles"],
+                cached_tile(rule_ids[0])
+            );
+            loaded.project.save(&path).unwrap();
+            assert_eq!(std::fs::read(ext_file(second)).unwrap(), untouched);
+        }
+    }
+
+    #[test]
+    fn opening_missing_recent_project_removes_only_that_history_entry() {
+        let directory = tempfile::tempdir().unwrap();
+        let missing = directory.path().join("Moved.ldtk");
+        let malformed = directory.path().join("Malformed.ldtk");
+        let external = directory.path().join("External.ldtk");
+        std::fs::write(&malformed, b"broken JSON").unwrap();
+        let mut project = Project::new();
+        project.json["externalLevels"] = true.into();
+        project.save(&external).unwrap();
+        let level = project.json["levels"][0]["externalRelPath"].as_str().unwrap();
+        std::fs::remove_file(directory.path().join(level)).unwrap();
+
+        let ctx = egui::Context::default();
+        let mut app = EditorApp::empty();
+        let settings = directory.path().join("settings.json");
+        app.settings.path = Some(settings.clone());
+        let history = serde_json::json!([missing, malformed, external]);
+        app.settings.value["recentProjects"] = history.clone();
+        app.settings.save().unwrap();
+
+        for path in [&malformed, &external] {
+            app.request(&ctx, Action::Open(path.clone()));
+            wait(&mut app, &ctx);
+            assert!(app.status_error);
+            assert_eq!(app.settings.value["recentProjects"], history);
+        }
+
+        app.request(&ctx, Action::Open(missing.clone()));
+        wait(&mut app, &ctx);
+        assert!(app.project.is_none());
+        assert!(app.status_error);
+        assert_eq!(app.status, "Project file not found");
+        let expected = serde_json::json!([malformed, external]);
+        assert_eq!(app.settings.value["recentProjects"], expected);
+        let stored: Value = serde_json::from_slice(&std::fs::read(settings).unwrap()).unwrap();
+        assert_eq!(stored["recentProjects"], expected);
+    }
+
+    #[test]
+    fn opening_a_project_resets_canvas_preview_but_navigating_a_level_keeps_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let original = dir.path().join("World.ldtk");
+        let mut project = Project::new();
+        let second = project.add_level(None, "Second", 256, 256).unwrap();
+        project.save(&original).unwrap();
+        let ctx = egui::Context::default();
+        let mut app = EditorApp::empty();
+        app.set_project(project);
+        app.set_details(false);
+        app.set_auto_layer_rendering(false, false);
+        app.navigate_level(second, true);
+        assert_eq!(app.selected, Some(second));
+        assert!(!app.details && !app.render_auto);
+
+        app.open_async(&ctx, original);
+        wait(&mut app, &ctx);
+        assert!(app.details && app.render_auto);
+        assert_eq!(app.settings.value["showDetails"], true);
+        assert!(app.quick_notification.is_none());
+    }
+
+    #[test]
     fn external_file_poll_waits_for_unsaved_reload_confirmation() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("Map.ldtk");
@@ -672,7 +898,7 @@ mod creation_tests {
         let (tx, rx) = mpsc::channel();
         app.loading = Some(rx);
         app.loading_progress = Some(Arc::new(Mutex::new(Some((2, 2)))));
-        tx.send(prepare_project(Project::new(), Vec::new()))
+        tx.send(prepare_project(Project::new(), Vec::new()).map_err(LoadFailure::Other))
             .unwrap();
 
         app.poll_services(&ctx);
@@ -897,8 +1123,11 @@ mod creation_tests {
         assert!(!app.is_busy());
         assert!(!EditorApp::backup_restore_open(&ctx));
         assert_eq!(std::fs::read(&backup).unwrap(), archived);
+        app.set_details(false);
+        app.set_auto_layer_rendering(false, false);
         app.backup_async(&ctx, backup, original.clone(), false);
         wait(&mut app, &ctx);
+        assert!(!app.details && !app.render_auto);
         assert_eq!(app.backup_original(&ctx).as_ref(), Some(&original));
         app.save(false);
         assert!(!app.is_busy());
@@ -925,5 +1154,6 @@ mod creation_tests {
             assert_eq!(Project::load(&original).unwrap().json["levels"][0]["identifier"], expected);
         }
         assert!(!app.project.as_ref().unwrap().is_backup());
+        assert!(!app.details && !app.render_auto);
     }
 }

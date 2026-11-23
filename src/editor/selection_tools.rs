@@ -29,8 +29,7 @@ impl EditorApp {
         };
         json!(project.level(key).and_then(|l|l["layerInstances"].as_array()).into_iter().flatten().enumerate().map(|(index,layer)|{
             let origin=canvas::layer_to_world(project,key,index,&self.viewport,[0.0,0.0]);let unit=canvas::layer_to_world(project,key,index,&self.viewport,[1.0,0.0]);
-            let kind=text(layer,"__type","");let details=self.details||matches!(kind,"Tiles"|"AutoLayer")||kind=="IntGrid"&&project.layer_def(layer["layerDefUid"].as_i64().unwrap_or(-1)).is_some_and(|d|!d["tilesetDefUid"].is_null());
-            let visible=self.layer_visible(key,index)&&(!self.single_layer||index==self.layer)&&details;
+            let visible=self.canvas_layer_visible(key,index)&&(!self.single_layer||index==self.layer);
             json!({"layerDefUid":layer["layerDefUid"],"origin":origin,"scale":unit[0]-origin[0],"visible":visible})
         }).collect::<Vec<_>>())
     }

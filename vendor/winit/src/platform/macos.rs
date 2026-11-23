@@ -428,6 +428,12 @@ pub trait EventLoopBuilderExtMacOS {
     /// ```
     fn with_default_menu(&mut self, enable: bool) -> &mut Self;
 
+    /// Send AppKit termination requests to the application before closing any windows.
+    ///
+    /// The handler runs on the main thread. Installing it cancels AppKit's
+    /// immediate termination so the application can decide when to exit.
+    fn with_quit_request_handler(&mut self, handler: fn()) -> &mut Self;
+
     /// Used to prevent the application from automatically activating when launched if
     /// another application is already active.
     ///
@@ -445,6 +451,12 @@ impl<T> EventLoopBuilderExtMacOS for EventLoopBuilder<T> {
     #[inline]
     fn with_default_menu(&mut self, enable: bool) -> &mut Self {
         self.platform_specific.default_menu = enable;
+        self
+    }
+
+    #[inline]
+    fn with_quit_request_handler(&mut self, handler: fn()) -> &mut Self {
+        self.platform_specific.quit_request_handler = Some(handler);
         self
     }
 

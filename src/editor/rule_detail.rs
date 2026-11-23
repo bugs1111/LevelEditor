@@ -9,6 +9,26 @@ mod rule_guidance;
 const ANY_VALUE: i64 = 1_000_001;
 const EDITOR_SIZE: usize = 9;
 
+pub(super) enum RuleCellStyle {
+    Editor { center: bool, hovered: bool },
+    Preview(f32),
+}
+
+pub(super) fn rule_has_unknown_conditions(source: &Value, pattern: &[Value]) -> bool {
+    pattern
+        .iter()
+        .filter_map(Value::as_i64)
+        .any(|value| match value.saturating_abs() {
+            0 | ANY_VALUE => false,
+            id @ 1_000.. => rule_value_group(source, id / 1_000 - 1).is_none(),
+            id => !source["intGridValues"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .any(|value| value["value"] == id),
+        })
+}
+
 #[derive(Clone, Copy)]
 struct PatternStroke {
     button: egui::PointerButton,
@@ -59,6 +79,21 @@ pub(super) struct RuleAtlas {
 }
 
 impl RuleAtlas {
+    pub(super) fn stamp_preview_size(&self, cell: f32, ids: &[Value]) -> Vec2 {
+        let mut span = Vec2::splat(cell);
+        if let Some(first) = ids.first().and_then(Value::as_i64) {
+            for id in ids.iter().filter_map(Value::as_i64) {
+                if id % self.columns != first % self.columns {
+                    span.x = cell * 1.9;
+                }
+                if id / self.columns != first / self.columns {
+                    span.y = cell * 1.9;
+                }
+            }
+        }
+        span
+    }
+
     pub(super) fn paint_ids(&self, ui: &egui::Ui, rect: Rect, ids: &[Value]) {
         let tiles: Vec<_> = ids
             .iter()
@@ -104,6 +139,34 @@ impl RuleAtlas {
             Rect::from_center_size(rect.center(), egui::vec2(w, h) * ratio),
             [x, y, w, h],
         );
+    }
+
+    pub(super) fn paint_fragment(
+        &self,
+        ui: &egui::Ui,
+        rect: Rect,
+        id: i64,
+        mirrored: Option<(bool, bool)>,
+    ) {
+        let x = self.padding + self.stride * (id % self.columns) as f32;
+        let y = self.padding + self.stride * (id / self.columns) as f32;
+        let size = self.texture.size_vec2();
+        let mut uv = Rect::from_min_size(
+            egui::pos2(x / size.x, y / size.y),
+            egui::vec2(self.grid / size.x, self.grid / size.y),
+        );
+        let tint = if let Some((x, y)) = mirrored {
+            if x {
+                std::mem::swap(&mut uv.min.x, &mut uv.max.x);
+            }
+            if y {
+                std::mem::swap(&mut uv.min.y, &mut uv.max.y);
+            }
+            Color32::from_white_alpha(102)
+        } else {
+            Color32::WHITE
+        };
+        ui.painter().image(self.texture.id(), rect, uv, tint);
     }
 
     fn paint_pixels(&self, ui: &egui::Ui, rect: Rect, [x, y, w, h]: [f32; 4]) {
@@ -161,27 +224,377 @@ fn rule_options_id() -> egui::Id {
     egui::Id::new("rule-options")
 }
 
-fn trim_pattern(data: &mut Value) {
-    let mut size = data["size"].as_u64().unwrap_or(1) as usize;
-    while size > 1 {
-        let pattern = data["pattern"].as_array().unwrap();
-        if (0..size).any(|i| {
-            pattern[i] != 0
-                || pattern[(size - 1) * size + i] != 0
-                || pattern[i * size] != 0
-                || pattern[i * size + size - 1] != 0
-        }) {
-            break;
+fn rule_options_anchor_id() -> egui::Id {
+    rule_options_id().with("anchor")
+}
+
+fn rule_settings_modal(ctx: &egui::Context, size: Vec2, bottom: i8) -> egui::Modal {
+    let id = rule_options_id();
+    let screen = ctx.content_rect();
+    let pos = ctx
+        .data(|d| d.get_temp::<Rect>(rule_options_anchor_id()))
+        .map_or(screen.left_top() + egui::vec2(0., 16.), |anchor| {
+            let x = if anchor.left() - screen.left() >= screen.width() * 0.6 {
+                anchor.right() - size.x
+            } else {
+                anchor.left()
+            };
+            let y = if anchor.top() - screen.top() >= screen.height() * 0.7 {
+                anchor.top() - size.y
+            } else {
+                anchor.bottom()
+            };
+            egui::pos2(
+                x.clamp(screen.left(), (screen.right() - size.x).max(screen.left())),
+                y.clamp(screen.top(), (screen.bottom() - size.y).max(screen.top())),
+            )
+        });
+    egui::Modal::new(id)
+        .area(
+            egui::Area::new(id)
+                .kind(egui::UiKind::Modal)
+                .sense(Sense::hover())
+                .order(egui::Order::Foreground)
+                .fixed_pos(pos),
+        )
+        .frame(
+            project_dialogs::dialog_frame(0)
+                .corner_radius(0.)
+                .stroke(Stroke::new(1., theme::LIGHT))
+                .inner_margin(egui::Margin {
+                    left: 20,
+                    right: 20,
+                    top: 20,
+                    bottom,
+                }),
+        )
+        .backdrop_color(Color32::TRANSPARENT)
+}
+
+const OFFSET_AXES: [[&str; 3]; 2] = [
+    ["tileXOffset", "tileRandomXMin", "tileRandomXMax"],
+    ["tileYOffset", "tileRandomYMin", "tileRandomYMax"],
+];
+
+fn offset_input(
+    ui: &mut egui::Ui,
+    key: &str,
+    value: i64,
+    bounds: (i64, i64),
+    width: f32,
+) -> Option<i64> {
+    let current = if value == 0 {
+        String::new()
+    } else {
+        value.to_string()
+    };
+    source_controls::number_input_sized(
+        ui,
+        key,
+        &current,
+        source_controls::NumberStyle::IntegerSlider {
+            min: bounds.0 as f64,
+            max: bounds.1 as f64,
+            speed: 0.05808,
+            placeholder: Some("0"),
+        },
+        width,
+    )
+    .map(|draft| (draft.trim().parse::<f64>().unwrap_or(0.) as i64).clamp(bounds.0, bounds.1))
+}
+
+fn offset_label(ui: &mut egui::Ui, text: &str, width: f32, align: egui::Align) {
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(width, 33.), Sense::hover());
+    let (position, alignment) = if align == egui::Align::Max {
+        (rect.right_center() - egui::vec2(0., 4.), Align2::RIGHT_CENTER)
+    } else {
+        (rect.center(), Align2::CENTER_CENTER)
+    };
+    ui.painter().with_clip_rect(rect).text(
+        position,
+        alignment,
+        locale::tr(ui, text),
+        FontId::proportional(13.333),
+        Color32::from_rgb(193, 207, 235),
+    );
+}
+
+fn offset_icon(
+    ui: &mut egui::Ui,
+    icon: egui::ImageSource<'static>,
+    tint: Color32,
+    label: &str,
+) -> egui::Response {
+    let button = ui.scope(|ui| {
+        ui.spacing_mut().button_padding = Vec2::splat(3.);
+        ui.add_sized(
+            [27., 32.],
+            egui::Button::image(
+                egui::Image::new(icon)
+                    .fit_to_exact_size(Vec2::splat(17.))
+                    .tint(tint),
+            )
+            .fill(Color32::TRANSPARENT)
+            .stroke(Stroke::NONE),
+        )
+    }).inner;
+    button.on_hover_text(locale::tr(ui, label))
+}
+
+const MODULO_FIELDS: [&str; 4] = ["xModulo", "yModulo", "xOffset", "yOffset"];
+const MODULO_PREVIEW_WIDTH: f32 = 260.;
+
+fn modulo_grid(steps: [i64; 2]) -> ([i64; 2], Vec2, f32) {
+    let cells = steps.map(|step| (step.clamp(1, 40) + 3).max(8));
+    let width = (MODULO_PREVIEW_WIDTH - 4. - (cells[0] - 1) as f32 * 2.) / cells[0] as f32;
+    let margins = 4. + (cells[1] - 1) as f32 * 2.;
+    let height = (margins + cells[1] as f32 * (width + 2.)).max(133.);
+    let size = egui::vec2(width, (height - margins) / cells[1] as f32);
+    (cells, size, height)
+}
+
+fn modulo_preview(ui: &mut egui::Ui, [x_step, y_step, x_offset, y_offset]: [i64; 4]) {
+    let ([columns, rows], size, height) = modulo_grid([x_step, y_step]);
+    let (rect, _) =
+        ui.allocate_exact_size(egui::vec2(MODULO_PREVIEW_WIDTH, height), Sense::hover());
+    ui.painter()
+        .rect_stroke(rect, 0., Stroke::new(1., theme::LIGHT), StrokeKind::Inside);
+    let cell_stroke = Stroke::new(1., Color32::from_rgb(115, 127, 157));
+    for y in 0..rows {
+        for x in 0..columns {
+            let origin = rect.min
+                + Vec2::splat(2.)
+                + egui::vec2(x as f32 * (size.x + 2.), y as f32 * (size.y + 2.));
+            let cell = Rect::from_min_size(origin, size);
+            let active = (x - x_offset) % x_step.max(1) == 0 && (y - y_offset) % y_step.max(1) == 0;
+            let fill = if active {
+                Color32::from_rgb(60, 97, 72)
+            } else {
+                theme::LIGHT
+            };
+            ui.painter().rect_filled(cell, 0., fill);
+            if active {
+                egui::Image::new(egui::include_image!("../../assets/icons/active.png")).paint_at(
+                    ui,
+                    Rect::from_center_size(cell.center(), Vec2::splat(size.x)),
+                );
+            } else {
+                egui::Image::new(egui::include_image!("../../assets/img/stripesLight.png"))
+                    .texture_options(egui::TextureOptions::NEAREST_REPEAT)
+                    .uv(Rect::from_min_size(egui::Pos2::ZERO, cell.size() / 8.))
+                    .paint_at(ui, cell);
+            }
+            ui.painter()
+                .rect_stroke(cell, 0., cell_stroke, StrokeKind::Inside);
         }
-        size -= 2;
-        data["pattern"] = json!(resize_rule_pattern(data, size));
-        data["size"] = json!(size);
     }
+}
+
+fn modulo_field(
+    ui: &mut egui::Ui,
+    index: usize,
+    label: &str,
+    current: i64,
+    opening: bool,
+) -> Option<i64> {
+    ui.allocate_ui_with_layout(
+        egui::vec2(100., 50.),
+        egui::Layout::top_down(egui::Align::Min),
+        |ui| {
+            ui.set_width(100.);
+            ui.spacing_mut().item_spacing.y = 0.;
+            ui.label(
+                RichText::new(locale::tr(ui, label))
+                    .size(14.667)
+                    .color(Color32::WHITE),
+            );
+            if current == 1 {
+                ui.visuals_mut().override_text_color = Some(theme::LIGHT);
+            }
+            let key = MODULO_FIELDS[index];
+            let current = current.to_string();
+            let (min, max) = if index < 2 { (1, 40) } else { (-4096, 4096) };
+            let edit = ui.make_persistent_id(key);
+            if opening {
+                ui.memory_mut(|memory| memory.request_focus(edit));
+            }
+            let draft = source_controls::number_input_sized(
+                ui,
+                key,
+                &current,
+                source_controls::NumberStyle::IntegerSlider {
+                    min: min as f64,
+                    max: max as f64,
+                    speed: 0.02904,
+                    placeholder: None,
+                },
+                100.,
+            );
+            if opening {
+                source_controls::select_text_input(ui.ctx(), edit, &current);
+            }
+            draft.map(|text| (text.trim().parse::<f64>().unwrap_or(0.) as i64).clamp(min, max))
+        },
+    )
+    .inner
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn modulo_settings_preview_the_period_and_reset_it_as_one_edit() {
+        let ctx = egui::Context::default();
+        theme::configure(&ctx);
+        ctx.style_mut(|style| style.animation_time = 0.);
+        let mut project = Project::new();
+        let layer = project.add_layer("Ground", "IntGrid", 16).unwrap();
+        let group_id = project.add_auto_rule_group(layer, "Terrain").unwrap();
+        let uid = project.add_auto_rule(layer, group_id, 1).unwrap();
+        project
+            .update_auto_rule(
+                layer,
+                group_id,
+                uid,
+                &json!({
+                    "xModulo": 3, "yModulo": 2, "xOffset": 1, "yOffset": 0, "checker": "Horizontal"
+                }),
+            )
+            .unwrap();
+        let mut app = EditorApp::empty();
+        app.set_project(project.clone());
+        app.set_rule_options(&ctx, layer, group_id, Some(uid), RuleOptions::Modulo);
+        let frame = |app: &mut EditorApp, events| {
+            ctx.run(
+                egui::RawInput {
+                    events,
+                    ..Default::default()
+                },
+                |ctx| app.rule_options_dialog(ctx),
+            )
+        };
+        frame(&mut app, vec![]);
+        let output = frame(&mut app, vec![]);
+        let reset = output
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) if text.galley.text() == "Reset" => {
+                    Some(text.pos + text.galley.size() * 0.5)
+                }
+                _ => None,
+            })
+            .expect("Reset modulo settings");
+        let active = output.shapes.iter().filter(|shape| {
+            matches!(&shape.shape, egui::Shape::Rect(cell) if cell.fill == Color32::from_rgb(60, 97, 72))
+        }).count();
+        assert_eq!(active, 12, "3 active columns by 4 active rows");
+        for pressed in [true, false] {
+            frame(
+                &mut app,
+                vec![
+                    egui::Event::PointerMoved(reset),
+                    egui::Event::PointerButton {
+                        pos: reset,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: Default::default(),
+                    },
+                ],
+            );
+        }
+        let saved = app
+            .project
+            .as_ref()
+            .unwrap()
+            .copy_auto_rule(layer, group_id, Some(uid))
+            .unwrap()
+            .value;
+        assert_eq!(saved["xModulo"], 1);
+        assert_eq!(saved["yModulo"], 1);
+        assert_eq!(saved["xOffset"], 0);
+        assert_eq!(saved["checker"], "None");
+        assert!(app.history.undo(app.project.as_mut().unwrap()));
+        assert_eq!(app.project.as_ref().unwrap().json, project.json);
+    }
+
+    #[test]
+    fn random_offset_reset_clears_both_axes_in_one_edit() {
+        let ctx = egui::Context::default();
+        theme::configure(&ctx);
+        let mut project = Project::new();
+        let layer = project.add_layer("Ground", "IntGrid", 16).unwrap();
+        let group_id = project.add_auto_rule_group(layer, "Terrain").unwrap();
+        let uid = project.add_auto_rule(layer, group_id, 1).unwrap();
+        project
+            .update_auto_rule(
+                layer,
+                group_id,
+                uid,
+                &json!({
+                    "tileXOffset": 7, "tileYOffset": -8,
+                    "tileRandomXMin": -2, "tileRandomXMax": 2,
+                    "tileRandomYMin": 1, "tileRandomYMax": 5
+                }),
+            )
+            .unwrap();
+        let mut app = EditorApp::empty();
+        app.set_project(project.clone());
+        app.set_rule_options(&ctx, layer, group_id, Some(uid), RuleOptions::Offsets);
+        let frame = |app: &mut EditorApp, events| {
+            ctx.run(
+                egui::RawInput {
+                    events,
+                    ..Default::default()
+                },
+                |ctx| app.rule_options_dialog(ctx),
+            )
+        };
+        frame(&mut app, vec![]);
+        let output = frame(&mut app, vec![]);
+        let point = output
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Text(text)
+                    if text.galley.text().eq_ignore_ascii_case("Reset all offsets") =>
+                {
+                    Some(text.pos + text.galley.size() * 0.5)
+                }
+                _ => None,
+            })
+            .expect("Reset all offsets");
+        for pressed in [true, false] {
+            frame(
+                &mut app,
+                vec![
+                    egui::Event::PointerMoved(point),
+                    egui::Event::PointerButton {
+                        pos: point,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: Default::default(),
+                    },
+                ],
+            );
+        }
+        let def = app.project.as_ref().unwrap().layer_def(layer).unwrap();
+        let saved = rule(group(def, group_id).unwrap(), uid).unwrap();
+        for key in [
+            "tileXOffset",
+            "tileYOffset",
+            "tileRandomXMin",
+            "tileRandomXMax",
+            "tileRandomYMin",
+            "tileRandomYMax",
+        ] {
+            assert_eq!(saved[key], 0, "{key}");
+        }
+        assert_eq!(saved["breakOnMatch"], true);
+        assert!(app.history.undo(app.project.as_mut().unwrap()));
+        assert_eq!(app.project.as_ref().unwrap().json, project.json);
+    }
 
     #[test]
     fn pattern_stroke_uses_the_starting_cell_to_choose_erase_or_paint() {
@@ -270,6 +683,7 @@ impl EditorApp {
         }) else {
             return false;
         };
+        self.last_rule_list_row = Some(uid);
         self.begin_rule_edit(layer, group_id, uid);
         true
     }
@@ -310,7 +724,7 @@ impl EditorApp {
             rule: uid,
             ..
         } = draft;
-        trim_pattern(&mut draft.data);
+        ldtk_core::trim_auto_rule_pattern(&mut draft.data);
         let empty = draft.data["pattern"]
             .as_array()
             .is_some_and(|a| a.iter().all(|v| *v == 0))
@@ -331,6 +745,9 @@ impl EditorApp {
                 p.remove_auto_rule(layer, group_id, uid)
             });
             self.rule_uid = None;
+            if self.last_rule_list_row == Some(uid) {
+                self.last_rule_list_row = None;
+            }
         } else if *current != draft.data {
             let mut patch = draft.data;
             if let Some(patch) = patch.as_object_mut() {
@@ -628,28 +1045,19 @@ impl EditorApp {
                             rect,
                             source,
                             value.as_i64().unwrap_or(0),
-                            index == EDITOR_SIZE * EDITOR_SIZE / 2
-                                && draft.data["tileMode"] != "Stamp",
-                            cell == Some(index),
+                            RuleCellStyle::Editor {
+                                center: index == EDITOR_SIZE * EDITOR_SIZE / 2
+                                    && draft.data["tileMode"] != "Stamp",
+                                hovered: cell == Some(index),
+                            },
                         );
                     }
                     if draft.data["tileMode"] == "Stamp" {
                         let cell = pattern_cell - 4.;
-                        let mut span = egui::Vec2::splat(cell);
-                        if let (Some(atlas), Some(ids)) =
-                            (atlas, draft.data["tileRectsIds"][0].as_array())
-                            && let Some(first) = ids.first().and_then(Value::as_i64)
-                        {
-                            let columns = atlas.columns;
-                            for id in ids.iter().filter_map(Value::as_i64) {
-                                if id % columns != first % columns {
-                                    span.x = cell * 1.9;
-                                }
-                                if id / columns != first / columns {
-                                    span.y = cell * 1.9;
-                                }
-                            }
-                        }
+                        let span = match (atlas, draft.data["tileRectsIds"][0].as_array()) {
+                            (Some(atlas), Some(ids)) => atlas.stamp_preview_size(cell, ids),
+                            _ => Vec2::splat(cell),
+                        };
                         let pivot = egui::vec2(
                             number(&draft.data, "pivotX", 0.),
                             number(&draft.data, "pivotY", 0.),
@@ -752,17 +1160,25 @@ impl EditorApp {
         }
     }
 
-    fn paint_rule_cell(
+    pub(super) fn paint_rule_cell(
         &mut self,
         ui: &egui::Ui,
         rect: Rect,
         source: &Value,
         value: i64,
-        center: bool,
-        hovered: bool,
+        style: RuleCellStyle,
     ) {
+        let (scale, center, hovered, preview) = match style {
+            RuleCellStyle::Editor { center, hovered } => (1., center, hovered, false),
+            RuleCellStyle::Preview(scale) => (scale, false, false, true),
+        };
         let painter = ui.painter();
         let id = value.saturating_abs();
+        if preview && id == 0 {
+            painter.rect_filled(rect, 0., theme::MEDIUM);
+            return;
+        }
+        let red = Color32::from_rgb(227, 77, 0);
         painter.rect_filled(rect, 2., theme::MEDIUM);
         match id {
             0 => egui::Image::new(egui::include_image!("../../assets/img/stripes.png"))
@@ -774,13 +1190,13 @@ impl EditorApp {
                     rect.center(),
                     Align2::CENTER_CENTER,
                     "?",
-                    FontId::proportional(21.),
+                    FontId::proportional(21. * scale),
                     Color32::WHITE,
                 );
                 painter.rect_stroke(
-                    rect.shrink(3.),
+                    rect.shrink(3. * scale),
                     1.,
-                    Stroke::new(1., Color32::WHITE),
+                    Stroke::new(scale, Color32::WHITE),
                     StrokeKind::Inside,
                 );
             }
@@ -790,7 +1206,11 @@ impl EditorApp {
                     .and_then(|group| group["color"].as_str())
                     .map(theme::color);
                 if let Some(color) = color {
-                    painter.rect_filled(rect, 2., color.gamma_multiply(0.9));
+                    painter.rect_filled(
+                        rect,
+                        2.,
+                        Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), 230),
+                    );
                 }
                 egui::Image::new(egui::include_image!("../../assets/icons/folderClose.svg"))
                     .paint_at(
@@ -798,10 +1218,10 @@ impl EditorApp {
                         Rect::from_center_size(rect.center(), rect.size() * 0.65),
                     );
                 painter.rect_stroke(
-                    rect.shrink(2.),
+                    rect.shrink(2. * scale),
                     1.,
                     Stroke::new(
-                        1.,
+                        scale,
                         color.map_or(Color32::WHITE, |color| {
                             color.lerp_to_gamma(Color32::WHITE, 0.6)
                         }),
@@ -821,7 +1241,16 @@ impl EditorApp {
                         .map(theme::color)
                         .unwrap_or(theme::LIGHT);
                     painter.rect_filled(rect, 2., color);
-                    self.rule_value_tile(ui, rect.shrink(2.), value);
+                    self.rule_value_tile(ui, rect.shrink(2. * scale), value);
+                } else if value < 0 {
+                    painter.rect_filled(rect, 2., Color32::from_rgb(255, 0, 255));
+                    painter.text(
+                        rect.center(),
+                        Align2::CENTER_CENTER,
+                        "ERR",
+                        FontId::proportional(13.),
+                        Color32::WHITE,
+                    );
                 }
             }
         }
@@ -837,12 +1266,14 @@ impl EditorApp {
                 ui,
                 Rect::from_center_size(rect.center(), rect.size() * 0.65),
             );
-            painter.rect_stroke(
-                rect.shrink(4.),
-                1.,
-                Stroke::new(2., Color32::from_rgb(192, 52, 37)),
-                StrokeKind::Inside,
-            );
+            if id < 1_000 || id == ANY_VALUE {
+                painter.rect_stroke(
+                    rect.shrink(4. * scale),
+                    1.,
+                    Stroke::new(2. * scale, red),
+                    StrokeKind::Inside,
+                );
+            }
         }
         let border = if hovered {
             theme::ACCENT
@@ -933,7 +1364,537 @@ impl EditorApp {
         rule: Option<i64>,
         options: RuleOptions,
     ) {
-        ctx.data_mut(|d| d.insert_temp(rule_options_id(), (layer, group_id, rule, options, true)));
+        ctx.data_mut(|d| {
+            d.remove::<Rect>(rule_options_anchor_id());
+            d.remove::<[bool; 2]>(rule_options_id().with("offset-links"));
+            d.insert_temp(rule_options_id(), (layer, group_id, rule, options, true));
+        });
+    }
+
+    pub(super) fn set_anchored_rule_options(
+        &mut self,
+        ctx: &egui::Context,
+        layer: i64,
+        group: i64,
+        rule: i64,
+        options: RuleOptions,
+        anchor: Option<Rect>,
+    ) {
+        self.set_rule_options(ctx, layer, group, Some(rule), options);
+        ctx.data_mut(|d| {
+            if let Some(anchor) = anchor {
+                d.insert_temp(rule_options_anchor_id(), anchor);
+            } else {
+                d.remove::<Rect>(rule_options_anchor_id());
+            }
+        });
+    }
+
+    fn offset_settings(
+        &mut self,
+        ctx: &egui::Context,
+        layer: i64,
+        gid: i64,
+        rid: i64,
+        rule: &Value,
+    ) {
+        const LIMIT: i64 = 1024;
+        let id = rule_options_id();
+        let links_id = id.with("offset-links");
+        let mut offsets =
+            OFFSET_AXES.map(|fields| fields.map(|key| rule[key].as_i64().unwrap_or(0)));
+        let initial = offsets;
+        let mut linked = ctx
+            .data(|d| d.get_temp::<[bool; 2]>(links_id))
+            .unwrap_or_else(|| offsets.map(|[_, min, max]| min == max.saturating_neg()));
+        let modal = rule_settings_modal(ctx, egui::vec2(500., 275.), 21).show(ctx, |ui| {
+            ui.spacing_mut().item_spacing = egui::vec2(0., 10.);
+            for (axis, label) in ["Tile X offset", "Tile Y offset"].into_iter().enumerate() {
+                ui.horizontal(|ui| {
+                    offset_label(ui, label, 128., egui::Align::Max);
+                    ui.add_space(12.);
+                    if let Some(value) = offset_input(
+                        ui,
+                        OFFSET_AXES[axis][0],
+                        offsets[axis][0],
+                        (-LIMIT, LIMIT),
+                        265.,
+                    ) {
+                        offsets[axis][0] = value;
+                    }
+                    offset_label(ui, "px", 25., egui::Align::Center);
+                    if offset_icon(
+                        ui,
+                        egui::include_image!("../../assets/icons/delete.svg"),
+                        Color32::WHITE,
+                        "Reset offset",
+                    )
+                    .clicked()
+                    {
+                        offsets[axis][0] = 0;
+                    }
+                });
+            }
+            for (axis, label) in ["Tile random X offset", "Tile random Y offset"]
+                .into_iter()
+                .enumerate()
+            {
+                let [_, min_field, max_field] = OFFSET_AXES[axis];
+                let [_, mut min, mut max] = offsets[axis];
+                ui.horizontal(|ui| {
+                    offset_label(ui, label, 128., egui::Align::Max);
+                    ui.add_space(12.);
+                    offset_label(ui, "min=", 45., egui::Align::Center);
+                    let was_linked = linked[axis];
+                    if let Some(value) = ui
+                        .add_enabled_ui(!was_linked, |ui| {
+                            offset_input(
+                                ui,
+                                min_field,
+                                min,
+                                (-LIMIT, LIMIT),
+                                if was_linked { 41. } else { 56. },
+                            )
+                        })
+                        .inner
+                    {
+                        min = value.min(max);
+                    }
+                    offset_label(ui, "px,", 30., egui::Align::Center);
+                    let (link_icon, tint, action) = if was_linked {
+                        (
+                            egui::include_image!("../../assets/icons/link.svg"),
+                            theme::ACCENT,
+                            "Unlink range",
+                        )
+                    } else {
+                        (
+                            egui::include_image!("../../assets/icons/unlink.svg"),
+                            theme::ACCENT.gamma_multiply(0.35),
+                            "Link range",
+                        )
+                    };
+                    if offset_icon(ui, link_icon, tint, action).clicked() {
+                        linked[axis] = !was_linked;
+                        if linked[axis] {
+                            max = max.max(min);
+                            min = max.saturating_neg();
+                        }
+                    }
+                    offset_label(ui, "max=", 51., egui::Align::Center);
+                    let lower = if linked[axis] { 0 } else { -LIMIT };
+                    if let Some(value) = offset_input(
+                        ui,
+                        max_field,
+                        max,
+                        (lower, LIMIT),
+                        if was_linked { 71. } else { 56. },
+                    ) {
+                        max = value.max(min);
+                        if linked[axis] {
+                            min = max.saturating_neg();
+                        }
+                    }
+                    offset_label(ui, "px", 25., egui::Align::Center);
+                    if offset_icon(
+                        ui,
+                        egui::include_image!("../../assets/icons/delete.svg"),
+                        Color32::WHITE,
+                        "Reset random range",
+                    )
+                    .clicked()
+                    {
+                        min = 0;
+                        max = 0;
+                    }
+                });
+                offsets[axis][1] = min;
+                offsets[axis][2] = max;
+            }
+            ui.add_space(17.);
+            let reset = egui::Button::image_and_text(
+                egui::Image::new(egui::include_image!("../../assets/icons/delete.svg"))
+                    .fit_to_exact_size(Vec2::splat(17.)),
+                RichText::new(locale::tr(ui, "RESET ALL OFFSETS"))
+                    .size(13.333)
+                    .color(Color32::WHITE),
+            )
+            .fill(Color32::from_rgb(121, 17, 5));
+            if source_controls::add_sized_button(ui, [458., 43.], reset).clicked() {
+                offsets = [[0; 3]; 2];
+            }
+        });
+        let mut patch = json!({});
+        for (keys, (before, after)) in OFFSET_AXES
+            .into_iter()
+            .zip(initial.into_iter().zip(offsets))
+        {
+            for (key, (old, new)) in keys.into_iter().zip(before.into_iter().zip(after)) {
+                if old != new {
+                    patch[key] = json!(new);
+                }
+            }
+        }
+        if changed(&patch) {
+            self.edit("Rule changed", |p| {
+                p.update_auto_rule(layer, gid, rid, &patch)
+            });
+        }
+        let close = modal.should_close();
+        ctx.data_mut(|d| {
+            if close {
+                d.remove::<RuleOptionsState>(id);
+                d.remove::<Rect>(rule_options_anchor_id());
+                d.remove::<[bool; 2]>(links_id);
+            } else {
+                d.insert_temp(links_id, linked);
+            }
+        });
+    }
+
+    fn modulo_settings(
+        &mut self,
+        ctx: &egui::Context,
+        layer: i64,
+        gid: i64,
+        rid: i64,
+        rule: &Value,
+        opening: bool,
+    ) {
+        let initial = MODULO_FIELDS.map(|key| {
+            rule[key]
+                .as_i64()
+                .unwrap_or(if key.ends_with("Modulo") { 1 } else { 0 })
+        });
+        let mut values = initial;
+        let mut checker = text(rule, "checker", "None");
+        let initial_checker = checker;
+        let (_, _, preview_height) = modulo_grid([values[0], values[1]]);
+        let height = preview_height.max(134.) + 306.;
+        let viewport_height = ctx.content_rect().height();
+        let id = rule_options_id();
+        let mut laid_out = false;
+        let mut numeric_input = false;
+        let modal = rule_settings_modal(ctx, egui::vec2(442., height.min(viewport_height)), 46)
+            .show(ctx, |ui| {
+                laid_out = !ui.is_sizing_pass();
+                let mut body = |ui: &mut egui::Ui| {
+                    ui.set_width(400.);
+                    ui.spacing_mut().item_spacing = egui::vec2(0., 0.);
+                    source_controls::help_card(ui, 400., 117., |ui| {
+                        source_controls::help_paragraph(
+                            ui,
+                            "Modulo values will allow you to limit this rule to every X columns or every Y rows. For example, if X modulo is 3, then the rule will only apply every 3 columns. If the X offset is 1, then the column counting will be offseted by 1.",
+                        );
+                    });
+                    ui.add_space(8.);
+                    ui.horizontal(|ui| {
+                        ui.add_space(16.);
+                        if let Some(value) = modulo_field(ui, 0, "X modulo", values[0], opening) {
+                            values[0] = value;
+                            numeric_input = true;
+                        }
+                        ui.add_sized([28., 50.], egui::Label::new("+"));
+                        if let Some(value) = modulo_field(ui, 2, "Offset", values[2], false) {
+                            values[2] = value % values[0].max(1);
+                            numeric_input = true;
+                        }
+                        ui.add_space(24.);
+                        if ui.add_sized(
+                            [132., 50.],
+                            egui::Link::new(RichText::new(locale::tr(ui, "Reset")).color(theme::ACCENT).underline()),
+                        ).clicked() {
+                            values = [1, 1, 0, 0];
+                            checker = "None";
+                        }
+                    });
+                    ui.add_space(8.);
+                    ui.horizontal(|ui| {
+                        modulo_preview(ui, values);
+                        ui.add_space(8.);
+                        ui.vertical_centered(|ui| {
+                            ui.set_width(132.);
+                            ui.spacing_mut().item_spacing.y = 8.;
+                            let (_, _, height) = modulo_grid([values[0], values[1]]);
+                            ui.add_space(((height - 134.) * 0.5).max(0.));
+                            if let Some(value) = modulo_field(ui, 1, "Y modulo", values[1], false) {
+                                values[1] = value;
+                                numeric_input = true;
+                            }
+                            ui.label("+");
+                            if let Some(value) = modulo_field(ui, 3, "Offset", values[3], false) {
+                                values[3] = value;
+                                numeric_input = true;
+                            }
+                        });
+                    });
+                    if values[..2] != initial[..2] {
+                        checker = match checker {
+                            "Horizontal" if values[0] == 1 => if values[1] > 1 { "Vertical" } else { "None" },
+                            "Vertical" if values[1] == 1 => if values[0] > 1 { "Horizontal" } else { "None" },
+                            other => other,
+                        };
+                    }
+                    ui.add_space(16.);
+                    let (line, _) = ui.allocate_exact_size(egui::vec2(400., 1.), Sense::hover());
+                    ui.painter().hline(line.x_range(), line.top(), Stroke::new(1., theme::LIGHT));
+                    ui.add_space(8.);
+                    ui.horizontal(|ui| {
+                        ui.add_sized([120., 30.], egui::Label::new(
+                            RichText::new(locale::tr(ui, "Checkboard mode")).size(13.333),
+                        ));
+                        ui.add_sized([28., 30.], egui::Label::new("?")).on_hover_text(
+                            locale::tr(ui, "Enabling this will alternate the resulting tiles like a checkboard."),
+                        );
+                        ui.add_space(8.);
+                        ui.spacing_mut().interact_size.y = 30.;
+                        let choices = [
+                            ("None", "Off", true),
+                            ("Horizontal", "Horizontally", values[0] > 1),
+                            ("Vertical", "Vertically", values[1] > 1),
+                        ];
+                        let label = choices.iter().find(|(value, _, _)| *value == checker)
+                            .map_or("Off", |(_, label, _)| *label);
+                        egui::ComboBox::from_id_salt("checker").width(244.)
+                            .selected_text(RichText::new(locale::tr(ui, label)).size(13.333))
+                            .show_ui(ui, |ui| {
+                                for (value, label, enabled) in choices {
+                                    if ui.add_enabled(enabled, egui::Button::selectable(
+                                        checker == value, locale::tr(ui, label),
+                                    )).clicked() {
+                                        checker = value;
+                                        ui.close();
+                                    }
+                                }
+                            });
+                    });
+                };
+                if height > viewport_height {
+                    egui::ScrollArea::vertical()
+                        .max_height((viewport_height - 70.).max(100.))
+                        .show(ui, body);
+                } else {
+                    body(ui);
+                }
+            });
+        let mut patch = json!({});
+        for (key, (before, after)) in MODULO_FIELDS
+            .into_iter()
+            .zip(initial.into_iter().zip(values))
+        {
+            if before != after {
+                patch[key] = json!(after);
+            }
+        }
+        if initial_checker != checker {
+            patch["checker"] = json!(checker);
+        }
+        let edited = changed(&patch)
+            && self.edit("Rule changed", |p| p.update_auto_rule(layer, gid, rid, &patch)).is_some();
+        let close = modal.should_close();
+        ctx.data_mut(|data| {
+            if close || numeric_input {
+                data.remove::<Rect>(rule_options_anchor_id());
+            }
+            if close {
+                data.remove::<RuleOptionsState>(id);
+            } else {
+                data.insert_temp(id, (layer, gid, Some(rid), RuleOptions::Modulo, edited || numeric_input || opening && !laid_out));
+            }
+        });
+    }
+
+    fn perlin_settings(
+        &mut self,
+        ctx: &egui::Context,
+        layer: i64,
+        group: i64,
+        rid: i64,
+        rule: &Value,
+    ) {
+        use source_controls::NumberStyle;
+        use std::hash::BuildHasher;
+        let id = rule_options_id();
+        let seed = rule["perlinSeed"].as_i64().unwrap_or(0);
+        let scale = rule["perlinScale"].as_f64().unwrap_or(0.2) * 100.;
+        let octaves = rule["perlinOctaves"].as_i64().unwrap_or(2);
+        let mut patch = json!({});
+        let modal = rule_settings_modal(ctx, egui::vec2(350., 187.), 46)
+            .show(ctx, |ui| {
+                ui.spacing_mut().item_spacing.y = 10.;
+                for (key, label, current, style, width) in [
+                    (
+                        "perlinSeed",
+                        "Seed",
+                        seed.to_string(),
+                        NumberStyle::Plain { placeholder: None },
+                        153.,
+                    ),
+                    (
+                        "perlinScale",
+                        "Scale",
+                        scale.to_string(),
+                        NumberStyle::PercentSlider { min: 1., max: 99. },
+                        62.,
+                    ),
+                    (
+                        "perlinOctaves",
+                        "Octaves",
+                        octaves.to_string(),
+                        NumberStyle::IntegerSlider {
+                            min: 1.,
+                            max: 4.,
+                            speed: 0.0176,
+                            placeholder: None,
+                        },
+                        248.,
+                    ),
+                ] {
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 0.;
+                        ui.add_sized(
+                            [52., 33.],
+                            egui::Label::new(RichText::new(locale::tr(ui, label)).size(13.333))
+                                .halign(egui::Align::Max),
+                        );
+                        ui.add_space(8.);
+                        if let Some(value) =
+                            source_controls::number_input_sized(ui, key, &current, style, width)
+                        {
+                            let parsed = value
+                                .trim()
+                                .parse::<f64>()
+                                .ok()
+                                .filter(|n| n.is_finite())
+                                .unwrap_or(0.);
+                            let value = match key {
+                                "perlinScale" => json!(parsed.clamp(1., 99.) / 100.),
+                                "perlinOctaves" => json!((parsed as i64).clamp(1, 4)),
+                                _ => json!((parsed as i64).clamp(i16::MIN.into(), i16::MAX.into())),
+                            };
+                            if rule[key] != value {
+                                patch[key] = value;
+                            }
+                        }
+                        if key == "perlinSeed" {
+                            ui.add_space(1.);
+                            if project_dialogs::button(
+                                ui,
+                                "RANDOM",
+                                egui::vec2(93., 32.),
+                                false,
+                                13.333,
+                            )
+                            .clicked()
+                            {
+                                let next =
+                                    std::hash::RandomState::new().hash_one(seed) % 99_999_999;
+                                patch[key] = json!(if next as i64 == seed {
+                                    (next + 1) % 99_999_999
+                                } else {
+                                    next
+                                });
+                            }
+                        } else if key == "perlinScale" {
+                            ui.add_space(4.);
+                            ui.label("%");
+                        }
+                    });
+                }
+            });
+        if changed(&patch) {
+            self.edit("Rule changed", |p| {
+                p.update_auto_rule(layer, group, rid, &patch)
+            });
+        }
+        if modal.should_close() {
+            ctx.data_mut(|d| {
+                d.remove::<RuleOptionsState>(id);
+                d.remove::<Rect>(rule_options_anchor_id());
+            });
+        }
+    }
+
+    pub(in crate::app) fn draw_perlin_preview(
+        &self,
+        ctx: &egui::Context,
+        painter: &egui::Painter,
+        rect: Rect,
+        level: LevelKey,
+    ) {
+        if self.panel != Some(Panel::Rules) || self.world {
+            return;
+        }
+        let Some((layer, gid, Some(rid), RuleOptions::Noise, _)) =
+            ctx.data(|d| d.get_temp::<RuleOptionsState>(rule_options_id()))
+        else {
+            return;
+        };
+        let Some(project) = self.project.as_ref() else {
+            return;
+        };
+        let Some(rule) = project
+            .layer_def(layer)
+            .and_then(|def| group(def, gid))
+            .and_then(|g| rule(g, rid))
+        else {
+            return;
+        };
+        let Some((index, instance)) = project
+            .level(level)
+            .and_then(|level| level["layerInstances"].as_array())
+            .and_then(|layers| {
+                layers
+                    .iter()
+                    .enumerate()
+                    .find(|(_, li)| li["layerDefUid"] == layer)
+            })
+        else {
+            return;
+        };
+        let origin = canvas::layer_to_world(project, level, index, &self.viewport, [0., 0.]);
+        let origin = egui::Pos2::from(self.viewport.to_screen(
+            origin,
+            rect.min.into(),
+            rect.size().into(),
+        ));
+        let step = number(instance, "__gridSize", 16.) * self.viewport.zoom;
+        if step <= 0. || !step.is_finite() {
+            return;
+        }
+        let clip = self
+            .uncovered_canvas_rect(rect)
+            .intersect(painter.clip_rect());
+        let range = |start: f32, end: f32, origin: f32, key| {
+            let count = instance[key]
+                .as_i64()
+                .and_then(|n| i32::try_from(n).ok())
+                .unwrap_or(0)
+                .max(0);
+            (((start - origin) / step).floor() as i32).clamp(0, count)
+                ..(((end - origin) / step).ceil() as i32).clamp(0, count)
+        };
+        let xs = range(clip.left(), clip.right(), origin.x, "__cWid");
+        let ys = range(clip.top(), clip.bottom(), origin.y, "__cHei");
+        let seed = instance["seed"].as_i64().unwrap_or(0) as i32;
+        let painter = painter.with_clip_rect(clip);
+        for y in ys {
+            for x in xs.clone() {
+                let color = if ldtk_core::auto_rule_perlin_value(seed, [x, y], rule) < 0. {
+                    Color32::from_rgba_unmultiplied(255, 0, 0, 128)
+                } else {
+                    Color32::from_rgba_unmultiplied(179, 247, 0, 77)
+                };
+                painter.rect_filled(
+                    Rect::from_min_size(
+                        origin + egui::vec2(x as f32, y as f32) * step,
+                        Vec2::splat(step),
+                    ),
+                    0.,
+                    color,
+                );
+            }
+        }
     }
 
     fn rule_options_dialog(&mut self, ctx: &egui::Context) {
@@ -951,6 +1912,21 @@ impl EditorApp {
             ctx.data_mut(|data| data.remove::<RuleOptionsState>(id));
             return;
         };
+        if matches!(
+            options,
+            RuleOptions::Noise | RuleOptions::Offsets | RuleOptions::Modulo
+        ) {
+            if let Some((rid, rule)) = rid.and_then(|rid| Some((rid, rule(&g, rid)?))) {
+                match options {
+                    RuleOptions::Noise => self.perlin_settings(ctx, layer, gid, rid, rule),
+                    RuleOptions::Offsets => self.offset_settings(ctx, layer, gid, rid, rule),
+                    _ => self.modulo_settings(ctx, layer, gid, rid, rule, opening),
+                }
+            } else {
+                ctx.data_mut(|d| d.remove::<RuleOptionsState>(id));
+            }
+            return;
+        }
         if matches!(options, RuleOptions::GroupColor | RuleOptions::GroupIcon) {
             let closed = if options == RuleOptions::GroupColor {
                 let before = g["color"]
@@ -1000,43 +1976,32 @@ impl EditorApp {
             return;
         }
         let mut close = false;
-        let modal=egui::Modal::new(rule_options_id()).frame(project_dialogs::dialog_frame(16)).show(ctx, |ui| {
-            ui.set_width(380.);
-            match options {
-                RuleOptions::Advanced|RuleOptions::RequireGroup => {
-                    ui.label(locale::tr(ui, if options==RuleOptions::Advanced {
-                        "Switch to advanced mode to edit these rules manually."
-                    } else {"Removing the optional status clears this group's on/off state in all levels."}));
-                    if source_controls::button(ui,"Confirm").clicked() {
-                        let patch=if options==RuleOptions::Advanced {json!({"usesWizard":false})} else {json!({"isOptional":false})};
-                        self.edit_recoverable("Rule group changed",|p|p.update_auto_rule_group(layer,gid,&patch));
-                        close=true;
-                    }
-                }
-                _ => {
-                    let Some((id,rule))=rid.and_then(|id|Some((id,rule(&g,id)?))) else {return};
-                    let properties:&[P] = match options {
-                        RuleOptions::Offsets => &[
-                            P("tileXOffset","Tile X offset",W::Int(-65536,65536)),P("tileYOffset","Tile Y offset",W::Int(-65536,65536)),
-                            P("tileRandomXMin","Random X minimum",W::Int(-65536,65536)),P("tileRandomXMax","Random X maximum",W::Int(-65536,65536)),
-                            P("tileRandomYMin","Random Y minimum",W::Int(-65536,65536)),P("tileRandomYMax","Random Y maximum",W::Int(-65536,65536))],
-                        RuleOptions::Modulo => &[
-                            P("xModulo","X modulo",W::Int(1,1024)),P("yModulo","Y modulo",W::Int(1,1024)),
-                            P("xOffset","X offset",W::Int(-65536,65536)),P("yOffset","Y offset",W::Int(-65536,65536)),
-                            P("checker","Checker mode",W::Choice(&["None","Horizontal","Vertical"]))],
-                        _ => &[
-                            P("perlinSeed","Perlin seed",W::Int(i32::MIN as i64,i32::MAX as i64)),
-                            P("perlinScale","Perlin scale",W::Float(0.001,10.)),
-                            P("perlinOctaves","Perlin octaves",W::Int(1,10))],
+        let modal = egui::Modal::new(id)
+            .frame(project_dialogs::dialog_frame(16))
+            .show(ctx, |ui| {
+                ui.set_width(380.);
+                ui.label(locale::tr(ui, if options == RuleOptions::Advanced {
+                "Switch to advanced mode to edit these rules manually."
+            } else {
+                "Removing the optional status clears this group's on/off state in all levels."
+            }));
+                if source_controls::button(ui, "Confirm").clicked() {
+                    let patch = if options == RuleOptions::Advanced {
+                        json!({"usesWizard":false})
+                    } else {
+                        json!({"isOptional":false})
                     };
-                    let patch=form(ui,rule,properties);
-                    if changed(&patch) {self.edit("Rule changed",|p|p.update_auto_rule(layer,gid,id,&patch));}
+                    self.edit_recoverable("Rule group changed", |p| {
+                        p.update_auto_rule_group(layer, gid, &patch)
+                    });
+                    close = true;
                 }
-            }
-            close |= source_controls::button(ui,if matches!(options,RuleOptions::Advanced|RuleOptions::RequireGroup) {"Cancel"} else {"Done"}).clicked();
-        });
+                close |= source_controls::button(ui, "Cancel").clicked();
+            });
         if close || modal.should_close() {
             ctx.data_mut(|data| data.remove::<RuleOptionsState>(id));
         }
     }
+
+
 }

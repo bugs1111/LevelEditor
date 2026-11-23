@@ -165,6 +165,20 @@ impl EditorApp {
         }
     }
 
+    pub(in crate::app) fn select_layer_definition(&mut self, uid: Option<i64>) {
+        self.definition_uid = uid;
+        let index = uid.and_then(|uid| {
+            let level = self.project.as_ref()?.level(self.selected?)?;
+            level["layerInstances"]
+                .as_array()?
+                .iter()
+                .position(|layer| layer["layerDefUid"] == uid)
+        });
+        if let Some(index) = index {
+            self.switch_layer(index);
+        }
+    }
+
     pub(super) fn show_panel(&mut self, panel: Option<Panel>) {
         let ctx = self.repaint.clone().unwrap_or_default();
         if self.defer_ui_action(&ctx, ui_commit::DeferredUiAction::Panel(panel)) {
@@ -182,6 +196,7 @@ impl EditorApp {
         if self.panel == Some(Panel::Rules) && panel != Some(Panel::Rules) {
             self.finish_rule_edit();
             self.rule_hover = None;
+            self.last_rule_list_row = None;
         }
         self.finish_gesture();
         self.finish_stroke();
@@ -216,6 +231,12 @@ impl EditorApp {
             // The standalone form opens directly on the current level.
             // The embedded World form checks the active depth on opening.
             self.level_form_depth_override = self.selected.filter(|_| panel == Some(Panel::Level));
+            if panel == Some(Panel::Layers) {
+                self.definition_uid = self
+                    .selected
+                    .and_then(|key| self.project.as_ref()?.layer(key, self.layer))
+                    .and_then(|layer| layer["layerDefUid"].as_i64());
+            }
         }
         self.panel = panel;
     }
@@ -485,8 +506,9 @@ mod tests {
             ],
         );
         near(app.viewport.zoom, expected_zoom);
-        near(anchor(&app)[0], before[0]);
-        near(anchor(&app)[1], before[1]);
+        for (actual, expected) in anchor(&app).into_iter().zip(before) {
+            assert!((actual - expected).abs() * expected_zoom <= 1.);
+        }
         let after = app.viewport.center;
         for _ in 0..5 {
             frame(&mut app, &ctx, vec![]);

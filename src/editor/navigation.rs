@@ -144,13 +144,15 @@ impl EditorApp {
         delta: f32,
         pixels_per_point: f32,
     ) {
+        let (Some(project), Some(key)) = (&self.project, self.selected) else {
+            return;
+        };
         let absolute_minimum = 0.03 / pixels_per_point;
         let level_minimum = if self.world {
             absolute_minimum
         } else {
-            self.project
-                .as_ref()
-                .and_then(|p| self.selected.and_then(|key| p.level(key)))
+            project
+                .level(key)
                 .map(|level| level_min_zoom(level, rect.size()))
                 .unwrap_or(absolute_minimum)
         };
@@ -163,14 +165,18 @@ impl EditorApp {
             .max(minimum)
             .min(32. / pixels_per_point);
         let center_before_zoom = self.viewport.center;
+        let (focus, _) = self.canvas_pointer_pixels(project, key, rect, pointer, pixels_per_point);
+        let level_origin = if self.world {
+            level_world_origin(project, key)
+        } else {
+            [0.; 2]
+        };
         self.viewport
-            .zoom_to_at(zoom, pointer.into(), rect.min.into(), rect.size().into());
+            .zoom_at_level_point(zoom, rect, level_origin, focus, pixels_per_point);
         self.camera_motion.cancel();
         let preference = self.settings.value["autoWorldModeSwitch"]
             .as_str()
             .unwrap_or("ZoomInAndOut");
-        let Some(project) = &self.project else { return };
-        let Some(key) = self.selected else { return };
         let placements = canvas::placements(project, key);
         let target = if !self.world
             && delta < 0.
@@ -266,6 +272,56 @@ mod tests {
             assert!((a[i] - b[i]).abs() < 0.001, "{a:?} != {b:?}");
         }
     }
+
+    fn stays_near_pointer(actual: [f32; 2], expected: [f32; 2], zoom: f32) {
+        for axis in 0..2 {
+            let shift = (actual[axis] - expected[axis]).abs() * zoom;
+            assert!(
+                shift <= 2.,
+                "zoom anchor shifted from {expected:?} to {actual:?}"
+            );
+        }
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn startup_fits_the_level_after_the_requested_window_state_arrives() {
+        let mut app = editor();
+        app.fit = true;
+        app.startup_window = Some(StartupWindow::NotYetMapped);
+        app.settings.value["startFullScreen"] = json!(true);
+        let ctx = egui::Context::default();
+        theme::configure(&ctx);
+        let mut draw = |size, focused, maximized, fullscreen| {
+            let mut input = egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, size)),
+                ..Default::default()
+            };
+            let viewport = input.viewports.get_mut(&egui::ViewportId::ROOT).unwrap();
+            viewport.focused = Some(focused);
+            viewport.maximized = Some(maximized);
+            viewport.fullscreen = Some(fullscreen);
+            let output = ctx.run(input, |ctx| {
+                eframe::App::update(&mut app, ctx, &mut eframe::Frame::_new_kittest());
+            });
+            (app.fit, output.viewport_output[&egui::ViewportId::ROOT].commands.clone())
+        };
+        let normal = egui::vec2(800., 600.);
+        let full = egui::vec2(1440., 900.);
+        assert!(draw(normal, false, false, false).0);
+        let (fit_pending, commands) = draw(normal, true, false, false);
+        assert!(fit_pending);
+        assert!(commands.iter().any(|cmd| matches!(cmd, egui::ViewportCommand::Maximized(true))));
+        let (fit_pending, commands) = draw(egui::vec2(1440., 876.), true, true, false);
+        assert!(fit_pending);
+        assert!(commands.iter().any(|cmd| matches!(cmd, egui::ViewportCommand::Fullscreen(true))));
+        assert!(!draw(full, true, true, true).0);
+        assert!(!draw(normal, true, false, false).1.iter().any(|cmd| {
+            matches!(cmd, egui::ViewportCommand::Maximized(_) | egui::ViewportCommand::Fullscreen(_))
+        }));
+        assert!((app.viewport.zoom - 900. / (256. + 80.)).abs() < 0.001);
+    }
+
     #[test]
     fn initial_fit_at_custom_ui_scale_uses_the_first_native_window_size() {
         let mut app = editor();
@@ -351,13 +407,44 @@ mod tests {
         assert!(app.world);
         assert_eq!(app.panel, Some(Panel::World));
         assert!((app.viewport.zoom - 600. / (256. * 2.3)).abs() < 0.0001);
-        close(
+        stays_near_pointer(
             app.viewport
                 .to_world(pointer.into(), rect.min.into(), rect.size().into()),
             [before[0] + 1000., before[1] + 2000.],
+            app.viewport.zoom,
         );
         assert!(!app.fit);
     }
+
+    #[test]
+    fn wheel_zoom_uses_the_original_snapped_focus() {
+        let mut app = editor();
+        let key = app.selected.unwrap();
+        app.project
+            .as_mut()
+            .unwrap()
+            .move_level(key, 0, 0, 0)
+            .unwrap();
+        let rect = Rect::from_min_size(egui::pos2(300., 0.), egui::vec2(500., 600.));
+        app.viewport
+            .fit([0., 0., 256., 256.], rect.size().into(), 1.);
+        let ctx = egui::Context::default();
+        let _ = ctx.run(
+            egui::RawInput {
+                events: vec![egui::Event::MouseWheel {
+                    unit: egui::MouseWheelUnit::Point,
+                    delta: egui::vec2(0., 120.),
+                    modifiers: egui::Modifiers::NONE,
+                }],
+                ..Default::default()
+            },
+            |ctx| app.wheel_zoom(ctx, rect, egui::pos2(452., 315.)),
+        );
+        let origin = app.viewport.level_render_canvas_origin(rect, 1.);
+        let level_top_left = app.viewport.to_screen([0.; 2], origin, rect.size().into());
+        close(level_top_left, [344., 73.]);
+    }
+
     #[test]
     fn never_clamps_at_level_minimum_without_switching_and_zoomoutonly_stays_in_world() {
         let mut app = editor();
@@ -471,11 +558,10 @@ mod tests {
         app.zoom_at_canvas(rect, pointer, 3.6, 1.);
         assert!(!app.world);
         assert_eq!(app.selected, Some(left));
-        close(
-            app.viewport
-                .to_world(pointer.into(), rect.min.into(), rect.size().into()),
-            [anchor[0] - 1000., anchor[1] - 2000.],
-        );
+        // Reprojecting level pixel [298, 128] moves its backing position by
+        // [650, 1] before the camera compensates and switches to level coordinates.
+        let zoom = app.viewport.zoom;
+        close(app.viewport.center, [128. + 650. / zoom, 128. + 1. / zoom]);
     }
 
     #[test]
@@ -581,16 +667,10 @@ mod tests {
                 app.settings.value["autoWorldModeSwitch"] = json!("Never");
                 app.viewport.zoom = 8.;
                 let pointer = rect.center() + egui::vec2(50., -50.);
-                let anchor =
-                    app.viewport
-                        .to_world(pointer.into(), rect.min.into(), rect.size().into());
                 app.zoom_at_canvas(rect, pointer, 1.5, ctx.pixels_per_point());
                 assert_eq!(app.viewport.zoom, 16., "world mode {world}");
-                close(
-                    app.viewport
-                        .to_world(pointer.into(), rect.min.into(), rect.size().into()),
-                    anchor,
-                );
+                // The anchor pixel [134, 122] stays at its previous backing position.
+                close(app.viewport.center, [131., 125.]);
                 app.zoom_at_canvas(rect, pointer, -1.5, ctx.pixels_per_point());
                 let expected = if world { 0.015 } else { 600. / (256. * 2.3) };
                 assert!(

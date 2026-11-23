@@ -420,30 +420,6 @@ impl Project {
             .find(|v| v["id"] == value)
     }
 }
-fn default_value(p: &Project, d: &Value) -> Result<Value> {
-    let kind = base(d);
-    if ["Point", "FilePath", "EntityRef"].contains(&kind) {
-        return Ok(Value::Null);
-    }
-    let raw = if !d["defaultOverride"].is_null() {
-        wrapper_value(&d["defaultOverride"], 1)
-    } else if d["canBeNull"] == true {
-        Value::Null
-    } else {
-        match kind {
-            "Int" | "Float" | "Color" => json!(0),
-            "Bool" => json!(false),
-            "String" | "Multilines" => json!(""),
-            _ => Value::Null,
-        }
-    };
-    if kind.contains("Enum.") && !raw.is_null() {
-        return Ok(enum_field_value(p, d, &raw)
-            .map(|value| value["id"].clone())
-            .unwrap_or(Value::Null));
-    }
-    value_from_raw(p, d, raw)
-}
 fn refresh_field(p: &Project, d: &Value, f: &mut Value) -> Result<()> {
     let values = f["realEditorValues"]
         .as_array()
@@ -467,7 +443,7 @@ fn refresh_field(p: &Project, d: &Value, f: &mut Value) -> Result<()> {
         }
         let v = values.get(i).unwrap_or(&Value::Null);
         out.push(if v.is_null() {
-            default_value(p, d)?
+            p.field_default_value(d)?
         } else {
             value_from_raw(p, d, wrapper_value(v, 2))?
         });
@@ -587,6 +563,31 @@ fn fields_at_mut<'a>(
     }
 }
 impl Project {
+    /// Resolve the default value for a scalar field or one element of an array field.
+    pub fn field_default_value(&self, d: &Value) -> Result<Value> {
+        let kind = base(d);
+        if ["Point", "FilePath", "EntityRef"].contains(&kind) {
+            return Ok(Value::Null);
+        }
+        let raw = if !d["defaultOverride"].is_null() {
+            wrapper_value(&d["defaultOverride"], 1)
+        } else if d["canBeNull"] == true {
+            Value::Null
+        } else {
+            match kind {
+                "Int" | "Float" | "Color" => json!(0),
+                "Bool" => json!(false),
+                "String" | "Multilines" => json!(""),
+                _ => Value::Null,
+            }
+        };
+        if kind.contains("Enum.") && !raw.is_null() {
+            return Ok(enum_field_value(self, d, &raw)
+                .map(|value| value["id"].clone())
+                .unwrap_or(Value::Null));
+        }
+        value_from_raw(self, d, raw)
+    }
     pub fn make_field_instance(&self, d: &Value) -> Result<Value> {
         let mut f = json!({"defUid":d["uid"],"__identifier":d["identifier"],"__type":d["__type"],"__value":null,"__tile":null,"realEditorValues":[]});
         refresh_field(self, d, &mut f)?;
@@ -931,7 +932,12 @@ impl Project {
             let d = field_def(p, uid)?;
             let value = normalize_input(&d, value, false)?;
             let w = wrapper(&d, &value, 1)?;
-            field_def_mut(p, uid).expect("validated field")["defaultOverride"] = w;
+            let optional_tile = base(&d) == "Tile" && !w.is_null();
+            let definition = field_def_mut(p, uid).expect("validated field");
+            definition["defaultOverride"] = w;
+            if optional_tile {
+                definition["canBeNull"] = json!(true);
+            }
             refresh_fields(p)
         })
     }
@@ -1243,6 +1249,18 @@ impl Project {
             Ok(())
         })
     }
+    /// Whether a local enum is referenced by a level or entity field definition.
+    pub fn is_enum_definition_used(&self, uid: i64) -> bool {
+        let Some(definition) = self.definition("enums", uid) else {
+            return false;
+        };
+        let kind = format!(
+            "LocalEnum.{}",
+            definition["identifier"].as_str().unwrap_or("")
+        );
+        field_defs(self).iter().any(|field| base(field) == kind)
+    }
+
     /// Whether deleting this local enum value needs confirmation in the editor.
     pub fn is_enum_value_used(&self, uid: i64, value: &str) -> bool {
         fn items(value: &Value) -> &[Value] {

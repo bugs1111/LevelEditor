@@ -1,11 +1,13 @@
-//! Finder document-open events. Loading stays with the app's dirty-document guard.
+//! macOS document-open and quit requests go through the app's dirty-document guard.
 //!
 //! Install on the main thread before `run_native`, retain the guard until it exits,
 //! and attach the egui context when the app is constructed. Startup events remain
 //! queued until the app can handle them. This does not replace winit's app delegate.
 
 #[cfg(target_os = "macos")]
-pub use mac::{OpenFilesGuard, install, set_context, take_open_file};
+pub use mac::{
+    OpenFilesGuard, configure_quit, install, set_context, take_open_file, take_quit_request,
+};
 
 #[cfg(not(target_os = "macos"))]
 pub struct OpenFilesGuard;
@@ -44,6 +46,7 @@ mod mac {
     struct OpenFiles {
         paths: VecDeque<PathBuf>,
         context: Option<Context>,
+        quit_requested: bool,
     }
 
     fn state() -> &'static Mutex<OpenFiles> {
@@ -161,10 +164,11 @@ mod mac {
             }
             NSAppleEventManager::sharedAppleEventManager()
                 .removeEventHandlerForEventClass_andEventID(CORE_EVENT, OPEN_DOCUMENTS);
-            state()
+            let mut state = state()
                 .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .context = None;
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            state.context = None;
+            state.quit_requested = false;
         }
     }
 
@@ -174,7 +178,7 @@ mod mac {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             state.context = Some(ctx.clone());
-            !state.paths.is_empty()
+            !state.paths.is_empty() || state.quit_requested
         };
         if pending {
             ctx.request_repaint();
@@ -187,5 +191,30 @@ mod mac {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .paths
             .pop_front()
+    }
+
+    pub fn configure_quit<T: 'static>(builder: &mut winit::event_loop::EventLoopBuilder<T>) {
+        use winit::platform::macos::EventLoopBuilderExtMacOS;
+        builder.with_quit_request_handler(request_quit);
+    }
+
+    fn request_quit() {
+        let context = {
+            let mut state = state()
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            state.quit_requested = true;
+            state.context.clone()
+        };
+        if let Some(context) = context {
+            context.request_repaint();
+        }
+    }
+
+    pub fn take_quit_request() -> bool {
+        let mut state = state()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        std::mem::take(&mut state.quit_requested)
     }
 }

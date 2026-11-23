@@ -180,45 +180,18 @@ impl EditorApp {
             .unwrap_or_else(|| values.iter().find_map(|v| v["tile"]["tilesetUid"].as_i64()));
         let mut selected_atlas = atlas;
         layer_row(ui, "Values interface icons", |ui| {
-            let name = |d: &Value| {
-                if d["embedAtlas"] == "LdtkIcons" {
-                    "⚙ Internal icons by FinalBossBlues"
-                } else {
-                    d["identifier"].as_str().unwrap_or("Tileset")
-                }
-                .to_owned()
-            };
-            let response = egui::ComboBox::from_id_salt(atlas_key)
-                .width(ui.available_width())
-                .selected_text(
-                    atlas
-                        .and_then(|uid| project.tileset(uid))
-                        .map(name)
-                        .unwrap_or_else(|| "-- No icon --".into()),
-                )
-                .show_ui(ui, |ui| {
-                    ui.selectable_value(&mut selected_atlas, None, "-- No icon --");
-                    let mut has_embedded = false;
-                    for tileset in project.json["defs"]["tilesets"]
-                        .as_array()
-                        .into_iter()
-                        .flatten()
-                    {
-                        if let Some(uid) = tileset["uid"].as_i64() {
-                            ui.selectable_value(&mut selected_atlas, Some(uid), name(tileset));
-                            has_embedded |= tileset["embedAtlas"] == "LdtkIcons";
-                        }
-                    }
-                    if !has_embedded {
-                        ui.selectable_value(
-                            &mut selected_atlas,
-                            Some(NEW_EMBEDDED_ICONS),
-                            "⚙ Internal icons by FinalBossBlues",
-                        );
-                    }
-                });
-            if atlas.is_none() {
-                source_controls::disabled_hatch(ui, response.response.rect);
+            let tilesets = project.json["defs"]["tilesets"]
+                .as_array()
+                .map(Vec::as_slice)
+                .unwrap_or_default();
+            if let Some(choice) =
+                tileset_picker(ui, ui.available_width(), tilesets, atlas, "-- No icon --", false)
+            {
+                selected_atlas = match choice {
+                    TilesetChoice::Unassigned => None,
+                    TilesetChoice::Existing(uid) => Some(uid),
+                    TilesetChoice::EmbeddedIcons => Some(NEW_EMBEDDED_ICONS),
+                };
             }
         });
         if selected_atlas != atlas {

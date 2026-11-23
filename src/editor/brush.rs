@@ -469,11 +469,16 @@ impl EditorApp {
         else {
             return;
         };
+        let left = rect[0].max(0);
+        let top = rect[1].max(0);
+        let right = rect[0].saturating_add(rect[2]).min(number(layer, "__cWid", 0.) as i32);
+        let bottom = rect[1].saturating_add(rect[3]).min(number(layer, "__cHei", 0.) as i32);
+        if left >= right || top >= bottom {
+            return;
+        }
+        let cells = || (top..bottom).flat_map(|y| (left..right).map(move |x| [x, y]));
         if layer["__type"] == "IntGrid" {
-            let cells = (rect[1]..rect[1] + rect[3])
-                .flat_map(|y| (rect[0]..rect[0] + rect[2]).map(move |x| [x, y]))
-                .collect::<Vec<_>>();
-            self.paint_cells(&cells, erase);
+            self.paint_cells(&cells().collect::<Vec<_>>(), erase);
         } else if layer["__type"] == "Tiles" {
             let Some(def) = layer["__tilesetDefUid"]
                 .as_i64()
@@ -488,23 +493,24 @@ impl EditorApp {
             let ids = self.selected_tile_ids_for(def["uid"].as_i64().unwrap_or(-1));
             // Rectangle erasing always follows the destination cells; the selection only controls drawing.
             if erase {
-                for y in rect[1]..rect[1] + rect[3] {
-                    for x in rect[0]..rect[0] + rect[2] {
-                        self.paint_tile_at(
-                            [x, y],
-                            [self.tile_rect[0], self.tile_rect[1]],
-                            true,
-                            self.tile_stacking,
-                        );
-                    }
+                for cell in cells() {
+                    self.paint_tile_at(
+                        cell,
+                        [self.tile_rect[0], self.tile_rect[1]],
+                        true,
+                        self.tile_stacking,
+                    );
                 }
             } else if self.random_tiles {
-                let cells = (rect[1]..rect[1] + rect[3])
-                    .flat_map(|y| (rect[0]..rect[0] + rect[2]).map(move |x| [x, y]))
-                    .collect::<Vec<_>>();
-                self.paint_cells(&cells, false);
+                self.paint_cells(&cells().collect::<Vec<_>>(), false);
             } else {
-                for (dest, src) in tools::rectangle_tiles(rect, self.tile_rect, scale) {
+                // Preserve the stamp phase of the raw rectangle at the clipped boundary.
+                for (dest, src) in tools::rectangle_tiles(
+                    [rect[0], rect[1]],
+                    [left, top, right, bottom],
+                    self.tile_rect,
+                    scale,
+                ) {
                     if !ids.contains(&(src[0] + src[1] * columns)) {
                         continue;
                     }

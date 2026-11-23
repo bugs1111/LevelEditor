@@ -11,6 +11,10 @@ const WORLD_SWITCH: [(&str, &str); 3] = [
     ("ZoomInAndOut", "Switch when zooming in or out (default)"),
 ];
 const LANGUAGES: [(&str, &str); 2] = [("en", "English"), ("zh-CN", "简体中文")];
+const SINGLE_LAYER_INTENSITIES: &[f64] = &[0., 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.];
+const NEARBY_TILE_DISTANCES: &[f64] = &[0., 1., 1.5, 2.];
+const SINGLE_LAYER_DEFAULT_PRESET: f64 = 0.9;
+const NEARBY_TILE_DEFAULT_PRESET: f64 = 1.;
 
 #[derive(Clone, Default)]
 struct Session {
@@ -55,39 +59,67 @@ fn choice(
         patch[key] = json!(selected);
     }
 }
+fn normalize_preset(values: &mut Value, key: &str, options: &[f64], default: f64) -> f64 {
+    let current = values[key].as_f64().unwrap_or(default);
+    let Some(preset) = options.iter().copied().find(|value| *value >= current) else {
+        return default;
+    };
+    if preset != current {
+        values[key] = json!(preset);
+    }
+    preset
+}
+
 fn number_choice(
     ui: &mut egui::Ui,
-    values: &Value,
     patch: &mut Value,
     key: &str,
     options: &[f64],
+    current: f64,
+    default: f64,
     label: impl Fn(f64) -> String,
 ) {
-    let current = values[key].as_f64().unwrap_or(1.);
+    let default_suffix = locale::tr(ui, " (default)");
+    let choice_label = |value| {
+        let mut text = label(value);
+        if value == default {
+            text.push_str(default_suffix);
+        }
+        text
+    };
     let mut selected = current;
     egui::ComboBox::from_id_salt(key)
         .width(ui.available_width())
         .truncate()
-        .selected_text(label(current))
+        .selected_text(choice_label(current))
         .show_ui(ui, |ui| {
             for value in options {
-                ui.selectable_value(&mut selected, *value, label(*value));
+                ui.selectable_value(&mut selected, *value, choice_label(*value));
             }
         });
     if selected != current {
         patch[key] = json!(selected);
     }
 }
-fn scale_label(ctx: &egui::Context, value: f64) -> String {
-    format!(
-        "{}%{}",
-        (value * 100.).round() as i32,
-        if value == 1. { locale::tr_ctx(ctx, " (default)") } else { "" }
-    )
+fn percent_label(value: f64) -> String {
+    format!("{}%", (value * 100.).round() as i32)
 }
 impl EditorApp {
     pub(in crate::app) fn show_settings_dialog(&mut self, ctx: &egui::Context) {
-        let width = 980_f32.min((ctx.content_rect().width() - 42.).max(260.));
+        let id = egui::Id::new("app-settings-dialog");
+        let height_id = id.with("content-height");
+        let content_height = ctx.data_mut(|data| data.get_temp::<f32>(height_id));
+        let screen_height = ctx.content_rect().height();
+        // The original switches to top-aligned scrolling when the form itself
+        // reaches the window height. Its footer is part of the scroll content.
+        let force_scroll = screen_height <= content_height.unwrap_or(590.);
+        let width = 980.;
+        let mut area = egui::Modal::default_area(id)
+            .default_width(width + 2.)
+            .constrain(false);
+        if force_scroll {
+            area = area.anchor(egui::Align2::CENTER_TOP, Vec2::ZERO);
+        }
         let frame = egui::Frame::new()
             .fill(theme::MEDIUM)
             .stroke(Stroke::new(1_f32, theme::LIGHT))
@@ -98,64 +130,104 @@ impl EditorApp {
                 color: Color32::from_black_alpha(153),
             });
         let mut close = false;
-        let modal = egui::Modal::new(egui::Id::new("app-settings-dialog"))
+        let modal = egui::Modal::new(id)
+            .area(area)
             .frame(frame)
             .backdrop_color(Color32::from_black_alpha(140))
             .show(ctx, |ui| {
-                ui.set_width(width);
-                ui.spacing_mut().item_spacing = egui::vec2(8., 10.);
-                ui.style_mut()
-                    .text_styles
-                    .insert(egui::TextStyle::Body, FontId::proportional(12.667));
-                ui.style_mut()
-                    .text_styles
-                    .insert(egui::TextStyle::Button, FontId::proportional(12.667));
-                let (header, _) = ui.allocate_exact_size(egui::vec2(width, 53.), Sense::hover());
-                ui.painter().rect_filled(header, 0., theme::LIGHT);
-                egui::Image::new(egui::include_image!("../../assets/icons/settings.svg")).paint_at(
-                    ui,
-                    Rect::from_min_size(header.min + egui::vec2(20., 6.5), Vec2::splat(40.)),
-                );
-                ui.painter().text(
-                    header.min + egui::vec2(72., 26.5),
-                    Align2::LEFT_CENTER,
-                    locale::tr(ui, "APPLICATION SETTINGS"),
-                    FontId::new(20., egui::FontFamily::Name("panel-title".into())),
-                    Color32::WHITE,
-                );
-                egui::Frame::new()
-                    .inner_margin(egui::Margin {
-                        left: 20,
-                        right: 20,
-                        top: 6,
-                        bottom: 20,
-                    })
-                    .show(ui, |ui| {
-                        egui::ScrollArea::both()
-                            .id_salt("app-settings-body")
-                            .max_height((ctx.content_rect().height() - 173.).max(80.))
-                            .max_width(width - 40.)
-                            .auto_shrink([false, true])
-                            .show(ui, |ui| {
-                                ui.set_width(940.);
-                                self.settings_properties(ui);
-                            });
-                        ui.add_space(6.);
-                        close = source_controls::add_sized_button(
-                            ui,
-                            [width - 40., 42.],
-                            egui::Button::new(RichText::new(locale::tr(ui, "CLOSE")).color(Color32::WHITE))
-                                .fill(Color32::from_rgb(235, 78, 0)),
-                        )
-                        .clicked();
+                ui.set_max_width(if force_scroll { width + 10. } else { width });
+                ui.set_max_height(if force_scroll {
+                    (screen_height - 2.).max(0.)
+                } else {
+                    f32::INFINITY
+                });
+                ui.spacing_mut().scroll = source_controls::scroll_style();
+                let content_visuals = source_controls::scroll_visuals(ui);
+                let mut scroll = egui::ScrollArea::vertical()
+                    .id_salt("app-settings-scroll")
+                    .auto_shrink([true, true])
+                    .scroll_source(egui::scroll_area::ScrollSource {
+                        scroll_bar: true,
+                        drag: false,
+                        mouse_wheel: true,
                     });
+                if !force_scroll || content_height.is_none() {
+                    scroll = scroll.vertical_scroll_offset(0.);
+                }
+                scroll.show(ui, |ui| {
+                    *ui.visuals_mut() = content_visuals;
+                    ui.set_width(width);
+                    let top = ui.next_widget_position().y;
+                    ui.spacing_mut().item_spacing = egui::vec2(8., 10.);
+                    ui.style_mut()
+                        .text_styles
+                        .insert(egui::TextStyle::Body, FontId::proportional(12.667));
+                    ui.style_mut()
+                        .text_styles
+                        .insert(egui::TextStyle::Button, FontId::proportional(12.667));
+                    let (header, _) = ui.allocate_exact_size(egui::vec2(width, 53.), Sense::hover());
+                    ui.painter().rect_filled(header, 0., theme::LIGHT);
+                    egui::Image::new(egui::include_image!("../../assets/icons/settings.svg")).paint_at(
+                        ui,
+                        Rect::from_min_size(header.min + egui::vec2(20., 6.5), Vec2::splat(40.)),
+                    );
+                    ui.painter().text(
+                        header.min + egui::vec2(72., 26.5),
+                        Align2::LEFT_CENTER,
+                        locale::tr(ui, "APPLICATION SETTINGS"),
+                        FontId::new(20., egui::FontFamily::Name("panel-title".into())),
+                        Color32::WHITE,
+                    );
+                    egui::Frame::new()
+                        .inner_margin(egui::Margin {
+                            left: 20,
+                            right: 20,
+                            top: 6,
+                            bottom: 20,
+                        })
+                        .show(ui, |ui| {
+                            ui.set_width(width - 40.);
+                            self.settings_properties(ui);
+                            let content_height = ui.next_widget_position().y - top;
+                            ui.add_space(6.);
+                            close = source_controls::add_sized_button(
+                                ui,
+                                [width - 40., 42.],
+                                egui::Button::new(RichText::new(locale::tr(ui, "CLOSE")).color(Color32::WHITE))
+                                    .fill(Color32::from_rgb(235, 78, 0)),
+                            )
+                            .clicked();
+                            content_height
+                        })
+                        .inner
+                })
+                .inner
             });
         if close || modal.should_close() {
             self.show_panel(None);
+        } else if self.panel == Some(Panel::Settings) {
+            ctx.data_mut(|data| data.insert_temp(height_id, modal.inner));
+            if force_scroll != (screen_height <= modal.inner) {
+                ctx.request_repaint();
+            }
         }
     }
 
     pub(super) fn settings_properties(&mut self, ui: &mut egui::Ui) {
+        // Opening the source form rounds historical values up in memory.
+        // The ordinary settings save path persists them with the next edit.
+        let nearby_distance = normalize_preset(
+            &mut self.settings.value,
+            "nearbyTilesRenderingDist",
+            NEARBY_TILE_DISTANCES,
+            NEARBY_TILE_DEFAULT_PRESET,
+        );
+        let single_layer_intensity = normalize_preset(
+            &mut self.settings.value,
+            "singleLayerModeIntensity",
+            SINGLE_LAYER_INTENSITIES,
+            SINGLE_LAYER_DEFAULT_PRESET,
+        );
         let values = self.settings.value.clone();
         let ctx = ui.ctx().clone();
         let mut patch = json!({});
@@ -198,11 +270,21 @@ impl EditorApp {
                 row(ui,"Re-open last project","openLastProject",left_width, |ui| checkbox(ui,&values,&mut patch,"openLastProject"));
                 heading(ui,"Visuals");
                 for (key,label,help) in [("appUiScale","General UI scale","appScale"),("editorUiScale","Level UI scale","fontScale")] {
-                    row(ui,label,help,left_width, |ui| number_choice(ui,&values,&mut patch,key,&SCALES,|value| scale_label(&ctx, value)));
+                    row(ui,label,help,left_width, |ui| number_choice(ui,&mut patch,key,&SCALES,values[key].as_f64().unwrap_or(1.),1.,percent_label));
                 }
                 row(ui,"Entity fields aspect","fieldsRender",left_width, |ui| choice(ui,&values,&mut patch,"fieldsRender",&[("FR_Outline","Outlined texts (default)"),("FR_Table","Opaque tables")]));
-                row(ui,"\"Nearby levels\" tiles rendering distance","nearbyTilesRenderingDist",left_width, |ui| number_choice(ui,&values,&mut patch,"nearbyTilesRenderingDist",&[0.,1.,1.5,2.], |value| if value==0. {locale::tr_ctx(&ctx, "Disabled").into()} else {locale::format_ctx(&ctx, "{value} pixels", &[("value", &((value*64.).ceil() as i32).to_string())])}));
-                row(ui,"Single-layer mode intensity","singleLayerModeIntensity",left_width, |ui| number_choice(ui,&values,&mut patch,"singleLayerModeIntensity",&[0.,0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9,1.], |value| format!("{}%",(value*100.).round() as i32)));
+                row(ui,"\"Nearby levels\" tiles rendering distance","nearbyTilesRenderingDist",left_width, |ui| {
+                    number_choice(ui,&mut patch,"nearbyTilesRenderingDist",NEARBY_TILE_DISTANCES,nearby_distance,NEARBY_TILE_DEFAULT_PRESET, |value| {
+                        if value==0. {
+                            locale::tr_ctx(&ctx, "Disabled").into()
+                        } else {
+                            locale::format_ctx(&ctx, "{value} pixels", &[("value", &((value*64.).ceil() as i32).to_string())])
+                        }
+                    });
+                });
+                row(ui,"Single-layer mode intensity","singleLayerModeIntensity",left_width, |ui| {
+                    number_choice(ui,&mut patch,"singleLayerModeIntensity",SINGLE_LAYER_INTENSITIES,single_layer_intensity,SINGLE_LAYER_DEFAULT_PRESET,percent_label);
+                });
                 for (key,label) in [("startFullScreen","Start in fullscreen mode"),("colorBlind","Prefer color-blind colors"),("blurMask","Fade LDtk window when not focused")] {
                     row(ui,label,key,left_width, |ui| checkbox(ui,&values,&mut patch,key));
                 }
@@ -213,9 +295,15 @@ impl EditorApp {
                 heading(ui,"Controls");
                 row(ui,"Mouse wheel speed","mouseWheelSpeed",right_width, |ui| {
                     let percent = (self.settings.float("mouseWheelSpeed",1.) * 100.).round() as i32;
-                    if let Some(value) = ui_fields::buffered_text(ui,"mouseWheelSpeed",&percent.to_string())
+                    if let Some(value) = source_controls::number_input_sized(
+                        ui,
+                        "mouseWheelSpeed",
+                        &percent.to_string(),
+                        source_controls::NumberStyle::PercentSlider { min: 25., max: 300. },
+                        62.,
+                    )
                         && let Ok(value) = value.trim().trim_end_matches('%').parse::<f64>()
-                        && value.is_finite() { patch["mouseWheelSpeed"] = json!(value.clamp(25.,300.)/100.); }
+                        && value.is_finite() { patch["mouseWheelSpeed"] = json!(value.round().clamp(25.,300.)/100.); }
                     ui.label("%");
                 });
                 row(ui,"World view with mouse wheel","autoSwitchOnZoom",right_width, |ui| choice(ui,&values,&mut patch,"autoWorldModeSwitch",&WORLD_SWITCH));
@@ -303,6 +391,9 @@ impl EditorApp {
     }
 
     pub(in crate::app) fn finish_settings_dialog(&mut self, ctx: &egui::Context) {
+        ctx.data_mut(|data| {
+            data.remove::<f32>(egui::Id::new("app-settings-dialog").with("content-height"));
+        });
         if let Some(session) = ctx.data_mut(|data| data.remove_temp::<Session>(session_id()))
             && session.changed
             && !session.save_failed
@@ -417,6 +508,58 @@ mod tests {
     }
 
     #[test]
+    fn f12_replaces_the_context_menu_with_application_settings() {
+        for world in [false, true] {
+            let ctx = egui::Context::default();
+            theme::configure(&ctx);
+            let mut app = EditorApp::empty();
+            app.repaint = Some(ctx.clone());
+            app.set_project(Project::new());
+            if world {
+                app.show_panel(Some(Panel::World));
+            }
+            let project = app.project.as_ref().unwrap().json.clone();
+            let pos = egui::pos2(1320., 800.);
+            frame(&mut app, &ctx, vec![egui::Event::PointerMoved(pos)]);
+            for pressed in [true, false] {
+                frame(
+                    &mut app,
+                    &ctx,
+                    vec![egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Secondary,
+                        pressed,
+                        modifiers: egui::Modifiers::NONE,
+                    }],
+                );
+            }
+            assert!(app.world_context.menu_open());
+            let key = |key| {
+                [true, false]
+                    .into_iter()
+                    .map(|pressed| egui::Event::Key {
+                        key,
+                        physical_key: Some(key),
+                        pressed,
+                        repeat: false,
+                        modifiers: egui::Modifiers::NONE,
+                    })
+                    .collect()
+            };
+            frame(&mut app, &ctx, key(Key::F12));
+            assert_eq!(app.panel, Some(Panel::Settings));
+            assert!(!app.world_context.menu_open());
+            assert!(!app.world);
+            let output = frame(&mut app, &ctx, key(Key::F12));
+            label(&output, "APPLICATION SETTINGS");
+            frame(&mut app, &ctx, key(Key::Escape));
+            assert!(app.panel.is_none());
+            assert!(!app.world_context.menu_open());
+            assert_eq!(app.project.as_ref().unwrap().json, project);
+        }
+    }
+
+    #[test]
     fn language_selection_updates_ui_and_persists_without_changing_the_project() {
         let (mut app, ctx) = setup();
         let dir = tempfile::tempdir().unwrap();
@@ -521,7 +664,7 @@ mod tests {
             "Outlined texts (default)",
             "Switch when zooming in or out (default)",
             "WASD",
-            "64 pixels",
+            "64 pixels (default)",
         ] {
             label(&output, name);
         }
@@ -543,6 +686,36 @@ mod tests {
         let output = frame(&mut app, &ctx, vec![]);
         click(&mut app, &ctx, label(&output, "80%"));
         assert_eq!(app.settings.float("appUiScale", 1.), 0.8);
+    }
+
+    #[test]
+    fn app_settings_uses_the_original_presets_and_waits_for_an_edit_to_save() {
+        let (mut app, ctx) = setup();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        app.settings.path = Some(path.clone());
+        app.settings.value["singleLayerModeIntensity"] = json!(0.73);
+        app.settings.value["nearbyTilesRenderingDist"] = json!(1.12);
+        app.settings.save().unwrap();
+        let saved = std::fs::read(&path).unwrap();
+
+        let output = frame(&mut app, &ctx, vec![]);
+        assert_eq!(app.settings.value["singleLayerModeIntensity"], 0.8);
+        assert_eq!(app.settings.value["nearbyTilesRenderingDist"], 1.5);
+        label(&output, "80%");
+        label(&output, "96 pixels");
+        click(&mut app, &ctx, label(&output, "CLOSE"));
+        assert!(app.panel.is_none());
+        assert_eq!(std::fs::read(&path).unwrap(), saved);
+
+        app.show_panel(Some(Panel::Settings));
+        let output = frame(&mut app, &ctx, vec![]);
+        click(&mut app, &ctx, checkbox_pos(&output, "Re-open last project"));
+        let saved = settings::Settings::load_at(Some(path));
+        assert!(saved.bool("openLastProject"));
+        assert_eq!(saved.value["singleLayerModeIntensity"], 0.8);
+        assert_eq!(saved.value["nearbyTilesRenderingDist"], 1.5);
+        assert!(!app.dirty);
     }
 
     #[test]
@@ -581,6 +754,34 @@ mod tests {
             serde_json::from_slice(&std::fs::read(app.settings.path.as_ref().unwrap()).unwrap())
                 .unwrap();
         assert_eq!(saved["mouseWheelSpeed"], 3.);
+    }
+
+    #[test]
+    fn source_app_settings_wheel_percent_drag_commits_on_release() {
+        let (mut app, ctx) = setup();
+        let output = frame(&mut app, &ctx, vec![]);
+        let start = label(&output, "100");
+        let end = start + egui::vec2(50., 0.);
+        let button = |pos, pressed| egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        frame(
+            &mut app,
+            &ctx,
+            vec![
+                egui::Event::PointerMoved(start),
+                button(start, true),
+                egui::Event::PointerMoved(start + egui::vec2(10., 0.)),
+            ],
+        );
+        let preview = frame(&mut app, &ctx, vec![egui::Event::PointerMoved(end)]);
+        label(&preview, "120");
+        assert_eq!(app.settings.float("mouseWheelSpeed", 1.), 1.);
+        frame(&mut app, &ctx, vec![button(end, false)]);
+        assert_eq!(app.settings.float("mouseWheelSpeed", 1.), 1.2);
     }
 
     #[test]
@@ -719,26 +920,63 @@ mod tests {
     }
 
     #[test]
-    fn source_app_settings_remains_inside_a_small_home_window() {
-        for size in [egui::vec2(800., 500.), egui::vec2(460., 340.)] {
-            let ctx = egui::Context::default();
-            theme::configure(&ctx);
-            let mut app = EditorApp::empty();
-            app.repaint = Some(ctx.clone());
-            app.show_panel(Some(Panel::Settings));
-            for _ in 0..16 {
-                frame_size(&mut app, &ctx, vec![], size);
-            }
-            let rect = egui::AreaState::load(&ctx, egui::Id::new("app-settings-dialog"))
+    fn source_app_settings_centers_fixed_columns_and_scrolls_the_entire_short_dialog() {
+        let (mut app, ctx) = setup();
+        let rect = || {
+            egui::AreaState::load(&ctx, egui::Id::new("app-settings-dialog"))
                 .unwrap()
-                .rect();
-            assert!(
-                rect.left() >= 0.
-                    && rect.top() >= 0.
-                    && rect.right() <= size.x
-                    && rect.bottom() <= size.y,
-                "{size:?}: {rect:?}"
+                .rect()
+        };
+        let narrow = egui::vec2(800., 600.);
+        for _ in 0..8 {
+            frame_size(&mut app, &ctx, vec![], narrow);
+        }
+        let centered = rect();
+        assert!((centered.width() - 982.).abs() < 1., "{centered:?}");
+        assert!(centered.left() < 0. && centered.right() > narrow.x);
+        assert!((centered.center().x - narrow.x / 2.).abs() < 1.);
+        assert!((centered.center().y - narrow.y / 2.).abs() < 1.);
+
+        let short = egui::vec2(1050., 500.);
+        for _ in 0..8 {
+            frame_size(&mut app, &ctx, vec![], short);
+        }
+        assert!(rect().top().abs() < 1., "{:?}", rect());
+        let before = frame_size(&mut app, &ctx, vec![], short);
+        let controls = label(&before, "CONTROLS");
+        frame_size(
+            &mut app,
+            &ctx,
+            vec![
+                egui::Event::PointerMoved(egui::pos2(430., 230.)),
+                egui::Event::MouseWheel {
+                    unit: egui::MouseWheelUnit::Point,
+                    delta: egui::vec2(0., -400.),
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ],
+            short,
+        );
+        for _ in 0..12 {
+            frame_size(&mut app, &ctx, vec![], short);
+        }
+        let scrolled = frame_size(&mut app, &ctx, vec![], short);
+        assert!(label(&scrolled, "ADVANCED OPTIONS").y < controls.y + 120.);
+        let close = label(&scrolled, "CLOSE");
+        assert!(close.y > 0. && close.y < short.y);
+        for pressed in [true, false] {
+            frame_size(
+                &mut app,
+                &ctx,
+                vec![egui::Event::PointerButton {
+                    pos: close,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: egui::Modifiers::NONE,
+                }],
+                short,
             );
         }
+        assert!(app.panel.is_none());
     }
 }

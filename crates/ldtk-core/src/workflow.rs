@@ -826,9 +826,6 @@ impl Project {
                     for k in ["autoSourceLayerDefUid", "autoTilesKilledByOtherLayerUid"] {
                         if d[k] == uid {
                             d[k] = Value::Null;
-                            if k == "autoSourceLayerDefUid" {
-                                d["autoRuleGroups"] = json!([]);
-                            }
                         }
                     }
                 }
@@ -1354,6 +1351,19 @@ impl Project {
             for (k, v) in fields {
                 d[k] = v.clone();
             }
+            if fields
+                .get("exportToToc")
+                .and_then(Value::as_bool)
+                .is_some_and(|enabled| enabled != (old["exportToToc"] == true))
+                && let Some(field_defs) = d["fieldDefs"].as_array_mut()
+            {
+                for field in field_defs
+                    .iter_mut()
+                    .filter(|field| field["exportToToc"] == true)
+                {
+                    field["exportToToc"] = json!(false);
+                }
+            }
             for key in ["width", "height"] {
                 if d[key]
                     .as_i64()
@@ -1363,8 +1373,8 @@ impl Project {
                 }
             }
             for key in ["pivotX", "pivotY"] {
-                if d[key].as_f64().is_none_or(|n| !(0. ..=1.).contains(&n)) {
-                    return Err(invalid("entity pivot must be between zero and one"));
+                if d[key].as_f64().is_none_or(|n| !n.is_finite()) {
+                    return Err(invalid("entity pivot must be a finite number"));
                 }
             }
             for (min, max) in [("minWidth", "maxWidth"), ("minHeight", "maxHeight")] {
@@ -1794,7 +1804,7 @@ fn smart_color(
     }
     None
 }
-fn canonical_number(n: f64) -> Value {
+pub(crate) fn canonical_number(n: f64) -> Value {
     let n = (n * 1000. + 0.5).floor() / 1000.;
     if n.fract() == 0. {
         json!(n as i64)

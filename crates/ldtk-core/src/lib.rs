@@ -14,7 +14,9 @@ mod selection;
 mod selection_group;
 mod workflow;
 
-pub use autotile::DeferredAutoLayers;
+pub use autotile::{
+    DeferredAutoLayers, auto_rule_pattern_is_symmetric, auto_rule_perlin_value, trim_auto_rule_pattern,
+};
 pub use definitions::{BakeMode, TilesetRemap};
 pub use edit::EntityPlacement;
 pub use field_edit::FieldArrayEdit;

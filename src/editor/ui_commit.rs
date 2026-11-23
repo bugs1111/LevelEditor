@@ -30,7 +30,7 @@ pub(super) enum DeferredUiAction {
 #[derive(Default)]
 pub(super) struct UiCommit {
     action: Option<(u64, DeferredUiAction)>,
-    pointer_events: std::collections::VecDeque<(Vec<egui::Event>, egui::Modifiers)>,
+    input_batches: std::collections::VecDeque<(Vec<egui::Event>, egui::Modifiers)>,
     flushing: bool,
 }
 impl UiCommit {
@@ -182,20 +182,19 @@ impl EditorApp {
         self.ui_commit.flushing = false;
     }
 
-    /// Match the browser's blur-before-click ordering even when the sidebar
-    /// renders before the form. Replay the complete event suffix next frame so
-    /// fast press/release pairs and subsequent text keep their original order.
+    /// Give the focused form its text events before a click or Tab moves focus.
+    /// Replay the rest of the batch with its original modifier state.
     pub(super) fn ui_commit_raw_input(&mut self, ctx: &egui::Context, input: &mut egui::RawInput) {
         focus::normalize_platform_pointer(ctx, input);
         if text_editor::is_open(ctx) {
             return;
         }
-        if !self.ui_commit.pointer_events.is_empty() {
+        if !self.ui_commit.input_batches.is_empty() {
             // A replay frame keeps its original modifier state. Newly arrived
             // input stays in a later batch, rather than inheriting stale Ctrl/Cmd.
             if !input.events.is_empty() {
                 self.ui_commit
-                    .pointer_events
+                    .input_batches
                     .push_back((std::mem::take(&mut input.events), input.modifiers));
             }
             if panels::source_colors::picker_is_open(ctx)
@@ -206,10 +205,10 @@ impl EditorApp {
                 ctx.request_repaint();
                 return;
             }
-            let (events, modifiers) = self.ui_commit.pointer_events.pop_front().unwrap();
+            let (events, modifiers) = self.ui_commit.input_batches.pop_front().unwrap();
             input.events = events;
             input.modifiers = modifiers;
-            if !self.ui_commit.pointer_events.is_empty() {
+            if !self.ui_commit.input_batches.is_empty() {
                 ctx.request_repaint();
             }
         }
@@ -220,26 +219,43 @@ impl EditorApp {
         let Some(rect) = rect else {
             return;
         };
+        let mut has_text_input = false;
         let Some(index) = input.events.iter().position(|event| {
-            matches!(event,
+            let pointer_blur = matches!(event,
                 egui::Event::PointerButton { pos, pressed: true, .. } if !rect.contains(*pos)
-            )
-        }) else {
-            return;
-        };
-        self.ui_commit
-            .pointer_events
-            .push_front((input.events.split_off(index), input.modifiers));
-        let has_text_input = input.events.iter().any(|event| {
-            matches!(
+            );
+            // egui processes Tab focus before the current editor sees its text events.
+            let tab_after_text = editor.is_some()
+                && color.is_none()
+                && has_text_input
+                && matches!(
+                    event,
+                    egui::Event::Key { key: Key::Tab, pressed: true, modifiers, .. }
+                        if !modifiers.alt && !modifiers.ctrl && !modifiers.command
+                );
+            if pointer_blur || tab_after_text {
+                return true;
+            }
+            has_text_input |= matches!(
                 event,
                 egui::Event::Text(_)
                     | egui::Event::Paste(_)
                     | egui::Event::Cut
                     | egui::Event::Key { .. }
                     | egui::Event::Ime(_)
-            )
-        });
+            );
+            false
+        }) else {
+            return;
+        };
+        let tab = matches!(input.events[index], egui::Event::Key { key: Key::Tab, .. });
+        self.ui_commit
+            .input_batches
+            .push_front((input.events.split_off(index), input.modifiers));
+        if tab {
+            ctx.request_repaint();
+            return;
+        }
         let frame = ctx.cumulative_frame_nr() + u64::from(has_text_input);
         if color.is_some() {
             panels::source_colors::request_validate(ctx);
@@ -647,5 +663,24 @@ mod tests {
         assert!(f.app.panel == Some(Panel::Help));
         assert!(f.app.dirty);
         assert_eq!(f.value(), "keep this");
+    }
+
+    #[test]
+    fn tab_navigation_commits_text_from_the_same_input_batch() {
+        let mut f = Form::new("String");
+        f.focus_and_type("first");
+        f.frame(vec![
+            egui::Event::Text(" last".into()),
+            egui::Event::Key {
+                key: Key::Tab,
+                physical_key: Some(Key::Tab),
+                pressed: true,
+                repeat: false,
+                modifiers: Default::default(),
+            },
+        ]);
+        f.frame(vec![]);
+        f.frame(vec![]);
+        assert_eq!(f.value(), "first last");
     }
 }

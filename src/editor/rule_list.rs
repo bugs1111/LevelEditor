@@ -1,22 +1,37 @@
 use super::*;
-use crate::app::panels::rule_detail::{RuleAtlas, RuleOptions};
+use crate::app::panels::rule_detail::{
+    RuleAtlas, RuleCellStyle, RuleOptions, rule_has_unknown_conditions,
+};
 
-const ROW_HEIGHT: f32 = 63.;
-const GROUP_HEIGHT: f32 = 35.;
+const RULE_CONTENT_HEIGHT: f32 = 54.;
+const GROUP_HEIGHT: f32 = 34.;
 
-fn toggle(ui: &mut egui::Ui, enabled: bool, tip: &str, width: f32, height: f32) -> egui::Response {
-    let symbol = if enabled {
-        egui::include_image!("../../assets/icons/toggleOn.svg")
-    } else {
-        egui::include_image!("../../assets/icons/toggleOff.svg")
+fn toggle(ui: &mut egui::Ui, enabled: bool, optional: bool, tip: &str, size: Vec2) -> egui::Response {
+    let (symbol, tint) = match (optional, enabled) {
+        (true, true) => (
+            egui::include_image!("../../assets/icons/visible.png"),
+            Color32::WHITE,
+        ),
+        (true, false) => (
+            egui::include_image!("../../assets/icons/hidden.png"),
+            Color32::WHITE,
+        ),
+        (false, true) => (
+            egui::include_image!("../../assets/icons/toggleOn.svg"),
+            Color32::from_rgb(157, 207, 96),
+        ),
+        (false, false) => (
+            egui::include_image!("../../assets/icons/toggleOff.svg"),
+            Color32::from_rgb(155, 112, 101),
+        ),
     };
-    let (rect, response) = ui.allocate_exact_size(egui::vec2(width, height), Sense::click());
+    let (rect, response) = ui.allocate_exact_size(size, Sense::click());
+    if optional && response.hovered() {
+        ui.painter()
+            .rect_filled(rect, 0., Color32::from_white_alpha(87));
+    }
     egui::Image::new(symbol)
-        .tint(if enabled {
-            Color32::from_rgb(157, 207, 96)
-        } else {
-            Color32::from_rgb(155, 112, 101)
-        })
+        .tint(tint)
         .paint_at(ui, Rect::from_center_size(rect.center(), Vec2::splat(18.)));
     response.on_hover_text(locale::tr(ui, tip))
 }
@@ -200,6 +215,25 @@ impl RulesView {
     fn group_key(&self, group: i64) -> egui::Id {
         egui::Id::new(("rule-group-open", &self.project, self.uid, group))
     }
+
+    fn insert_hover_id(&self) -> egui::Id {
+        egui::Id::new(("rule-insert-hover", &self.project, self.uid))
+    }
+}
+
+struct RuleInsertion {
+    group: i64,
+    rule: i64,
+    index: usize,
+    row: Rect,
+}
+
+impl RuleInsertion {
+    fn buttons(&self) -> [Rect; 2] {
+        [self.row.top() - 8., self.row.bottom() - 10.].map(|y| {
+            Rect::from_min_size(egui::pos2(self.row.right() - 20., y), Vec2::splat(18.))
+        })
+    }
 }
 
 impl EditorApp {
@@ -252,8 +286,10 @@ impl EditorApp {
             atlas: None,
         };
         view.atlas = self.rule_atlas(ui.ctx(), atlas_uid);
+        let body_bottom = ui.cursor().min.y + height;
         self.rule_list_header(ui, &view, atlas_uid, ready);
-        ui.add_space(8.);
+        ui.add_space(9.);
+        let list_height = (body_bottom - ui.cursor().min.y - 2.).max(40.);
         let groups = view.def["autoRuleGroups"]
             .as_array()
             .map(Vec::as_slice)
@@ -269,9 +305,10 @@ impl EditorApp {
             .fill(theme::DARK)
             .stroke(Stroke::new(1., theme::LIGHT))
             .show(ui, |ui| {
+                ui.spacing_mut().scroll = source_controls::scroll_style();
                 let scroll = egui::ScrollArea::vertical()
                     .id_salt(("rule-list", uid))
-                    .max_height((height - 88.).max(40.))
+                    .max_height(list_height)
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
                         ui.spacing_mut().item_spacing.y = 1.;
@@ -292,9 +329,39 @@ impl EditorApp {
                             }
                             return false;
                         }
+                        let mut insertion = None;
                         for (index, group) in groups.iter().enumerate() {
-                            let default_open = groups.len() == 1 && group["usesWizard"] != true;
-                            self.rule_group_row(ui, &view, group, index, default_open);
+                            self.rule_group_row(ui, &view, group, index, &mut insertion);
+                        }
+                        let insertion_id = view.insert_hover_id();
+                        if let Some(insertion) = insertion {
+                            ui.data_mut(|data| data.insert_temp(insertion_id, insertion.rule));
+                            for (index, (rect, tip)) in insertion
+                                .buttons()
+                                .into_iter()
+                                .zip(["Create new rule before", "Create new rule after"])
+                                .enumerate()
+                            {
+                                let response = ui.interact(
+                                    rect,
+                                    insertion_id.with((insertion.rule, index)),
+                                    Sense::click(),
+                                );
+                                response.widget_info(|| {
+                                    egui::WidgetInfo::labeled(egui::WidgetType::Button, true, locale::tr(ui, tip))
+                                });
+                                let opacity = if response.hovered() { 1. } else { 0.6 };
+                                ui.painter()
+                                    .rect_filled(rect, 0., SOURCE_ORANGE.gamma_multiply(opacity));
+                                egui::Image::new(egui::include_image!("../../assets/icons/add.svg"))
+                                    .tint(Color32::from_white_alpha((255. * opacity) as u8))
+                                    .paint_at(ui, rect.shrink(1.));
+                                if response.on_hover_text(locale::tr(ui, tip)).clicked() {
+                                    self.insert_rule(view.uid, insertion.group, insertion.index + index);
+                                }
+                            }
+                        } else {
+                            ui.data_mut(|data| data.remove::<i64>(insertion_id));
                         }
                         let mut background = ui.available_rect_before_wrap();
                         background.max.y = ui.clip_rect().max.y;
@@ -371,10 +438,8 @@ impl EditorApp {
                                 Ok(group)
                             })
                         }) {
-                            ui.data_mut(|data| {
-                                data.insert_temp(view.group_key(gid), true);
-                                data.insert_temp(rename_group_id(), (view.uid, gid));
-                            });
+                            self.open_rule_groups.insert((view.uid, gid));
+                            ui.data_mut(|data| data.insert_temp(rename_group_id(), (view.uid, gid)));
                             self.rule_group_uid = Some(gid);
                             self.rule_uid = None;
                         }
@@ -438,28 +503,61 @@ impl EditorApp {
             let mut sorted = tilesets.iter().collect::<Vec<_>>();
             sorted.sort_by_key(|d| (!compatible(d), d["uid"].as_i64().unwrap_or(-1)));
             let mut picked = atlas;
-            egui::ComboBox::from_id_salt(("rule-instance-tileset", view.uid))
-                .width(width)
-                .selected_text(
-                    current
-                        .map(name)
-                        .unwrap_or_else(|| locale::tr(ui, "-- Select a tileset --").into()),
-                )
-                .show_ui(ui, |ui| {
-                    for d in sorted {
-                        if compatible(d) {
-                            ui.selectable_value(&mut picked, d["uid"].as_i64(), name(d));
-                        } else {
-                            ui.add_enabled(
-                                false,
-                                egui::Button::selectable(
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 0.;
+                ui.add_space(1.);
+                ui.spacing_mut().interact_size.y = 29.;
+                ui.spacing_mut().button_padding = egui::vec2(10., 6.);
+                let widgets = &mut ui.visuals_mut().widgets;
+                for style in [&mut widgets.inactive, &mut widgets.hovered, &mut widgets.open] {
+                    style.weak_bg_fill = theme::LIGHT;
+                    style.bg_stroke = Stroke::new(1., Color32::from_rgb(115, 127, 157));
+                    style.corner_radius = egui::CornerRadius::same(3);
+                    style.expansion = 0.;
+                }
+                let selected = current
+                    .map(name)
+                    .unwrap_or_else(|| locale::tr(ui, "-- Select a tileset --").into());
+                let picker = egui::ComboBox::from_id_salt(("rule-instance-tileset", view.uid))
+                    .width(width - 2.)
+                    .selected_text(RichText::new(selected).size(13.333).color(Color32::WHITE))
+                    .icon(|ui, rect, _, _| {
+                        let center = rect.center();
+                        ui.painter().add(egui::Shape::line(
+                            vec![
+                                center + egui::vec2(-4., -2.),
+                                center + egui::vec2(0., 2.),
+                                center + egui::vec2(4., -2.),
+                            ],
+                            Stroke::new(1.5, Color32::WHITE),
+                        ));
+                    })
+                    .show_ui(ui, |ui| {
+                        for d in sorted {
+                            if compatible(d) {
+                                ui.selectable_value(&mut picked, d["uid"].as_i64(), name(d));
+                            } else {
+                                ui.add_enabled(
                                     false,
-                                    locale::format(ui, "{name} (INCOMPATIBLE SIZE)", &[("name", &name(d))]),
-                                ),
-                            );
+                                    egui::Button::selectable(
+                                        false,
+                                        locale::format(
+                                            ui,
+                                            "{name} (INCOMPATIBLE SIZE)",
+                                            &[("name", &name(d))],
+                                        ),
+                                    ),
+                                );
+                            }
                         }
-                    }
-                });
+                    });
+                let bounds = picker.response.rect;
+                ui.painter().rect_filled(
+                    Rect::from_min_size(bounds.left_bottom(), egui::vec2(bounds.width(), 2.)),
+                    egui::CornerRadius { sw: 2, se: 2, ..Default::default() },
+                    Color32::from_black_alpha(77),
+                );
+            });
             if picked != atlas {
                 self.edit_level("Layer instance tileset changed", view.key, |p| {
                     p.set_layer_tileset_override(
@@ -481,15 +579,13 @@ impl EditorApp {
         view: &RulesView,
         group: &Value,
         index: usize,
-        default_open: bool,
+        insertion: &mut Option<RuleInsertion>,
     ) {
         let Some(gid) = group["uid"].as_i64() else {
             return;
         };
-        let group_key = view.group_key(gid);
-        let mut open = ui
-            .data(|d| d.get_temp::<bool>(group_key))
-            .unwrap_or(default_open);
+        let group_key = (view.uid, gid);
+        let mut open = self.open_rule_groups.contains(&group_key);
         let optional = group["isOptional"] == true;
         let active = if optional {
             view.instance["optionalRules"]
@@ -525,9 +621,21 @@ impl EditorApp {
             .fill(if active {
                 color
             } else {
-                color.gamma_multiply(0.58)
+                Color32::from_rgb(39, 25, 30)
             })
             .show(ui, |ui| {
+                if !active {
+                    let rect = Rect::from_min_size(
+                        ui.cursor().min,
+                        egui::vec2(ui.available_width(), GROUP_HEIGHT),
+                    );
+                    egui::Image::new(egui::include_image!("../../assets/img/stripes.png"))
+                        .texture_options(egui::TextureOptions::NEAREST_REPEAT)
+                        .tint(Color32::from_white_alpha(89))
+                        .uv(Rect::from_min_size(egui::Pos2::ZERO, rect.size() / 8.))
+                        .paint_at(ui, rect);
+                    ui.multiply_opacity(0.35);
+                }
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 0.;
                     rule_drag(ui, 28., GROUP_HEIGHT).dnd_set_drag_payload((view.uid, gid));
@@ -536,7 +644,9 @@ impl EditorApp {
                     } else {
                         "Toggle rule group"
                     };
-                    if toggle(ui, active, toggle_tip, 35., GROUP_HEIGHT).clicked() {
+                    if toggle(ui, active, optional, toggle_tip, egui::vec2(35., GROUP_HEIGHT))
+                        .clicked()
+                    {
                         if optional {
                             self.edit_level("Optional rule group toggled", view.key, |p| {
                                 let li = p.layer_mut(view.key, view.index).unwrap();
@@ -595,8 +705,10 @@ impl EditorApp {
                         let (rect, response) =
                             ui.allocate_exact_size(egui::vec2(width, GROUP_HEIGHT), Sense::click());
                         if response.hovered() {
-                            ui.painter()
-                                .rect_filled(rect, 0., Color32::from_white_alpha(38));
+                            if !optional {
+                                ui.painter()
+                                    .rect_filled(rect, 0., Color32::from_white_alpha(38));
+                            }
                             if active {
                                 self.rule_hover = Some((view.uid, gid, None));
                             }
@@ -615,12 +727,27 @@ impl EditorApp {
                             );
                             text_x += 32.;
                         }
-                        ui.painter_at(rect).text(
-                            egui::pos2(text_x, rect.center().y),
-                            Align2::LEFT_CENTER,
-                            text(group, "name", "Group"),
-                            FontId::proportional(15.),
-                            Color32::WHITE,
+                        let name = RichText::new(text(group, "name", "Group")).size(14.667);
+                        let name = if active {
+                            name.family(egui::FontFamily::Name("body-bold".into()))
+                        } else {
+                            name.italics()
+                        };
+                        let text_color = if active || response.hovered() {
+                            Color32::WHITE
+                        } else {
+                            SOURCE_ORANGE
+                        };
+                        let galley = egui::WidgetText::from(name.color(text_color)).into_galley(
+                            ui,
+                            Some(egui::TextWrapMode::Truncate),
+                            (rect.right() - text_x).max(0.),
+                            egui::TextStyle::Body,
+                        );
+                        ui.painter_at(rect).galley(
+                            egui::pos2(text_x, rect.center().y - galley.size().y * 0.5),
+                            galley,
+                            text_color,
                         );
                         if response.clicked() {
                             open = !open;
@@ -662,7 +789,12 @@ impl EditorApp {
                         .on_hover_text(locale::tr(ui, "Add rule"))
                         .clicked();
                     }
-                    let menu = compact_button(ui, "⋮", [27., GROUP_HEIGHT], color);
+                    let menu = compact_button(
+                        ui,
+                        "⋮",
+                        [27., GROUP_HEIGHT],
+                        if active { color } else { Color32::TRANSPARENT },
+                    );
                     egui::Popup::menu(&menu)
                         .align(egui::RectAlign::BOTTOM_END)
                         .gap(2.)
@@ -695,7 +827,11 @@ impl EditorApp {
                 open = true;
             }
         }
-        ui.data_mut(|d| d.insert_temp(group_key, open));
+        if open {
+            self.open_rule_groups.insert(group_key);
+        } else {
+            self.open_rule_groups.remove(&group_key);
+        }
         if let Some(payload) = header.response.dnd_release_payload::<(i64, i64)>()
             && payload.0 == view.uid
             && payload.1 != gid
@@ -715,17 +851,46 @@ impl EditorApp {
         if !open {
             return;
         }
-        if group["usesWizard"] == true {
-            if source_controls::button(ui, "Edit rules").clicked() {
-                self.begin_rule_wizard(ui.ctx(), view.uid, Some(gid));
-            }
-            if ui.link(locale::tr(ui, "Switch to advanced mode")).clicked() {
-                self.set_rule_options(ui.ctx(), view.uid, gid, None, RuleOptions::Advanced);
-            }
-            ui.small(locale::tr(ui, "The rules in this group are managed by the Assistant editor."));
+        let managed = group["usesWizard"] == true;
+        if managed {
+            egui::Frame::new()
+                .fill(theme::MEDIUM)
+                .inner_margin(8)
+                .show(ui, |ui| {
+                    ui.spacing_mut().item_spacing.y = 1.;
+                    let width = ui.available_width();
+                    let edit = RichText::new(locale::tr(ui, "Edit rules").to_uppercase())
+                        .size(13.333)
+                        .color(Color32::WHITE);
+                    if compact_button(ui, edit, [width, 35.], SOURCE_ORANGE).clicked()
+                    {
+                        self.begin_rule_wizard(ui.ctx(), view.uid, Some(gid));
+                    }
+                    let advanced = RichText::new(locale::tr(ui, "Switch to advanced mode"))
+                        .size(10.667)
+                        .color(theme::ACCENT)
+                        .underline();
+                    if ui
+                        .add_sized([width, 21.], egui::Label::new(advanced).sense(Sense::click()))
+                        .on_hover_cursor(egui::CursorIcon::PointingHand)
+                        .clicked()
+                    {
+                        self.set_rule_options(ui.ctx(), view.uid, gid, None, RuleOptions::Advanced);
+                    }
+                    ui.add_space(7.);
+                    source_controls::help_card(ui, width, 62., |ui| {
+                        source_controls::help_paragraph(
+                            ui,
+                            "The rules in this group are managed by the Assistant editor.",
+                        );
+                    });
+                });
         }
         for (index, rule) in group["rules"].as_array().into_iter().flatten().enumerate() {
-            self.rule_row(ui, view, group, gid, rule, index);
+            if index != 0 {
+                ui.add_space(1.);
+            }
+            self.rule_row(ui, view, gid, rule, index, managed, insertion);
         }
         ui.add_space(7.);
     }
@@ -1069,10 +1234,11 @@ impl EditorApp {
         &mut self,
         ui: &mut egui::Ui,
         view: &RulesView,
-        group: &Value,
         gid: i64,
         rule: &Value,
         index: usize,
+        managed: bool,
+        insertion: &mut Option<RuleInsertion>,
     ) {
         let Some(rid) = rule["uid"].as_i64() else {
             return;
@@ -1084,88 +1250,89 @@ impl EditorApp {
             rule: Some(rid),
         };
         let mut patch = json!({});
+        let width = ui.available_width();
+        let pattern = rule["pattern"].as_array().map(Vec::as_slice).unwrap_or(&[]);
+        let layout = (!rule_has_unknown_conditions(&view.source, pattern))
+            .then(|| PatternPreview::new(rule, pattern));
+        let preview_height = layout.as_ref().map_or(39., |layout| layout.span.y);
+        let content_height = RULE_CONTENT_HEIGHT.max(preview_height);
         let row = egui::Frame::new()
-            .fill(if active {
-                Color32::from_rgb(32, 37, 46)
-            } else {
-                Color32::from_rgb(47, 33, 29)
-            })
-            .stroke(Stroke::new(1., theme::MEDIUM))
+            .fill(if active { theme::DARK } else { Color32::from_rgba_unmultiplied(121, 17, 5, 77) })
+            .inner_margin(3)
+            .corner_radius(3.)
             .show(ui, |ui| {
+                ui.set_min_width((width - 6.).max(0.));
+                if !active {
+                    let rect = Rect::from_min_size(ui.cursor().min - Vec2::splat(3.), egui::vec2(width, content_height + 6.));
+                    egui::Image::new(egui::include_image!("../../assets/img/stripesLight.png"))
+                        .texture_options(egui::TextureOptions::NEAREST_REPEAT)
+                        .uv(Rect::from_min_size(egui::Pos2::ZERO, rect.size() / 8.))
+                        .tint(Color32::from_white_alpha(153))
+                        .paint_at(ui, rect);
+                    ui.multiply_opacity(0.6);
+                }
+                if managed {
+                    ui.disable();
+                }
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 0.;
-                    rule_drag(ui, 28., ROW_HEIGHT - 2.).dnd_set_drag_payload((view.uid, gid, rid));
+                    rule_drag(ui, 25., content_height).dnd_set_drag_payload((view.uid, gid, rid));
+                    ui.add_space(2.);
                     if toggle(
                         ui,
                         active,
+                        false,
                         "Enable or disable this rule",
-                        25.,
-                        ROW_HEIGHT - 2.,
+                        egui::vec2(21., content_height),
                     )
                     .clicked()
                     {
                         patch["active"] = json!(!active);
                     }
-                    ui.add_space(8.);
+                    ui.add_space(2.);
                     let (preview, response) =
-                        ui.allocate_exact_size(Vec2::splat(56.), Sense::click());
-                    draw_pattern_preview(ui, preview, &view.source, rule);
-                    if let Some(atlas) = &view.atlas
-                        && let Some(ids) = rule["tileRectsIds"][0].as_array()
-                    {
-                        let rect = Rect::from_center_size(preview.center(), Vec2::splat(33.));
-                        ui.painter()
-                            .rect_filled(rect, 1., Color32::from_black_alpha(154));
-                        ui.painter().rect_stroke(
-                            rect,
-                            1.,
-                            Stroke::new(1., Color32::WHITE),
-                            StrokeKind::Inside,
-                        );
-                        atlas.paint_ids(ui, rect.shrink(2.), ids);
-                    }
+                        ui.allocate_exact_size(egui::vec2(72., preview_height), Sense::click());
+                    self.paint_pattern_preview(ui, preview, view, rule, layout.as_ref());
                     if response.hovered() {
+                        ui.painter().rect_stroke(
+                            preview,
+                            0.,
+                            Stroke::new(1., theme::ACCENT),
+                            StrokeKind::Outside,
+                        );
+                    }
+                    if !managed && response.hovered() {
                         self.rule_hover = Some((view.uid, gid, Some(rid)));
                     }
-                    if response.clicked() && group["usesWizard"] != true {
+                    if response.clicked() {
                         self.clipboard_focus(ui.ctx(), target.clone());
                         self.begin_rule_edit(view.uid, gid, rid);
                     }
                     response.context_menu(|ui| self.clipboard_menu(ui, target.clone()));
-                    ui.add_space(18.);
+                    ui.add_space(10.);
                     ui.vertical(|ui| {
                         ui.spacing_mut().item_spacing = egui::vec2(2., 2.);
                         ui.horizontal(|ui| {
-                            for (key, value, prefix, scale) in [
-                                ("chance", rule["chance"].as_f64().unwrap_or(1.), "⚄", 100.),
-                                ("alpha", rule["alpha"].as_f64().unwrap_or(1.), "◒", 1.),
-                            ] {
-                                let mut adjusted = value * scale;
-                                let minimum = if key == "alpha" { 0.01 } else { 0. };
-                                if ui
-                                    .add_sized(
-                                        [65., 24.],
-                                        egui::DragValue::new(&mut adjusted)
-                                            .prefix(format!("{prefix} "))
-                                            .speed(if scale == 100. { 1. } else { 0.01 })
-                                            .range(minimum..=scale)
-                                            .max_decimals(if scale == 100. { 1 } else { 2 }),
-                                    )
-                                    .on_hover_text(locale::tr(ui, if key == "chance" {
+                            for (key, chance) in [("chance", true), ("alpha", false)] {
+                                let scale = if chance { 100. } else { 1. };
+                                let mut value = rule[key].as_f64().unwrap_or(1.) * scale;
+                                if rule_number(ui, &mut value, chance)
+                                    .on_hover_text(locale::tr(ui, if chance {
                                         "Random probability (%)"
                                     } else {
                                         "Tile opacity"
                                     }))
                                     .changed()
                                 {
-                                    patch[key] = json!(adjusted / scale);
+                                    patch[key] = json!(value / scale);
                                 }
                             }
-                            if rule_icon_button(
+                            if rule_flag(
                                 ui,
-                                egui::include_image!("../../assets/icons/stop.svg"),
-                                [25., 24.],
-                                flag_fill(rule["breakOnMatch"] == true),
+                                26.,
+                                rule["breakOnMatch"] == true,
+                                Color32::from_rgb(0, 157, 255),
+                                RuleFlag::Icon(egui::include_image!("../../assets/icons/stop.svg")),
                             )
                             .on_hover_text(locale::tr(ui, "Stop on match"))
                             .clicked()
@@ -1175,11 +1342,12 @@ impl EditorApp {
                         });
                         ui.horizontal(|ui| {
                             for (key, label) in [("flipX", "X"), ("flipY", "Y")] {
-                                if compact_button(
+                                if rule_flag(
                                     ui,
-                                    label,
-                                    [20., 25.],
-                                    flag_fill(rule[key] == true),
+                                    20.5,
+                                    rule[key] == true,
+                                    Color32::from_rgb(207, 221, 64),
+                                    RuleFlag::Text(label),
                                 )
                                 .on_hover_text(locale::tr(ui, if key == "flipX" {
                                     "Horizontal symmetry"
@@ -1188,15 +1356,19 @@ impl EditorApp {
                                 }))
                                 .clicked()
                                 {
-                                    patch[key] = json!(rule[key] != true);
+                                    if ldtk_core::auto_rule_pattern_is_symmetric(rule, key == "flipX") {
+                                        self.report_canvas_notice(
+                                            notifications::CanvasNotice::SymmetricRule,
+                                        );
+                                    } else {
+                                        patch[key] = json!(rule[key] != true);
+                                    }
                                 }
                             }
-                            if rule_icon_button(
+                            let offsets = rule_flag(
                                 ui,
-                                egui::include_image!("../../assets/icons/offset.svg"),
-                                [41., 25.],
-                                flag_fill(
-                                    [
+                                43.,
+                                [
                                         "tileXOffset",
                                         "tileYOffset",
                                         "tileRandomXMin",
@@ -1206,79 +1378,125 @@ impl EditorApp {
                                     ]
                                     .iter()
                                     .any(|&k| rule[k].as_i64().unwrap_or(0) != 0),
-                                ),
+                                Color32::from_rgb(207, 221, 64),
+                                RuleFlag::Icon(egui::include_image!("../../assets/icons/offset.svg")),
                             )
-                            .on_hover_text(locale::tr(ui, "Randomize position"))
-                            .clicked()
-                            {
-                                self.set_rule_options(
+                            .on_hover_text(locale::tr(ui, "Randomize position"));
+                            if offsets.clicked() {
+                                self.set_anchored_rule_options(
                                     ui.ctx(),
                                     view.uid,
                                     gid,
-                                    Some(rid),
+                                    rid,
                                     RuleOptions::Offsets,
+                                    Some(offsets.rect),
                                 );
                             }
                             let x = rule["xModulo"].as_i64().unwrap_or(1);
                             let y = rule["yModulo"].as_i64().unwrap_or(1);
-                            if compact_button(
-                                ui,
-                                format!("{x}-{y}"),
-                                [44., 25.],
-                                flag_fill(x != 1 || y != 1),
-                            )
-                            .on_hover_text(locale::tr(ui, "Modulo and checkerboard options"))
-                            .clicked()
-                            {
-                                self.set_rule_options(
+                            let (rect, modulo) = ui.allocate_exact_size(egui::vec2(43., 26.), Sense::click());
+                            let (fill, ink) = if modulo.hovered() {
+                                (SOURCE_ORANGE, theme::DARK)
+                            } else if x == 1 && y == 1 {
+                                (Color32::from_rgba_unmultiplied(121, 17, 5, 102), SOURCE_ORANGE.gamma_multiply(0.4))
+                            } else {
+                                (theme::MEDIUM, Color32::WHITE)
+                            };
+                            ui.painter().rect_filled(rect, 4., fill);
+                            ui.painter().text(rect.center(), Align2::CENTER_CENTER, format!("{x}-{y}"), FontId::proportional(12.), ink);
+                            let modulo = modulo.on_hover_cursor(egui::CursorIcon::PointingHand)
+                                .on_hover_text(locale::tr(ui, "Modulo and checkerboard options"));
+                            if modulo.clicked() {
+                                self.set_anchored_rule_options(
                                     ui.ctx(),
                                     view.uid,
                                     gid,
-                                    Some(rid),
+                                    rid,
                                     RuleOptions::Modulo,
+                                    Some(modulo.rect),
                                 );
                             }
-                            let noise = compact_button(
+                            let noise = rule_flag(
                                 ui,
-                                "P",
-                                [25., 25.],
-                                flag_fill(rule["perlinActive"] == true),
+                                26.,
+                                rule["perlinActive"] == true,
+                                Color32::from_rgb(207, 221, 64),
+                                RuleFlag::Text("P"),
                             )
                             .on_hover_text(locale::tr(ui, "Perlin filter. Right-click to customize."));
                             if noise.clicked() {
                                 patch["perlinActive"] = json!(rule["perlinActive"] != true);
                             }
                             if noise.secondary_clicked() {
-                                self.set_rule_options(
+                                let was_active = rule["perlinActive"] == true;
+                                if !was_active {
+                                    patch["perlinActive"] = json!(true);
+                                }
+                                self.set_anchored_rule_options(
                                     ui.ctx(),
                                     view.uid,
                                     gid,
-                                    Some(rid),
+                                    rid,
                                     RuleOptions::Noise,
+                                    was_active.then_some(noise.rect),
                                 );
                             }
                         });
                     });
                     ui.add_space(3.);
-                    let menu = compact_button(ui, "⋮", [33., 32.], theme::DARK);
+                    let menu = rule_icon_button(
+                        ui,
+                        egui::include_image!("../../assets/icons/contextMenu.svg"),
+                        [33., 32.],
+                        Color32::from_black_alpha(25),
+                    );
                     egui::Popup::menu(&menu)
                         .align(egui::RectAlign::BOTTOM_END)
+                        .frame(rule_popup_frame(ui))
                         .show(|ui| {
                             self.clipboard_menu(ui, target.clone());
-                            if group["usesWizard"] != true {
-                                if ui.button(locale::tr(ui, "Create new rule before")).clicked() {
-                                    self.insert_rule(view.uid, gid, index);
-                                    ui.close();
-                                }
-                                if ui.button(locale::tr(ui, "Create new rule after")).clicked() {
-                                    self.insert_rule(view.uid, gid, index + 1);
-                                    ui.close();
-                                }
-                            }
                         });
                 })
             })
             .response;
+        if !managed {
+            let hovered = ui.rect_contains_pointer(row.rect);
+            if hovered && ui.input(|input| input.pointer.any_pressed()) {
+                self.last_rule_list_row = Some(rid);
+            }
+            if self.rule_draft.is_none() && ui.memory(|memory| memory.top_modal_layer().is_none()) {
+                let target = RuleInsertion {
+                    group: gid,
+                    rule: rid,
+                    index,
+                    row: row.rect,
+                };
+                let previous = ui.data(|data| data.get_temp::<i64>(view.insert_hover_id()));
+                let on_button = previous == Some(rid)
+                    && target
+                        .buttons()
+                        .into_iter()
+                        .any(|rect| ui.rect_contains_pointer(rect));
+                if on_button || hovered && insertion.is_none() {
+                    *insertion = Some(target);
+                }
+            }
+        }
+        if self.last_rule_list_row == Some(rid) {
+            let rect = row.rect.shrink(0.5);
+            ui.painter().extend(egui::Shape::dashed_line(
+                &[
+                    rect.left_top(),
+                    rect.right_top(),
+                    rect.right_bottom(),
+                    rect.left_bottom(),
+                    rect.left_top(),
+                ],
+                Stroke::new(1., Color32::WHITE),
+                3.,
+                2.,
+            ));
+        }
         if changed(&patch) {
             self.edit("Rule changed", |p| {
                 p.update_auto_rule(view.uid, gid, rid, &patch)
@@ -1307,48 +1525,366 @@ fn rule_group_members(group: &Value, rid: Option<i64>) -> impl Iterator<Item = i
 fn rename_group_id() -> egui::Id {
     egui::Id::new("rename-rule-group")
 }
-fn flag_fill(on: bool) -> Color32 {
-    if on {
-        theme::MEDIUM
+enum RuleFlag<'a> {
+    Text(&'a str),
+    Icon(egui::ImageSource<'static>),
+}
+
+fn rule_flag(
+    ui: &mut egui::Ui,
+    width: f32,
+    enabled: bool,
+    ink: Color32,
+    content: RuleFlag<'_>,
+) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(width, 26.), Sense::click());
+    let painter = ui.painter();
+    if enabled {
+        painter.rect(
+            rect,
+            4.,
+            if response.hovered() {
+                theme::LIGHT
+            } else {
+                theme::MEDIUM
+            },
+            Stroke::new(1., ink),
+            StrokeKind::Inside,
+        );
     } else {
-        Color32::from_rgb(63, 34, 28)
+        painter.rect_filled(rect, 4., Color32::from_rgba_unmultiplied(121, 17, 5, 102));
+        let edge = rect.shrink(0.5);
+        painter.extend(egui::Shape::dashed_line(
+            &[
+                edge.left_top(),
+                edge.right_top(),
+                edge.right_bottom(),
+                edge.left_bottom(),
+                edge.left_top(),
+            ],
+            Stroke::new(1., SOURCE_ORANGE.gamma_multiply(0.4)),
+            3.,
+            2.,
+        ));
+    }
+    match content {
+        RuleFlag::Text(text) => {
+            let ink = if response.hovered() {
+                Color32::WHITE
+            } else if enabled {
+                ink
+            } else {
+                SOURCE_ORANGE.gamma_multiply(0.4)
+            };
+            painter.text(
+                rect.center(),
+                Align2::CENTER_CENTER,
+                text,
+                FontId::proportional(10.667),
+                ink,
+            );
+        }
+        RuleFlag::Icon(icon) => {
+            egui::Image::new(icon)
+                .tint(Color32::from_white_alpha(if enabled { 255 } else { 51 }))
+                .paint_at(ui, Rect::from_center_size(rect.center(), Vec2::splat(18.)));
+        }
+    }
+    response.on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
+fn rule_number(ui: &mut egui::Ui, number: &mut f64, chance: bool) -> egui::Response {
+    let (rect, click) = ui.allocate_exact_size(egui::vec2(66., 26.), Sense::click());
+    let fill = ui.painter().add(egui::Shape::Noop);
+    let mut area = rect;
+    area.min.x += 22.;
+    let mut field = ui.new_child(egui::UiBuilder::new().max_rect(area).layout(
+        egui::Layout::centered_and_justified(egui::Direction::LeftToRight),
+    ));
+    field.set_clip_rect(field.clip_rect().intersect(area));
+    field.spacing_mut().button_padding = Vec2::splat(1.);
+    field.style_mut().override_font_id = Some(FontId::proportional(12.));
+    let ink = if chance && *number == 0. {
+        SOURCE_ORANGE
+    } else {
+        Color32::WHITE
+    };
+    field.visuals_mut().override_text_color = Some(ink);
+    let widgets = &mut field.visuals_mut().widgets;
+    for widget in [
+        &mut widgets.inactive,
+        &mut widgets.hovered,
+        &mut widgets.active,
+    ] {
+        widget.weak_bg_fill = Color32::TRANSPARENT;
+        widget.bg_fill = Color32::TRANSPARENT;
+        widget.bg_stroke = Stroke::NONE;
+    }
+    let max = if chance { 100. } else { 1. };
+    let at_max = *number >= max;
+    let input_id = field.next_auto_id();
+    if click.clicked()
+        && click
+            .interact_pointer_pos()
+            .is_some_and(|point| point.x < area.left())
+    {
+        field.memory_mut(|memory| memory.request_focus(input_id));
+    }
+    let editing = field.memory(|memory| memory.has_focus(input_id));
+    if at_max && !editing {
+        field.multiply_opacity(0.25);
+    }
+    let response = field.add(
+        egui::DragValue::new(number)
+            .speed(if chance { 1. } else { 0.01 })
+            .range((if chance { 1. } else { 0.01 })..=max)
+            .clamp_existing_to_range(false)
+            .custom_formatter(|value, _| {
+                format!("{value:.2}")
+                    .trim_end_matches('0')
+                    .trim_end_matches('.')
+                    .to_owned()
+            }),
+    );
+    let focused = editing || response.has_focus() || response.dragged();
+    let alpha = if at_max && !focused { 64 } else { 255 };
+    let shape = egui::Shape::rect_filled(
+        rect,
+        4.,
+        if focused { theme::DARK } else { theme::MEDIUM }.gamma_multiply(f32::from(alpha) / 255.),
+    );
+    ui.painter().set(fill, shape);
+    if focused {
+        ui.painter()
+            .rect_stroke(rect, 4., Stroke::new(1., SOURCE_ORANGE), StrokeKind::Inside);
+    }
+    let icon = if chance {
+        egui::include_image!("../../assets/icons/random.svg")
+    } else {
+        egui::include_image!("../../assets/icons/alpha.svg")
+    };
+    egui::Image::new(icon)
+        .tint(Color32::from_white_alpha(alpha))
+        .paint_at(
+            ui,
+            Rect::from_center_size(rect.left_center() + egui::vec2(12., 0.), Vec2::splat(18.)),
+        );
+    response
+}
+
+struct PatternPreview<'a> {
+    pattern: &'a [Value],
+    size: usize,
+    scale: f32,
+    output_scale: f32,
+    cell_span: f32,
+    columns: [f32; 9],
+    rows: [f32; 9],
+    span: Vec2,
+}
+
+impl<'a> PatternPreview<'a> {
+    fn new(rule: &Value, pattern: &'a [Value]) -> Self {
+        let size = rule["size"].as_u64().unwrap_or(1).clamp(1, 9) as usize;
+        let (scale, output_scale) = match size {
+            1 => (1., 1.),
+            3 => (0.5, 1.),
+            5 => (0.3, 0.6),
+            7 => (0.2, 0.6),
+            9 => (0.15, 0.45),
+            _ => (1.5 / size as f32, 0.6),
+        };
+        let center = size / 2;
+        let cell_span = 32. * scale;
+        let mut columns = [cell_span; 9];
+        let mut rows = [cell_span; 9];
+        let value_at = |x, y| {
+            pattern
+                .get(y * size + x)
+                .and_then(Value::as_i64)
+                .unwrap_or(0)
+        };
+        for (y, row) in rows[..size].iter_mut().enumerate() {
+            for (x, column) in columns[..size].iter_mut().enumerate() {
+                if value_at(x, y) != 0 || (x == center && y == center) {
+                    *column = cell_span + 2.;
+                    *row = cell_span + 2.;
+                }
+            }
+        }
+        let span = egui::vec2(columns[..size].iter().sum(), rows[..size].iter().sum());
+        Self {
+            scale,
+            output_scale,
+            pattern,
+            size,
+            cell_span,
+            columns,
+            rows,
+            span: span + Vec2::splat(size as f32 + 1.),
+        }
     }
 }
 
-fn draw_pattern_preview(ui: &egui::Ui, rect: Rect, source: &Value, rule: &Value) {
-    let size = rule["size"].as_u64().unwrap_or(1).clamp(1, 9) as usize;
-    let cell = rect.width() / size as f32;
-    for index in 0..size * size {
-        let value = rule["pattern"][index].as_i64().unwrap_or(0);
-        let color = source["intGridValues"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .find(|v| v["value"].as_i64() == Some(value.abs()))
-            .and_then(|v| v["color"].as_str())
-            .map(theme::color)
-            .unwrap_or(theme::MEDIUM);
-        let fill = if value == 0 {
-            theme::DARK
-        } else {
-            color.gamma_multiply(0.75)
-        };
-        let target = Rect::from_min_size(
-            rect.min + egui::vec2((index % size) as f32 * cell, (index / size) as f32 * cell),
-            Vec2::splat(cell),
-        )
-        .shrink(0.5);
-        ui.painter().rect_filled(target, 0., fill);
-        ui.painter().rect_stroke(
-            target,
-            0.,
-            Stroke::new(1., theme::MEDIUM),
-            StrokeKind::Inside,
-        );
-    }
+fn paint_preview_stripes(ui: &egui::Ui, rect: Rect, scale: f32) {
+    egui::Image::new(egui::include_image!("../../assets/img/stripes.png"))
+        .texture_options(egui::TextureOptions::NEAREST_REPEAT)
+        .uv(Rect::from_min_size(
+            egui::Pos2::ZERO,
+            rect.size() / (8. * scale),
+        ))
+        .paint_at(ui, rect);
 }
 
 impl EditorApp {
+    fn paint_pattern_preview(
+        &mut self,
+        ui: &mut egui::Ui,
+        rect: Rect,
+        view: &RulesView,
+        rule: &Value,
+        layout: Option<&PatternPreview<'_>>,
+    ) {
+        let painter = ui.painter().clone();
+        let Some(layout) = layout else {
+            let warning = Rect::from_center_size(rect.center(), egui::vec2(58., 39.));
+            let ink = Color32::from_rgb(227, 77, 0);
+            painter.rect_filled(warning, 0., Color32::from_rgb(121, 17, 5));
+            paint_preview_stripes(ui, warning, 1.);
+            painter.rect_stroke(warning, 0., Stroke::new(1., ink), StrokeKind::Inside);
+            painter.text(
+                warning.center(),
+                Align2::CENTER_CENTER,
+                locale::tr(ui, "Error"),
+                FontId::proportional(16.),
+                ink,
+            );
+            return;
+        };
+
+        let PatternPreview {
+            pattern,
+            size,
+            scale,
+            output_scale,
+            cell_span,
+            columns,
+            rows,
+            span,
+        } = *layout;
+        let center = size / 2;
+        let grid = Rect::from_center_size(rect.center(), span);
+        painter.rect_stroke(grid, 0., Stroke::new(1., theme::MEDIUM), StrokeKind::Inside);
+        let mut cells = ui.new_child(egui::UiBuilder::new().max_rect(grid));
+        cells.multiply_opacity(0.5);
+        let stamp = rule["tileMode"] == "Stamp";
+        let (mut y, mut center_cell) = (grid.top() + 1., Rect::NOTHING);
+        for (row, height) in rows[..size].iter().enumerate() {
+            let mut x = grid.left() + 1.;
+            for (column, width) in columns[..size].iter().enumerate() {
+                let origin = egui::pos2(x, y);
+                let value = pattern
+                    .get(row * size + column)
+                    .and_then(Value::as_i64)
+                    .unwrap_or(0);
+                if column == center && row == center {
+                    center_cell = Rect::from_min_size(origin, Vec2::splat(cell_span + 2.));
+                    if stamp {
+                        cells.painter().rect_filled(center_cell, 2., theme::MEDIUM);
+                    } else {
+                        painter.rect_filled(center_cell, 2., theme::MEDIUM);
+                        painter.extend(egui::Shape::dashed_line(
+                            &[
+                                center_cell.left_top(),
+                                center_cell.right_top(),
+                                center_cell.right_bottom(),
+                                center_cell.left_bottom(),
+                                center_cell.left_top(),
+                            ],
+                            Stroke::new(scale, Color32::WHITE),
+                            3. * scale,
+                            2. * scale,
+                        ));
+                    }
+                } else {
+                    let outer = cell_span + if value == 0 { 0. } else { 2. };
+                    let cell = Rect::from_min_size(origin, Vec2::splat(outer));
+                    self.paint_rule_cell(
+                        &cells,
+                        cell,
+                        &view.source,
+                        value,
+                        RuleCellStyle::Preview(scale),
+                    );
+                }
+                x += width + 1.;
+            }
+            y += height + 1.;
+        }
+
+        let ids = rule["tileRectsIds"][0]
+            .as_array()
+            .map(Vec::as_slice)
+            .unwrap_or(&[]);
+        if stamp {
+            let span = view.atlas.as_ref().map_or(Vec2::splat(cell_span), |atlas| {
+                atlas.stamp_preview_size(cell_span, ids)
+            });
+            let pivot = egui::vec2(number(rule, "pivotX", 0.), number(rule, "pivotY", 0.));
+            let origin = center_cell.min + Vec2::splat(1.);
+            if let (Some(atlas), Some(first)) = (&view.atlas, ids.first()) {
+                let tile = Rect::from_min_size(origin, Vec2::splat(cell_span));
+                atlas.paint_ids(&cells, tile, std::slice::from_ref(first));
+            }
+            let guide = Rect::from_min_size(origin + pivot * (Vec2::splat(cell_span) - span), span);
+            cells.painter().rect_stroke(
+                guide,
+                0.,
+                Stroke::new(2. * scale, Color32::BLACK),
+                StrokeKind::Outside,
+            );
+            cells.painter().rect_stroke(
+                guide,
+                0.,
+                Stroke::new(3. * scale, theme::ACCENT),
+                StrokeKind::Inside,
+            );
+        } else if let Some(atlas) = &view.atlas {
+            let tile =
+                Rect::from_center_size(center_cell.center(), Vec2::splat(32. * output_scale));
+            if rule["tileRectsIds"]
+                .as_array()
+                .is_some_and(|groups| groups.len() > 1)
+            {
+                painter.rect_filled(
+                    tile.translate(egui::vec2(3., 3.) * output_scale),
+                    2.,
+                    Color32::WHITE,
+                );
+                painter.rect_filled(
+                    tile.translate(egui::vec2(2., 2.) * output_scale),
+                    2.,
+                    Color32::BLACK,
+                );
+            }
+            painter.rect_filled(tile, 2., Color32::GRAY);
+            paint_preview_stripes(ui, tile.shrink(1.), output_scale);
+            painter.rect_stroke(
+                tile,
+                2.,
+                Stroke::new(output_scale, Color32::WHITE),
+                StrokeKind::Inside,
+            );
+            if let Some(first) = ids.first() {
+                atlas.paint_ids(
+                    ui,
+                    tile.shrink(3. * output_scale),
+                    std::slice::from_ref(first),
+                );
+            }
+        }
+    }
+
     pub(in crate::app) fn draw_rule_hover(
         &self,
         ctx: &egui::Context,
@@ -1431,6 +1967,52 @@ impl EditorApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rule_row_previews_conditions_and_reports_missing_source_values() {
+        let ctx = egui::Context::default();
+        let mut app = EditorApp::empty();
+        let view = RulesView {
+            uid: 4,
+            key: Project::new().level_keys()[0],
+            index: 0,
+            project: String::new(),
+            def: Value::Null,
+            instance: Value::Null,
+            source: json!({
+                "intGridValues": [{"value": 1, "color": "#B86F50"}],
+                "intGridValuesGroups": [{"uid": 1, "color": "#34683A"}],
+            }),
+            atlas: None,
+            biome: None,
+        };
+        let output = ctx.run(egui::RawInput::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                let patterns = [
+                    json!([0, 1, -1, 2000, 1, -2000, 1000001, -1000001, 0]),
+                    json!([0, 0, 0, 0, -999, 0, 0, 0, 0]),
+                    json!([0, 0, 0, 0, 7000, 0, 0, 0, 0]),
+                ];
+                for (index, pattern) in patterns.into_iter().enumerate() {
+                    let rule = json!({"uid": index, "size": 3, "pattern": pattern});
+                    app.rule_row(ui, &view, 7, &rule, index, false, &mut None);
+                }
+            });
+        });
+        let labels = output
+            .shapes
+            .iter()
+            .filter_map(|shape| {
+                if let egui::Shape::Text(text) = &shape.shape {
+                    Some(text.galley.text())
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(labels.iter().filter(|&&text| text == "Error").count(), 2);
+        assert_eq!(labels.iter().filter(|&&text| text == "?").count(), 1);
+    }
 
     #[test]
     fn group_context_menu_exposes_separate_appearance_actions_in_source_order() {

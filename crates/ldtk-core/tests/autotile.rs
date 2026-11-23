@@ -820,6 +820,99 @@ fn preview_154_auto_layer_source_change_inherits_the_source_grid() {
 }
 
 #[test]
+fn deleting_an_auto_layer_source_keeps_rules_across_save_and_rebinding() {
+    let mut project = Project::new();
+    let source = project.add_layer("OldGrid", "IntGrid", 16).unwrap();
+    let replacement = project.add_layer("NewGrid", "IntGrid", 16).unwrap();
+    let target = project.add_layer("Generated", "AutoLayer", 16).unwrap();
+    let key = project.level_keys()[0];
+    project.json["defs"]["tilesets"] =
+        json!([{"uid":400,"relPath":"atlas.png","tileGridSize":16,"pxWid":32,"pxHei":16}]);
+    project.assign_tileset(target, 400).unwrap();
+    project
+        .update_layer_properties(target, &json!({"autoSourceLayerDefUid":source}))
+        .unwrap();
+    let group = project.add_auto_rule_group(target, "Walls").unwrap();
+    let rule = project.add_auto_rule(target, group, 1).unwrap();
+    project
+        .update_auto_rule(
+            target,
+            group,
+            rule,
+            &json!({
+                "pattern":[1], "tileRectsIds":[[1]], "outOfBoundsValue":1, "extension":"keep"
+            }),
+        )
+        .unwrap();
+    let instance_index = |project: &Project, uid| {
+        project.level(key).unwrap()["layerInstances"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .position(|layer| layer["layerDefUid"] == uid)
+            .unwrap()
+    };
+    project
+        .paint_int_grid(key, instance_index(&project, source), 1, 2, 1)
+        .unwrap();
+    project
+        .paint_int_grid(key, instance_index(&project, replacement), 3, 1, 1)
+        .unwrap();
+    let generated = |project: &Project| {
+        project.layer(key, instance_index(project, target)).unwrap()["autoLayerTiles"].clone()
+    };
+    let old_cache = generated(&project);
+    assert_eq!(old_cache[0]["px"], json!([16, 32]));
+    let rules = project.layer_def(target).unwrap()["autoRuleGroups"].clone();
+    project.remove_definition("layers", source).unwrap();
+    let detached = project.layer_def(target).unwrap();
+    assert!(detached["autoSourceLayerDefUid"].is_null());
+    assert_eq!(detached["autoRuleGroups"], rules);
+    assert_eq!(generated(&project), json!([]));
+
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("Detached.ldtk");
+    project.save(&path).unwrap();
+    let mut reopened = Project::load(&path).unwrap();
+    // LDtk clears the obsolete out-of-bounds value on save without a source.
+    let mut saved_rules = rules.clone();
+    saved_rules[0]["rules"][0]["outOfBoundsValue"] = Value::Null;
+    assert_eq!(
+        reopened.layer_def(target).unwrap()["autoRuleGroups"],
+        saved_rules
+    );
+    assert_eq!(generated(&reopened), json!([]));
+
+    let orphan = reopened.json["defs"]["layers"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|def| def["uid"] == target)
+        .unwrap();
+    orphan["autoSourceLayerDefUid"] = json!(source);
+    let index = instance_index(&reopened, target);
+    reopened.layer_mut(key, index).unwrap()["autoLayerTiles"] = old_cache;
+    reopened.migrate_to_current().unwrap();
+    reopened.reconcile_cached_auto_tiles();
+    assert!(reopened.layer_def(target).unwrap()["autoSourceLayerDefUid"].is_null());
+    assert_eq!(
+        reopened.layer_def(target).unwrap()["autoRuleGroups"],
+        saved_rules
+    );
+    assert_eq!(generated(&reopened), json!([]));
+
+    reopened
+        .update_layer_properties(target, &json!({"autoSourceLayerDefUid":replacement}))
+        .unwrap();
+    assert_eq!(
+        reopened.layer_def(target).unwrap()["autoRuleGroups"],
+        saved_rules
+    );
+    assert_eq!(generated(&reopened)[0]["px"], json!([48, 16]));
+    assert_eq!(generated(&reopened)[0]["t"], 1);
+}
+
+#[test]
 fn preview_154_multiple_tile_and_intgrid_blockers_update_incrementally() {
     let (mut p, k) = fixture();
     p.json["defs"]["layers"][0]["layerUidsPreventingAutoTilingHere"] = json!([9, 10]);

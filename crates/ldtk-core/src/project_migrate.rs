@@ -3,7 +3,7 @@ use crate::grid_presence::GridPresence;
 use crate::workflow::{layer_cell_extent, tidy_gridvania_defaults};
 use crate::{Error, Project, Result};
 use serde_json::{Value, json};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 fn n(v: &Value, k: &str) -> i64 {
     v[k].as_i64().unwrap_or(0)
 }
@@ -324,6 +324,10 @@ impl Project {
             .iter()
             .map(|t| (n(t, "uid"), t.clone()))
             .collect();
+        let layer_uids: BTreeSet<_> = array(&p.json["defs"]["layers"])
+            .iter()
+            .filter_map(|layer| layer["uid"].as_i64())
+            .collect();
         for d in p.json["defs"]["layers"].as_array_mut().unwrap() {
             if d["layerUidsPreventingAutoTilingHere"].is_null() {
                 d["layerUidsPreventingAutoTilingHere"] =
@@ -360,6 +364,13 @@ impl Project {
                 d["intGridValues"] = json!([]);
             }
             defaults(d, &layer_template);
+            if kind == "AutoLayer"
+                && d["autoSourceLayerDefUid"]
+                    .as_i64()
+                    .is_some_and(|uid| !layer_uids.contains(&uid))
+            {
+                d["autoSourceLayerDefUid"] = Value::Null;
+            }
             d["uid"] = id;
             d["identifier"] = name;
             d["type"] = kind.clone();

@@ -11,6 +11,7 @@ fn main() {
     #[cfg(target_os = "macos")]
     {
         mac::open_documents_survive_startup_and_wake_the_editor();
+        mac::native_quit_reaches_the_editor();
         // LaunchServices needs an unsandboxed GUI session. The default test
         // still exercises real AppleEvent delivery to this isolated process.
         if std::env::args().any(|arg| arg == "--bundle-open") {
@@ -72,6 +73,7 @@ mod mac {
     use objc2::{
         DefinedClass, MainThreadOnly, class, define_class, msg_send, runtime::AnyObject, sel,
     };
+    use objc2_app_kit::{NSApplication, NSApplicationDelegate, NSApplicationTerminateReply};
     use objc2_foundation::{
         MainThreadMarker, NSAppleEventDescriptor as Descriptor, NSAppleEventSendOptions, NSObject,
         NSObjectProtocol, NSString, NSURL,
@@ -158,6 +160,35 @@ mod mac {
             platform_files::take_open_file().is_none(),
             "reinstall does not replay consumed requests"
         );
+    }
+
+    pub fn native_quit_reaches_the_editor() {
+        let _guard = platform_files::install();
+        let mut builder = winit::event_loop::EventLoop::builder();
+        platform_files::configure_quit(&mut builder);
+        let _event_loop = builder.build().unwrap();
+        let app = NSApplication::sharedApplication(MainThreadMarker::new().unwrap());
+        let delegate = app.delegate().unwrap();
+        let ctx = eframe::egui::Context::default();
+        for _ in 0..3 {
+            let _ = ctx.run(Default::default(), |_| {});
+        }
+        let wake = Arc::new(AtomicUsize::new(0));
+        let counter = wake.clone();
+        ctx.set_request_repaint_callback(move |_| {
+            counter.fetch_add(1, Ordering::SeqCst);
+        });
+        platform_files::set_context(&ctx);
+        assert!(!platform_files::take_quit_request());
+        for _ in 0..2 {
+            assert_eq!(
+                delegate.applicationShouldTerminate(&app),
+                NSApplicationTerminateReply::TerminateCancel,
+            );
+        }
+        assert!(wake.load(Ordering::SeqCst) > 0);
+        assert!(platform_files::take_quit_request());
+        assert!(!platform_files::take_quit_request());
     }
 
     struct ProbeIvars {

@@ -480,6 +480,8 @@ fn main() -> eframe::Result {
         viewport: egui::ViewportBuilder::default().with_inner_size([1440., 900.]),
         renderer: eframe::Renderer::Wgpu,
         wgpu_options,
+        #[cfg(target_os = "macos")]
+        event_loop_builder: Some(Box::new(platform_files::configure_quit)),
         ..Default::default()
     };
     let result = eframe::run_native(

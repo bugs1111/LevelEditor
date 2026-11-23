@@ -250,7 +250,7 @@ pub(super) fn source_panel_width(panel: Panel) -> f32 {
         Panel::Level => 490.,
         Panel::Fields => 790.,
         Panel::Project | Panel::Enums => 840.,
-        Panel::Help => 906.,
+        Panel::Help => 907.,
         _ => 1000.,
     }
 }
@@ -910,8 +910,7 @@ impl EditorApp {
                     });
                 }
                 if source_controls::button(ui, "Delete layer").clicked() {
-                    self.edit_recoverable("Layer deleted", |p| p.remove_definition("layers", uid));
-                    self.definition_uid = None;
+                    self.request_definition_removal(ui.ctx(), "layers", uid);
                 }
             });
         }
@@ -1140,10 +1139,7 @@ impl EditorApp {
                 });
             }
             if source_controls::button(ui, "Delete entity definition").clicked() {
-                self.edit_recoverable("Entity definition deleted", |p| {
-                    p.remove_definition("entities", uid)
-                });
-                self.definition_uid = None;
+                self.request_definition_removal(ui.ctx(), "entities", uid);
             }
         });
     }
@@ -1890,8 +1886,7 @@ impl EditorApp {
             }
             if !self.source_panel_active(ui) && source_controls::button(ui, "Delete enum").clicked()
             {
-                self.edit_recoverable("Enum deleted", |p| p.remove_definition("enums", uid));
-                self.definition_uid = None;
+                self.request_definition_removal(ui.ctx(), "enums", uid);
             }
         }
         if self.source_panel_active(ui) {
@@ -2019,63 +2014,56 @@ impl EditorApp {
         editable: bool,
     ) -> Option<i64> {
         let previous = def["iconTilesetUid"].as_i64();
-        let mut atlas = previous;
         let project = self.project.as_ref().unwrap();
-        let picker = |ui: &mut egui::Ui| {
-            let empty = locale::tr(ui, "-- Select a tileset --");
+        let tilesets = project.json["defs"]["tilesets"]
+            .as_array()
+            .map(Vec::as_slice)
+            .unwrap_or_default();
+        let choice = enum_property_row(ui, "Icon tileset", "icons", |ui| {
             let response = ui.add_enabled_ui(editable, |ui| {
-                egui::ComboBox::from_id_salt("enum-icon-tileset")
-                    .width(ui.available_width())
-                    .truncate()
-                    .selected_text(
-                        previous
-                            .and_then(|uid| project.tileset(uid))
-                            .map(|d| text(d, "identifier", "Tileset"))
-                            .unwrap_or(empty),
-                    )
-                    .show_ui(ui, |ui| {
-                        ui.selectable_value(&mut atlas, None, empty);
-                        for def in project.json["defs"]["tilesets"]
-                            .as_array()
-                            .into_iter()
-                            .flatten()
-                        {
-                            ui.selectable_value(
-                                &mut atlas,
-                                def["uid"].as_i64(),
-                                text(def, "identifier", locale::tr(ui, "Tileset")),
-                            );
-                        }
-                    })
-                    .response
+                source_controls::tileset_picker(
+                    ui,
+                    ui.available_width(),
+                    tilesets,
+                    previous,
+                    "-- Select a tileset --",
+                    false,
+                )
             });
-            if !editable || previous.is_none() {
-                source_controls::disabled_hatch(ui, response.inner.rect);
+            if !editable {
+                source_controls::disabled_hatch(ui, response.response.rect);
             }
-        };
-        enum_property_row(ui, "Icon tileset", "icons", picker);
-        if atlas == previous {
+            response.inner
+        });
+        let Some(choice) = choice else {
             return previous;
-        }
+        };
         let uid = def["uid"].as_i64().unwrap();
         let mut values = def["values"].as_array().cloned().unwrap_or_default();
-        let has_icons = values.iter().any(|value| !value["tileRect"].is_null());
+        let has_icons =
+            previous.is_some() && values.iter().any(|value| !value["tileRect"].is_null());
         for value in &mut values {
             value["tileRect"] = Value::Null;
         }
         let edit = |p: &mut Project| {
+            let atlas = match choice {
+                source_controls::TilesetChoice::Unassigned => None,
+                source_controls::TilesetChoice::Existing(uid) => Some(uid),
+                source_controls::TilesetChoice::EmbeddedIcons => Some(p.ensure_embedded_icons()?),
+            };
             if external {
-                p.update_external_enum_appearance(uid, atlas, &values)
+                p.update_external_enum_appearance(uid, atlas, &values)?;
             } else {
-                p.update_enum_definition(uid, &json!({"iconTilesetUid":atlas,"values":values}))
+                p.update_enum_definition(uid, &json!({"iconTilesetUid":atlas,"values":values}))?;
             }
+            Ok(atlas)
         };
         let updated = if has_icons {
             self.edit_recoverable("Enum icons changed", edit)
         } else {
             self.edit("Enum icon tileset changed", edit)
         };
-        if updated.is_some() {
+        if let Some(atlas) = updated {
             def["iconTilesetUid"] = json!(atlas);
             def["values"] = json!(values);
             atlas
@@ -2122,7 +2110,7 @@ impl EditorApp {
         }
     }
 
-    fn value_tile_thumbnail(
+    pub(super) fn value_tile_thumbnail(
         &mut self,
         ui: &mut egui::Ui,
         atlas: Option<i64>,
@@ -2258,14 +2246,14 @@ impl EditorApp {
             let viewport = ctx.content_rect();
             let modal = egui::Modal::new(id)
                 .frame(project_dialogs::dialog_frame(0).corner_radius(0.)
-                    .stroke(Stroke::new(1., theme::LIGHT)))
+                    .fill(theme::DARK).stroke(Stroke::new(1., theme::LIGHT)))
                 .area(egui::Area::new(id).kind(egui::UiKind::Modal)
                     .sense(Sense::hover()).order(egui::Order::Foreground)
                     .fixed_pos(viewport.left_top() + Vec2::splat(50.)))
                 .show(ctx, |ui| {
                     ui.set_width(viewport.width() * 0.9);
                     ui.set_height(viewport.height() * 0.9);
-                    app.atlas_enum_icon_picker(ctx, ui, uid);
+                    app.atlas_icon_picker(ctx, ui, uid, opening);
                 });
             let picked = if before != app.atlas_selection {
                 app.selected_tile_rect_for(uid)
@@ -2309,6 +2297,14 @@ impl EditorApp {
             });
         }
         let Some(def) = self.definition_picker(ui, "tilesets") else {
+            if in_definition_panel && self.project.is_some() {
+                source_controls::help_card(ui, ui.available_width(), 62., |ui| {
+                    source_controls::help_paragraph(
+                        ui,
+                        "Tilesets are large images in which you pick sub-parts to draw them in your levels. They can also be used as icons for some specific elements (like Enums).",
+                    );
+                });
+            }
             return;
         };
         let uid = def["uid"].as_i64().unwrap();
@@ -3618,7 +3614,7 @@ mod tests {
                 assert_eq!(position("px, with an atlas padding of"), first_caption);
                 assert_eq!(position("px"), first_caption);
             }
-            let pane_right = width - 20.;
+            let pane_right = source_panel_width(Panel::Tilesets) - 20.;
             for item in &out.shapes {
                 let bounds = item.shape.visual_bounding_rect();
                 if bounds.top() >= layout_top - 12.
@@ -4397,13 +4393,14 @@ mod tests {
                 let ctx = egui::Context::default();
                 theme::configure(&ctx);
                 ctx.style_mut(|style| style.animation_time = 0.);
-                let frame = |app: &mut EditorApp| {
+                let frame = |app: &mut EditorApp, events| {
                     ctx.run(
                         egui::RawInput {
                             screen_rect: Some(Rect::from_min_size(
                                 egui::Pos2::ZERO,
                                 egui::vec2(screen_width, 800.),
                             )),
+                            events,
                             ..Default::default()
                         },
                         |ctx| {
@@ -4411,8 +4408,27 @@ mod tests {
                         },
                     )
                 };
-                frame(app);
-                let output = frame(app);
+                frame(app, vec![]);
+                frame(app, vec![]);
+                let panel_width = source_panel_width(Panel::Enums);
+                let offset = (panel_width - screen_width).max(0.);
+                if offset > 0. {
+                    frame(
+                        app,
+                        vec![
+                            egui::Event::PointerMoved(egui::pos2(650., 190.)),
+                            egui::Event::MouseWheel {
+                                unit: egui::MouseWheelUnit::Point,
+                                delta: egui::vec2(-500., 0.),
+                                modifiers: egui::Modifiers::NONE,
+                            },
+                        ],
+                    );
+                    for _ in 0..4 {
+                        frame(app, vec![]);
+                    }
+                }
+                let output = frame(app, vec![]);
                 let mut shapes = Vec::new();
                 for shape in &output.shapes {
                     flatten(&shape.shape, &mut shapes);
@@ -4457,7 +4473,11 @@ mod tests {
                         text_pos(label, region).unwrap_or_else(|| panic!("missing {label}"));
                     rects
                         .clone()
-                        .filter(|shape| shape.fill != Color32::TRANSPARENT)
+                        .filter(|shape| {
+                            shape.stroke.width > 0.
+                                && (shape.fill != Color32::TRANSPARENT
+                                    || shape.stroke.color == Color32::from_rgb(115, 127, 157))
+                        })
                         .map(|shape| shape.rect)
                         .filter(|rect| rect.contains(center) && rect.width() >= 24.)
                         .min_by(|a, b| a.area().total_cmp(&b.area()))
@@ -4479,7 +4499,7 @@ mod tests {
                     assert_eq!(remove.left() - name.right(), 3.);
 
                     let header = Rect::from_min_max(
-                        egui::pos2(300., 90.),
+                        egui::pos2(300. - offset, 90.),
                         egui::pos2(screen_width, name.top()),
                     );
                     let identifier = control_rect("State", header);
@@ -4491,8 +4511,8 @@ mod tests {
                     let add = control_rect("ADD A NEW VALUE", header);
                     assert!(add.bottom() < name.top());
                     assert_eq!(add.height(), 35.);
-                    assert_eq!(identifier.left(), 404.);
-                    assert_eq!(identifier.right(), screen_width.min(840.) - 20.);
+                    assert_eq!(identifier.left() + offset, 404.);
+                    assert_eq!(identifier.right() + offset, panel_width - 20.);
                 } else {
                     assert!(remove.is_none());
                 }
@@ -4500,10 +4520,7 @@ mod tests {
             };
             let narrow = width_at(&mut app, 700.);
             let wide = width_at(&mut app, 1200.);
-            assert!(
-                wide > narrow + 100.,
-                "enum name must absorb the extra width"
-            );
+            assert_eq!(wide, narrow, "window width must not resize the enum values");
         }
     }
 
@@ -4687,6 +4704,74 @@ mod tests {
         assert!(app.history.undo(app.project.as_mut().unwrap()));
         assert_eq!(app.project.as_ref().unwrap().json, moved_to_bottom);
         assert!(app.history.undo(app.project.as_mut().unwrap()));
+        assert_eq!(app.project.as_ref().unwrap().json, before);
+    }
+
+    #[test]
+    fn enum_icon_tileset_picker_offers_integrated_icons_and_restores_previous_icons() {
+        let mut project = Project::new();
+        let previous = project.add_tileset(Path::new("Plain.png"), 16, 32, 32).unwrap();
+        let uid = project.add_enum_definition("State", &["Idle"]).unwrap();
+        project
+            .update_enum_definition(
+                uid,
+                &json!({"iconTilesetUid":previous,"values":[{
+                    "id":"Idle","tileRect":{"tilesetUid":previous,"x":16,"y":0,"w":16,"h":16}
+                }]}),
+            )
+            .unwrap();
+        let before = project.json.clone();
+        let mut app = EditorApp::empty();
+        app.set_project(project);
+        app.panel = Some(Panel::Enums);
+        app.definition_uid = Some(uid);
+        let ctx = egui::Context::default();
+        theme::configure(&ctx);
+        let frame = |app: &mut EditorApp, events| {
+            ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(
+                        egui::Pos2::ZERO, egui::vec2(1200., 800.),
+                    )),
+                    events,
+                    ..Default::default()
+                },
+                |ctx| { app.source_panel(ctx, Panel::Enums); },
+            )
+        };
+        let label = |out: &egui::FullOutput, name| {
+            out.shapes.iter().find_map(|item| match &item.shape {
+                egui::Shape::Text(text) if text.galley.job.text == name => {
+                    Some(text.pos + text.galley.rect.center().to_vec2())
+                }
+                _ => None,
+            }).unwrap_or_else(|| panic!("missing {name}"))
+        };
+        let click = |app: &mut EditorApp, pos| {
+            for pressed in [true, false] {
+                frame(app, vec![
+                    egui::Event::PointerMoved(pos),
+                    egui::Event::PointerButton {
+                        pos, pressed,
+                        button: egui::PointerButton::Primary,
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                ]);
+            }
+        };
+        frame(&mut app, vec![]);
+        let closed = frame(&mut app, vec![]);
+        click(&mut app, label(&closed, "Plain"));
+        let opened = frame(&mut app, vec![]);
+        assert!(label(&opened, "All tilesets").y < label(&opened, "Integrated LDtk tilesets").y);
+        click(&mut app, label(&opened, "⚙ Internal icons by FinalBossBlues"));
+        let project = app.project.as_ref().unwrap();
+        let definition = &project.json["defs"]["enums"][0];
+        let atlas = definition["iconTilesetUid"].as_i64().unwrap();
+        assert_eq!(project.tileset(atlas).unwrap()["embedAtlas"], "LdtkIcons");
+        assert!(definition["values"][0]["tileRect"].is_null());
+        assert_eq!(app.last_chance.as_ref().map(|(text, _)| text.as_str()), Some("Enum icons changed"));
+        app.restore_last_chance();
         assert_eq!(app.project.as_ref().unwrap().json, before);
     }
 

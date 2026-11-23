@@ -11,9 +11,7 @@ impl EditorApp {
         let auto_error = (!self.settle_deferred_auto_paint()).then(|| self.status.clone());
         self.gesture = None;
         self.level_resize = None;
-        self.stroke = false;
-        self.last_cell = None;
-        self.painted_cells.clear();
+        self.clear_stroke_controls();
         self.pending = None;
         self.panel = None;
         self.command_palette = false;
@@ -132,6 +130,7 @@ mod tests {
             end: [2, 2],
             erase: false,
             select: false,
+            entered_level: true,
             started: Instant::now(),
             world_end: [32.0, 32.0],
         });

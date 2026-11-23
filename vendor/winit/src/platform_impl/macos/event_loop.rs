@@ -200,16 +200,22 @@ pub struct EventLoop<T: 'static> {
     panic_info: Rc<PanicInfo>,
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Copy, Clone)]
 pub(crate) struct PlatformSpecificEventLoopAttributes {
     pub(crate) activation_policy: Option<ActivationPolicy>,
     pub(crate) default_menu: bool,
     pub(crate) activate_ignoring_other_apps: bool,
+    pub(crate) quit_request_handler: Option<fn()>,
 }
 
 impl Default for PlatformSpecificEventLoopAttributes {
     fn default() -> Self {
-        Self { activation_policy: None, default_menu: true, activate_ignoring_other_apps: true }
+        Self {
+            activation_policy: None,
+            default_menu: true,
+            activate_ignoring_other_apps: true,
+            quit_request_handler: None,
+        }
     }
 }
 
@@ -234,6 +240,7 @@ impl<T> EventLoop<T> {
             activation_policy,
             attributes.default_menu,
             attributes.activate_ignoring_other_apps,
+            attributes.quit_request_handler,
         );
 
         autoreleasepool(|_| {

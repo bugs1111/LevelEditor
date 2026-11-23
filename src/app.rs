@@ -239,6 +239,15 @@ struct DeferredAutoPaint {
     prior_selection: Option<Value>,
 }
 
+#[cfg(target_os = "linux")]
+#[derive(Clone, Copy)]
+enum StartupWindow {
+    NotYetMapped,
+    Mapping(Instant),
+    Maximizing(Instant),
+    EnteringFullscreen(Instant),
+}
+
 pub struct EditorApp {
     project: Option<Project>,
     history: History,
@@ -268,8 +277,10 @@ pub struct EditorApp {
     fit: bool,
     stroke: bool,
     stroke_erase: bool,
+    stroke_waiting_for_level: bool,
     last_cell: Option<[i32; 2]>,
     brush_preview_waits_for_pointer: bool,
+    entity_eraser_preview: bool,
     neighbor_level_press: bool,
     async_paint: Option<canvas::AsyncPaintPreview>,
     deferred_auto_paint: Option<DeferredAutoPaint>,
@@ -279,7 +290,7 @@ pub struct EditorApp {
     suggest_backups: bool,
     quick_notification: Option<(String, Option<egui::ImageSource<'static>>, Instant)>,
     canvas_notices: Vec<notifications::CanvasNoticeEntry>,
-    loading: Option<Receiver<Result<services::LoadedProject, String>>>,
+    loading: Option<Receiver<Result<services::LoadedProject, services::LoadFailure>>>,
     loading_progress: Option<Arc<Mutex<Option<(usize, usize)>>>>,
     saving_progress: Option<Arc<Mutex<save_progress::SaveProgress>>>,
     exporting_progress: Option<Arc<Mutex<Option<(usize, usize)>>>>,
@@ -291,6 +302,8 @@ pub struct EditorApp {
     external_changes: Option<Vec<PathBuf>>,
     status: String,
     published_window_title: String,
+    #[cfg(target_os = "linux")]
+    startup_window: Option<StartupWindow>,
     allow_close: bool,
     frame_time: f32,
     visible_tiles: usize,
@@ -312,7 +325,9 @@ pub struct EditorApp {
     field_owner: Option<i64>,
     field_uid: Option<i64>,
     rule_group_uid: Option<i64>,
+    open_rule_groups: HashSet<(i64, i64)>,
     rule_uid: Option<i64>,
+    last_rule_list_row: Option<i64>,
     rule_draft: Option<panels::RuleDraft>,
     rule_hover: Option<(i64, i64, Option<i64>)>,
     command_palette: bool,
@@ -406,6 +421,10 @@ impl EditorApp {
     }
     pub fn new(cc: &eframe::CreationContext<'_>, path: Option<PathBuf>) -> Self {
         let mut app = Self::empty();
+        #[cfg(target_os = "linux")]
+        {
+            app.startup_window = Some(StartupWindow::NotYetMapped);
+        }
         canvas::configure_gpu(cc.wgpu_render_state.as_ref());
         app.repaint = Some(cc.egui_ctx.clone());
         crate::platform_files::set_context(&cc.egui_ctx);
@@ -415,7 +434,7 @@ impl EditorApp {
             .map(|d| d.as_nanos() as u64)
             .unwrap_or(1);
         app.apply_initial_preferences(&cc.egui_ctx);
-        if app.settings.bool("startFullScreen") {
+        if !cfg!(target_os = "linux") && app.settings.bool("startFullScreen") {
             cc.egui_ctx
                 .send_viewport_cmd(egui::ViewportCommand::Fullscreen(true));
         }
@@ -426,6 +445,7 @@ impl EditorApp {
                     app.settings.value["lastProject"]["filePath"]
                         .as_str()
                         .map(PathBuf::from)
+                        .filter(|path| path.exists())
                 })
                 .flatten()
         });
@@ -488,8 +508,10 @@ impl EditorApp {
             fit: true,
             stroke: false,
             stroke_erase: false,
+            stroke_waiting_for_level: false,
             last_cell: None,
             brush_preview_waits_for_pointer: false,
+            entity_eraser_preview: false,
             neighbor_level_press: false,
             async_paint: None,
             deferred_auto_paint: None,
@@ -511,6 +533,8 @@ impl EditorApp {
             external_changes: None,
             status: "Open a project or create a new one.".into(),
             published_window_title: String::new(),
+            #[cfg(target_os = "linux")]
+            startup_window: None,
             allow_close: false,
             frame_time: 0.0,
             visible_tiles: 0,
@@ -532,7 +556,9 @@ impl EditorApp {
             field_owner: None,
             field_uid: None,
             rule_group_uid: None,
+            open_rule_groups: HashSet::new(),
             rule_uid: None,
+            last_rule_list_row: None,
             rule_draft: None,
             rule_hover: None,
             command_palette: false,
@@ -598,8 +624,23 @@ impl EditorApp {
                     *progress.lock().unwrap_or_else(|e| e.into_inner()) = Some((done, total));
                     ctx.request_repaint();
                 })
-                .map_err(|e| e.to_string())?;
-                let loaded = services::prepare_project(project, Vec::new())?;
+                .map_err(|error| {
+                    let file_read_missing = matches!(
+                        &error,
+                        ldtk_core::Error::Io { source, .. }
+                            if source.kind() == std::io::ErrorKind::NotFound
+                    );
+                    if file_read_missing
+                        && std::fs::metadata(&path)
+                            .is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound)
+                    {
+                        services::LoadFailure::MissingProject(path)
+                    } else {
+                        services::LoadFailure::Other(error.to_string())
+                    }
+                })?;
+                let loaded = services::prepare_project(project, Vec::new())
+                    .map_err(services::LoadFailure::Other)?;
                 let mut progress = progress.lock().unwrap_or_else(|e| e.into_inner());
                 let total = progress.map_or(1, |(_, total)| total);
                 *progress = Some((total, total));
@@ -611,6 +652,20 @@ impl EditorApp {
     }
 
     fn set_project(&mut self, project: Project) {
+        self.open_rule_groups = project.json["defs"]["layers"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|layer| {
+                let [group] = layer["autoRuleGroups"].as_array()?.as_slice() else {
+                    return None;
+                };
+                (group["usesWizard"] != true).then_some((
+                    layer["uid"].as_i64()?,
+                    group["uid"].as_i64()?,
+                ))
+            })
+            .collect();
         self.layer_visibility_press = None;
         self.layer_context_menu = None;
         if let Some(ctx) = &self.repaint {
@@ -681,9 +736,9 @@ impl EditorApp {
         self.resource_missing.clear();
         self.hidden.clear();
         self.dirty = false;
-        self.stroke = false;
-        self.last_cell = None;
+        self.clear_stroke_controls();
         self.brush_preview_waits_for_pointer = false;
+        self.entity_eraser_preview = false;
         self.neighbor_level_press = false;
         self.async_paint = None;
         self.deferred_auto_paint = None;
@@ -701,6 +756,7 @@ impl EditorApp {
         self.definition_uid = None;
         self.rule_draft = None;
         self.rule_hover = None;
+        self.last_rule_list_row = None;
         self.field_uid = None;
         self.point_pick = None;
         self.reference_pick = None;
@@ -761,6 +817,7 @@ impl EditorApp {
 
     fn clear_stroke_controls(&mut self) {
         self.stroke = false;
+        self.stroke_waiting_for_level = false;
         self.last_cell = None;
         self.painted_cells.clear();
     }
@@ -785,7 +842,7 @@ impl EditorApp {
     }
 
     fn request(&mut self, ctx: &egui::Context, action: Action) {
-        if world_form_dialog::is_open(ctx) {
+        if world_form_dialog::is_open(ctx) || Self::definition_removal_open(ctx) {
             return;
         }
         if self.defer_ui_action(ctx, ui_commit::DeferredUiAction::Request(action.clone())) {
@@ -794,8 +851,12 @@ impl EditorApp {
         if self.is_busy() || self.pending.is_some() {
             return;
         }
-        self.finish_gesture();
-        self.finish_stroke();
+        if matches!(action, Action::Close | Action::Quit) && self.world_context.menu_open() {
+            self.show_panel(None);
+        } else {
+            self.finish_gesture();
+            self.finish_stroke();
+        }
         if self.dirty {
             self.pending = Some(action);
         } else {
@@ -849,19 +910,7 @@ impl EditorApp {
         let mut dialog = FileDialog::new().add_filter("Supported file types", &["ldtk"]);
         let browse_from = dir
             .or_else(|| self.settings.ui_dir(None, "NewProject", None))
-            .or_else(|| {
-                self.settings.value["recentProjects"]
-                    .get(0)
-                    .and_then(Value::as_str)
-                    .and_then(|recent| Path::new(recent).parent())
-                    .map(Path::to_path_buf)
-            })
-            .or_else(|| {
-                std::env::current_exe()
-                    .ok()?
-                    .parent()
-                    .map(Path::to_path_buf)
-            });
+            .or_else(|| self.settings.default_project_dialog_dir());
         if let Some(dir) = &browse_from {
             dialog = dialog.set_directory(dir);
         }
@@ -878,8 +927,8 @@ impl EditorApp {
     }
 
     fn browse_project_dialog(&mut self, ctx: &egui::Context, dir: Option<PathBuf>) {
-        let mut dialog = FileDialog::new().add_filter("LDtk project", &["ldtk", "json"]);
-        if let Some(dir) = dir {
+        let mut dialog = FileDialog::new().add_filter("Supported file types", &["ldtk", "json"]);
+        if let Some(dir) = dir.or_else(|| self.settings.default_project_dialog_dir()) {
             dialog = dialog.set_directory(dir);
         }
         if let Some(path) = dialog.pick_file() {
@@ -954,7 +1003,22 @@ impl EditorApp {
         }) {
             self.async_paint = None;
         }
-        if !self.world_context_menu(ctx, rect, response) {
+        let menu_was_open = self.world_context.menu_open();
+        let context_consumed = self.world_context_menu(ctx, rect, response);
+        // In level view the outside right press opens the menu after it
+        // starts the brush, so that stroke can still enter the level.
+        let erasing_with_menu = !self.world
+            && self.world_context.menu_open()
+            && (self.stroke && self.stroke_erase
+                || !menu_was_open
+                    && self.project
+                        .as_ref()
+                        .zip(self.selected)
+                        .and_then(|(project, key)| project.layer(key, self.layer))
+                        .is_some_and(|layer| {
+                            matches!(layer["__type"].as_str(), Some("Tiles" | "IntGrid"))
+                        }));
+        if !context_consumed || erasing_with_menu {
             if self.stroke
                 && ctx.input(|i| {
                     i.events
@@ -1340,8 +1404,51 @@ impl EditorApp {
         rect
     }
 
+    #[cfg(target_os = "linux")]
+    fn update_startup_window(&mut self, ctx: &egui::Context) {
+        use StartupWindow::{EnteringFullscreen, Mapping, Maximizing, NotYetMapped};
+        let Some(stage) = self.startup_window else {
+            return;
+        };
+        let (focused, maximized, fullscreen) = ctx.input(|input| {
+            let viewport = input.viewport();
+            (
+                viewport.focused == Some(true),
+                viewport.maximized == Some(true),
+                viewport.fullscreen == Some(true),
+            )
+        });
+        let now = Instant::now();
+        // Window managers without maximization support must still get an initial view.
+        let wait = std::time::Duration::from_millis(250);
+        let finish_maximizing = || {
+            self.settings.bool("startFullScreen").then(|| {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(true));
+                EnteringFullscreen(now + wait)
+            })
+        };
+        self.startup_window = match stage {
+            NotYetMapped => Some(Mapping(now + wait)),
+            Mapping(_) if focused && maximized => finish_maximizing(),
+            Mapping(_) if focused => {
+                // X11 can discard maximization requested before eframe maps the window.
+                ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(true));
+                Some(Maximizing(now + wait))
+            }
+            Mapping(deadline) | Maximizing(deadline)
+                if maximized || now >= deadline => finish_maximizing(),
+            EnteringFullscreen(deadline) if fullscreen || now >= deadline => None,
+            _ => Some(stage),
+        };
+        if self.startup_window.is_some() {
+            ctx.request_repaint_after(std::time::Duration::from_millis(16));
+        }
+    }
+
     fn update_frame(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         locale::set(ctx, self.settings.language());
+        #[cfg(target_os = "linux")]
+        self.update_startup_window(ctx);
         if self.update_installing(ctx) {
             self.update_dialog(ctx);
             return;
@@ -1358,11 +1465,20 @@ impl EditorApp {
         self.poll_hooks(ctx);
         self.poll_services(ctx);
         self.pointer_lifecycle(ctx);
+        #[cfg(target_os = "macos")]
         if !self.is_busy()
+            && !world_form_dialog::is_open(ctx)
+            && !Self::definition_removal_open(ctx)
+            && crate::platform_files::take_quit_request()
+        {
+            self.request(ctx, Action::Quit);
+        }
+        if !self.is_busy()
+            && !self.allow_close
             && self.pending.is_none()
             && !self.ui_commit.pending()
             && !world_form_dialog::is_open(ctx)
-            && !world_form_dialog::is_open(ctx)
+            && !Self::definition_removal_open(ctx)
             && let Some(path) = crate::platform_files::take_open_file()
         {
             self.request(ctx, Action::Open(path));
@@ -1425,6 +1541,7 @@ impl EditorApp {
                     if let Some(key) = self.selected {
                         self.draw_project_canvas(ctx, ui.painter(), rect, key);
                         self.draw_rule_hover(ctx, ui.painter(), rect, key);
+                        self.draw_perlin_preview(ctx, ui.painter(), rect, key);
                         self.draw_world_selection(ui, rect);
                         self.draw_brush_preview(ui, rect, response.hovered());
                         self.draw_tool_overlay(ui, rect);
@@ -1452,6 +1569,7 @@ impl EditorApp {
         self.dialogs(ctx, level_point_picker_was_open);
         self.preview_backup_restore_dialog(ctx);
         self.world_form_dialog(ctx);
+        self.definition_removal_dialog(ctx);
         self.resource_dialog(ctx);
         self.service_dialogs(ctx);
         self.palette_dialog(ctx);
@@ -1540,7 +1658,7 @@ impl Drop for EditorApp {
 impl eframe::App for EditorApp {
     fn raw_input_hook(&mut self, ctx: &egui::Context, input: &mut egui::RawInput) {
         panels::source_colors::capture_color_clipboard(ctx, input);
-        self.capture_rule_clipboard_preview(ctx, input);
+        self.capture_clipboard_preview(ctx, input);
         self.ui_commit_raw_input(ctx, input);
     }
     fn on_exit(&mut self) {
@@ -2004,7 +2122,8 @@ mod tests {
             .viewport
             .to_world(pointer.into(), canvas.min.into(), canvas.size().into());
         assert!(
-            (after[0] - world_point[0]).abs() < 0.001 && (after[1] - world_point[1]).abs() < 0.001,
+            (after[0] - world_point[0]).abs() * app.viewport.zoom <= 2.
+                && (after[1] - world_point[1]).abs() * app.viewport.zoom <= 2.,
             "world mouse anchor shifted from {world_point:?} to {after:?}"
         );
     }
@@ -2084,7 +2203,8 @@ mod tests {
                 app.viewport
                     .to_world(start.into(), canvas.min.into(), canvas.size().into());
             assert!(
-                (after[0] - before[0]).abs() < 0.001 && (after[1] - before[1]).abs() < 0.001,
+                (after[0] - before[0]).abs() * app.viewport.zoom <= 2.
+                    && (after[1] - before[1]).abs() * app.viewport.zoom <= 2.,
                 "drag anchor shifted from {before:?} to {after:?}"
             );
             assert!(!app.camera_motion.is_active());
@@ -2165,6 +2285,40 @@ mod tests {
             assert!(app.camera_drag.is_none());
             assert_eq!(app.project.as_ref().unwrap().json, before);
         }
+    }
+
+    #[test]
+    fn fractional_zoom_pan_uses_the_snapped_canvas_origin() {
+        let mut app = editor();
+        app.viewport.center = [128.2; 2];
+        app.viewport.zoom = 1.4;
+        let ctx = egui::Context::default();
+        let start = egui::pos2(52., 96.);
+        let end = egui::pos2(53., 96.);
+        let modifiers = egui::Modifiers::NONE;
+        let middle = |pos, pressed| egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Middle,
+            pressed,
+            modifiers,
+        };
+        canvas_frame(
+            &mut app,
+            &ctx,
+            vec![egui::Event::PointerMoved(start)],
+            modifiers,
+        );
+        canvas_frame(&mut app, &ctx, vec![middle(start, true)], modifiers);
+        assert!(app.camera_drag.is_some());
+        canvas_frame(
+            &mut app,
+            &ctx,
+            vec![egui::Event::PointerMoved(end), middle(end, false)],
+            modifiers,
+        );
+        // Both positions round to world x=74 from the snapped root at x=-59.
+        assert_eq!(app.viewport.center, [128.2; 2]);
+        assert!(app.camera_drag.is_none());
     }
 
     #[test]
@@ -2294,7 +2448,7 @@ mod tests {
             ]
         );
         assert_eq!(
-            tools::rectangle_tiles([0, 0, 5, 3], [2, 5, 2, 2], 2),
+            tools::rectangle_tiles([0, 0], [0, 0, 5, 3], [2, 5, 2, 2], 2),
             vec![
                 ([0, 0], [2, 5]),
                 ([2, 0], [3, 5]),
@@ -2302,6 +2456,15 @@ mod tests {
                 ([0, 2], [2, 6]),
                 ([2, 2], [3, 6]),
                 ([4, 2], [2, 6])
+            ]
+        );
+        assert_eq!(
+            tools::rectangle_tiles([-1, -1], [0, 0, 4, 4], [2, 5, 2, 2], 2),
+            vec![
+                ([1, 1], [3, 6]),
+                ([3, 1], [2, 6]),
+                ([1, 3], [3, 5]),
+                ([3, 3], [2, 5])
             ]
         );
     }
@@ -2548,6 +2711,114 @@ mod tests {
                 app.focus_overlay(ctx);
             },
         );
+    }
+
+    #[test]
+    fn tiles_only_canvas_edits_int_grid_only_when_its_definition_has_an_atlas() {
+        let mut app = editor();
+        let ctx = egui::Context::default();
+        let key = app.selected.unwrap();
+        app.details = false;
+        app.int_value = 1;
+        let ground = app.project.as_ref().unwrap().json["defs"]["layers"][0]["uid"]
+            .as_i64()
+            .unwrap();
+        let point = egui::pos2(72., 72.);
+        let modifiers = egui::Modifiers::NONE;
+        let rect = Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(256., 256.));
+        let cursor = ctx
+            .run(
+                egui::RawInput {
+                    screen_rect: Some(rect),
+                    events: vec![egui::Event::PointerMoved(point)],
+                    ..Default::default()
+                },
+                |ctx| {
+                    egui::CentralPanel::default()
+                        .show(ctx, |ui| app.draw_brush_preview(ui, rect, true));
+                },
+            )
+            .platform_output
+            .cursor_icon;
+        assert_eq!(cursor, egui::CursorIcon::NotAllowed);
+        let click = |app: &mut EditorApp| {
+            canvas_frame(app, &ctx, vec![egui::Event::PointerMoved(point)], modifiers);
+            for pressed in [true, false] {
+                canvas_frame(
+                    app,
+                    &ctx,
+                    vec![egui::Event::PointerButton {
+                        pos: point,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers,
+                    }],
+                    modifiers,
+                );
+            }
+        };
+        click(&mut app);
+        assert!(!app.dirty);
+        let p = app.project.as_mut().unwrap();
+        let atlas = p.add_tileset(Path::new("atlas.png"), 16, 16, 16).unwrap();
+        p.assign_tileset(ground, atlas).unwrap();
+        assert_eq!(
+            p.layer_def(ground).unwrap()["autoRuleGroups"],
+            serde_json::json!([])
+        );
+        click(&mut app);
+        let layer = app.project.as_ref().unwrap().layer(key, 0).unwrap();
+        assert!(
+            layer["intGridCsv"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|cell| cell == 1)
+        );
+        assert!(app.dirty);
+    }
+
+    #[test]
+    fn alt_picks_visible_tiles_even_when_the_active_layer_is_hidden_by_details() {
+        let mut app = editor();
+        let project = app.project.as_mut().unwrap();
+        let tiles = project.add_layer("Tiles", "Tiles", 16).unwrap();
+        let atlas = project
+            .add_tileset(Path::new("atlas.png"), 16, 16, 16)
+            .unwrap();
+        project.assign_tileset(tiles, atlas).unwrap();
+        let key = app.selected.unwrap();
+        project
+            .paint_tile(key, 0, 4, 4, 0, [0, 0], 0, false)
+            .unwrap();
+        app.layer = 1;
+        app.details = false;
+        let ctx = egui::Context::default();
+        let pos = egui::pos2(72., 72.);
+        let modifiers = egui::Modifiers::ALT;
+        canvas_frame(
+            &mut app,
+            &ctx,
+            vec![egui::Event::PointerMoved(pos)],
+            modifiers,
+        );
+        canvas_frame(
+            &mut app,
+            &ctx,
+            vec![egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers,
+            }],
+            modifiers,
+        );
+        let selection = app
+            .selection_group
+            .as_ref()
+            .expect("picked the visible tile");
+        assert_eq!(selection["layers"][0]["layerDefUid"], tiles);
+        assert!(!app.dirty);
     }
 
     #[test]
@@ -3240,6 +3511,115 @@ mod tests {
         );
         assert_eq!(cells[6 + 6 * 16], 1);
         assert_eq!(cells[7 + 7 * 16], 0);
+    }
+
+    #[test]
+    fn rectangle_brush_crosses_level_edges_without_clamping_the_cursor_or_filling() {
+        let inside = egui::pos2(132., 168.);
+        let outside = egui::pos2(120., 168.);
+        for (start, end, preview_end) in [
+            (inside, outside, [-1, 2]),
+            (outside, inside, [0, 2]),
+        ] {
+            let mut app = editor();
+            let ctx = egui::Context::default();
+            let canvas = Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(512., 512.));
+            let modifiers = egui::Modifiers {
+                shift: true,
+                ..Default::default()
+            };
+            let button = |pos, pressed| egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers,
+            };
+            let frame = |app: &mut EditorApp, events| {
+                let _ = ctx.run(
+                    egui::RawInput {
+                        events,
+                        modifiers,
+                        screen_rect: Some(canvas),
+                        ..Default::default()
+                    },
+                    |ctx| {
+                        egui::CentralPanel::default()
+                            .frame(egui::Frame::NONE)
+                            .show(ctx, |ui| {
+                                let (rect, response) =
+                                    ui.allocate_exact_size(canvas.size(), Sense::click_and_drag());
+                                app.canvas_controls(ctx, rect, &response);
+                            });
+                    },
+                );
+            };
+            frame(&mut app, vec![egui::Event::PointerMoved(start)]);
+            frame(&mut app, vec![button(start, true)]);
+            frame(&mut app, vec![egui::Event::PointerMoved(end)]);
+            assert!(
+                matches!(app.gesture, Some(tools::Gesture::Rectangle { end, .. }) if end == preview_end)
+            );
+            frame(&mut app, vec![button(end, false)]);
+            let project = app.project.as_ref().unwrap();
+            let cells = project.layer(app.selected.unwrap(), 0).unwrap()["intGridCsv"]
+                .as_array()
+                .unwrap();
+            assert_eq!(cells[32], 1);
+            assert_eq!(cells.iter().filter(|&cell| cell == 1).count(), 1);
+        }
+    }
+
+    #[test]
+    fn free_brush_enters_from_outside_the_level_and_interpolates_the_boundary_cells() {
+        let start = egui::pos2(40., 56.);
+        let end = egui::pos2(118., 104.);
+        let modifiers = egui::Modifiers::NONE;
+        let boundary_cells = [[0, 4], [1, 4], [2, 5], [3, 5], [4, 6]];
+        let painted = |app: &EditorApp| {
+            let project = app.project.as_ref().unwrap();
+            let cells = project.layer(app.selected.unwrap(), 0).unwrap()["intGridCsv"]
+                .as_array()
+                .unwrap();
+            cells
+                .iter()
+                .enumerate()
+                .filter_map(|(i, value)| (value == 1).then_some([i as i32 % 16, i as i32 / 16]))
+                .collect::<Vec<_>>()
+        };
+        for (pointer_button, before, after) in [
+            (egui::PointerButton::Primary, &[][..], &boundary_cells[..]),
+            (egui::PointerButton::Secondary, &boundary_cells[..], &[][..]),
+        ] {
+            let mut app = editor();
+            app.viewport.center[0] = 80.;
+            let ctx = egui::Context::default();
+            let key = app.selected.unwrap();
+            let cells = before.iter().map(|&cell| (cell, 1)).collect::<Vec<_>>();
+            app.project
+                .as_mut()
+                .unwrap()
+                .paint_int_grid_cells(key, 0, &cells)
+                .unwrap();
+            let button = |pos, pressed| egui::Event::PointerButton {
+                pos,
+                button: pointer_button,
+                pressed,
+                modifiers,
+            };
+            canvas_frame(&mut app, &ctx, vec![egui::Event::PointerMoved(start)], modifiers);
+            canvas_frame(&mut app, &ctx, vec![button(start, true)], modifiers);
+            assert_eq!(
+                app.world_context.menu_open(),
+                pointer_button == egui::PointerButton::Secondary
+            );
+            assert_eq!(painted(&app), before);
+            assert!(!app.dirty);
+            canvas_frame(&mut app, &ctx, vec![egui::Event::PointerMoved(end)], modifiers);
+            canvas_frame(&mut app, &ctx, vec![button(end, false)], modifiers);
+            assert_eq!(painted(&app), after, "{pointer_button:?}");
+            app.undo_action(false);
+            assert_eq!(painted(&app), before);
+        }
     }
 
     #[test]
@@ -3946,7 +4326,7 @@ mod tests {
 
     #[test]
     fn creating_an_entity_immediately_drags_or_resizes_with_one_undo() {
-        for resizable in [false, true] {
+        for (resizable, shift) in [(false, false), (true, false), (false, true), (true, true)] {
             let mut p = Project::new();
             p.add_layer("Entities", "Entities", 16).unwrap();
             let uid = p.add_entity_def("Actor", 16, 16).unwrap();
@@ -3966,7 +4346,10 @@ mod tests {
             let ctx = egui::Context::default();
             let start = egui::pos2(40.0, 40.0);
             let end = egui::pos2(104.0, 40.0);
-            let modifiers = egui::Modifiers::NONE;
+            let modifiers = egui::Modifiers {
+                shift,
+                ..Default::default()
+            };
             canvas_frame(
                 &mut app,
                 &ctx,
@@ -4008,7 +4391,7 @@ mod tests {
             if resizable {
                 assert!(entity["width"].as_i64().unwrap() > 16);
             } else {
-                assert_eq!(entity["px"][0], 104);
+                assert_eq!(entity["px"][0], if shift { 40 } else { 104 });
             }
             app.undo_action(false);
             assert!(

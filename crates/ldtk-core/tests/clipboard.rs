@@ -89,6 +89,71 @@ fn layer_rule_and_group_clipboards_are_atomic_and_remap_every_owned_uid() {
     assert_eq!(p.layer(p.level_keys()[0], 1).unwrap()["intGridCsv"][0], 0);
 }
 #[test]
+fn rule_group_and_layer_clips_apply_source_rule_tidy_before_pasting() {
+    let mut project = Project::new();
+    let source = project.add_layer("Values", "IntGrid", 16).unwrap();
+    let layer = project.add_layer("Result", "AutoLayer", 16).unwrap();
+    project.json["defs"]["tilesets"] = json!([{"uid":400,"tileGridSize":16,"pxWid":64,"pxHei":32}]);
+    project
+        .update_layer_properties(layer, &json!({"autoSourceLayerDefUid":source}))
+        .unwrap();
+    project.assign_tileset(layer, 400).unwrap();
+    let group = project.add_auto_rule_group(layer, "Walls").unwrap();
+    let first = project.add_auto_rule(layer, group, 3).unwrap();
+    let second = project.add_auto_rule(layer, group, 1).unwrap();
+    project
+        .update_auto_rule(
+            layer,
+            group,
+            first,
+            &json!({"pattern":[0,0,0,0,1,0,0,0,0],"tileRectsIds":[[0]],"flipX":true,
+                "flipY":true,"checker":"Horizontal","xModulo":1,"yModulo":2,
+                "outOfBoundsValue":99,"extension":{"preserve":true}}),
+        )
+        .unwrap();
+    project
+        .update_auto_rule(layer, group, second, &json!({"outOfBoundsValue":1}))
+        .unwrap();
+    let before = project.json.clone();
+
+    let single = project.copy_auto_rule(layer, group, Some(first)).unwrap();
+    let group_clip = project.copy_auto_rule(layer, group, None).unwrap();
+    let layer_clip = project.copy_definition("layers", layer).unwrap();
+    let remap = project
+        .remap_rule_group_clipboard(layer, group, "Remapped", &[(1, 2)].into(), [1, 0])
+        .unwrap();
+    let mut expected = project.layer_def(layer).unwrap()["autoRuleGroups"][0]["rules"][0].clone();
+    for (key, val) in [
+        ("size", json!(1)),
+        ("pattern", json!([1])),
+        ("flipX", json!(false)),
+        ("flipY", json!(false)),
+        ("checker", json!("Vertical")),
+        ("outOfBoundsValue", serde_json::Value::Null),
+    ] {
+        expected[key] = val;
+    }
+    assert_eq!(single.value, expected);
+    assert_eq!(group_clip.value["rules"][0], expected);
+    assert_eq!(group_clip.value["rules"][1]["outOfBoundsValue"], 1);
+    assert_eq!(layer_clip.value["autoRuleGroups"][0], group_clip.value);
+    assert_eq!(remap.value["rules"][0]["size"], 1);
+    assert_eq!(remap.value["rules"][0]["pattern"], json!([2]));
+    assert_eq!(remap.value["rules"][0]["tileRectsIds"], json!([[1]]));
+    assert_eq!(remap.value["rules"][1]["outOfBoundsValue"], 2);
+    assert_eq!(project.json, before);
+
+    let duplicate = project
+        .paste_auto_rule(layer, group, &single, Some(first))
+        .unwrap();
+    expected["uid"] = json!(duplicate);
+    assert_eq!(
+        project.layer_def(layer).unwrap()["autoRuleGroups"][0]["rules"][1],
+        expected
+    );
+}
+
+#[test]
 fn duplicate_remap_preserves_pattern_sign_and_checks_tile_coordinates() {
     let mut p = Project::new();
     let layer = p.add_layer("Ground", "IntGrid", 16).unwrap();

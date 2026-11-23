@@ -1,4 +1,5 @@
 //! Common layer settings from the pinned LDtk EditLayerDefs form.
+use super::source_controls::{FormSelectAppearance, TilesetChoice, tileset_picker};
 use super::world_level_panel::form_text_input;
 use super::*;
 
@@ -137,17 +138,108 @@ fn reset_layer_color(ui: &mut egui::Ui, patch: &mut Value, key: &str) {
 impl EditorApp {
     pub(in super::super) fn layer_tileset_assignment(&mut self, ui: &mut egui::Ui, def: &Value) {
         let uid = def["uid"].as_i64().unwrap();
-        let options = remap_options(ui, ("layer", uid), true, ldtk_core::TilesetRemap::TileIds);
-        let mut selected = def["tilesetDefUid"].as_i64().unwrap_or(-1);
-        let previous = selected;
-        self.tileset_choice(ui, "Tileset", &mut selected);
-        if selected != previous {
-            self.apply_layer_tileset(uid, (selected >= 0).then_some(selected), options);
+        let project = self.project.as_ref().unwrap();
+        let tilesets = project.json["defs"]["tilesets"]
+            .as_array()
+            .map(Vec::as_slice)
+            .unwrap_or_default();
+        let current = def["tilesetDefUid"].as_i64();
+        let tile_size = current
+            .and_then(|atlas| project.tileset(atlas))
+            .and_then(|tileset| tileset["tileGridSize"].as_i64());
+        let mut open_tilesets = false;
+        let selected = ui
+            .horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 3.;
+                let total_width = ui.available_width();
+                let size_label = tile_size.map(|size| {
+                    locale::format(ui, "{size}px tiles", &[("size", &size.to_string())])
+                });
+                let size_galley = size_label.map(|label| {
+                    ui.painter().layout_no_wrap(
+                        label,
+                        FontId::proportional(14.),
+                        Color32::from_white_alpha(128),
+                    )
+                });
+                let width = if tilesets.is_empty() {
+                    total_width * 0.5 - 4.
+                } else if let Some(galley) = &size_galley {
+                    total_width - galley.size().x - 3.
+                } else {
+                    total_width
+                };
+                let selected =
+                    tileset_picker(ui, width, tilesets, current, "-- Tileset required --", false);
+                if tilesets.is_empty() {
+                    open_tilesets = orange(
+                        ui,
+                        "CREATE NEW TILESET",
+                        egui::vec2(ui.available_width(), 29.),
+                    )
+                    .clicked();
+                } else if let Some(galley) = size_galley {
+                    ui.add(egui::Label::new(galley));
+                }
+                selected
+            })
+            .inner;
+        if let Some(tile_size) = tile_size.filter(|size| *size > 0)
+            && let Some(grid_size) = def["gridSize"].as_i64().filter(|size| *size > 0)
+            && tile_size % grid_size != 0
+        {
+            let width = ui.available_width();
+            let warning = locale::format(
+                ui,
+                "Warning: the TILESET grid ({tileset}px) differs from the LAYER grid ({layer}px), and the values aren't multiples, which can lead to unexpected behaviors when adding a group of tiles.",
+                &[("tileset", &tile_size.to_string()), ("layer", &grid_size.to_string())],
+            );
+            let galley = ui.painter().layout(
+                warning,
+                FontId::proportional(14.667),
+                Color32::PLACEHOLDER,
+                (width - 18.).max(1.),
+            );
+            ui.add_space(4. - ui.spacing().item_spacing.y);
+            let (rect, _) =
+                ui.allocate_exact_size(egui::vec2(width, galley.size().y + 18.), Sense::hover());
+            project_dialogs::paint_warning(
+                ui.painter(),
+                rect,
+                galley,
+                Color32::from_black_alpha(168),
+                Color32::WHITE,
+            );
+        }
+        let options = if tilesets.is_empty() {
+            RemapOptions {
+                mode: ldtk_core::TilesetRemap::TileIds,
+                allow_loss: false,
+                clear_overrides: false,
+            }
+        } else {
+            remap_options(ui, ("layer", uid), true, ldtk_core::TilesetRemap::TileIds)
+        };
+        if let Some(selected) = selected {
+            self.apply_layer_tileset(def, selected, options);
+        }
+        if open_tilesets {
+            self.show_panel(Some(Panel::Tilesets));
         }
     }
 
-    fn apply_layer_tileset(&mut self, uid: i64, atlas: Option<i64>, options: RemapOptions) {
-        if let Some(discarded) = self.edit_recoverable("Tileset assigned", |p| {
+    fn apply_layer_tileset(&mut self, def: &Value, atlas: TilesetChoice, options: RemapOptions) {
+        let uid = def["uid"].as_i64().unwrap();
+        let has_auto_rules = matches!(def["type"].as_str(), Some("AutoLayer" | "IntGrid"))
+            && def["autoRuleGroups"]
+                .as_array()
+                .is_some_and(|groups| !groups.is_empty());
+        let assign = |p: &mut Project| {
+            let atlas = match atlas {
+                TilesetChoice::Unassigned => None,
+                TilesetChoice::Existing(uid) => Some(uid),
+                TilesetChoice::EmbeddedIcons => Some(p.ensure_embedded_icons()?),
+            };
             p.assign_tileset_with_policy(
                 uid,
                 atlas,
@@ -155,8 +247,13 @@ impl EditorApp {
                 options.clear_overrides,
                 options.allow_loss,
             )
-        }) && discarded > 0
-        {
+        };
+        let discarded = if has_auto_rules {
+            self.edit_recoverable("Changed auto-layer tileset", assign)
+        } else {
+            self.edit("Tileset assigned", assign)
+        };
+        if let Some(discarded) = discarded && discarded > 0 {
             self.status = format!("Tileset assigned; removed {discarded} references");
         }
     }
@@ -391,25 +488,26 @@ impl EditorApp {
                                 ("YDescending", "Y descending (lower Y in front)"),
                             ];
                             let current = text(def, "entityDepthSorting", "Manual");
-                            let mut selected = current;
-                            let label = choices
+                            let selected = choices
                                 .iter()
-                                .find(|(value, _)| *value == current)
-                                .map_or(choices[0].1, |(_, label)| label);
-                            egui::ComboBox::from_id_salt("entity-depth-sorting")
-                                .width(ui.available_width())
-                                .selected_text(locale::tr(ui, label))
-                                .show_ui(ui, |ui| {
-                                    for (value, label) in choices {
-                                        ui.selectable_value(
-                                            &mut selected,
-                                            value,
-                                            locale::tr(ui, label),
-                                        );
-                                    }
-                                });
-                            if selected != current {
-                                patch["entityDepthSorting"] = json!(selected);
+                                .position(|(value, _)| *value == current)
+                                .unwrap_or(0);
+                            let options =
+                                choices.map(|(_, label)| (locale::tr(ui, label), Color32::WHITE));
+                            let response = source_controls::searchable_select_button(
+                                ui,
+                                ui.available_width(),
+                                options[selected].0,
+                            );
+                            if let Some((index, _)) = source_controls::searchable_select_popup(
+                                &response,
+                                response.id.with("entity-depth-sorting"),
+                                selected,
+                                &options,
+                            )
+                                && choices[index].0 != current
+                            {
+                                patch["entityDepthSorting"] = json!(choices[index].0);
                             }
                         });
                         layer_row(ui, "Hide entity fields when inactive", |ui| {
@@ -523,7 +621,7 @@ impl EditorApp {
             .unwrap_or_default();
         let auto = def["type"] == "AutoLayer";
         let atlas = def["tilesetDefUid"].as_i64();
-        let mut new_atlas = atlas;
+        let mut new_atlas = None;
         let source = def["autoSourceLayerDefUid"].as_i64();
         let mut patch = json!({});
         let mut edit_rules = false;
@@ -531,30 +629,38 @@ impl EditorApp {
         if auto {
             layer_row(ui, "Auto-Layer source", |ui| {
                 ui.vertical(|ui| {
-                    let mut selected = source;
-                    let candidates = layers.iter().filter(|layer| layer["type"] == "IntGrid");
                     let placeholder = locale::tr(ui, "-- Select an IntGrid layer --");
-                    egui::ComboBox::from_id_salt(("auto-layer-source", uid))
-                        .width(ui.available_width())
-                        .selected_text(
-                            candidates
-                                .clone()
-                                .find(|layer| layer["uid"].as_i64() == source)
-                                .map(|layer| text(layer, "identifier", placeholder))
-                                .unwrap_or(placeholder),
-                        )
-                        .show_ui(ui, |ui| {
-                            ui.selectable_value(&mut selected, None, placeholder);
-                            for layer in candidates {
-                                ui.selectable_value(
-                                    &mut selected,
-                                    layer["uid"].as_i64(),
+                    let mut candidates = vec![(None, placeholder)];
+                    candidates.extend(
+                        layers
+                            .iter()
+                            .filter(|layer| layer["type"] == "IntGrid")
+                            .filter_map(|layer| {
+                                Some((
+                                    Some(layer["uid"].as_i64()?),
                                     text(layer, "identifier", locale::tr(ui, "Layer")),
-                                );
-                            }
-                        });
-                    if selected != source {
-                        patch["autoSourceLayerDefUid"] = json!(selected);
+                                ))
+                            }),
+                    );
+                    let current = candidates.iter().position(|(id, _)| *id == source);
+                    let options: Vec<_> = candidates.iter().map(|(_, label)| (*label, None)).collect();
+                    let title = current.map_or(placeholder, |index| options[index].0);
+                    if let Some(index) = source_controls::form_select(
+                        ui,
+                        ("auto-layer-source", uid),
+                        29.,
+                        &options,
+                        current,
+                        title,
+                        if source.is_none() {
+                            FormSelectAppearance::Required
+                        } else {
+                            FormSelectAppearance::Normal
+                        },
+                    )
+                        && candidates[index].0 != source
+                    {
+                        patch["autoSourceLayerDefUid"] = json!(candidates[index].0);
                     }
                     let green = Color32::from_rgb(101, 178, 117);
                     let width = ui.available_width();
@@ -608,34 +714,14 @@ impl EditorApp {
         layer_row(ui, "Auto-layer tileset", |ui| {
             let can_edit_rules = atlas.is_some() && (!auto || source.is_some());
             let width = ui.available_width() - if can_edit_rules { 104. } else { 0. };
-            let internal_icons = locale::tr(ui, "⚙ Internal icons by FinalBossBlues");
-            let name = |def: &Value| {
-                if def["embedAtlas"] == "LdtkIcons" {
-                    internal_icons
-                } else {
-                    text(def, "identifier", "Tileset")
-                }
-                .to_owned()
-            };
-            egui::ComboBox::from_id_salt(("auto-layer-tileset", uid))
-                .width(width.max(40.))
-                .selected_text(
-                    tilesets
-                        .iter()
-                        .find(|def| def["uid"].as_i64() == atlas)
-                        .map(name)
-                        .unwrap_or_else(|| locale::tr(ui, "-- Select a tileset --").into()),
-                )
-                .show_ui(ui, |ui| {
-                    ui.selectable_value(
-                        &mut new_atlas,
-                        None,
-                        locale::tr(ui, "-- Select a tileset --"),
-                    );
-                    for def in tilesets {
-                        ui.selectable_value(&mut new_atlas, def["uid"].as_i64(), name(def));
-                    }
-                });
+            new_atlas = tileset_picker(
+                ui,
+                width,
+                tilesets,
+                atlas,
+                "-- Select a tileset --",
+                auto && atlas.is_none(),
+            );
             edit_rules = can_edit_rules && orange(ui, "EDIT RULES", egui::vec2(98., 29.)).clicked();
         });
         layer_row(ui, "Biome enum", |ui| {
@@ -703,8 +789,8 @@ impl EditorApp {
             });
         }
         let options = remap_options(ui, ("layer", uid), true, ldtk_core::TilesetRemap::TileIds);
-        if new_atlas != atlas {
-            self.apply_layer_tileset(uid, new_atlas, options);
+        if let Some(atlas) = new_atlas {
+            self.apply_layer_tileset(def, atlas, options);
         }
         if changed(&patch) {
             let apply = |p: &mut Project| p.update_layer_properties(uid, &patch);
@@ -754,24 +840,26 @@ fn auto_layer_blockers(
                 .into_iter()
                 .collect()
         });
-    let mut add = None;
-    egui::ComboBox::from_id_salt(("auto-blocker", uid))
-        .width(ui.available_width())
-        .selected_text(locale::tr(ui, "-- Add a layer --"))
-        .show_ui(ui, |ui| {
-            for layer in layers {
-                if let Some(other) = layer["uid"].as_i64()
-                    && other != uid
-                    && !blockers.contains(&other)
-                    && matches!(layer["type"].as_str(), Some("Tiles" | "IntGrid"))
-                    && ui
-                        .selectable_label(false, text(layer, "identifier", "Layer"))
-                        .clicked()
-                {
-                    add = Some(other);
-                }
-            }
-        });
+    let placeholder = locale::tr(ui, "-- Add a layer --");
+    let mut candidates = vec![(None, placeholder)];
+    candidates.extend(layers.iter().filter_map(|layer| {
+        let other = layer["uid"].as_i64()?;
+        (other != uid
+            && !blockers.contains(&other)
+            && matches!(layer["type"].as_str(), Some("Tiles" | "IntGrid")))
+        .then(|| (Some(other), text(layer, "identifier", locale::tr(ui, "Layer"))))
+    }));
+    let options: Vec<_> = candidates.iter().map(|(_, label)| (*label, None)).collect();
+    let add = source_controls::form_select(
+        ui,
+        ("auto-blocker", uid),
+        29.,
+        &options,
+        Some(0),
+        placeholder,
+        FormSelectAppearance::Normal,
+    )
+    .and_then(|index| candidates[index].0);
     let mut remove = None;
     ui.scope(|ui| {
         ui.spacing_mut().item_spacing.y = 4.;

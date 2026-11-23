@@ -337,60 +337,150 @@ impl EditorApp {
             }
         }
     }
-    pub(super) fn recent_file_menu(&mut self, ui: &mut egui::Ui, path: &Path) {
-        let dir = path.parent().unwrap_or(Path::new("."));
-        if ui.button(locale::tr(ui, "Load from this folder")).clicked() {
-            self.request(ui.ctx(), Action::BrowseInDir(dir.to_owned()));
-            ui.close();
+    pub(super) fn recent_path_menu(&mut self, ui: &mut egui::Ui, path: &Path, file: bool) {
+        enum RecentAction {
+            Open,
+            Locate,
+            AssignColor,
+            ResetColor,
+            Remove,
+            Clear,
         }
-        if ui.button(locale::tr(ui, "Locate file")).clicked() {
-            if let Err(error) = locate(path, true) {
-                self.status = error.to_string();
-                self.status_error = true;
+        let (directory, history, open, open_icon, locate_label, clear) = if file {
+            (
+                path.parent().unwrap_or(Path::new(".")),
+                "recentProjects",
+                "Load from this folder",
+                egui::include_image!("../../assets/icons/open.svg"),
+                "Locate file",
+                "Clear all history",
+            )
+        } else {
+            (
+                path,
+                "recentDirs",
+                "New project in this folder",
+                egui::include_image!("../../assets/icons/new.svg"),
+                "Locate folder",
+                "Clear all folder history",
+            )
+        };
+        let assigned = self.settings.value["recentDirColors"]
+            .as_array()
+            .is_some_and(|colors| {
+                colors
+                    .iter()
+                    .any(|color| color["path"].as_str() == directory.to_str())
+            });
+        let color = egui::include_image!("../../assets/icons/color.svg");
+        let font = FontId::proportional(13.333);
+        let rows: Vec<_> = [
+            Some((RecentAction::Open, open, Some(open_icon), false)),
+            Some((
+                RecentAction::Locate,
+                locate_label,
+                Some(egui::include_image!("../../assets/icons/locate.svg")),
+                false,
+            )),
+            Some((
+                RecentAction::AssignColor,
+                "Assign custom color",
+                Some(color.clone()),
+                true,
+            )),
+            assigned.then_some((
+                RecentAction::ResetColor,
+                "Reset assigned color",
+                Some(color),
+                false,
+            )),
+            Some((RecentAction::Remove, "Remove from history", None, true)),
+            Some((RecentAction::Clear, clear, None, false)),
+        ]
+        .into_iter()
+        .flatten()
+        .map(|(action, label, icon, gap)| {
+            let label = locale::tr(ui, label).to_uppercase();
+            let galley = ui
+                .painter()
+                .layout_no_wrap(label, font.clone(), Color32::PLACEHOLDER);
+            let left = if icon.is_some() { 50. } else { 20. };
+            (action, galley, icon, gap, left)
+        })
+        .collect();
+        let width = rows
+            .iter()
+            .map(|(_, text, _, _, left)| text.size().x + left + 20.)
+            .fold(0., f32::max);
+        ui.spacing_mut().item_spacing.y = 0.;
+        for (index, (action, text, icon, gap, left)) in rows.into_iter().enumerate() {
+            if gap {
+                ui.add_space(8.);
+            }
+            let border = if index == 0 { 0. } else { 1. };
+            let height = if icon.is_some() { 38. } else { 31. };
+            let (rect, response) =
+                ui.allocate_exact_size(egui::vec2(width, height + border), Sense::click());
+            let center = rect.left_center() + egui::vec2(0., border * 0.5);
+            let text_color = if response.hovered() {
+                ui.painter().rect_filled(rect, 0., theme::ACCENT);
+                Color32::BLACK
+            } else {
+                theme::ACCENT
+            };
+            if border > 0. {
+                ui.painter().hline(
+                    rect.x_range(),
+                    rect.top() + 0.5,
+                    Stroke::new(1., theme::MEDIUM),
+                );
+            }
+            if let Some(icon) = icon {
+                egui::Image::new(icon)
+                    .tint(Color32::from_white_alpha(179))
+                    .paint_at(
+                        ui,
+                        Rect::from_center_size(center + egui::vec2(31., 0.), Vec2::splat(22.)),
+                    );
+            }
+            response.widget_info(|| {
+                egui::WidgetInfo::labeled(egui::WidgetType::Button, true, text.text())
+            });
+            ui.painter().galley(
+                center + egui::vec2(left, -text.size().y * 0.5),
+                text,
+                text_color,
+            );
+            if !response.clicked() {
+                continue;
             }
             ui.close();
-        }
-        self.directory_color_menu(ui, dir);
-        if ui.button(locale::tr(ui, "Remove from history")).clicked() {
-            self.remove_recent("recentProjects", path);
-            ui.close();
-        }
-        if ui.button(locale::tr(ui, "Clear all history")).clicked() {
-            self.settings.value["recentProjects"] = serde_json::json!([]);
-            let _ = self.settings.save();
-            ui.close();
-        }
-    }
-    pub(super) fn recent_folder_menu(&mut self, ui: &mut egui::Ui, path: &Path) {
-        if ui
-            .button(locale::tr(ui, "New project in this folder"))
-            .clicked()
-        {
-            self.request(ui.ctx(), Action::NewInDir(path.to_owned()));
-            ui.close();
-        }
-        if ui.button(locale::tr(ui, "Locate folder")).clicked() {
-            if let Err(error) = locate(path, false) {
-                self.status = error.to_string();
-                self.status_error = true;
+            match action {
+                RecentAction::Open => self.request(
+                    ui.ctx(),
+                    if file {
+                        Action::BrowseInDir(directory.to_owned())
+                    } else {
+                        Action::NewInDir(directory.to_owned())
+                    },
+                ),
+                RecentAction::Locate => {
+                    if let Err(error) = locate(path, file) {
+                        self.status = error.to_string();
+                        self.status_error = true;
+                    }
+                }
+                RecentAction::AssignColor => self.edit_recent_directory_color(ui.ctx(), directory),
+                RecentAction::ResetColor => self.settings.force_dir_color(directory, None),
+                RecentAction::Remove => self.remove_recent(history, path),
+                RecentAction::Clear => {
+                    self.settings.value[history] = serde_json::json!([]);
+                    let _ = self.settings.save();
+                }
             }
-            ui.close();
-        }
-        self.directory_color_menu(ui, path);
-        if ui.button(locale::tr(ui, "Remove from history")).clicked() {
-            self.remove_recent("recentDirs", path);
-            ui.close();
-        }
-        if ui
-            .button(locale::tr(ui, "Clear all folder history"))
-            .clicked()
-        {
-            self.settings.value["recentDirs"] = serde_json::json!([]);
-            let _ = self.settings.save();
-            ui.close();
         }
     }
-    fn remove_recent(&mut self, kind: &str, path: &Path) {
+    pub(super) fn remove_recent(&mut self, kind: &str, path: &Path) {
         if let Some(entries) = self.settings.value[kind].as_array_mut() {
             entries.retain(|entry| entry.as_str() != path.to_str());
         }

@@ -127,11 +127,11 @@ fn left_button(
     response.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
-fn matches_search(path: &std::path::Path, query: &str) -> bool {
-    let path = path.to_string_lossy().to_lowercase();
+fn matches_search(text: &str, query: &str) -> bool {
+    let text = text.to_lowercase();
     query
         .split_whitespace()
-        .all(|word| path.contains(&word.to_lowercase()))
+        .all(|word| text.contains(&word.to_lowercase()))
 }
 
 fn path_job(
@@ -363,9 +363,22 @@ impl EditorApp {
                 .set_ui_state_int("HideSamplesOnHome", None, i64::from(hide));
         }
         let search_id = egui::Id::new("source-home-search");
+        let search_input = search_id.with("input");
         let mut search = ctx
             .data_mut(|data| data.get_temp::<String>(search_id))
             .unwrap_or_default();
+        let search_was_focused = ctx.memory(|mem| {
+            mem.top_modal_layer().is_none()
+                && (mem.has_focus(search_input) || mem.had_focus_last_frame(search_input))
+        });
+        if search_was_focused
+            && ctx.input_mut(|input| {
+                input.focused && input.consume_key(egui::Modifiers::NONE, egui::Key::Escape)
+            })
+        {
+            search.clear();
+            ctx.memory_mut(|mem| mem.request_focus(search_input));
+        }
         let search_glow = ui.painter().add(egui::Shape::Noop);
         let search_frame = ui.painter().add(egui::Shape::Noop);
         let cursor_stroke = ui.visuals().text_cursor.stroke;
@@ -373,7 +386,7 @@ impl EditorApp {
         let search_response = ui.add_sized(
             [ui.available_width(), 33.],
             egui::TextEdit::singleline(&mut search)
-                .id(search_id.with("input"))
+                .id(search_input)
                 .font(FontId::proportional(14.667))
                 .text_color(Color32::WHITE)
                 .hint_text(
@@ -383,7 +396,7 @@ impl EditorApp {
                 .frame(false)
                 .margin(egui::Margin {
                     left: 29,
-                    right: 8,
+                    right: 36,
                     top: 8,
                     bottom: 8,
                 }),
@@ -425,6 +438,28 @@ impl EditorApp {
                 Vec2::splat(16.),
             ),
         );
+        if !search.is_empty() {
+            let icon_size = 19.;
+            let rect = Rect::from_center_size(
+                search_response.rect.right_center() - egui::vec2(12. + icon_size * 0.5, 0.),
+                egui::vec2(icon_size, search_response.rect.height()),
+            );
+            let clear = ui
+                .interact(rect, search_id.with("clear"), Sense::click())
+                .on_hover_cursor(egui::CursorIcon::PointingHand)
+                .on_hover_text(locale::tr(&ui, "Clear"));
+            if clear.clicked() {
+                search.clear();
+                ctx.request_repaint();
+            } else {
+                egui::Image::new(egui::include_image!("../../assets/icons/clear.svg"))
+                    .tint(Color32::WHITE.gamma_multiply(if clear.hovered() { 1. } else { 0.5 }))
+                    .paint_at(
+                        &ui,
+                        Rect::from_center_size(rect.center(), Vec2::splat(icon_size)),
+                    );
+            }
+        }
         ctx.data_mut(|data| data.insert_temp(search_id, search.clone()));
         let list_rect = Rect::from_min_max(ui.cursor().min, files.max);
         let column_width = (list_rect.width() - 8.) * 0.5;
@@ -693,11 +728,11 @@ impl EditorApp {
         query: &str,
         action: &mut Option<Action>,
     ) {
-        let entries: Vec<PathBuf> = entries
-            .iter()
-            .filter_map(Value::as_str)
-            .map(PathBuf::from)
+        let mut paths = entries.iter().filter_map(Value::as_str).peekable();
+        let has_history = paths.peek().is_some();
+        let entries: Vec<PathBuf> = paths
             .filter(|path| matches_search(path, query))
+            .map(PathBuf::from)
             .collect();
         let rect = ui.max_rect();
         ui.painter().rect_filled(rect, 0., theme::DARK);
@@ -707,7 +742,7 @@ impl EditorApp {
             Stroke::new(1_f32, theme::LIGHT),
             egui::StrokeKind::Inside,
         );
-        if entries.is_empty() {
+        if !has_history {
             egui::Image::new(egui::include_image!("../../assets/img/stripes.png"))
                 .texture_options(egui::TextureOptions::NEAREST_REPEAT)
                 .uv(Rect::from_min_max(
@@ -729,6 +764,15 @@ impl EditorApp {
             );
             return;
         }
+        let title = if files {
+            locale::tr(ui, "Recent projects")
+        } else {
+            locale::tr(ui, "Recent folders")
+        };
+        let show_title = matches_search(title, query);
+        if entries.is_empty() && !show_title {
+            return;
+        }
         let mut content = child(ui, rect.shrink(4.), "source-recent-inner");
         scrollbar(&mut content, 10.);
         egui::ScrollArea::vertical()
@@ -737,20 +781,18 @@ impl EditorApp {
             .max_height(rect.height() - 8.)
             .show(&mut content, |ui| {
                 ui.spacing_mut().item_spacing.y = 0.;
-                ui.add_space(3.);
-                ui.label(
-                    RichText::new(if files {
-                        locale::tr(ui, "Recent projects")
-                    } else {
-                        locale::tr(ui, "Recent folders")
-                    })
-                    .font(FontId::new(
-                        11.733,
-                        egui::FontFamily::Name("panel-title".into()),
-                    ))
-                    .color(theme::ACCENT),
-                );
-                ui.add_space(3.);
+                if show_title {
+                    ui.add_space(3.);
+                    ui.label(
+                        RichText::new(title)
+                            .font(FontId::new(
+                                11.733,
+                                egui::FontFamily::Name("panel-title".into()),
+                            ))
+                            .color(theme::ACCENT),
+                    );
+                    ui.add_space(3.);
+                }
                 ui.spacing_mut().item_spacing.y = 1.;
                 for path in entries {
                     let directory = if files {
@@ -836,13 +878,10 @@ impl EditorApp {
                             ui,
                             Rect::from_center_size(menu_rect.center(), egui::vec2(14.667, 24.933)),
                         );
-                    egui::Popup::menu(&menu_response).show(|ui| {
-                        if files {
-                            self.recent_file_menu(ui, &path);
-                        } else {
-                            self.recent_folder_menu(ui, &path);
-                        }
-                    });
+                    let menu_frame = panels::source_controls::context_menu_frame(ui.style());
+                    egui::Popup::menu(&menu_response)
+                        .frame(menu_frame)
+                        .show(|ui| self.recent_path_menu(ui, &path, files));
                     let mut text_right = menu_rect.left() - 8.;
                     if files {
                         let mut backup = child(
@@ -941,13 +980,9 @@ impl EditorApp {
                             }
                         }
                     }
-                    response.context_menu(|ui| {
-                        if files {
-                            self.recent_file_menu(ui, &path);
-                        } else {
-                            self.recent_folder_menu(ui, &path);
-                        }
-                    });
+                    egui::Popup::context_menu(&response)
+                        .frame(menu_frame)
+                        .show(|ui| self.recent_path_menu(ui, &path, files));
                 }
             });
     }
@@ -969,12 +1004,18 @@ impl EditorApp {
             ui.ctx()
                 .data_mut(|data| data.insert_temp(egui::Id::new("home-support-open"), true));
         }
+        let (version, title) = help::latest_changelog_heading();
+        let description = if title.is_empty() {
+            locale::tr(ui, "Release notes").to_owned()
+        } else {
+            format!("\"{title}\"")
+        };
         let (rect, response) = ui.allocate_exact_size(egui::vec2(width, 96.), Sense::click());
         ui.painter().rect_filled(rect, 0., theme::LIGHT);
         ui.painter().text(
             rect.min + egui::vec2(8., 17.),
             egui::Align2::LEFT_TOP,
-            locale::format(ui, "Update {version}", &[("version", "1.5.3")]),
+            locale::format(ui, "Update {version}", &[("version", version)]),
             FontId::proportional(14.667),
             theme::TEXT,
         );
@@ -987,7 +1028,7 @@ impl EditorApp {
         ui.painter().text(
             rect.min + egui::vec2(48., 48.),
             egui::Align2::LEFT_TOP,
-            locale::tr(ui, "Release notes"),
+            description,
             FontId::proportional(18.667),
             theme::ACCENT,
         );
@@ -1201,7 +1242,9 @@ mod tests {
             &ctx,
             vec![egui::Event::Text("no-such-folder".into())],
         );
-        text_rect(&output, "No recent folder");
+        assert!(!output.shapes.iter().any(|shape| {
+            matches!(&shape.shape, egui::Shape::Text(text) if text.galley.job.text == "No recent folder")
+        }));
         assert_eq!(
             ctx.data_mut(|data| data.get_temp::<String>(egui::Id::new("source-home-search")))
                 .as_deref(),
@@ -1217,6 +1260,7 @@ mod tests {
         let output = home_frame(&mut app, &ctx, vec![]);
         let examples = text_rect(&output, "Examples");
         let support = text_rect(&output, "Support my work");
+        text_rect(&output, "Update 1.5.4");
         assert!(examples.top() > 280. && examples.top() < 345.);
         assert!(support.left() > examples.right() + 400.);
         text_rect(&output, "Example projects to discover LDtk");
@@ -1272,7 +1316,11 @@ mod tests {
             &ctx,
             vec![egui::Event::Text("never-matches-this-folder".into())],
         );
-        assert!(!filtered.shapes.iter().any(|s| matches!(&s.shape,egui::Shape::Text(t) if t.galley.job.text == "Needle" || t.galley.job.text == directory.path().to_str().unwrap())));
+        assert!(!filtered.shapes.iter().any(|shape| {
+            matches!(&shape.shape, egui::Shape::Text(text)
+                if matches!(text.galley.job.text.as_str(), "Needle" | "No recent project file" | "No recent folder")
+                    || text.galley.job.text == directory.path().to_str().unwrap())
+        }));
     }
 
     #[test]
@@ -1289,6 +1337,45 @@ mod tests {
             recent.top() - search.bottom() < 24.,
             "extra Home gap: search={search:?} recent={recent:?}"
         );
+    }
+
+    #[test]
+    fn home_search_can_be_cleared_with_escape_or_the_clear_button() {
+        let ctx = egui::Context::default();
+        theme::configure(&ctx);
+        let mut app = EditorApp::empty();
+        app.settings.value["recentProjects"] = serde_json::json!(["Needle.ldtk", "Other.ldtk"]);
+        app.settings.set_ui_state_int("HideSamplesOnHome", None, 1);
+        let search = text_rect(&home_frame(&mut app, &ctx, vec![]), "Search...");
+        click(&mut app, &ctx, search.center());
+        let filtered = home_frame(&mut app, &ctx, vec![egui::Event::Text("Needle".into())]);
+        text_rect(&filtered, "Needle");
+        assert!(!filtered.shapes.iter().any(|shape| {
+            matches!(&shape.shape, egui::Shape::Text(text)
+                if matches!(text.galley.job.text.as_str(), "Other" | "Recent projects"))
+        }));
+        let output = home_frame(
+            &mut app,
+            &ctx,
+            vec![egui::Event::Key {
+                key: egui::Key::Escape,
+                physical_key: Some(egui::Key::Escape),
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
+        );
+        text_rect(&output, "Other");
+        text_rect(&output, "Recent projects");
+        assert!(ctx.memory(|memory| {
+            memory.has_focus(egui::Id::new("source-home-search").with("input"))
+        }));
+        home_frame(&mut app, &ctx, vec![egui::Event::Text("Needle".into())]);
+        let clear = ctx
+            .read_response(egui::Id::new("source-home-search").with("clear"))
+            .expect("a nonempty search shows its clear button");
+        click(&mut app, &ctx, clear.rect.center());
+        text_rect(&home_frame(&mut app, &ctx, vec![]), "Other");
     }
 
     #[test]
@@ -1377,11 +1464,20 @@ mod tests {
             egui::pos2(panel.right() - 21., title.top() + 34.),
         );
         let output = home_frame(&mut app, &ctx, vec![]);
-        text_rect(&output, "Locate file");
+        let load = text_rect(&output, "LOAD FROM THIS FOLDER");
+        let locate = text_rect(&output, "LOCATE FILE");
+        let color = text_rect(&output, "ASSIGN CUSTOM COLOR");
+        let remove = text_rect(&output, "REMOVE FROM HISTORY");
+        assert!((locate.top() - load.top() - 38.5).abs() <= 1., "{load:?} {locate:?}");
+        assert!((color.top() - locate.top() - 47.).abs() <= 1., "{locate:?} {color:?}");
+        assert!((locate.left() - remove.left() - 30.).abs() < 1.);
         assert!(
             app.pending.is_none() && app.project.is_none(),
             "context menu click must not open the row"
         );
+        click(&mut app, &ctx, remove.center());
+        assert_eq!(app.settings.value["recentProjects"], serde_json::json!([]));
+        assert!(path.is_file());
     }
 
     #[test]

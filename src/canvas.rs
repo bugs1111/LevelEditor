@@ -80,6 +80,10 @@ pub fn text<'a>(value: &'a Value, field: &str, fallback: &'a str) -> &'a str {
     value[field].as_str().unwrap_or(fallback)
 }
 
+pub(crate) fn layer_visible_in_tiles_only(kind: &str, def: &Value) -> bool {
+    matches!(kind, "Tiles" | "AutoLayer") || kind == "IntGrid" && !def["tilesetDefUid"].is_null()
+}
+
 pub fn placements(project: &Project, selected: LevelKey) -> Vec<(LevelKey, [f32; 4])> {
     let settings = selected
         .world
@@ -976,6 +980,9 @@ impl Scene<'_> {
         let Some((tileset, texture)) =
             tileset.and_then(|tileset| self.texture(tileset).map(|texture| (tileset, texture)))
         else {
+            if region.is_none() && layer["__type"] == "IntGrid" {
+                return self.intgrid(painter, layer, def, transform, alpha);
+            }
             if region.is_some()
                 || layer["__type"] != "Tiles"
                 || tileset
@@ -1530,6 +1537,11 @@ pub fn draw(
                 if options.hidden.contains(&uid) || layer["visible"].as_bool() == Some(false) {
                     continue;
                 }
+                let kind = text(layer, "__type", "");
+                let visible_in_tiles_only = layer_visible_in_tiles_only(kind, def);
+                if !options.details && !visible_in_tiles_only {
+                    continue;
+                }
                 let active = key == options.selected && index == options.active_layer;
                 let alpha = scene.layer_alpha(layer, def, active);
                 let filtered = options.single_layer && !active && blur::available();
@@ -1540,7 +1552,6 @@ pub fn draw(
                     number(layer, "__pxTotalOffsetY", 0.),
                 ]);
                 let first = blur::begin(painter);
-                let kind = text(layer, "__type", "");
                 if kind == "Entities" {
                     let entities = options
                         .async_paint
@@ -1563,8 +1574,7 @@ pub fn draw(
                         egui::vec2(width as f32, height as f32),
                     );
                     let layer_painter = canvas_painter.with_clip_rect(scene.screen(base.rect(mask)));
-                    let autotile = kind == "AutoLayer"
-                        || (kind == "IntGrid" && !layer["__tilesetDefUid"].is_null());
+                    let autotile = kind != "Tiles" && visible_in_tiles_only;
                     if kind == "IntGrid" && (!autotile || !options.render_auto) {
                         count += scene.intgrid(&layer_painter, layer, def, transform, draw_alpha);
                     }

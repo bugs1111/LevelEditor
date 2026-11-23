@@ -7,15 +7,38 @@ pub(super) struct LayerVisibilityPress {
 }
 
 impl EditorApp {
-    pub(super) fn set_single_layer_mode(&mut self, value: bool) {
+    fn clear_canvas_option_selection(&mut self) {
         self.finish_gesture();
         self.finish_stroke();
-        self.single_layer = value;
-        self.settings.value["singleLayerMode"] = value.into();
-        let _ = self.settings.save();
         self.selection = None;
         self.selection_group = None;
         self.entity_index = None;
+    }
+
+    fn save_canvas_option(&mut self, key: &str, value: bool) {
+        self.settings.value[key] = value.into();
+        let _ = self.settings.save();
+    }
+
+    fn notify_canvas_switch(&mut self, label: &str, value: bool) {
+        let state = if value { "ON" } else { "off" };
+        let message = self.repaint.as_ref().map_or_else(
+            || label.replace("{state}", state),
+            |ctx| locale::format_ctx(ctx, label, &[("state", locale::tr_ctx(ctx, state))]),
+        );
+        self.notify_quick(message);
+    }
+
+    pub(super) fn set_grid(&mut self, value: bool) {
+        self.grid = value;
+        self.save_canvas_option("grid", value);
+        self.notify_canvas_switch("Grid: {state}", value);
+    }
+
+    pub(super) fn set_single_layer_mode(&mut self, value: bool) {
+        self.clear_canvas_option_selection();
+        self.single_layer = value;
+        self.save_canvas_option("singleLayerMode", value);
         let label = if value {
             "Single layer mode: ON"
         } else {
@@ -28,23 +51,45 @@ impl EditorApp {
         self.notify_quick(message.into());
     }
     pub(super) fn set_details(&mut self, value: bool) {
-        self.finish_gesture();
-        self.finish_stroke();
+        self.clear_canvas_option_selection();
         self.details = value;
-        self.settings.value["showDetails"] = value.into();
-        let _ = self.settings.save();
-        self.selection = None;
-        self.selection_group = None;
-        self.entity_index = None;
+        self.save_canvas_option("showDetails", value);
+        let label = if value {
+            "Showing everything"
+        } else {
+            "Showing tiles only"
+        };
+        let message = self
+            .repaint
+            .as_ref()
+            .map_or(label, |ctx| locale::tr_ctx(ctx, label));
+        self.notify_quick(message.into());
     }
     pub(super) fn set_empty_selection(&mut self, value: bool) {
-        self.finish_gesture();
-        self.finish_stroke();
-        self.settings.value["emptySpaceSelection"] = value.into();
-        let _ = self.settings.save();
-        self.selection = None;
-        self.selection_group = None;
-        self.entity_index = None;
+        self.clear_canvas_option_selection();
+        self.save_canvas_option("emptySpaceSelection", value);
+        self.notify_canvas_switch("Select empty spaces: {state}", value);
+    }
+
+    pub(super) fn set_tile_stacking(&mut self, value: bool) {
+        self.clear_canvas_option_selection();
+        self.tile_stacking = value;
+        self.save_canvas_option("tileStacking", value);
+        self.notify_canvas_switch("Tile stacking: {state}", value);
+    }
+
+    pub(super) fn set_tile_enum_overlays(&mut self, value: bool) {
+        self.clear_canvas_option_selection();
+        self.tile_tags = value;
+        self.save_canvas_option("tileEnumOverlays", value);
+        self.notify_canvas_switch("Tile enum overlay: {state}", value);
+    }
+
+    pub(super) fn set_auto_layer_rendering(&mut self, value: bool, notify: bool) {
+        self.render_auto = value;
+        if notify {
+            self.notify_canvas_switch("Auto-layers rendering: {state}", value);
+        }
     }
     pub(super) fn layer_visible(&self, key: LevelKey, index: usize) -> bool {
         self.project
@@ -56,6 +101,19 @@ impl EditorApp {
                         .hidden
                         .contains(&l["layerDefUid"].as_i64().unwrap_or(-1))
             })
+    }
+
+    pub(super) fn canvas_layer_visible(&self, key: LevelKey, index: usize) -> bool {
+        self.layer_visible(key, index)
+            && (self.details
+                || self.project.as_ref().is_some_and(|project| {
+                    let Some(layer) = project.layer(key, index) else {
+                        return false;
+                    };
+                    let uid = layer["layerDefUid"].as_i64().unwrap_or(-1);
+                    let def = project.layer_def(uid).unwrap_or(&Value::Null);
+                    canvas::layer_visible_in_tiles_only(text(layer, "__type", ""), def)
+                }))
     }
     pub(super) fn toggle_layer_visibility(&mut self, key: LevelKey, index: usize, solo: bool) {
         self.finish_gesture();

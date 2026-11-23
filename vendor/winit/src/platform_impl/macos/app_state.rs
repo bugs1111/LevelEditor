@@ -6,7 +6,8 @@ use std::time::Instant;
 use objc2::rc::Retained;
 use objc2::{declare_class, msg_send_id, mutability, ClassType, DeclaredClass};
 use objc2_app_kit::{
-    NSApplication, NSApplicationActivationPolicy, NSApplicationDelegate, NSRunningApplication,
+    NSApplication, NSApplicationActivationPolicy, NSApplicationDelegate,
+    NSApplicationTerminateReply, NSRunningApplication,
 };
 use objc2_foundation::{MainThreadMarker, NSNotification, NSObject, NSObjectProtocol};
 
@@ -23,6 +24,7 @@ pub(super) struct AppState {
     activation_policy: Option<NSApplicationActivationPolicy>,
     default_menu: bool,
     activate_ignoring_other_apps: bool,
+    quit_request_handler: Option<fn()>,
     run_loop: RunLoop,
     event_handler: EventHandler,
     stop_on_launch: Cell<bool>,
@@ -66,6 +68,16 @@ declare_class!(
             self.did_finish_launching(notification)
         }
 
+        #[method(applicationShouldTerminate:)]
+        fn app_should_terminate(&self, _sender: &NSApplication) -> NSApplicationTerminateReply {
+            if let Some(handler) = self.ivars().quit_request_handler {
+                handler();
+                NSApplicationTerminateReply::NSTerminateCancel
+            } else {
+                NSApplicationTerminateReply::NSTerminateNow
+            }
+        }
+
         #[method(applicationWillTerminate:)]
         fn app_will_terminate(&self, notification: &NSNotification) {
             self.will_terminate(notification)
@@ -79,11 +91,13 @@ impl ApplicationDelegate {
         activation_policy: Option<NSApplicationActivationPolicy>,
         default_menu: bool,
         activate_ignoring_other_apps: bool,
+        quit_request_handler: Option<fn()>,
     ) -> Retained<Self> {
         let this = mtm.alloc().set_ivars(AppState {
             activation_policy,
             default_menu,
             activate_ignoring_other_apps,
+            quit_request_handler,
             run_loop: RunLoop::main(mtm),
             event_handler: EventHandler::new(),
             stop_on_launch: Cell::new(false),

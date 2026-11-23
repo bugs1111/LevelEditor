@@ -116,19 +116,23 @@ impl EditorApp {
         rect: Rect,
         response: &egui::Response,
     ) -> bool {
+        let busy = self.is_busy();
+        let keep_menu_during_save = self.world_context.menu_open()
+            && (self.saving.is_some() || self.holding_save_completion());
+        let covered_by_search = self.command_palette && self.world_context.menu_open();
         if self.project.as_ref().is_none_or(Project::is_backup)
             || self.picking_entity_ref()
             || self
                 .panel
                 .is_some_and(|panel| !matches!(panel, Panel::Entity | Panel::World))
-            || self.is_busy()
+            || busy && !keep_menu_during_save
             || self.pending.is_some()
             || self.crash.is_some()
             || self.clicktrap
             || text_editor::is_open(ctx)
             || world_form_dialog::is_open(ctx)
             || help::changelog_is_open(ctx)
-            || self.command_palette
+            || self.command_palette && !covered_by_search
             || self.command_open
             || !self.resource_missing.is_empty()
         {
@@ -186,7 +190,9 @@ impl EditorApp {
             }
             return true;
         }
-        if response.hovered()
+        if !busy
+            && !covered_by_search
+            && response.hovered()
             && ctx.input(|i| {
                 i.pointer.secondary_pressed()
                     && !tools::space_secondary_pressed(i)
@@ -332,10 +338,12 @@ impl EditorApp {
         let mut action = None;
         let mut open = true;
         // Source opens on button-down; the corresponding right-button release must not close it.
-        let close = if ctx.input(|i| {
-            i.pointer.button_down(egui::PointerButton::Secondary)
-                || i.pointer.button_released(egui::PointerButton::Secondary)
-        }) {
+        let close = if covered_by_search
+            || ctx.input(|i| {
+                i.pointer.button_down(egui::PointerButton::Secondary)
+                    || i.pointer.button_released(egui::PointerButton::Secondary)
+            })
+        {
             egui::PopupCloseBehavior::IgnoreClicks
         } else {
             egui::PopupCloseBehavior::CloseOnClickOutside
@@ -379,7 +387,7 @@ impl EditorApp {
                         let separator = index > 0 && index != world_rows_start;
                         let (rect, response) = ui.allocate_exact_size(
                             egui::vec2(width, row.height(separator)),
-                            if row.enabled {
+                            if row.enabled && !covered_by_search {
                                 Sense::click()
                             } else {
                                 Sense::hover()
@@ -396,7 +404,7 @@ impl EditorApp {
                         let color = if !row.enabled {
                             source_controls::disabled_hatch(ui, rect);
                             theme::LIGHT
-                        } else if response.hovered() {
+                        } else if response.hovered() && !covered_by_search {
                             painter.rect_filled(rect, 0., theme::ACCENT);
                             Color32::BLACK
                         } else {
@@ -436,7 +444,7 @@ impl EditorApp {
                                 Color32::from_rgb(115, 127, 157),
                             );
                         }
-                        if response.clicked() && row.enabled {
+                        if response.clicked() && row.enabled && !busy {
                             action = Some(row.action);
                         }
                     }
@@ -955,6 +963,7 @@ mod tests {
                         a.update_world_hover(ctx, rect, response.hovered());
                         a.world_context_overlay(ui, rect);
                     });
+                a.palette_dialog(ctx);
             },
         )
     }
@@ -1344,6 +1353,257 @@ mod tests {
         assert!(app.world_context.menu.is_none());
         assert!(app.world);
         assert_eq!(app.panel, Some(Panel::World));
+    }
+
+    #[test]
+    fn save_shortcut_writes_the_project_while_the_world_context_menu_is_open() {
+        for world in [false, true] {
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("World.ldtk");
+            let mut project = Project::new();
+            project.json["backupOnSave"] = json!(false);
+            project.save(&path).unwrap();
+            let mut app = EditorApp::empty();
+            app.set_project(project);
+            app.world = world;
+            app.fit = false;
+            app.viewport.center = [128.; 2];
+            app.project.as_mut().unwrap().json["bgColor"] = json!("#334455");
+            app.dirty = true;
+            let ctx = egui::Context::default();
+            theme::configure(&ctx);
+            right_click(&mut app, &ctx, egui::pos2(740., 550.));
+            assert!(app.world_context.menu_open());
+
+            let modifiers = egui::Modifiers::COMMAND;
+            frame(
+                &mut app,
+                &ctx,
+                vec![egui::Event::Key {
+                    key: Key::S,
+                    physical_key: Some(Key::S),
+                    pressed: true,
+                    repeat: false,
+                    modifiers,
+                }],
+                modifiers,
+            );
+            assert!(app.world_context.menu_open(), "saving keeps the menu visible");
+            app.saving
+                .take()
+                .expect("save with the context menu open")
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap()
+                .unwrap();
+            assert_eq!(Project::load(&path).unwrap().json["bgColor"], "#334455");
+            assert_eq!(app.world, world);
+        }
+    }
+
+    #[test]
+    fn canvas_display_shortcuts_work_without_dismissing_the_context_menu() {
+        let mut app = editor();
+        app.world = false;
+        app.viewport.center = [128.; 2];
+        let ctx = egui::Context::default();
+        theme::configure(&ctx);
+        right_click(&mut app, &ctx, egui::pos2(740., 550.));
+        assert!(app.world_context.menu_open());
+
+        let state = |app: &EditorApp| {
+            [
+                app.grid,
+                app.render_auto,
+                app.settings.bool("emptySpaceSelection"),
+                app.tile_stacking,
+                app.single_layer,
+                app.details,
+            ]
+        };
+        let before = state(&app);
+        let details = if cfg!(target_os = "macos") {
+            egui::Modifiers::SHIFT
+        } else {
+            egui::Modifiers::CTRL | egui::Modifiers::COMMAND
+        };
+        for (index, (key, modifiers)) in [
+            (Key::G, egui::Modifiers::NONE),
+            (Key::R, egui::Modifiers::SHIFT),
+            (Key::E, egui::Modifiers::SHIFT),
+            (Key::T, egui::Modifiers::SHIFT),
+            (Key::A, egui::Modifiers::SHIFT),
+            (Key::H, details),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            frame(
+                &mut app,
+                &ctx,
+                vec![egui::Event::Key {
+                    key,
+                    physical_key: Some(key),
+                    pressed: true,
+                    repeat: false,
+                    modifiers,
+                }],
+                modifiers,
+            );
+            assert_ne!(state(&app)[index], before[index], "{key:?}");
+            assert!(app.world_context.menu_open());
+        }
+        assert!(!app.dirty);
+    }
+
+    #[test]
+    fn editor_panel_shortcuts_replace_the_world_context_menu() {
+        for (key, modifiers, panel) in [
+            (Key::H, egui::Modifiers::NONE, Panel::Help),
+            (Key::P, egui::Modifiers::NONE, Panel::Project),
+            (Key::C, egui::Modifiers::NONE, Panel::Level),
+            (Key::L, egui::Modifiers::NONE, Panel::Layers),
+            (Key::E, egui::Modifiers::NONE, Panel::Entities),
+            (Key::U, egui::Modifiers::NONE, Panel::Enums),
+            (Key::T, egui::Modifiers::NONE, Panel::Tilesets),
+            (Key::W, egui::Modifiers::SHIFT, Panel::World),
+        ] {
+            let mut app = editor();
+            app.world = false;
+            app.viewport.center = [128.; 2];
+            let project = app.project.as_ref().unwrap().json.clone();
+            let ctx = egui::Context::default();
+            theme::configure(&ctx);
+            right_click(&mut app, &ctx, egui::pos2(740., 550.));
+            assert!(app.world_context.menu_open());
+            frame(
+                &mut app,
+                &ctx,
+                vec![egui::Event::Key {
+                    key,
+                    physical_key: Some(key),
+                    pressed: true,
+                    repeat: false,
+                    modifiers,
+                }],
+                modifiers,
+            );
+            assert_eq!(app.panel, Some(panel), "{key:?}");
+            assert!(!app.world_context.menu_open());
+            assert_eq!(app.world, panel == Panel::World);
+            assert_eq!(app.project.as_ref().unwrap().json, project);
+        }
+    }
+
+    #[test]
+    fn exit_shortcuts_dismiss_the_context_menu_before_leaving_or_prompting() {
+        for key in [Key::W, Key::Q] {
+            for (world, dirty) in [(false, false), (false, true), (true, false), (true, true)] {
+                let mut app = editor();
+                app.world = false;
+                if world {
+                    app.show_panel(Some(Panel::World));
+                }
+                app.fit = false;
+                app.viewport.center = [128.; 2];
+                app.dirty = dirty;
+                let project = app.project.as_ref().unwrap().json.clone();
+                let ctx = egui::Context::default();
+                theme::configure(&ctx);
+                right_click(&mut app, &ctx, egui::pos2(740., 550.));
+                assert!(app.world_context.menu_open());
+
+                let modifiers = egui::Modifiers::COMMAND;
+                let output = frame(
+                    &mut app,
+                    &ctx,
+                    vec![egui::Event::Key {
+                        key,
+                        physical_key: Some(key),
+                        pressed: true,
+                        repeat: false,
+                        modifiers,
+                    }],
+                    modifiers,
+                );
+                assert!(!app.world_context.menu_open());
+                assert!(!app.world && app.panel.is_none());
+                let quit = key == Key::Q;
+                let window_closed = output.viewport_output[&egui::ViewportId::ROOT]
+                    .commands
+                    .iter()
+                    .any(|cmd| matches!(cmd, egui::ViewportCommand::Close));
+                assert_eq!(window_closed, quit && !dirty);
+                assert_eq!(app.allow_close, quit && !dirty);
+                if dirty {
+                    if quit {
+                        assert!(matches!(app.pending, Some(Action::Quit)));
+                    } else {
+                        assert!(matches!(app.pending, Some(Action::Close)));
+                    }
+                    assert_eq!(app.project.as_ref().unwrap().json, project);
+                    assert!(app.dirty);
+                } else {
+                    assert_eq!(app.project.is_none(), !quit);
+                    assert!(app.pending.is_none());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn search_opens_above_the_context_menu_and_escape_closes_one_at_a_time() {
+        let mut app = editor();
+        app.world = false;
+        app.viewport.center = [128.; 2];
+        app.project
+            .as_mut()
+            .unwrap()
+            .add_entity_def("Actor", 16, 16)
+            .unwrap();
+        let ctx = egui::Context::default();
+        theme::configure(&ctx);
+        let anchor = egui::pos2(740., 550.);
+        right_click(&mut app, &ctx, anchor);
+        assert!(app.world_context.menu_open());
+        let keys = |key, modifiers| {
+            [true, false]
+                .into_iter()
+                .map(|pressed| egui::Event::Key {
+                    key,
+                    physical_key: Some(key),
+                    pressed,
+                    repeat: false,
+                    modifiers,
+                })
+                .collect()
+        };
+        let command = egui::Modifiers::COMMAND;
+        frame(&mut app, &ctx, keys(Key::P, command), command);
+        assert!(app.command_palette);
+        let output = frame(
+            &mut app,
+            &ctx,
+            vec![egui::Event::Text("Actor".to_owned())],
+            egui::Modifiers::NONE,
+        );
+        assert_eq!(app.search, "Actor");
+        label_center(&output, "Actor");
+        let menu_row = label_center(&output, "NEW LEVEL");
+        assert_eq!(
+            ctx.layer_id_at(menu_row).unwrap().id,
+            egui::Id::new("command-palette")
+        );
+
+        for menu_remains in [true, false] {
+            frame(
+                &mut app,
+                &ctx,
+                keys(Key::Escape, egui::Modifiers::NONE),
+                egui::Modifiers::NONE,
+            );
+            assert!(!app.command_palette);
+            assert_eq!(app.world_context.menu_open(), menu_remains);
+        }
     }
     #[test]
     fn actual_empty_space_new_level_and_picker_cancel_preserve_source_mode() {

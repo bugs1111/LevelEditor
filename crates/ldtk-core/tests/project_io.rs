@@ -3,6 +3,171 @@ use serde_json::json;
 use std::fs;
 
 #[test]
+fn preview_154_save_filters_and_orders_cached_auto_tiles_without_changing_draw_opacity() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("CachedRules.ldtk");
+    let mut project = Project::new();
+    let layer = project.add_layer("Walls", "IntGrid", 16).unwrap();
+    let key = project.level_keys()[0];
+    project.json["defs"]["layers"][0]["autoRuleGroups"] = json!([
+        {"uid": 10, "rules": [
+            {"uid": 11, "alpha": 0.5}, {"uid": 12}, {"uid": 13, "active": false}
+        ]},
+        {"uid": 20, "isOptional": true, "rules": [{"uid": 21}]},
+        {"uid": 30, "isOptional": true, "rules": [{"uid": 31}]},
+    ]);
+    let tile = |rule, cell, id| json!({"d":[rule,cell],"t":id,"a":1,"future":"keep"});
+    let cached = [
+        tile(11, 2, 0),
+        tile(12, 3, 1),
+        tile(13, 4, 2),
+        tile(21, 6, 3),
+        tile(31, 8, 4),
+        tile(500, 10, 5),
+        tile(12, 2, 6),
+        tile(12, 2, 7),
+    ];
+    let instance = project.layer_mut(key, 0).unwrap();
+    assert_eq!(instance["layerDefUid"], layer);
+    instance["autoLayerTiles"] = json!(cached);
+    instance["optionalRules"] = json!([30]);
+    project.set_external_levels(true).unwrap();
+
+    project.save(&path).unwrap();
+    let mut expected = json!([cached[4], cached[6], cached[7], cached[1], cached[0]]);
+    assert_eq!(project.layer(key, 0).unwrap()["autoLayerTiles"], expected);
+    expected[4]["a"] = json!(0.5);
+    let mut reopened = Project::load(&path).unwrap();
+    assert_eq!(reopened.layer(key, 0).unwrap()["autoLayerTiles"], expected);
+    let relative = reopened.json["levels"][0]["externalRelPath"]
+        .as_str()
+        .unwrap();
+    let external = temp.path().join(relative);
+    let mut original = fs::read(&external).unwrap();
+    original.extend_from_slice(b" \n");
+    fs::write(&external, &original).unwrap();
+    reopened = Project::load(&path).unwrap();
+    reopened.save(&path).unwrap();
+    assert_eq!(fs::read(external).unwrap(), original);
+}
+
+#[test]
+fn preview_154_save_tidies_rules_and_uses_the_linked_intgrid_values() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("Rules.ldtk");
+    let mut project = Project::new();
+    project.json["jsonVersion"] = json!("1.5.4");
+    project.json["defs"]["layers"] = json!([
+        {
+            "uid": 10, "type": "IntGrid",
+            "intGridValues": [{"value": 1}],
+            "autoRuleGroups": [{"rules": [
+                {"uid": 11, "size": 3, "pattern": [0,0,0,0,7000,0,0,0,0],
+                 "flipX": true, "flipY": true, "checker": "Horizontal",
+                 "xModulo": 1, "yModulo": 1, "outOfBoundsValue": 1, "future": {"value": 42}},
+                {"uid": 12, "size": 3, "pattern": [0,0,0,1,0,0,0,0,0],
+                 "flipX": true, "flipY": true, "checker": "Horizontal",
+                 "xModulo": 1, "yModulo": 2, "outOfBoundsValue": 0},
+                {"uid": 13, "size": 5, "pattern": [
+                  0,0,0,0,0, 0,0,1,0,0, 0,0,1,0,0, 0,0,0,0,0, 0,0,0,0,0
+                 ], "flipX": true, "flipY": true, "checker": "Vertical",
+                 "xModulo": 3, "yModulo": 1, "outOfBoundsValue": 99}
+            ]}]
+        },
+        {
+            "uid": 20, "type": "AutoLayer", "autoSourceLayerDefUid": 10,
+            "intGridValues": [{"value": 99}],
+            "autoRuleGroups": [{"rules": [
+                {"uid": 21, "size": 1, "pattern": [-1], "outOfBoundsValue": 1},
+                {"uid": 22, "active": false, "size": 1, "pattern": [-1],
+                 "checker": "Vertical", "xModulo": 2, "yModulo": 2,
+                 "outOfBoundsValue": 99}
+            ]}]
+        }
+    ]);
+
+    let before = project.json.clone();
+    let blocked = temp.path().join("Occupied.ldtk");
+    fs::create_dir(&blocked).unwrap();
+    assert!(project.save(&blocked).is_err());
+    assert_eq!(project.json, before);
+
+    project.save_with_exports(&path).unwrap();
+    let reloaded = Project::load(&path).unwrap();
+    assert_eq!(reloaded.json["defs"], project.json["defs"]);
+    let rules = &reloaded.layer_def(10).unwrap()["autoRuleGroups"][0]["rules"];
+    assert_eq!(rules[0]["size"], 1);
+    assert_eq!(rules[0]["pattern"], json!([7000]));
+    assert_eq!(rules[0]["flipX"], false);
+    assert_eq!(rules[0]["flipY"], false);
+    assert_eq!(rules[0]["checker"], "None");
+    assert_eq!(rules[0]["outOfBoundsValue"], 1);
+    assert_eq!(rules[0]["future"], json!({"value":42}));
+    assert_eq!(rules[1]["size"], 3);
+    assert_eq!(rules[1]["flipX"], true);
+    assert_eq!(rules[1]["flipY"], false);
+    assert_eq!(rules[1]["checker"], "Vertical");
+    assert_eq!(rules[1]["outOfBoundsValue"], 0);
+    assert_eq!(rules[2]["size"], 3);
+    assert_eq!(rules[2]["pattern"], json!([0,1,0,0,1,0,0,0,0]));
+    assert_eq!(rules[2]["flipX"], false);
+    assert_eq!(rules[2]["flipY"], true);
+    assert_eq!(rules[2]["checker"], "Horizontal");
+    assert!(rules[2]["outOfBoundsValue"].is_null());
+    let linked = &reloaded.layer_def(20).unwrap()["autoRuleGroups"][0]["rules"];
+    assert_eq!(linked[0]["outOfBoundsValue"], 1);
+    assert_eq!(linked[1]["checker"], "Vertical");
+    assert_eq!(linked[1]["outOfBoundsValue"], serde_json::Value::Null);
+
+    let saved = fs::read(&path).unwrap();
+    project.save(&path).unwrap();
+    assert_eq!(fs::read(path).unwrap(), saved);
+}
+
+#[test]
+fn preview_154_save_omits_inactive_nine_slice_borders_without_discarding_them_in_memory() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("Borders.ldtk");
+    let mut project = Project::new();
+    let actor = project.add_entity_def("Actor", 32, 32).unwrap();
+    let borders = json!([3, 4, 5, 6]);
+    project
+        .update_entity_definition(
+            actor,
+            &json!({"tileRenderMode":"NineSlice","nineSliceBorders":borders}),
+        )
+        .unwrap();
+    project.save(&path).unwrap();
+    let reopen = || Project::load(&path).unwrap();
+    assert_eq!(
+        reopen().json["defs"]["entities"][0]["nineSliceBorders"],
+        borders
+    );
+
+    project
+        .update_entity_definition(actor, &json!({"tileRenderMode":"Stretch"}))
+        .unwrap();
+    project.save(&path).unwrap();
+    let reopened = reopen();
+    let saved = &reopened.json["defs"]["entities"][0];
+    assert_eq!(saved["tileRenderMode"], "Stretch");
+    assert_eq!(saved["nineSliceBorders"], json!([]));
+    assert_eq!(
+        project.json["defs"]["entities"][0]["nineSliceBorders"],
+        borders
+    );
+
+    project
+        .update_entity_definition(actor, &json!({"tileRenderMode":"NineSlice"}))
+        .unwrap();
+    project.save(&path).unwrap();
+    assert_eq!(
+        reopen().json["defs"]["entities"][0]["nineSliceBorders"],
+        borders
+    );
+}
+
+#[test]
 fn preview_154_save_writes_tileset_tags_in_enum_value_order() {
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("Tags.ldtk");

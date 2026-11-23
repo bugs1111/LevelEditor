@@ -424,6 +424,8 @@ impl Project {
         let current_version = candidate.json["jsonVersion"] == "1.5.4";
         // Derive the current output dialect only after an explicit migration.
         let compatibility = if current_version {
+            candidate.reconcile_cached_auto_tiles();
+            candidate.tidy_auto_rules_for_save();
             candidate.refresh_table_of_contents()?;
             Some(OutputCompatibility::new(&candidate.json))
         } else {
@@ -836,6 +838,7 @@ struct OutputCompatibility {
     multiline: bool,
     legacy_int_grid: bool,
     text_arrays: BTreeMap<i64, bool>,
+    auto_rule_alpha: BTreeMap<(i64, i64), Value>,
 }
 
 impl OutputCompatibility {
@@ -849,8 +852,26 @@ impl OutputCompatibility {
             multiline: flag("UseMultilinesType"),
             legacy_int_grid: flag("ExportPreCsvIntGridFormat"),
             text_arrays: BTreeMap::new(),
+            auto_rule_alpha: BTreeMap::new(),
         };
         let defs = &root["defs"];
+        for layer in defs["layers"].as_array().into_iter().flatten() {
+            let Some(layer_uid) = layer["uid"].as_i64() else {
+                continue;
+            };
+            for group in layer["autoRuleGroups"].as_array().into_iter().flatten() {
+                for rule in group["rules"].as_array().into_iter().flatten() {
+                    if let Some(uid) = rule["uid"].as_i64() {
+                        let alpha = rule
+                            .get("alpha")
+                            .filter(|value| value.is_number())
+                            .cloned()
+                            .unwrap_or_else(|| Value::from(1));
+                        result.auto_rule_alpha.insert((layer_uid, uid), alpha);
+                    }
+                }
+            }
+        }
         let entity_fields = defs["entities"]
             .as_array()
             .into_iter()
@@ -883,6 +904,25 @@ impl OutputCompatibility {
     fn project_output(&self, root: &mut Value, presence: &GridPresences) {
         Self::apply_definition_types(root, self.multiline);
         Self::apply_tileset_enum_tags(root);
+        for entity in root
+            .pointer_mut("/defs/entities")
+            .and_then(Value::as_array_mut)
+            .into_iter()
+            .flatten()
+        {
+            for axis in ["pivotX", "pivotY"] {
+                if let Some(pivot) = entity.get_mut(axis)
+                    && let Some(value) = pivot.as_f64()
+                {
+                    *pivot = crate::workflow::canonical_number(value);
+                }
+            }
+            if entity["tileRenderMode"] != "NineSlice"
+                && let Some(borders) = entity.get_mut("nineSliceBorders")
+            {
+                *borders = Value::Array(Vec::new());
+            }
+        }
         visit_level_documents(root, |level| self.apply_level(level, presence));
     }
 
@@ -978,9 +1018,11 @@ impl OutputCompatibility {
     ) -> std::borrow::Cow<'a, Value> {
         if self.text_arrays.is_empty()
             && !self.legacy_int_grid
-            && !level["layerInstances"]
-                .as_array()
-                .is_some_and(|layers| layers.iter().any(|layer| layer.get("intGrid").is_some()))
+            && !level["layerInstances"].as_array().is_some_and(|layers| {
+                layers.iter().any(|layer| {
+                    layer.get("intGrid").is_some() || self.layer_has_stale_auto_alpha(layer)
+                })
+            })
         {
             return std::borrow::Cow::Borrowed(level);
         }
@@ -1020,6 +1062,21 @@ impl OutputCompatibility {
             .into_iter()
             .flatten()
         {
+            let layer_uid = layer["layerDefUid"].as_i64();
+            if !self.auto_rule_alpha.is_empty()
+                && let Some(uid) = layer_uid
+            {
+                for tile in layer
+                    .get_mut("autoLayerTiles")
+                    .and_then(Value::as_array_mut)
+                    .into_iter()
+                    .flatten()
+                {
+                    if let Some(alpha) = self.changed_auto_tile_alpha(uid, tile) {
+                        tile["a"] = alpha.clone();
+                    }
+                }
+            }
             let Some(layer) = layer.as_object_mut() else {
                 continue;
             };
@@ -1047,6 +1104,24 @@ impl OutputCompatibility {
                 }
             }
         }
+    }
+
+    fn changed_auto_tile_alpha(&self, layer_uid: i64, tile: &Value) -> Option<&Value> {
+        let rule_uid = tile["d"][0].as_i64()?;
+        self.auto_rule_alpha
+            .get(&(layer_uid, rule_uid))
+            .filter(|alpha| alpha.as_f64() != tile["a"].as_f64())
+    }
+
+    fn layer_has_stale_auto_alpha(&self, layer: &Value) -> bool {
+        !self.auto_rule_alpha.is_empty()
+            && layer["layerDefUid"].as_i64().is_some_and(|uid| {
+                layer["autoLayerTiles"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .any(|tile| self.changed_auto_tile_alpha(uid, tile).is_some())
+            })
     }
 }
 

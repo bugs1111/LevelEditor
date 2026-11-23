@@ -496,7 +496,6 @@ fn world_view_excludes_entity_layers_even_when_enabled() {
     let key = project.level_keys()[0];
     let hidden = HashSet::new();
     let mut options = options(&hidden, key);
-    options.details = false;
     let ctx = egui::Context::default();
     let view = Viewport {
         center: [16., 16.],
@@ -516,6 +515,82 @@ fn world_view_excludes_entity_layers_even_when_enabled() {
     assert!(!has_entity(
         frame(&ctx, &project, &view, &options, &mut assets).1
     ));
+}
+
+#[test]
+fn tiles_only_hides_entities_and_plain_int_grid_but_keeps_automatic_layers() {
+    let mut project = Project::new();
+    project.json["defs"]["layers"] = serde_json::json!([
+        {"uid":1,"type":"Entities"},
+        {"uid":2,"type":"IntGrid","intGridValues":[{"value":1,"color":"#00ff00"}]},
+        {"uid":3,"type":"IntGrid","tilesetDefUid":4,"intGridValues":[{"value":1,"color":"#ff0000"}]}
+    ]);
+    project.json["defs"]["tilesets"] = serde_json::json!([
+        {"uid":4,"relPath":"auto.png","tileGridSize":16}
+    ]);
+    project.json["defs"]["entities"] = serde_json::json!([
+        {"uid":5,"color":"#ff00ff","width":16,"height":16,"renderMode":"Rectangle"}
+    ]);
+    project.json["levels"] = serde_json::json!([{
+        "pxWid":48,"pxHei":16,
+        "layerInstances":[
+            {"layerDefUid":1,"__type":"Entities","__gridSize":16,
+             "entityInstances":[{"defUid":5,"px":[8,8],"width":16,"height":16}]},
+            {"layerDefUid":2,"__type":"IntGrid","__gridSize":16,"__cWid":3,"__cHei":1,"intGridCsv":[0,1,0]},
+            {"layerDefUid":3,"__type":"IntGrid","__gridSize":16,"__cWid":3,"__cHei":1,"__tilesetDefUid":4,
+             "intGridCsv":[0,0,1],"autoLayerTiles":[{"px":[32,0],"src":[0,0],"t":0,"f":0,"a":1}]}
+        ]
+    }]);
+    let ctx = egui::Context::default();
+    let mut assets = Assets::default();
+    let path = asset_path(&project, "auto.png");
+    assets
+        .store_file_image(
+            &ctx,
+            &path,
+            image::RgbaImage::from_pixel(16, 16, image::Rgba([255, 255, 255, 255])),
+        )
+        .unwrap();
+    let texture = assets.texture(&ctx, &path).unwrap().id();
+    let hidden = HashSet::new();
+    let mut options = options(&hidden, project.level_keys()[0]);
+    options.active_layer = 2;
+    let view = Viewport {
+        center: [24., 8.],
+        zoom: 1.,
+    };
+    let has_fill = |output: &egui::FullOutput, color| {
+        output
+            .shapes
+            .iter()
+            .any(|shape| matches!(&shape.shape, egui::Shape::Rect(rect) if rect.fill == color))
+    };
+    let has_tiles = |output: &egui::FullOutput| {
+        output.shapes.iter().any(
+            |shape| matches!(&shape.shape, egui::Shape::Mesh(mesh) if mesh.texture_id == texture),
+        )
+    };
+    let (_, all) = frame(&ctx, &project, &view, &options, &mut assets);
+    assert!(has_fill(&all, Color32::GREEN));
+    assert!(has_fill(&all, Color32::from_rgb(255, 0, 255)));
+    options.details = false;
+    options.grid = false;
+    options.rulers = false;
+    let (_, only_tiles) = frame(&ctx, &project, &view, &options, &mut assets);
+    assert!(!has_fill(&only_tiles, Color32::GREEN));
+    assert!(!has_fill(&only_tiles, Color32::from_rgb(255, 0, 255)));
+    assert!(has_tiles(&only_tiles));
+
+    options.render_auto = false;
+    let (_, underlying) = frame(&ctx, &project, &view, &options, &mut assets);
+    assert!(has_fill(&underlying, Color32::RED));
+    assert!(!has_tiles(&underlying));
+
+    options.render_auto = true;
+    project.json["defs"]["tilesets"][0]["relPath"] = "missing-auto.png".into();
+    let (_, missing) = frame(&ctx, &project, &view, &options, &mut assets);
+    assert!(has_fill(&missing, Color32::RED));
+    assert!(!has_tiles(&missing));
 }
 
 #[test]
@@ -677,7 +752,6 @@ fn selection_entity_ghost_uses_half_alpha_and_preserves_normal_scene() {
     let hidden = HashSet::new();
     let mut opts = options(&hidden, key);
     opts.grid = false;
-    opts.details = false;
     opts.rulers = false;
     opts.guides = false;
     let ctx = egui::Context::default();

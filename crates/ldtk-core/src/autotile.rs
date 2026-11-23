@@ -11,6 +11,156 @@ mod noise;
 
 const MAX_PATTERN_SIZE: i32 = 9;
 
+fn rule_pattern(rule: &Value) -> Option<(usize, &[Value])> {
+    let size = usize::try_from(rule["size"].as_u64()?).ok()?;
+    let pattern = rule["pattern"].as_array()?;
+    (size <= MAX_PATTERN_SIZE as usize
+        && size % 2 == 1
+        && pattern.len() == size * size
+        && pattern.iter().all(Value::is_i64))
+    .then_some((size, pattern))
+}
+
+/// Whether mirroring the pattern on one axis leaves every condition unchanged.
+pub fn auto_rule_pattern_is_symmetric(rule: &Value, horizontal: bool) -> bool {
+    let Some((size, pattern)) = rule_pattern(rule) else {
+        return false;
+    };
+    (0..size).all(|y| {
+        (0..size).all(|x| {
+            let mirrored = if horizontal {
+                y * size + (size - 1 - x)
+            } else {
+                (size - 1 - y) * size + x
+            };
+            pattern[y * size + x] == pattern[mirrored]
+        })
+    })
+}
+
+/// Remove matching empty borders from a rule while keeping its center fixed.
+pub fn trim_auto_rule_pattern(rule: &mut Value) {
+    let Some((old_size, pattern)) = rule_pattern(rule) else {
+        return;
+    };
+    let center = old_size / 2;
+    let radius = pattern
+        .iter()
+        .enumerate()
+        .filter(|(_, value)| **value != 0)
+        .map(|(index, _)| {
+            (index % old_size)
+                .abs_diff(center)
+                .max((index / old_size).abs_diff(center))
+        })
+        .max()
+        .unwrap_or(0);
+    let size = 2 * radius + 1;
+    if size < old_size {
+        let inset = center - radius;
+        let trimmed = pattern
+            .chunks_exact(old_size)
+            .skip(inset)
+            .take(size)
+            .flat_map(|row| row[inset..inset + size].iter().cloned())
+            .collect();
+        rule["size"] = json!(size);
+        rule["pattern"] = Value::Array(trimmed);
+    }
+}
+
+impl Project {
+    pub(crate) fn auto_rule_source_values(&self, layer: &Value) -> BTreeSet<i64> {
+        let source = linked_rule_source_uid(layer)
+            .and_then(|uid| self.layer_def(uid))
+            .unwrap_or(layer);
+        int_grid_value_ids(source)
+    }
+
+    pub(crate) fn tidy_auto_rules_for_save(&mut self) {
+        let Some(layers) = self
+            .json
+            .pointer_mut("/defs/layers")
+            .and_then(Value::as_array_mut)
+        else {
+            return;
+        };
+        let grid_values: BTreeMap<_, BTreeSet<_>> = layers
+            .iter()
+            .filter_map(|layer| {
+                let uid = layer["uid"].as_i64()?;
+                Some((uid, int_grid_value_ids(layer)))
+            })
+            .collect();
+        for layer in layers {
+            let source = linked_rule_source_uid(layer)
+                .and_then(|uid| grid_values.get(&uid))
+                .or_else(|| layer["uid"].as_i64().and_then(|uid| grid_values.get(&uid)));
+            tidy_layer_auto_rules(layer, source);
+        }
+    }
+}
+
+fn linked_rule_source_uid(layer: &Value) -> Option<i64> {
+    (layer["type"] == "AutoLayer")
+        .then(|| layer["autoSourceLayerDefUid"].as_i64())
+        .flatten()
+}
+
+fn int_grid_value_ids(layer: &Value) -> BTreeSet<i64> {
+    arr(&layer["intGridValues"])
+        .iter()
+        .filter_map(|value| value["value"].as_i64())
+        .collect()
+}
+
+pub(crate) fn tidy_layer_auto_rules(layer: &mut Value, source: Option<&BTreeSet<i64>>) {
+    for group in layer
+        .get_mut("autoRuleGroups")
+        .and_then(Value::as_array_mut)
+        .into_iter()
+        .flatten()
+    {
+        tidy_auto_rule_group(group, source);
+    }
+}
+
+pub(crate) fn tidy_auto_rule_group(group: &mut Value, source: Option<&BTreeSet<i64>>) {
+    for rule in group
+        .get_mut("rules")
+        .and_then(Value::as_array_mut)
+        .into_iter()
+        .flatten()
+    {
+        tidy_rule(rule, source);
+    }
+}
+
+pub(crate) fn tidy_rule(rule: &mut Value, source: Option<&BTreeSet<i64>>) {
+    trim_auto_rule_pattern(rule);
+    for (key, horizontal) in [("flipX", true), ("flipY", false)] {
+        if rule[key] == true && auto_rule_pattern_is_symmetric(rule, horizontal) {
+            rule[key] = Value::Bool(false);
+        }
+    }
+    let x_modulo = rule["xModulo"].as_i64().unwrap_or(1);
+    let y_modulo = rule["yModulo"].as_i64().unwrap_or(1);
+    let checker = match (rule["checker"].as_str(), x_modulo, y_modulo) {
+        (Some("Horizontal"), 1, y) => Some(if y > 1 { "Vertical" } else { "None" }),
+        (Some("Vertical"), x, 1) => Some(if x > 1 { "Horizontal" } else { "None" }),
+        _ => None,
+    };
+    if let Some(checker) = checker {
+        rule["checker"] = json!(checker);
+    }
+    if let Some(value) = rule["outOfBoundsValue"].as_i64()
+        && value != 0
+        && source.is_none_or(|values| !values.contains(&value))
+    {
+        rule["outOfBoundsValue"] = Value::Null;
+    }
+}
+
 fn int(v: &Value, k: &str, default: i32) -> i32 {
     v[k].as_i64().map_or(default, |n| n as i32)
 }
@@ -19,6 +169,17 @@ fn float(v: &Value, k: &str, default: f64) -> f64 {
 }
 fn flag(v: &Value, k: &str, default: bool) -> bool {
     v[k].as_bool().unwrap_or(default)
+}
+
+/// Per-cell Perlin value shared by auto-layer evaluation and the editor preview.
+pub fn auto_rule_perlin_value(layer_seed: i32, cell: [i32; 2], rule: &Value) -> f64 {
+    let scale = float(rule, "perlinScale", 0.2);
+    noise::perlin(
+        f64::from(layer_seed) + f64::from(int(rule, "perlinSeed", 0)),
+        f64::from(cell[0]) * scale,
+        f64::from(cell[1]) * scale,
+        int(rule, "perlinOctaves", 2),
+    )
 }
 fn arr(v: &Value) -> &[Value] {
     v.as_array().map_or(&[], Vec::as_slice)
@@ -394,9 +555,85 @@ pub(crate) fn group_applied(group: &Value, level: &Value, li: &Value, ld: &Value
     (active && !flag(group, "isOptional", false))
         || arr(&li["optionalRules"]).contains(&group["uid"])
 }
+
+fn active_rules<'a>(
+    level: &'a Value,
+    layer: &'a Value,
+    definition: &'a Value,
+) -> impl DoubleEndedIterator<Item = &'a Value> {
+    arr(&definition["autoRuleGroups"])
+        .iter()
+        .filter(move |group| group_applied(group, level, layer, definition))
+        .flat_map(|group| arr(&group["rules"]))
+        .filter(|rule| flag(rule, "active", true))
+}
+
+impl Project {
+    /// Order the loaded cache as LDtk draws it, keeping the tile's cached opacity.
+    pub fn reconcile_cached_auto_tiles(&mut self) {
+        for key in self.level_keys() {
+            let Some(level) = self.level(key) else {
+                continue;
+            };
+            let updates = arr(&level["layerInstances"])
+                .iter()
+                .enumerate()
+                .filter_map(|(index, layer)| {
+                    let tiles = layer["autoLayerTiles"].as_array()?;
+                    if tiles.is_empty() {
+                        return None;
+                    }
+                    let definition = self.layer_def(layer["layerDefUid"].as_i64()?)?;
+                    if definition["type"] == "AutoLayer"
+                        && linked_rule_source_uid(definition)
+                            .and_then(|uid| self.layer_def(uid))
+                            .is_none()
+                    {
+                        return Some((index, json!([])));
+                    }
+                    let order: BTreeMap<_, _> = active_rules(level, layer, definition)
+                        .rev()
+                        .enumerate()
+                        .filter_map(|(rank, rule)| Some((rule["uid"].as_i64()?, rank)))
+                        .collect();
+                    let sort_key = |tile: &Value| {
+                        let rule = tile["d"][0].as_i64()?;
+                        Some((*order.get(&rule)?, tile["d"][1].as_i64()?))
+                    };
+                    let already_ordered = tiles
+                        .iter()
+                        .try_fold((0, i64::MIN), |previous, tile| {
+                            sort_key(tile).filter(|key| *key >= previous)
+                        })
+                        .is_some();
+                    if already_ordered
+                        || tiles
+                            .iter()
+                            .any(|tile| !tile["d"][0].is_i64() || !tile["d"][1].is_i64())
+                    {
+                        return None;
+                    }
+                    let mut sorted: Vec<_> = tiles
+                        .iter()
+                        .filter_map(|tile| Some((sort_key(tile)?, tile)))
+                        .collect();
+                    sorted.sort_by_key(|(key, _)| *key);
+                    Some((
+                        index,
+                        Value::Array(sorted.into_iter().map(|(_, tile)| tile.clone()).collect()),
+                    ))
+                })
+                .collect::<Vec<_>>();
+            for (index, tiles) in updates {
+                self.layer_mut(key, index).expect("enumerated layer")["autoLayerTiles"] = tiles;
+            }
+        }
+    }
+}
+
 impl<'a> Engine<'a> {
     fn new(
-        level: &Value,
+        level: &'a Value,
         layers: &[Value],
         li: &'a Value,
         ld: &'a Value,
@@ -453,16 +690,9 @@ impl<'a> Engine<'a> {
             .map(|(index, v)| (int(v, "value", index as i32 + 1), int(v, "groupUid", 0)))
             .collect::<BTreeMap<_, _>>();
         let areas = BTreeMap::new();
-        let mut rules = Vec::new();
-        for group in arr(&ld["autoRuleGroups"]) {
-            if group_applied(group, level, li, ld) {
-                for r in arr(&group["rules"]) {
-                    if flag(r, "active", true) {
-                        rules.push(Rule::new(r)?);
-                    }
-                }
-            }
-        }
+        let rules = active_rules(level, li, ld)
+            .map(Rule::new)
+            .collect::<Result<Vec<_>>>()?;
         let mut killed = BTreeSet::new();
         for blocker in layers.iter().filter(|l| {
             l["layerDefUid"]
@@ -652,12 +882,7 @@ impl<'a> Engine<'a> {
                         continue;
                     }
                     if flag(j, "perlinActive", false)
-                        && noise::perlin(
-                            self.seed as f64 + int(j, "perlinSeed", 0) as f64,
-                            x as f64 * float(j, "perlinScale", 0.2),
-                            y as f64 * float(j, "perlinScale", 0.2),
-                            int(j, "perlinOctaves", 2),
-                        ) < 0.
+                        && auto_rule_perlin_value(self.seed, [x, y], j) < 0.
                     {
                         continue;
                     }

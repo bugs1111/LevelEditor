@@ -21,11 +21,15 @@ pub(super) enum CanvasNotice {
     EntityLimit { maximum: i64, identifier: String },
     SavedProject(String),
     SavedTileSelection,
+    EnteredFullscreen,
     SavingFailed,
     CannotSaveBackup,
+    CannotEditBackup,
     NothingToSelect,
+    SymmetricRule,
     LinkOpened,
     LinkCopied,
+    ClipboardCopied(String),
     ValueReset,
     ProjectFileSettingChanged,
     LocateMissingPath,
@@ -58,11 +62,21 @@ impl CanvasNotice {
             ),
             Self::SavedProject(_) => locale::tr_ctx(ctx, SAVED_PROJECT_TITLE).into(),
             Self::SavedTileSelection => locale::tr_ctx(ctx, "Saved selection").into(),
+            Self::EnteredFullscreen => locale::tr_ctx(ctx, "Press F11 to leave fullscreen").into(),
             Self::SavingFailed => locale::tr_ctx(ctx, "Saving failed!").into(),
             Self::CannotSaveBackup => locale::tr_ctx(ctx, "Cannot save over a backup file.").into(),
+            Self::CannotEditBackup => {
+                locale::tr_ctx(ctx, "Backup files should not be edited directly").into()
+            }
             Self::NothingToSelect => locale::tr_ctx(ctx, "Nothing to select").into(),
+            Self::SymmetricRule => {
+                locale::tr_ctx(ctx, "This option will have no effect on a symetric rule.").into()
+            }
             Self::LinkOpened => locale::tr_ctx(ctx, "Opening url...").into(),
             Self::LinkCopied => locale::tr_ctx(ctx, "Copied to clipboard.").into(),
+            Self::ClipboardCopied(name) => {
+                locale::format_ctx(ctx, "Copied \"{name}\" to clipboard.", &[("name", name)])
+            }
             Self::ValueReset => locale::tr_ctx(ctx, "Value reset.").into(),
             Self::ProjectFileSettingChanged => {
                 locale::tr_ctx(ctx, "Project file setting changed").into()
@@ -221,8 +235,10 @@ impl EditorApp {
                 entry.notice,
                 CanvasNotice::SavedProject(_)
                     | CanvasNotice::SavedTileSelection
+                    | CanvasNotice::EnteredFullscreen
                     | CanvasNotice::LinkOpened
                     | CanvasNotice::LinkCopied
+                    | CanvasNotice::ClipboardCopied(_)
                     | CanvasNotice::ValueReset
                     | CanvasNotice::LocatingFile
             );
@@ -252,15 +268,18 @@ impl EditorApp {
                     CanvasNotice::EntityLimit { .. }
                     | CanvasNotice::SavingFailed
                     | CanvasNotice::CannotSaveBackup
+                    | CanvasNotice::CannotEditBackup
                     | CanvasNotice::NothingToSelect
+                    | CanvasNotice::SymmetricRule
                     | CanvasNotice::LocateMissingPath => ([87, 0, 0], [255, 0, 0]),
-                    CanvasNotice::SavedProject(_) | CanvasNotice::ValueReset => {
+                    CanvasNotice::SavedProject(_) | CanvasNotice::ValueReset | CanvasNotice::EnteredFullscreen => {
                         ([22, 62, 38], [66, 183, 113])
                     }
                     CanvasNotice::SavedTileSelection
                     | CanvasNotice::LinkOpened
                     | CanvasNotice::LinkCopied
                     | CanvasNotice::LocatingFile => ([30, 34, 41], [84, 93, 115]),
+                    CanvasNotice::ClipboardCopied(_) => ([0, 0, 0], [0, 0, 0]),
                     _ => ([69, 48, 6], [203, 141, 19]),
                 };
                 let shade = |channels: [u8; 3]| {
@@ -328,7 +347,7 @@ impl EditorApp {
     }
 
     pub(super) fn canvas_notifications(&mut self, ctx: &egui::Context, rect: Rect) {
-        self.backup_preview_banner(ctx, rect);
+        let backup_bottom = self.backup_preview_banner(ctx, rect);
         if self.pending_auto_layer_rebuild {
             let viewport = ctx.content_rect();
             egui::Area::new(egui::Id::new("rebuild-auto-layers"))
@@ -444,37 +463,59 @@ impl EditorApp {
                 .filter(|s| !s.is_empty())
         {
             egui::Area::new(egui::Id::new("tutorial-description"))
-                .fixed_pos(rect.left_top())
-                .order(egui::Order::Foreground)
+                .fixed_pos(egui::pos2(rect.left(), backup_bottom.unwrap_or(rect.top())))
+                .order(egui::Order::Middle)
+                .fade_in(false)
                 .show(ctx, |ui| {
                     egui::Frame::new()
-                        .fill(Color32::from_rgb(92, 168, 105))
-                        .inner_margin(egui::Margin::symmetric(12, 8))
+                        .fill(Color32::from_rgb(94, 171, 107))
+                        .inner_margin(egui::Margin::symmetric(0, 8))
                         .show(ui, |ui| {
-                            ui.set_width(rect.width() - 24.0);
-                            ui.set_min_height(64.0);
-                            ui.horizontal(|ui| {
-                                let width = (rect.width() - 64.0).min(700.0);
-                                ui.add_space(((rect.width() - width) / 2.0 - 52.0).max(0.0));
-                                ui.add(
-                                    egui::Image::new(egui::include_image!(
-                                        "../../assets/icons/help.svg"
-                                    ))
-                                    .fit_to_exact_size(Vec2::splat(40.0)),
+                            let max_width = (rect.width().min(700.) - 64.).max(0.);
+                            let paragraphs = desc
+                                .lines()
+                                .filter(|line| !line.is_empty())
+                                .map(|line| {
+                                    ui.painter().layout(
+                                        line.into(),
+                                        FontId::proportional(14.667),
+                                        Color32::WHITE,
+                                        max_width,
+                                    )
+                                })
+                                .collect::<Vec<_>>();
+                            let text_width = paragraphs
+                                .iter()
+                                .map(|line| line.size().x)
+                                .fold(0., f32::max);
+                            let text_height =
+                                paragraphs.iter().map(|line| line.size().y).sum::<f32>()
+                                    + 6. * paragraphs.len().saturating_sub(1) as f32;
+                            let height = text_height.max(64.);
+                            let (row, _) = ui.allocate_exact_size(
+                                egui::vec2(rect.width(), height),
+                                Sense::hover(),
+                            );
+                            let left = row.center().x - (text_width + 64.) * 0.5;
+                            egui::Image::new(egui::include_image!("../../assets/icons/help.svg"))
+                                .paint_at(
+                                    ui,
+                                    Rect::from_center_size(
+                                        egui::pos2(left + 24., row.center().y),
+                                        Vec2::splat(48.),
+                                    ),
                                 );
-                                ui.add_space(12.0);
-                                ui.vertical(|ui| {
-                                    ui.set_max_width(width - 64.0);
-                                    for paragraph in desc.split("\n\n") {
-                                        ui.label(
-                                            RichText::new(paragraph)
-                                                .size(14.67)
-                                                .color(Color32::WHITE),
-                                        );
-                                        ui.add_space(8.0);
-                                    }
-                                });
-                            });
+                            let extra = (height - text_height) / paragraphs.len().max(1) as f32;
+                            let mut y = row.top() + extra * 0.5;
+                            for paragraph in paragraphs {
+                                let advance = paragraph.size().y + 6. + extra;
+                                ui.painter().galley(
+                                    egui::pos2(left + 64., y),
+                                    paragraph,
+                                    Color32::WHITE,
+                                );
+                                y += advance;
+                            }
                         });
                 });
         }
@@ -518,25 +559,18 @@ impl EditorApp {
         }
     }
 
-    fn backup_preview_banner(&mut self, ctx: &egui::Context, rect: Rect) {
-        let Some(project) = self.project.as_ref().filter(|project| project.is_backup()) else {
-            return;
-        };
-        let date = project.path.as_deref()
-            .and_then(std::path::Path::parent)
-            .and_then(std::path::Path::file_name)
-            .and_then(std::ffi::OsStr::to_str)
-            .and_then(|name| {
-                let iid = text(&project.json, "iid", "");
-                name.strip_prefix(iid).or_else(|| name.strip_prefix("backup"))
-            })
-            .and_then(|date| date.strip_prefix('_'))
-            .and_then(|date| Some(format!("{} {}", date.get(..10)?, date.get(11..19)?.replace('-', ":"))));
+    fn backup_preview_banner(&mut self, ctx: &egui::Context, rect: Rect) -> Option<f32> {
+        let project = self
+            .project
+            .as_ref()
+            .filter(|project| project.is_backup())?;
+        let date = project.backup_date_label();
         let linked = self.backup_original(ctx).is_some();
         let busy = self.is_busy();
-        egui::Area::new(egui::Id::new("backup-preview-banner"))
+        let banner = egui::Area::new(egui::Id::new("backup-preview-banner"))
             .fixed_pos(rect.left_top())
-            .order(egui::Order::Foreground)
+            .order(egui::Order::Middle)
+            .fade_in(false)
             .show(ctx, |ui| {
                 egui::Frame::new()
                     .fill(Color32::from_rgb(101, 148, 255))
@@ -551,43 +585,142 @@ impl EditorApp {
                             ui.add_space((rect.width() - width) * 0.5);
                             ui.vertical(|ui| {
                                 ui.set_width((width - buttons - 16.).max(0.));
+                                ui.spacing_mut().item_spacing.y = 8.;
+                                ui.add_space(4.);
                                 let description = if linked {
                                     "This file is a BACKUP: you cannot edit or modify to it in any way. You may only restore it to replace the original project."
                                 } else {
                                     "The images are not displayed properly because the location of the original project represented by this backup is unknown."
                                 };
-                                ui.label(RichText::new(locale::tr(ui, description)).size(12.).strong().color(Color32::WHITE));
+                                let font = FontId::new(12., egui::FontFamily::Name("body-bold".into()));
+                                ui.label(RichText::new(locale::tr(ui, description)).font(font.clone()).color(Color32::WHITE));
                                 if let Some(date) = &date {
-                                    ui.label(RichText::new(date).size(12.).strong().color(Color32::WHITE));
+                                    ui.label(RichText::new(date).font(font).color(Color32::WHITE));
                                 }
                             });
                             ui.add_space(16.);
                             ui.vertical(|ui| {
                                 ui.spacing_mut().item_spacing.y = 2.;
-                                ui.add_enabled_ui(!busy, |ui| {
-                                    if !linked && project_dialogs::button(
-                                        ui, "LOCATE THE ORIGINAL PROJECT", egui::vec2(buttons, 40.), true, 13.333
-                                    ).clicked() {
-                                        self.locate_backup_original(ctx);
-                                    }
-                                    ui.add_enabled_ui(linked, |ui| {
-                                        if project_dialogs::button(
-                                            ui, "RESTORE THIS BACKUP", egui::vec2(buttons, 40.), !linked, 13.333
-                                        ).clicked() {
-                                            self.confirm_preview_restore(ctx);
-                                        }
-                                    });
-                                });
+                                ui.add_space(1.);
+                                if !linked && backup_banner_button(
+                                    ui, "LOCATE THE ORIGINAL PROJECT", buttons, theme::LIGHT, !busy,
+                                ).clicked() {
+                                    self.locate_backup_original(ctx);
+                                }
+                                if backup_banner_button(
+                                    ui, "RESTORE THIS BACKUP", buttons, Color32::from_rgb(227, 77, 0), linked && !busy,
+                                ).clicked() {
+                                    self.confirm_preview_restore(ctx);
+                                }
                             });
                         });
                     });
             });
+        Some(banner.response.rect.bottom())
     }
+}
+
+fn backup_banner_button(
+    ui: &mut egui::Ui,
+    label: &str,
+    width: f32,
+    fill: Color32,
+    enabled: bool,
+) -> egui::Response {
+    let label = locale::tr(ui, label);
+    let muted = Color32::from_rgb(115, 127, 157);
+    ui.add_enabled_ui(enabled, |ui| {
+        if !enabled && ui.is_visible() {
+            ui.set_opacity(1.);
+        }
+        let widgets = &mut ui.visuals_mut().widgets;
+        widgets.inactive.weak_bg_fill = fill;
+        widgets.hovered.weak_bg_fill = if fill == theme::LIGHT {
+            muted
+        } else {
+            Color32::from_rgb(255, 93, 74)
+        };
+        widgets.active.weak_bg_fill = widgets.hovered.weak_bg_fill;
+        let color = if enabled { Color32::WHITE } else { muted };
+        let mut button =
+            egui::Button::new(RichText::new(label).size(13.333).color(color)).corner_radius(0);
+        if !enabled {
+            button = button.fill(theme::DARK);
+        }
+        panels::source_controls::add_sized_button(ui, egui::vec2(width, 40.), button)
+    })
+    .inner
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn backup_notice_stays_above_the_tutorial_and_shows_the_local_date() {
+        let mut app = EditorApp::empty();
+        let ctx = egui::Context::default();
+        theme::configure(&ctx);
+        let mut project = Project::new();
+        let path = PathBuf::from("backup_2024-01-04_11-00-00/World.ldtk");
+        project.path = Some(path.clone());
+        project.json["tutorialDesc"] = serde_json::json!("First line\nSecond line");
+        app.project = Some(project);
+        ctx.data_mut(|data| {
+            data.insert_temp(
+                project_dialogs::backup_original_key(&path),
+                PathBuf::from("World.ldtk"),
+            );
+        });
+
+        let screen = Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1440., 900.));
+        let canvas = Rect::from_min_max(egui::pos2(300., 0.), screen.max);
+        for _ in 0..2 {
+            let _ = ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(screen),
+                    ..Default::default()
+                },
+                |ctx| {
+                    app.canvas_notifications(ctx, canvas);
+                },
+            );
+        }
+        let output = ctx.run(
+            egui::RawInput {
+                screen_rect: Some(screen),
+                ..Default::default()
+            },
+            |ctx| {
+                app.canvas_notifications(ctx, canvas);
+            },
+        );
+        let background = |color| {
+            output
+                .shapes
+                .iter()
+                .find_map(|shape| match &shape.shape {
+                    egui::Shape::Rect(rect)
+                        if rect.fill == color && rect.rect.width() == canvas.width() =>
+                    {
+                        Some(rect.rect)
+                    }
+                    _ => None,
+                })
+                .expect("notification background")
+        };
+        let backup = background(Color32::from_rgb(101, 148, 255));
+        let tutorial = background(Color32::from_rgb(94, 171, 107));
+        assert_eq!(backup.top(), canvas.top());
+        assert_eq!(tutorial.top(), backup.bottom());
+        assert!(
+            output
+                .shapes
+                .iter()
+                .any(|shape| matches!(&shape.shape, egui::Shape::Text(text)
+            if text.galley.job.text.starts_with("Thu Jan 04 2024 11:00:00 GMT")))
+        );
+    }
 
     fn paint(app: &mut EditorApp, ctx: &egui::Context, now: Instant) -> egui::FullOutput {
         let screen = Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1440., 900.));

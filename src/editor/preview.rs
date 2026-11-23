@@ -5,6 +5,7 @@ impl EditorApp {
     pub(super) fn draw_brush_preview(&mut self, ui: &egui::Ui, rect: Rect, hovered: bool) {
         if self.world
             || self.brush_preview_waits_for_pointer
+            || self.stroke_waiting_for_level
             || self.neighbor_level_press
             || self.panel == Some(Panel::Level)
             || self.gesture.is_some()
@@ -14,6 +15,7 @@ impl EditorApp {
             || self.command_open
             || !hovered
         {
+            self.entity_eraser_preview = false;
             return;
         }
         let Some(pointer) = ui.ctx().pointer_hover_pos().filter(|p| rect.contains(*p)) else {
@@ -25,6 +27,7 @@ impl EditorApp {
         let (world, _) =
             self.canvas_pointer_pixels(project, key, rect, pointer, ui.ctx().pixels_per_point());
         if ui.input(|input| input.modifiers.alt && !input.key_down(Key::Space)) {
+            self.entity_eraser_preview = false;
             self.draw_pick_preview(ui, rect, world);
             return;
         }
@@ -35,12 +38,14 @@ impl EditorApp {
         else {
             return;
         };
-        if layer["__type"] == "AutoLayer"
+        if !self.canvas_layer_visible(key, self.layer)
+            || layer["__type"] == "AutoLayer"
             && self
                 .stamp
                 .as_ref()
                 .is_none_or(|stamp| stamp["type"] != "SelectionGroup")
         {
+            self.entity_eraser_preview = false;
             let [x, y] = world;
             let [left, top, right, bottom] = canvas::bounds(project, key, false);
             let ctx = ui.ctx();
@@ -61,7 +66,22 @@ impl EditorApp {
             .stamp
             .as_ref()
             .filter(|v| v["type"] == "SelectionGroup");
-        let inside = if layer["__type"] == "Entities" && group.is_none() {
+        let entity_brush = layer["__type"] == "Entities" && group.is_none();
+        if !entity_brush {
+            self.entity_eraser_preview = false;
+        } else if ui.input(|input| {
+            input
+                .events
+                .iter()
+                .any(|event| matches!(event, egui::Event::PointerMoved(_)))
+        }) {
+            // LDtk updates the eraser on pointer motion, including after release.
+            self.entity_eraser_preview = self.stroke && self.stroke_erase;
+        }
+        if self.entity_eraser_preview {
+            return;
+        }
+        let inside = if entity_brush {
             entity_tools::placement_in_level(project, key, world)
         } else {
             (0..number(layer, "__cWid", 0.0) as i32).contains(&cell[0])
@@ -661,5 +681,63 @@ mod tests {
             egui::CursorIcon::Cell
         );
         assert!(!has_label(&placement));
+    }
+
+    #[test]
+    fn entity_erase_cursor_changes_on_motion_and_stays_until_the_next_move() {
+        let mut project = Project::new();
+        project.add_layer("Actors", "Entities", 16).unwrap();
+        let actor = project.add_entity_def("Actor", 16, 16).unwrap();
+        let mut app = EditorApp::empty();
+        app.set_project(project);
+        app.entity_uid = Some(actor);
+        app.fit = false;
+        app.viewport.center = [128.; 2];
+        let ctx = egui::Context::default();
+        let rect = Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(256., 256.));
+        let mut frame = |events| {
+            ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(rect),
+                    events,
+                    ..Default::default()
+                },
+                |ctx| {
+                    egui::CentralPanel::default()
+                        .frame(egui::Frame::NONE)
+                        .show(ctx, |ui| {
+                            let (rect, response) =
+                                ui.allocate_exact_size(rect.size(), Sense::click_and_drag());
+                            app.canvas_controls(ctx, rect, &response);
+                            app.draw_brush_preview(ui, rect, response.hovered());
+                        });
+                },
+            )
+            .platform_output
+            .cursor_icon
+        };
+        let start = egui::pos2(64., 64.);
+        let moved = egui::pos2(65., 64.);
+        let right = |pos, pressed| egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Secondary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        frame(vec![]);
+        assert_eq!(
+            frame(vec![egui::Event::PointerMoved(start)]),
+            egui::CursorIcon::Cell
+        );
+        assert_eq!(frame(vec![right(start, true)]), egui::CursorIcon::Cell);
+        assert_eq!(
+            frame(vec![egui::Event::PointerMoved(moved)]),
+            egui::CursorIcon::Default
+        );
+        assert_eq!(frame(vec![right(moved, false)]), egui::CursorIcon::Default);
+        assert_eq!(
+            frame(vec![egui::Event::PointerMoved(start)]),
+            egui::CursorIcon::Cell
+        );
     }
 }

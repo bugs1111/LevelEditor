@@ -1,4 +1,5 @@
 //! The signed text envelope used by the original editor's system clipboard.
+use crate::autotile::{tidy_auto_rule_group, tidy_layer_auto_rules, tidy_rule};
 use crate::workflow::alloc_uid;
 use crate::{Error, Project, Result};
 use serde_json::{Value, json};
@@ -250,10 +251,12 @@ impl Project {
             "tilesets" => ClipboardKind::TilesetDef,
             _ => return Err(invalid("unsupported definition clipboard kind")),
         };
-        Ok(ClipboardData {
-            kind: clip,
-            value: definition(self, kind, uid)?.clone(),
-        })
+        let mut value = definition(self, kind, uid)?.clone();
+        if clip == ClipboardKind::LayerDef {
+            let source = self.auto_rule_source_values(&value);
+            tidy_layer_auto_rules(&mut value, Some(&source));
+        }
+        Ok(ClipboardData { kind: clip, value })
     }
     pub fn paste_definition(&mut self, data: &ClipboardData, after: Option<i64>) -> Result<i64> {
         self.edit_document(|p| {
@@ -498,26 +501,26 @@ impl Project {
         group: i64,
         rule: Option<i64>,
     ) -> Result<ClipboardData> {
-        let group = definition(self, "layers", layer)?["autoRuleGroups"]
+        let layer = definition(self, "layers", layer)?;
+        let group = layer["autoRuleGroups"]
             .as_array()
             .and_then(|a| a.iter().find(|g| g["uid"] == group))
             .ok_or_else(|| invalid("rule group missing"))?;
-        let value = if let Some(uid) = rule {
-            group["rules"]
+        let source = self.auto_rule_source_values(layer);
+        let (kind, value) = if let Some(uid) = rule {
+            let mut value = group["rules"]
                 .as_array()
                 .and_then(|a| a.iter().find(|r| r["uid"] == uid))
                 .ok_or_else(|| invalid("rule missing"))?
+                .clone();
+            tidy_rule(&mut value, Some(&source));
+            (ClipboardKind::Rule, value)
         } else {
-            group
+            let mut value = group.clone();
+            tidy_auto_rule_group(&mut value, Some(&source));
+            (ClipboardKind::RuleGroup, value)
         };
-        Ok(ClipboardData {
-            kind: if rule.is_some() {
-                ClipboardKind::Rule
-            } else {
-                ClipboardKind::RuleGroup
-            },
-            value: value.clone(),
-        })
+        Ok(ClipboardData { kind, value })
     }
     pub fn paste_auto_rule(
         &mut self,

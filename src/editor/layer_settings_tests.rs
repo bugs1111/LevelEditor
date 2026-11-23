@@ -114,6 +114,145 @@ fn layer(app: &EditorApp, uid: i64) -> &Value {
 }
 
 #[test]
+fn default_tileset_row_opens_the_library_and_reports_bound_tile_size() {
+    let (mut app, ctx, uid) = editor("Tiles");
+    app.panel = Some(Panel::Layers);
+    let before = app.project.as_ref().unwrap().json.clone();
+    frame(&mut app, &ctx, vec![]);
+    let out = frame(&mut app, &ctx, vec![]);
+    let create = label(&out, "CREATE NEW TILESET");
+    assert!(create.left() > label(&out, "-- Tileset required --").right());
+    click(&mut app, &ctx, create.center());
+    assert_eq!(app.panel, Some(Panel::Tilesets));
+    assert_eq!(app.project.as_ref().unwrap().json, before);
+    app.dismiss_panel();
+    assert!(app.panel.is_none());
+
+    let p = app.project.as_mut().unwrap();
+    let atlas = p.ensure_embedded_icons().unwrap();
+    p.update_layer_properties(uid, &json!({"tilesetDefUid":atlas}))
+        .unwrap();
+    app.panel = Some(Panel::Layers);
+    frame(&mut app, &ctx, vec![]);
+    let out = frame(&mut app, &ctx, vec![]);
+    let picker = label(&out, "⚙ Internal icons by FinalBossBlues");
+    let size = label(&out, "16px tiles");
+    assert!(size.left() > picker.right());
+    assert!((size.center().y - picker.center().y).abs() <= 2.);
+    assert!(labels(&out, "CREATE NEW TILESET").is_empty());
+    for (grid, warns) in [(10, true), (8, false), (32, true), (16, false)] {
+        app.project
+            .as_mut()
+            .unwrap()
+            .change_layer_grid_size(uid, grid)
+            .unwrap();
+        let out = frame(&mut app, &ctx, vec![]);
+        let message = format!(
+            "Warning: the TILESET grid (16px) differs from the LAYER grid ({grid}px), and the values aren't multiples, which can lead to unexpected behaviors when adding a group of tiles."
+        );
+        assert_eq!(!labels(&out, &message).is_empty(), warns, "layer grid {grid}");
+    }
+}
+
+#[test]
+fn tileset_picker_groups_multitag_atlases_without_selecting_headings() {
+    let (mut app, ctx, uid) = editor("Tiles");
+    let project = app.project.as_mut().unwrap();
+    let mut canopy = None;
+    for (name, tags) in [
+        ("Plain", &[][..]),
+        ("Canopy", &["forest", "City"][..]),
+        ("Road", &["City"][..]),
+    ] {
+        let atlas = project
+            .add_tileset(Path::new(&format!("{name}.png")), 16, 32, 32)
+            .unwrap();
+        project
+            .update_tileset_definition(atlas, &json!({"tags":tags}))
+            .unwrap();
+        if name == "Canopy" {
+            canopy = Some(atlas);
+        }
+    }
+    frame(&mut app, &ctx, vec![]);
+    let closed = frame(&mut app, &ctx, vec![]);
+    click(&mut app, &ctx, label(&closed, "-- Tileset required --").center());
+    let opened = frame(&mut app, &ctx, vec![]);
+    let [untagged, city, forest, integrated] =
+        ["Untagged", "City", "forest", "Integrated LDtk tilesets"].map(|name| label(&opened, name));
+    let canopy_rows = labels(&opened, "Canopy");
+    assert_eq!(canopy_rows.len(), 2);
+    assert!(untagged.top() < city.top() && city.top() < canopy_rows[0].top());
+    assert!(forest.top() < canopy_rows[1].top() && canopy_rows[1].top() < integrated.top());
+    assert!(canopy_rows[0].left() > city.left());
+    for key in [Key::Home, Key::ArrowDown, Key::ArrowDown, Key::ArrowDown, Key::ArrowDown, Key::Enter] {
+        for pressed in [true, false] {
+            frame(
+                &mut app,
+                &ctx,
+                vec![egui::Event::Key {
+                    key,
+                    physical_key: None,
+                    pressed,
+                    repeat: false,
+                    modifiers: egui::Modifiers::NONE,
+                }],
+            );
+        }
+    }
+    assert_eq!(layer(&app, uid)["tilesetDefUid"].as_i64(), canopy);
+}
+
+#[test]
+fn layer_tileset_pickers_create_internal_icons_once_and_undo_assignment() {
+    let (mut app, ctx, tiles) = editor("Tiles");
+    let p = app.project.as_mut().unwrap();
+    let intgrid = p.add_layer("Collision", "IntGrid", 16).unwrap();
+    let auto = p.add_layer("Generated", "AutoLayer", 16).unwrap();
+    p.update_layer_properties(auto, &json!({"autoSourceLayerDefUid":intgrid}))
+        .unwrap();
+    let before = p.json.clone();
+
+    let select = |app: &mut EditorApp, uid, placeholder| {
+        app.definition_uid = Some(uid);
+        frame(app, &ctx, vec![]);
+        let closed = frame(app, &ctx, vec![]);
+        click(app, &ctx, label(&closed, placeholder).center());
+        let opened = frame(app, &ctx, vec![]);
+        let icons = labels(&opened, "⚙ Internal icons by FinalBossBlues");
+        assert_eq!(icons.len(), 1);
+        click(app, &ctx, icons[0].center());
+        layer(app, uid)["tilesetDefUid"].as_i64().unwrap()
+    };
+
+    let atlas = select(&mut app, tiles, "-- Tileset required --");
+    assert!(app.last_chance.is_none());
+    let p = app.project.as_ref().unwrap();
+    assert_eq!(p.tileset(atlas).unwrap()["embedAtlas"], "LdtkIcons");
+    assert_eq!(p.tileset(atlas).unwrap()["tileGridSize"], 16);
+    assert!(p.tileset(atlas).unwrap()["relPath"].is_null());
+    let assigned = p.json.clone();
+    assert_eq!(select(&mut app, auto, "-- Select a tileset --"), atlas);
+    assert!(app.last_chance.is_none());
+    let p = app.project.as_mut().unwrap();
+    assert_eq!(p.json["defs"]["tilesets"].as_array().unwrap().len(), 1);
+    assert!(app.history.undo(p));
+    assert_eq!(p.json, assigned);
+    assert!(app.history.undo(p));
+    assert_eq!(p.json, before);
+
+    p.add_auto_rule_group(auto, "Walls").unwrap();
+    let with_rules = p.json.clone();
+    select(&mut app, auto, "-- Select a tileset --");
+    assert_eq!(
+        app.last_chance.as_ref().map(|(message, _)| message.as_str()),
+        Some("Changed auto-layer tileset")
+    );
+    app.restore_last_chance();
+    assert_eq!(app.project.as_ref().unwrap().json, with_rules);
+}
+
+#[test]
 fn layer_ui_tags_create_and_rename_shared_tags_only_in_layer_ui() {
     let (mut app, ctx, uid) = editor("IntGrid");
     let p = app.project.as_mut().unwrap();
@@ -263,6 +402,38 @@ fn intgrid_palette_and_auto_tiles_share_the_same_section() {
     assert!(labels(&out, "Grid values").is_empty());
     assert!(labels(&out, "Auto-layer tileset").is_empty());
     assert_eq!(app.project.as_ref().unwrap().json, before);
+}
+
+#[test]
+fn intgrid_icon_tileset_picker_groups_atlases_and_clears_old_icons() {
+    let (mut app, ctx, uid) = editor("IntGrid");
+    let project = app.project.as_mut().unwrap();
+    let icons = project.ensure_embedded_icons().unwrap();
+    let replacement = project
+        .add_tileset(Path::new("Replacement.png"), 16, 32, 32)
+        .unwrap();
+    project
+        .update_tileset_definition(replacement, &json!({"tags":["icons"]}))
+        .unwrap();
+    project
+        .update_layer_properties(uid, &json!({"intGridValues":[
+            {"value":1,"color":"#123456","identifier":"Floor","groupUid":0,
+             "tile":{"tilesetUid":icons,"x":0,"y":0,"w":16,"h":16}}
+        ]}))
+        .unwrap();
+    let before = project.json.clone();
+    frame(&mut app, &ctx, vec![]);
+    let out = frame(&mut app, &ctx, vec![]);
+    click(&mut app, &ctx, label(&out, "⚙ Internal icons by FinalBossBlues").center());
+    let opened = frame(&mut app, &ctx, vec![]);
+    assert!(label(&opened, "Untagged").top() < label(&opened, "icons").top());
+    click(&mut app, &ctx, label(&opened, "Replacement").center());
+    let closed = frame(&mut app, &ctx, vec![]);
+    label(&closed, "Replacement");
+    assert!(layer(&app, uid)["intGridValues"][0]["tile"].is_null());
+    let project = app.project.as_mut().unwrap();
+    assert!(app.history.undo(project));
+    assert_eq!(project.json, before);
 }
 
 #[test]

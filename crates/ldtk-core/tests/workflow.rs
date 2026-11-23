@@ -127,6 +127,26 @@ fn entity_remove_repairs_reference_and_toc() {
 }
 
 #[test]
+fn entity_toc_toggle_clears_field_exports_and_rebuilds_the_table() {
+    let mut p = sample();
+    let uid = p.json["defs"]["entities"][0]["uid"].as_i64().unwrap();
+    let field = p.add_field_definition(Some(uid), "Health", "Int", false).unwrap();
+    p.update_entity_definition(uid, &json!({"exportToToc":true})).unwrap();
+    p.update_field_definition(field, &json!({"exportToToc":true})).unwrap();
+    let first_entry = p.json["toc"][0]["instancesData"][0]["fields"].clone();
+    assert!(first_entry.get("Health").is_some());
+
+    p.update_entity_definition(uid, &json!({"exportToToc":false})).unwrap();
+    assert_eq!(p.json["defs"]["entities"][0]["fieldDefs"][0]["exportToToc"], false);
+    assert_eq!(p.json["toc"], json!([]));
+
+    p.update_entity_definition(uid, &json!({"exportToToc":true})).unwrap();
+    assert_eq!(p.json["toc"][0]["instancesData"][0]["fields"], json!({}));
+    p.update_field_definition(field, &json!({"exportToToc":true})).unwrap();
+    assert_eq!(p.json["toc"][0]["instancesData"][0]["fields"], first_entry);
+}
+
+#[test]
 fn save_rebuilds_table_of_contents_after_flag_and_position_changes() {
     let dir = tempfile::tempdir().unwrap();
     for external in [false, true] {
@@ -324,6 +344,48 @@ fn definition_properties_propagate_and_rollback_invalid_dimensions() {
     assert_eq!(p.json, old);
 }
 #[test]
+fn entity_definition_preserves_outside_pivots_on_instances_and_reopen() {
+    let mut p = sample();
+    let uid = p.json["defs"]["entities"][0]["uid"].as_i64().unwrap();
+    p.update_entity_definition(uid, &json!({"pivotX":-0.25,"pivotY":1.75}))
+        .unwrap();
+    assert_eq!(
+        p.layer(K, 0).unwrap()["entityInstances"][0]["__pivot"],
+        json!([-0.25, 1.75])
+    );
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("Pivot.ldtk");
+    p.save(&path).unwrap();
+    let mut reopened = Project::load(&path).unwrap();
+    reopened
+        .update_entity_definition(uid, &json!({"doc":"Outside origin"}))
+        .unwrap();
+    assert_eq!(reopened.json["defs"]["entities"][0]["pivotX"], json!(-0.25));
+    assert_eq!(reopened.json["defs"]["entities"][0]["pivotY"], json!(1.75));
+
+    let before = reopened.json.clone();
+    assert!(
+        reopened
+            .update_entity_definition(uid, &json!({"pivotX":"bad"}))
+            .is_err()
+    );
+    assert_eq!(reopened.json, before);
+
+    let ratio = 7. / 22.;
+    reopened
+        .update_entity_definition(uid, &json!({"pivotX":ratio}))
+        .unwrap();
+    reopened.save(&path).unwrap();
+    let saved = Project::load(&path).unwrap();
+    assert_eq!(saved.json["defs"]["entities"][0]["pivotX"], json!(0.318));
+    assert_eq!(
+        saved.layer(K, 0).unwrap()["entityInstances"][0]["__pivot"],
+        json!([0.318, 1.75])
+    );
+    assert_eq!(reopened.json["defs"]["entities"][0]["pivotX"], json!(ratio));
+}
+#[test]
 fn history_cancel_restores_pending_cross_document_changes() {
     let mut p = sample();
     let mut h = History::default();
@@ -485,13 +547,17 @@ fn cross_level_entity_transfer_preserves_iid_and_rewrites_reference_location() {
     assert_eq!(p.layer(K, 0).unwrap()["entityInstances"], json!([]));
 }
 #[test]
-fn removing_source_layer_clears_dependent_rules() {
+fn removing_source_layer_detaches_the_auto_layer_without_removing_its_groups() {
     let mut p = Project::new();
     let uid = p.add_layer("Source", "IntGrid", 16).unwrap();
-    let target = p.add_layer("Target", "IntGrid", 16).unwrap();
-    p.update_layer_properties(target,&json!({"autoSourceLayerDefUid":uid,"autoRuleGroups":[{"uid":999,"active":true,"rules":[]}]})).unwrap();
+    let target = p.add_layer("Target", "AutoLayer", 16).unwrap();
+    let groups = json!([{"uid":999,"active":true,"rules":[]}]);
+    p.update_layer_properties(target, &json!({"autoSourceLayerDefUid":uid,"autoRuleGroups":groups}))
+        .unwrap();
     p.remove_definition("layers", uid).unwrap();
-    assert_eq!(p.layer_def(target).unwrap()["autoRuleGroups"], json!([]));
+    let target = p.layer_def(target).unwrap();
+    assert!(target["autoSourceLayerDefUid"].is_null());
+    assert_eq!(target["autoRuleGroups"], groups);
 }
 #[test]
 fn level_resize_crops_manual_tiles_by_the_offset_layer_grid() {

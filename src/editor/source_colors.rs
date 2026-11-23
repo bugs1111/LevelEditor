@@ -583,7 +583,8 @@ fn color_palette(ui: &mut egui::Ui, id: egui::Id, draft: &mut ColorDraft) {
 
 /// Original RGB-only picker: SV plane, reversed hue bar, hexadecimal input, clipboard and palette.
 /// Draft choices validate on Enter, Escape or click outside; they do not create per-drag undo entries.
-pub(in crate::app) fn color_editor(ui: &mut egui::Ui, color: &mut [u8; 3]) -> egui::Response {
+#[cfg(test)]
+fn color_editor(ui: &mut egui::Ui, color: &mut [u8; 3]) -> egui::Response {
     color_editor_tag(ui, color, None)
 }
 pub(in crate::app) fn color_editor_tag(
