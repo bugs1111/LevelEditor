@@ -304,6 +304,7 @@ impl Scene<'_> {
         origin: [f32; 2],
         edge_region: Option<Rect>,
     ) -> usize {
+        let clip = painter.clip_rect();
         let mut done = HashSet::new();
         if let Some(region) = edge_region {
             for layer in values(&level["layerInstances"]) {
@@ -369,16 +370,16 @@ impl Scene<'_> {
                     if done.contains(&key) {
                         continue;
                     }
-                    let color = values(&def["intGridValues"])
-                        .iter()
-                        .find(|d| d["value"].as_i64() == Some(value))
-                        .map(|d| theme::color(text(d, "color", "#ffcc00")))
-                        .unwrap_or(theme::ACCENT);
                     let dst = self.screen(transform.rect(Rect::from_min_size(
                         [cell[0] as f32 * grid, cell[1] as f32 * grid].into(),
                         vec2(grid, grid),
                     )));
-                    if dst.intersects(painter.clip_rect()) {
+                    if dst.intersects(clip) {
+                        let color = values(&def["intGridValues"])
+                            .iter()
+                            .find(|d| d["value"].as_i64() == Some(value))
+                            .map(|d| theme::color(text(d, "color", "#ffcc00")))
+                            .unwrap_or(theme::ACCENT);
                         done.insert(key);
                         painter.rect_filled(dst, 0., color);
                         count += 1;
@@ -401,19 +402,28 @@ impl Scene<'_> {
                 .map(|p| super::asset_path(self.project, p))
                 .unwrap_or_else(|| std::path::PathBuf::from("@ldtk/embedded-atlas"));
             let atlas_grid = number(atlas, "tileGridSize", 16.) as i32;
-            let tiles = if layer["__type"] == "Tiles" {
+            let manual_tiles = layer["__type"] == "Tiles";
+            let tiles = if manual_tiles {
                 values(&layer["gridTiles"])
             } else {
                 values(&layer["autoLayerTiles"])
             };
-            let mut emit = |tile: &Value| {
+            let tile_cell = |tile: &Value| {
                 let px = pair(&tile["px"], [0.; 2]);
-                let cell = [(px[0] / grid) as i32, (px[1] / grid) as i32];
+                [(px[0] / grid) as i32, (px[1] / grid) as i32]
+            };
+            let mut emit = |tile: &Value, cell: [i32; 2]| {
                 let key = (grid as i32, cell[0], cell[1]);
                 if done.contains(&key) {
                     return;
                 }
-                let id = tile["t"].as_u64().unwrap_or(u64::MAX) as usize;
+                let dst = self.screen(transform.rect(Rect::from_min_size(
+                    [cell[0] as f32 * grid, cell[1] as f32 * grid].into(),
+                    vec2(grid, grid),
+                )));
+                if !dst.intersects(clip) {
+                    return;
+                }
                 let color = if colors.is_empty() {
                     let src = pair(&tile["src"], [0.; 2]);
                     self.assets.average_tile_color(
@@ -422,7 +432,8 @@ impl Scene<'_> {
                         [atlas_grid; 2],
                     )
                 } else {
-                    super::cached_tile_average(atlas, id)
+                    let id = tile["t"].as_u64().unwrap_or(u64::MAX) as usize;
+                    super::decode_tile_average(colors, id)
                 };
                 let Some(color) = color else {
                     return;
@@ -430,28 +441,21 @@ impl Scene<'_> {
                 if color[3] < 153 {
                     return;
                 }
-                let dst = self.screen(transform.rect(Rect::from_min_size(
-                    [cell[0] as f32 * grid, cell[1] as f32 * grid].into(),
-                    vec2(grid, grid),
-                )));
-                if !dst.intersects(painter.clip_rect()) {
-                    return;
-                }
                 done.insert(key);
                 painter.rect_filled(dst, 0., Color32::from_rgb(color[0], color[1], color[2]));
                 count += 1;
             };
-            if layer["__type"] == "Tiles" {
+            if manual_tiles {
                 let mut seen = HashSet::new();
                 for tile in tiles.iter().rev() {
-                    let px = pair(&tile["px"], [0.; 2]);
-                    if seen.insert(((px[0] / grid) as i32, (px[1] / grid) as i32)) {
-                        emit(tile);
+                    let cell = tile_cell(tile);
+                    if seen.insert(cell) {
+                        emit(tile, cell);
                     }
                 }
             } else {
                 for tile in tiles {
-                    emit(tile)
+                    emit(tile, tile_cell(tile));
                 }
             }
         }

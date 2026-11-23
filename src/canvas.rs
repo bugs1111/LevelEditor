@@ -189,6 +189,10 @@ impl AsyncPaintPreview {
 
 pub(crate) fn cached_tile_average(tileset: &Value, tile_id: usize) -> Option<[u8; 4]> {
     let colors = tileset["cachedPixelData"]["averageColors"].as_str()?;
+    decode_tile_average(colors, tile_id)
+}
+
+fn decode_tile_average(colors: &str, tile_id: usize) -> Option<[u8; 4]> {
     let start = tile_id.checked_mul(4)?;
     let n = u16::from_str_radix(colors.get(start..start.checked_add(4)?)?, 16).ok()?;
     Some([

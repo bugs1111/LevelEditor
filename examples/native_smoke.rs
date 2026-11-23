@@ -95,7 +95,27 @@ struct Smoke {
     update_intervals: Vec<f64>,
     input_intervals: Vec<f64>,
     surface_errors: Arc<SurfaceErrors>,
+    benchmark: Option<InputBenchmark>,
 }
+
+struct InputBenchmark {
+    rendered: Arc<AtomicU64>,
+    start: Option<(Instant, u64)>,
+}
+
+struct CountRenderedFrame(Arc<AtomicU64>);
+
+impl eframe::egui_wgpu::CallbackTrait for CountRenderedFrame {
+    fn paint(
+        &self,
+        _: egui::PaintCallbackInfo,
+        _: &mut eframe::wgpu::RenderPass<'static>,
+        _: &eframe::egui_wgpu::CallbackResources,
+    ) {
+        self.0.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
 fn rss_kib() -> Option<u64> {
     let output = std::process::Command::new("ps")
         .args(["-o", "rss=", "-p", &std::process::id().to_string()])
@@ -175,7 +195,9 @@ impl Smoke {
                     input.events.extend(action.events.iter().cloned());
                     self.action_modifiers = action.modifiers;
                     self.input_frame = true;
-                    eprintln!("Workflow frame {frame}: {:?}", action.events);
+                    if self.benchmark.is_none() {
+                        eprintln!("Workflow frame {frame}: {:?}", action.events);
+                    }
                 }
                 input.modifiers = self.action_modifiers;
                 self.action_frame = Some(frame + 1);
@@ -230,6 +252,27 @@ impl eframe::App for Smoke {
             eprintln!("Capture initialized: {}", self.app.capture_state());
         }
         let started = Instant::now();
+        if let Some(benchmark) = &mut self.benchmark {
+            let rendered = benchmark.rendered.load(Ordering::Relaxed);
+            if self.input_frame {
+                benchmark.start.get_or_insert((started, rendered));
+                ctx.layer_painter(egui::LayerId::new(
+                    egui::Order::Debug,
+                    egui::Id::new("render count"),
+                ))
+                .add(eframe::egui_wgpu::Callback::new_paint_callback(
+                    egui::Rect::from_min_size(ctx.viewport_rect().min, egui::Vec2::splat(1.)),
+                    CountRenderedFrame(benchmark.rendered.clone()),
+                ));
+            } else if let Some((start, first)) = benchmark.start.take() {
+                let elapsed = started.duration_since(start).as_secs_f64();
+                eprintln!(
+                    "Input rendering: {} frames in {elapsed:.6}s; {:.3} FPS",
+                    rendered - first,
+                    (rendered - first) as f64 / elapsed
+                );
+            }
+        }
         let interval = self
             .last_update_started
             .replace(started)
@@ -474,11 +517,16 @@ fn main() -> eframe::Result {
         .unwrap_or(1.);
     assert!(settle_seconds.is_finite() && settle_seconds >= 1.);
     let mut wgpu_options = app::native_gpu_config();
+    let vsync = std::env::var_os("LDTK_SMOKE_NO_VSYNC").is_none();
+    if !vsync {
+        wgpu_options.present_mode = eframe::wgpu::PresentMode::AutoNoVsync;
+    }
     let surface_errors = observe_surface_errors(&mut wgpu_options);
     let final_errors = surface_errors.clone();
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default().with_inner_size([1440., 900.]),
         renderer: eframe::Renderer::Wgpu,
+        vsync,
         wgpu_options,
         #[cfg(target_os = "macos")]
         event_loop_builder: Some(Box::new(platform_files::configure_quit)),
@@ -527,6 +575,10 @@ fn main() -> eframe::Result {
                 update_intervals: Vec::new(),
                 input_intervals: Vec::new(),
                 surface_errors,
+                benchmark: std::env::var_os("LDTK_SMOKE_BENCH").map(|_| InputBenchmark {
+                    rendered: Arc::new(AtomicU64::new(0)),
+                    start: None,
+                }),
             }))
         }),
     );
@@ -635,11 +687,24 @@ fn parse_actions(raw: &str) -> Result<Vec<CaptureAction>, String> {
                 button: match button {
                     "primary" => egui::PointerButton::Primary,
                     "secondary" => egui::PointerButton::Secondary,
+                    "middle" => egui::PointerButton::Middle,
                     _ => return Err("unknown button".into()),
                 },
                 pressed: value["pressed"]
                     .as_bool()
                     .ok_or("button requires pressed")?,
+                modifiers,
+            });
+        }
+        if let Some(wheel) = value.get("wheel") {
+            let dy = wheel
+                .as_f64()
+                .map(|dy| dy as f32)
+                .filter(|dy| dy.is_finite())
+                .ok_or("wheel must be a finite number of points")?;
+            events.push(egui::Event::MouseWheel {
+                unit: egui::MouseWheelUnit::Point,
+                delta: egui::vec2(0., dy),
                 modifiers,
             });
         }
