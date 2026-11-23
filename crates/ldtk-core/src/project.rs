@@ -12,6 +12,7 @@ use std::{
 
 mod levels;
 mod snapshot;
+mod toc;
 pub use levels::{EntityMatch, LevelKey};
 pub use snapshot::FilesystemSnapshot;
 use snapshot::bytes_fingerprint;

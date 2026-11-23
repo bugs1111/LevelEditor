@@ -147,6 +147,44 @@ fn entity_toc_toggle_clears_field_exports_and_rebuilds_the_table() {
 }
 
 #[test]
+fn toc_keeps_definition_order_and_groups_interleaved_instances() {
+    let mut p = sample();
+    let hero = p.json["defs"]["entities"][0]["uid"].as_i64().unwrap();
+    let npc = p.add_entity_def("Npc", 16, 16).unwrap();
+    p.add_entity_def("Unused", 16, 16).unwrap();
+    p.add_entity(K, 0, npc, 32, 16).unwrap();
+    p.add_entity(K, 0, hero, 48, 16).unwrap();
+    for def in p.json["defs"]["entities"].as_array_mut().unwrap() {
+        def["exportToToc"] = json!(true);
+    }
+    p.json["toc"] = json!([
+        {"identifier":"Npc","extra":2},
+        {"identifier":"Hero","extra":1,"instancesData":["stale"]}
+    ]);
+    p.move_entity(K, 0, 0, 64, 16).unwrap();
+    let rows = p.json["toc"].as_array().unwrap();
+    let names: Vec<_> = rows
+        .iter()
+        .map(|row| row["identifier"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, ["Hero", "Npc", "Unused"]);
+    assert_eq!(rows[0]["extra"], 1);
+    assert_eq!(rows[1]["extra"], 2);
+    let positions: Vec<Vec<i64>> = rows
+        .iter()
+        .map(|row| {
+            row["instancesData"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|item| item["worldX"].as_i64().unwrap())
+                .collect()
+        })
+        .collect();
+    assert_eq!(positions, [vec![64, 48], vec![32], vec![]]);
+}
+
+#[test]
 fn linear_toc_positions_restart_in_each_world() {
     let mut p = sample();
     p.resize_level(K, 64, 96, 0, 0).unwrap();
