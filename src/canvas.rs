@@ -92,9 +92,7 @@ pub fn placements(project: &Project, selected: LevelKey) -> Vec<(LevelKey, [f32;
     let layout = text(settings, "worldLayout", "Free");
     let mut cursor = [0.0_f32; 2];
     project
-        .level_keys()
-        .into_iter()
-        .filter(|key| key.world == selected.world)
+        .level_keys_in_world(selected.world)
         .filter_map(|key| {
             let level = project.level(key)?;
             let size = [number(level, "pxWid", 256.0), number(level, "pxHei", 256.0)];
@@ -1250,7 +1248,6 @@ fn paint_level_hover(ctx: &egui::Context, painter: &Painter, rect: Rect) {
 }
 
 pub fn draw(
-    ctx: &egui::Context,
     painter: &Painter,
     canvas: Rect,
     project: &Project,
@@ -1259,6 +1256,7 @@ pub fn draw(
     linear_drag: Option<(LevelKey, [i32; 2])>,
     assets: &mut Assets,
 ) -> usize {
+    let ctx = painter.ctx();
     painter.rect_filled(
         canvas,
         0.,

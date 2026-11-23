@@ -1196,9 +1196,7 @@ impl EditorApp {
             if !crossed
                 || linear
                     && project
-                        .level_keys()
-                        .into_iter()
-                        .filter(|other| other.world == key.world)
+                        .level_keys_in_world(key.world)
                         .nth(1)
                         .is_none()
             {

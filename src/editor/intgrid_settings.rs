@@ -350,24 +350,20 @@ impl EditorApp {
             groups.push(json!({"uid":uid,"identifier":null,"color":null}));
         }
         let mut confirmed_removal = false;
-        if let Some(action) = remove {
-            if self.int_grid_removal_needs_confirmation(layer, action, &values) {
-                self.int_grid_removal = Some((layer, action));
-                remove = None;
-            }
+        if let Some(action) = remove
+            && self.int_grid_removal_needs_confirmation(layer, action, &values)
+        {
+            self.int_grid_removal = Some((layer, action));
+            remove = None;
         }
         if let Some((owner, action)) = self.int_grid_removal
             && owner == layer
+            && let Some(confirm) = self.confirm_int_grid_removal(ui.ctx(), action)
         {
-            match self.confirm_int_grid_removal(ui.ctx(), action) {
-                Some(confirm) => {
-                    self.int_grid_removal = None;
-                    if confirm {
-                        remove = Some(action);
-                        confirmed_removal = true;
-                    }
-                }
-                None => {}
+            self.int_grid_removal = None;
+            if confirm {
+                remove = Some(action);
+                confirmed_removal = true;
             }
         }
         match remove {

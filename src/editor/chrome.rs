@@ -1471,16 +1471,12 @@ impl EditorApp {
                                 }
                                 menu_response = menu_response.union(r);
                             }
-                            if response.clicked() && !mac_context
-                                && !eye.contains(
-                                    ui.input(|i| i.pointer.interact_pos().unwrap_or_default()),
-                                )
-                                && !(auto
-                                    && rule_rect.contains(
-                                        ui.input(|i| i.pointer.interact_pos().unwrap_or_default()),
-                                    ))
-                            {
-                                self.switch_layer(*index);
+                            if response.clicked() && !mac_context {
+                                let pointer = ui.input(|i| i.pointer.interact_pos().unwrap_or_default());
+                                let on_control = eye.contains(pointer) || (auto && rule_rect.contains(pointer));
+                                if !on_control {
+                                    self.switch_layer(*index);
+                                }
                             }
                             ui.set_opacity(opacity);
                             response.on_hover_text(text(def, "doc", ""));
@@ -1812,7 +1808,7 @@ impl EditorApp {
                                     if hovered {
                                         ui.painter().rect_filled(row.translate(egui::vec2(2., 0.)), 4., theme::MEDIUM);
                                     }
-                                    paint_world_depth_row(ui, row, depth, depth == min, index == 0, active, hovered, &font);
+                                    paint_world_depth_row(ui, row, depth, min..=max, active, hovered, &font);
                                 }
                             });
                     });
@@ -1827,20 +1823,19 @@ fn paint_world_depth_row(
     ui: &egui::Ui,
     row: Rect,
     depth: i64,
-    bottom: bool,
-    top: bool,
+    depths: std::ops::RangeInclusive<i64>,
     active: bool,
     hovered: bool,
     font: &FontId,
 ) {
-    let icon = if bottom {
+    let icon = if depth == *depths.start() {
         egui::include_image!("../../assets/icons/worldLayer_top.svg")
     } else {
         egui::include_image!("../../assets/icons/worldLayer_below.svg")
     };
     let tint = if active || hovered {
         theme::ACCENT
-    } else if top {
+    } else if depth == *depths.end() {
         Color32::WHITE.gamma_multiply(0.5)
     } else {
         Color32::WHITE

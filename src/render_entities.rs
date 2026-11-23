@@ -104,29 +104,18 @@ impl Scene<'_> {
             .unwrap_or(&Value::Null);
         let bounds = entity_bounds(entity, def);
         let rect = self.screen(transform.rect(bounds));
-        if !rect
-            .expand(300. * self.options.ui_scale)
-            .intersects(self.canvas)
-            && !(def["tileRenderMode"] == "FullSizeUncropped"
-                && values(&def["fieldDefs"]).iter().any(|field| {
-                    field["__type"] == "FilePath"
-                        && field["isArray"] != true
-                        && field["editorDisplayMode"] == "EntityTile"
-                }))
-            && !values(&def["fieldDefs"]).iter().any(|f| {
-                matches!(
-                    text(f, "editorDisplayMode", ""),
-                    "RadiusPx"
-                        | "RadiusGrid"
-                        | "RefLinkBetweenCenters"
-                        | "RefLinkBetweenPivots"
-                        | "Points"
-                        | "PointStar"
-                        | "PointPath"
-                        | "PointPathLoop"
+        let visible = rect.expand(300. * self.options.ui_scale).intersects(self.canvas);
+        if !visible && !values(&def["fieldDefs"]).iter().any(|field| {
+            (def["tileRenderMode"] == "FullSizeUncropped"
+                && field["__type"] == "FilePath"
+                && field["isArray"] != true
+                && field["editorDisplayMode"] == "EntityTile")
+                || matches!(
+                    text(field, "editorDisplayMode", ""),
+                    "RadiusPx" | "RadiusGrid" | "RefLinkBetweenCenters" | "RefLinkBetweenPivots"
+                        | "Points" | "PointStar" | "PointPath" | "PointPathLoop"
                 )
-            })
-        {
+        }) {
             return;
         }
         let image_tile = values(&def["fieldDefs"]).iter().find_map(|field| {

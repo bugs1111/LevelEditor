@@ -56,12 +56,7 @@ impl EditorApp {
                 if p.level(*key).is_none() {
                     return false;
                 }
-                if p.level_keys()
-                    .iter()
-                    .filter(|k| k.world == key.world)
-                    .count()
-                    <= 1
-                {
+                if p.level_keys_in_world(key.world).len() <= 1 {
                     self.status = "You can't delete the last level.".into();
                     return false;
                 }

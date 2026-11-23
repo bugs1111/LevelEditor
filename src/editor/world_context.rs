@@ -64,7 +64,7 @@ fn overlaps(a: [f32; 4], b: [f32; 4]) -> bool {
 }
 fn normalize_linear(p: &mut Project, world: Option<usize>) {
     if text(container(p, world), "worldLayout", "Free").starts_with("Linear") {
-        for key in p.level_keys().into_iter().filter(|k| k.world == world) {
+        for key in p.level_keys_in_world(world) {
             if let Some(level) = p.level_mut(key) {
                 level["worldX"] = json!(-1);
                 level["worldY"] = json!(-1);
@@ -768,11 +768,7 @@ impl EditorApp {
     }
     fn move_context_level(&mut self, key: LevelKey, world: usize) {
         if let Some(target) = self.edit("Move level to world", |p| {
-            let count = p
-                .level_keys()
-                .iter()
-                .filter(|k| k.world == Some(world))
-                .count();
+            let count = p.level_keys_in_world(Some(world)).len();
             let origin = canvas::placements(p, key)
                 .into_iter()
                 .find(|(candidate, _)| *candidate == key)

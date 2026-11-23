@@ -1,0 +1,18 @@
+Edit the attached FIRST icon candidate to the user's corrected camera direction, while preserving its pixel-art appearance, terrain themes, and visible thickness.
+
+IMPORTANT: the user does NOT want either a pure overhead map or a flat side-view landscape. They want this same thick terrain tile, seen from an ELEVATED FRONT CAMERA after a 45-degree horizontal/YAW rotation of the 3D subject. Change the camera azimuth, NOT a 45-degree rotation of the finished picture in its 2D canvas.
+Imagine the attached diamond-shaped isometric square terrain slab rotating around its vertical axis until ONE STRAIGHT EDGE faces the viewer squarely. Keep the elevated downward viewing angle around 45–50 degrees so its ENTIRE BROAD TOP SURFACE remains visible. The result is like looking down at a tabletop from its front: a large horizontally aligned, foreshortened RECTANGULAR map surface with a shallow rectangular soil/stone thickness directly below its FRONT EDGE.
+
+GEOMETRY REQUIREMENTS:
+- Top surface must be extensive and clearly show the four biomes laid out across its depth and width, taking about 65–75% of the terrain object's projected height.
+- A visible solid earth sidewall under the front edge must provide physical thickness, around 15–20% of the total terrain object height.
+- The front edge runs HORIZONTALLY left-to-right. The back edge is also horizontal. The map is square in world space, foreshortened into a wide rectangle by the elevated camera.
+- Camera is centered on the middle of one face, NOT on a corner. NO pointed front corner, NO diamond footprint, NO diagonal front edges, NO two equally visible sidewalls.
+- Keep a high-angle 3D view of a continuous top plane, NOT a flat 2D platformer skyline, NOT the previous front-elevation cross-section, NOT a pure vertical overhead view.
+- Orthographic projection, zero camera roll; all vertical edges remain vertical. Single front wall, at most negligible side faces.
+
+PRESERVE: one cohesive terrain chunk, lush green grass upper-left with a single chunky pixel tree, golden sand upper-right with a small stepped dune, bright turquoise water lower-left spilling as a short waterfall over the FRONT EDGE, charcoal basalt/lava lower-right with a vivid orange lava channel. A narrow pale path joins the grassy and sandy parts. Keep the clean limited palette, thick dark blue-black outline, chunky controlled pixel clusters, simple recognizable app-icon shapes. Adjust tree and dune to the new elevated frontal view; show their top and front surfaces consistently. Keep one small GOLDEN tile-selection corner outline ON THE TOP MAP SURFACE near the front center; make it a foreshortened rectangle aligned with the map, NOT a diamond.
+
+REMOVE THE PENCIL COMPLETELY. This overrides the pencil in the reference. No pencil, pen, brush, cursor arrow, tool, letters, title, text, label or watermark anywhere. The only editor cue is the selected terrain tile.
+
+Finish as one centered square app icon with a TRUE TRANSPARENT background and comfortable clear padding about 8%. No background plate, no external ground shadow, no checkerboard pattern. Pixel art with bold 96x96–128x128-style logical pixels enlarged crisply, no blur or smooth vector edges. Do not crop any tree, terrain slab or waterfall.

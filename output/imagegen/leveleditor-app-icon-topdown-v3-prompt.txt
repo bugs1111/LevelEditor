@@ -1,0 +1,16 @@
+Use case: logo-brand. Create a new top-down version of this pixel-art map editor / level editor app icon, using the attached prior candidate ONLY for its bold pixel-art palette and four terrain themes.
+LATEST USER REQUIREMENTS: make it much more TOP DOWN and REMOVE THE PENCIL ENTIRELY. There must be NO PENCIL, NO PEN, NO BRUSH, NO STYLUS, NO HAND TOOL, NO CURSOR ARROW anywhere.
+
+CAMERA: strictly overhead orthographic, looking vertically straight DOWN at a square tile map, like a beautiful classic top-down 2D game map. Edges of the map are horizontal/vertical and aligned with the image frame. No diamond shape, no isometric projection, no tilted map, no side-view skyline, no horizon, no visible soil cross-section, no cube sidewalls, no cutaway, no 3D slab, no front elevation. The map's upper surface is the entire subject.
+
+Design a compact, single cohesive square map with a subtly stepped pixel border and FOUR large terrain regions joined by simple natural stepped boundaries:
+- lush emerald green grass in the upper-left with ONE small tree seen from ABOVE as a chunky layered leafy crown, with no tall exposed trunk or sideways profile;
+- golden sandy desert in the upper-right, with one simple top-down dune contour;
+- vivid turquoise-blue lake in the lower-left, with a few crisp lighter-blue pixel wave bands;
+- charcoal basalt volcanic land in the lower-right, with a bright orange winding lava fissure seen from above.
+A small pale sand path joins the two land regions, without splitting the whole map into a rigid four-panel diagram. Terrain patches have large simple readable silhouettes and crisp tonal separation. A tiny amount of stepped shore transition helps it read as a miniature editable map, but avoid busy scattering of objects. Keep the terrain boundary colors distinct even at small size.
+
+Editor identity without any physical tool: put a small GOLDEN SQUARE TILE-SELECTION OUTLINE on one grass tile close to the central meeting point of the terrain types. Use just four strong corner brackets, aligned horizontally and vertically. This should be restrained and integrated into the map, not a giant external frame. No letters, no words, no app name, no additional tool symbols.
+
+Style: premium authentic chunky pixel art with approximately 96x96 to 128x128 logical pixel resolution, enlarged with nearest-neighbor crisp edges. Bold simple clusters, limited vivid palette, consistent dark blue-black pixel outline around the overall map, carefully stepped boundaries, sparse meaningful highlights, minimal microtexture. All objects share the same exact overhead camera. Friendly, polished, strongly recognizable at 32px/64px. Not vector art, not smooth illustration, not a 3D render, no gradients, no blur, no antialiasing on the subject.
+Composition: ONE finished standalone square app icon, centered, fills about 84% of the square canvas, even transparent margins on all four sides. TRUE transparent background with alpha, no background plate or squircle, no external cast shadow, no baked checkerboard, no watermarks. Again: absolutely NO pencil and no side-view soil block.

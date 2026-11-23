@@ -482,40 +482,6 @@ impl EditorApp {
         }
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn every_removal_with_a_replacement_requires_its_own_action() {
-        let mut pending = PendingSync {
-            path: PathBuf::from("Game.cdb"),
-            source: Vec::new(),
-            report: EnumSyncReport {
-                added: ["Loot.New", "Moves.Jump"].map(str::to_owned).to_vec(),
-                removed: ["Loot.Old", "Moves.Walk", "Other.Value"]
-                    .map(str::to_owned)
-                    .to_vec(),
-                ..Default::default()
-            },
-            actions: BTreeMap::new(),
-        };
-        assert!(!pending.ready());
-        assert_eq!(
-            rename_options(&pending.report, "Loot.Old").collect::<Vec<_>>(),
-            ["New"]
-        );
-        pending
-            .actions
-            .insert("Loot.Old".into(), SyncAction::Rename("New".into()));
-        assert!(!pending.ready());
-        pending
-            .actions
-            .insert("Moves.Walk".into(), SyncAction::Remove);
-        assert!(pending.ready());
-    }
-}
 impl EditorApp {
     pub(super) fn pick_project_file(
         &mut self,
@@ -549,5 +515,39 @@ impl EditorApp {
                 }
             }
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_removal_with_a_replacement_requires_its_own_action() {
+        let mut pending = PendingSync {
+            path: PathBuf::from("Game.cdb"),
+            source: Vec::new(),
+            report: EnumSyncReport {
+                added: ["Loot.New", "Moves.Jump"].map(str::to_owned).to_vec(),
+                removed: ["Loot.Old", "Moves.Walk", "Other.Value"]
+                    .map(str::to_owned)
+                    .to_vec(),
+                ..Default::default()
+            },
+            actions: BTreeMap::new(),
+        };
+        assert!(!pending.ready());
+        assert_eq!(
+            rename_options(&pending.report, "Loot.Old").collect::<Vec<_>>(),
+            ["New"]
+        );
+        pending
+            .actions
+            .insert("Loot.Old".into(), SyncAction::Rename("New".into()));
+        assert!(!pending.ready());
+        pending
+            .actions
+            .insert("Moves.Walk".into(), SyncAction::Remove);
+        assert!(pending.ready());
     }
 }

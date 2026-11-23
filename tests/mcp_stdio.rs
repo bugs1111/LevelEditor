@@ -443,14 +443,28 @@ fn refuses_to_overwrite_changed_root_and_external_level_files() {
 
 #[test]
 fn refuses_to_replace_an_unrelated_file_at_a_normalized_external_level_path() {
+    for indexed in [false, true] {
+        check_external_path_collision(indexed);
+    }
+}
+
+fn check_external_path_collision(indexed: bool) {
     let temp = tempfile::tempdir().unwrap();
     let path = copy_external_project(temp.path());
     let normalized = path.with_extension("").join("World_Level_0.ldtkl");
     let source = normalized.with_file_name("legacy name.ldtkl");
     fs::rename(&normalized, &source).unwrap();
+    let normalized = if indexed {
+        normalized.with_file_name("0000-World_Level_0.ldtkl")
+    } else {
+        normalized
+    };
     let unrelated = b"Unrelated file at the default external level path";
     fs::write(&normalized, unrelated).unwrap();
     let mut root: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    if indexed {
+        root["flags"].as_array_mut().unwrap().push(json!("PrependIndexToLevelFileNames"));
+    }
     root["levels"][0]["externalRelPath"] = json!("SeparateLevelFiles/legacy name.ldtkl");
     let root_bytes = serde_json::to_vec(&root).unwrap();
     fs::write(&path, &root_bytes).unwrap();

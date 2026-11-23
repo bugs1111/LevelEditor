@@ -642,9 +642,7 @@ impl EditorApp {
                 let layout_width = ui.available_width() - ui.spacing().scroll.allocated_width();
                 index.layout(ui, &self.search, self.search_show_all, layout_width);
                 let rows = &index.rows;
-                let Some(last) = rows.last() else {
-                    return None;
-                };
+                let last = rows.last()?;
                 let rows_height = last.top + last.height;
 
                 self.search_index = self.search_index.min(rows.len() - 1);

@@ -43,7 +43,7 @@ fn frame(
         |ctx| {
             assets.poll(ctx);
             let painter = ctx.layer_painter(egui::LayerId::background());
-            count = draw(ctx, &painter, rect, project, view, options, None, assets);
+            count = draw(&painter, rect, project, view, options, None, assets);
         },
     );
     (count, output)
@@ -1159,7 +1159,7 @@ fn source_level_annotation_position_uses_the_world_origin_at_fractional_zoom() {
         },
         |ctx| {
             draw(
-                ctx, &ctx.layer_painter(egui::LayerId::background()), rect,
+                &ctx.layer_painter(egui::LayerId::background()), rect,
                 &project, &view, &opts, None, &mut assets,
             );
         },
@@ -1221,7 +1221,7 @@ fn source_world_fields_use_truncated_world_positions_in_each_layout() {
         let out = ctx.run(
             egui::RawInput { screen_rect: Some(rect), ..Default::default() },
             |ctx| {
-                draw(ctx, &ctx.layer_painter(egui::LayerId::background()), rect,
+                draw(&ctx.layer_painter(egui::LayerId::background()), rect,
                     &project, &view, &opts, None, &mut assets);
             },
         );

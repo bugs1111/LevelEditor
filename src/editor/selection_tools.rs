@@ -282,8 +282,7 @@ impl EditorApp {
                 let d = l["layerDefUid"]
                     .as_i64()
                     .and_then(|uid| project.layer_def(uid));
-                (!self.single_layer || *i == self.layer)
-                    && (*i == self.layer || d.is_some_and(|d| d["canSelectWhenInactive"] != false))
+                (*i == self.layer || (!self.single_layer && d.is_some_and(|d| d["canSelectWhenInactive"] != false)))
                     && l["__type"] != "AutoLayer"
             })
             .map(|(i, _)| i)

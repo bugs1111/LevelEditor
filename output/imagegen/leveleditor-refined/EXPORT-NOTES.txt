@@ -1,0 +1,7 @@
+All exports resize/pad/mask the same opaque artwork. No scene edits.
+macOS legacy: 1024 RGBA canvas; centered 824px body; circular rounded-rectangle radius 185px at body scale; manually baked approximation, NOT an official Apple system mask or exact continuous curve.
+Modern Apple: unmasked 1024 square source for system masking / Icon Composer.
+Windows: 1024 RGBA canvas; body=44/48 of canvas; corner radius=2/48 of canvas, derived from Microsoft 48px icon-grid guidance.
+ICO PNG entries:16,20,24,32,40,48,64,128,256.
+ICNS PNG chunks:icp4=16,icp5=32,icp6=64,ic07=128,ic08=256,ic09=512,ic10=1024.
+Masks are antialiased by 4x4 coverage samples; resizing uses Lanczos3.

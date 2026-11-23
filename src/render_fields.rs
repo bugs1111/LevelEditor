@@ -1356,6 +1356,11 @@ fn render_link(
         ));
     }
 }
+
+pub(crate) fn level_smart_color(project: &Project, level: &Value) -> Color32 {
+    let [r, g, b] = project.level_smart_color(level, false);
+    Color32::from_rgb(r, g, b)
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1533,9 +1538,4 @@ mod tests {
             "-locked"
         );
     }
-}
-
-pub(crate) fn level_smart_color(project: &Project, level: &Value) -> Color32 {
-    let [r, g, b] = project.level_smart_color(level, false);
-    Color32::from_rgb(r, g, b)
 }

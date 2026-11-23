@@ -497,187 +497,187 @@ impl EditorApp {
                     let mut open_definition = None;
                     match layer_type {
                         "IntGrid" => {
-                            if let Some(def) = project.layer_def(layer_uid) {
-                                if let Some(values) = def["intGridValues"].as_array() {
-                                    let mut groups =
-                                        vec![(0, locale::tr(ui, "Ungrouped").to_owned(), None)];
-                                    groups.extend(
-                                        def["intGridValuesGroups"]
-                                            .as_array()
-                                            .into_iter()
-                                            .flatten()
-                                            .map(|g| {
-                                                (
-                                                    g["uid"].as_i64().unwrap_or(0),
-                                                    text(g, "identifier", locale::tr(ui, "Group"))
-                                                        .to_owned(),
-                                                    g["color"].as_str().map(theme::color),
-                                                )
-                                            }),
-                                    );
-                                    let count = groups
-                                        .iter()
-                                        .filter(|(uid, _, _)| {
-                                            values.iter().any(|v| {
-                                                v["groupUid"].as_i64().unwrap_or(0) == *uid
-                                            })
+                            if let Some(def) = project.layer_def(layer_uid)
+                                && let Some(values) = def["intGridValues"].as_array()
+                            {
+                                let mut groups =
+                                    vec![(0, locale::tr(ui, "Ungrouped").to_owned(), None)];
+                                groups.extend(
+                                    def["intGridValuesGroups"]
+                                        .as_array()
+                                        .into_iter()
+                                        .flatten()
+                                        .map(|g| {
+                                            (
+                                                g["uid"].as_i64().unwrap_or(0),
+                                                text(g, "identifier", locale::tr(ui, "Group"))
+                                                    .to_owned(),
+                                                g["color"].as_str().map(theme::color),
+                                            )
+                                        }),
+                                );
+                                let count = groups
+                                    .iter()
+                                    .filter(|(uid, _, _)| {
+                                        values.iter().any(|v| {
+                                            v["groupUid"].as_i64().unwrap_or(0) == *uid
                                         })
-                                        .count();
-                                    for (uid, name, group_color) in groups {
-                                        let group = values
-                                            .iter()
-                                            .filter(|v| v["groupUid"].as_i64().unwrap_or(0) == uid)
-                                            .filter(|v| {
-                                                search.is_empty()
-                                                    || text(v, "identifier", "")
-                                                        .to_lowercase()
-                                                        .contains(&search)
-                                                    || v["value"].to_string().contains(&search)
-                                            })
-                                            .collect::<Vec<_>>();
-                                        if group.is_empty() {
-                                            continue;
-                                        }
-                                        let draw = |ui: &mut egui::Ui| {
-                                            let width = if columns == 1 {
-                                                ui.available_width()
-                                            } else {
-                                                (ui.available_width() - (columns - 1) as f32)
-                                                    / columns as f32
-                                            };
-                                            ui.horizontal_wrapped(|ui| {
-                                                ui.spacing_mut().item_spacing = egui::vec2(1., 1.);
-                                                for value in &group {
-                                                    let id =
-                                                        value["value"].as_i64().unwrap_or(1) as i32;
-                                                    let (rect, response) = ui.allocate_exact_size(
-                                                        egui::vec2(
-                                                            width,
-                                                            if columns == 1 {
-                                                                46.
-                                                            } else {
-                                                                width + 18.
-                                                            },
-                                                        ),
-                                                        Sense::click(),
-                                                    );
-                                                    let selected = self.int_value == id;
-                                                    let color = theme::color(text(
-                                                        value, "color", "#ffcc00",
-                                                    ));
-                                                    let text_color = palette_item(
+                                    })
+                                    .count();
+                                for (uid, name, group_color) in groups {
+                                    let group = values
+                                        .iter()
+                                        .filter(|v| v["groupUid"].as_i64().unwrap_or(0) == uid)
+                                        .filter(|v| {
+                                            search.is_empty()
+                                                || text(v, "identifier", "")
+                                                    .to_lowercase()
+                                                    .contains(&search)
+                                                || v["value"].to_string().contains(&search)
+                                        })
+                                        .collect::<Vec<_>>();
+                                    if group.is_empty() {
+                                        continue;
+                                    }
+                                    let draw = |ui: &mut egui::Ui| {
+                                        let width = if columns == 1 {
+                                            ui.available_width()
+                                        } else {
+                                            (ui.available_width() - (columns - 1) as f32)
+                                                / columns as f32
+                                        };
+                                        ui.horizontal_wrapped(|ui| {
+                                            ui.spacing_mut().item_spacing = egui::vec2(1., 1.);
+                                            for value in &group {
+                                                let id =
+                                                    value["value"].as_i64().unwrap_or(1) as i32;
+                                                let (rect, response) = ui.allocate_exact_size(
+                                                    egui::vec2(
+                                                        width,
+                                                        if columns == 1 {
+                                                            46.
+                                                        } else {
+                                                            width + 18.
+                                                        },
+                                                    ),
+                                                    Sense::click(),
+                                                );
+                                                let selected = self.int_value == id;
+                                                let color = theme::color(text(
+                                                    value, "color", "#ffcc00",
+                                                ));
+                                                let text_color = palette_item(
+                                                    ui.painter(),
+                                                    rect,
+                                                    color,
+                                                    selected,
+                                                    response.hovered(),
+                                                    columns == 1,
+                                                );
+                                                let icon = Rect::from_center_size(
+                                                    if columns == 1 {
+                                                        egui::pos2(
+                                                            rect.left() + 33.,
+                                                            rect.center().y,
+                                                        )
+                                                    } else {
+                                                        egui::pos2(
+                                                            rect.center().x,
+                                                            rect.top() + width / 2.,
+                                                        )
+                                                    },
+                                                    Vec2::splat(if columns == 1 {
+                                                        34.
+                                                    } else {
+                                                        (width - 4.).max(4.)
+                                                    }),
+                                                );
+                                                let border = if columns == 1 {
+                                                    Stroke::new(
+                                                        1_f32,
+                                                        color
+                                                            .lerp_to_gamma(Color32::WHITE, 0.2),
+                                                    )
+                                                } else {
+                                                    Stroke::NONE
+                                                };
+                                                ui.painter().rect(
+                                                    icon,
+                                                    2.,
+                                                    color.lerp_to_gamma(Color32::BLACK, 0.5),
+                                                    border,
+                                                    StrokeKind::Inside,
+                                                );
+                                                if !value["tile"].is_null() {
+                                                    paint_tile(
+                                                        ctx,
                                                         ui.painter(),
-                                                        rect,
-                                                        color,
-                                                        selected,
-                                                        response.hovered(),
-                                                        columns == 1,
+                                                        icon.shrink(border.width),
+                                                        project,
+                                                        &value["tile"],
+                                                        &mut self.assets,
                                                     );
-                                                    let icon = Rect::from_center_size(
+                                                }
+                                                if let Some(name) = value["identifier"].as_str()
+                                                {
+                                                    ui.painter().text(
                                                         if columns == 1 {
                                                             egui::pos2(
-                                                                rect.left() + 33.,
+                                                                rect.left() + 58.,
                                                                 rect.center().y,
                                                             )
                                                         } else {
                                                             egui::pos2(
                                                                 rect.center().x,
-                                                                rect.top() + width / 2.,
+                                                                rect.bottom() - 9.,
                                                             )
                                                         },
-                                                        Vec2::splat(if columns == 1 {
-                                                            34.
+                                                        if columns == 1 {
+                                                            Align2::LEFT_CENTER
                                                         } else {
-                                                            (width - 4.).max(4.)
+                                                            Align2::CENTER_CENTER
+                                                        },
+                                                        name,
+                                                        FontId::proportional(if columns == 1 {
+                                                            15.
+                                                        } else {
+                                                            10.
                                                         }),
+                                                        text_color,
                                                     );
-                                                    let border = if columns == 1 {
-                                                        Stroke::new(
-                                                            1_f32,
-                                                            color
-                                                                .lerp_to_gamma(Color32::WHITE, 0.2),
-                                                        )
-                                                    } else {
-                                                        Stroke::NONE
-                                                    };
-                                                    ui.painter().rect(
-                                                        icon,
-                                                        2.,
-                                                        color.lerp_to_gamma(Color32::BLACK, 0.5),
-                                                        border,
-                                                        StrokeKind::Inside,
-                                                    );
-                                                    if !value["tile"].is_null() {
-                                                        paint_tile(
-                                                            ctx,
-                                                            ui.painter(),
-                                                            icon.shrink(border.width),
-                                                            project,
-                                                            &value["tile"],
-                                                            &mut self.assets,
-                                                        );
-                                                    }
-                                                    if let Some(name) = value["identifier"].as_str()
-                                                    {
-                                                        ui.painter().text(
-                                                            if columns == 1 {
-                                                                egui::pos2(
-                                                                    rect.left() + 58.,
-                                                                    rect.center().y,
-                                                                )
-                                                            } else {
-                                                                egui::pos2(
-                                                                    rect.center().x,
-                                                                    rect.bottom() - 9.,
-                                                                )
-                                                            },
-                                                            if columns == 1 {
-                                                                Align2::LEFT_CENTER
-                                                            } else {
-                                                                Align2::CENTER_CENTER
-                                                            },
-                                                            name,
-                                                            FontId::proportional(if columns == 1 {
-                                                                15.
-                                                            } else {
-                                                                10.
-                                                            }),
-                                                            text_color,
-                                                        );
-                                                    }
-                                                    if response.clicked() {
-                                                        self.int_value = id;
-                                                    }
                                                 }
-                                            });
-                                        };
-                                        if count > 1 {
-                                            let group_key = format!(
-                                                "{}_intGridPalette_{}_group_{}",
-                                                text(&project.json, "iid", ""),
-                                                layer_uid,
-                                                uid
-                                            );
-                                            let group_open =
-                                                self.settings.ui_state_int(&group_key, None, 1)
-                                                    != 0;
-                                            let group_next = palette_group(
-                                                ui,
-                                                group_open,
-                                                &name.to_uppercase(),
-                                                group_color.unwrap_or(theme::ACCENT),
-                                                draw,
-                                            );
-                                            if group_next != group_open {
-                                                self.settings.set_ui_state_int(
-                                                    &group_key,
-                                                    None,
-                                                    i64::from(group_next),
-                                                );
+                                                if response.clicked() {
+                                                    self.int_value = id;
+                                                }
                                             }
-                                        } else {
-                                            egui::Frame::new().inner_margin(4).show(ui, draw);
+                                        });
+                                    };
+                                    if count > 1 {
+                                        let group_key = format!(
+                                            "{}_intGridPalette_{}_group_{}",
+                                            text(&project.json, "iid", ""),
+                                            layer_uid,
+                                            uid
+                                        );
+                                        let group_open =
+                                            self.settings.ui_state_int(&group_key, None, 1)
+                                                != 0;
+                                        let group_next = palette_group(
+                                            ui,
+                                            group_open,
+                                            &name.to_uppercase(),
+                                            group_color.unwrap_or(theme::ACCENT),
+                                            draw,
+                                        );
+                                        if group_next != group_open {
+                                            self.settings.set_ui_state_int(
+                                                &group_key,
+                                                None,
+                                                i64::from(group_next),
+                                            );
                                         }
+                                    } else {
+                                        egui::Frame::new().inner_margin(4).show(ui, draw);
                                     }
                                 }
                             }

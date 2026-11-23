@@ -476,9 +476,7 @@ impl EditorApp {
             return;
         };
         let mut depths = project
-            .level_keys()
-            .into_iter()
-            .filter(|other| other.world == key.world)
+            .level_keys_in_world(key.world)
             .filter_map(|other| {
                 Some((
                     other,
@@ -845,9 +843,8 @@ impl EditorApp {
                     );
                     let project = self.project.as_ref().unwrap();
                     let depths = project
-                        .level_keys()
-                        .into_iter()
-                        .filter(|other| other.world == key.world && *other != key)
+                        .level_keys_in_world(key.world)
+                        .filter(|other| *other != key)
                         .filter_map(|other| {
                             Some(project.level(other)?["worldDepth"].as_i64().unwrap_or(0))
                         });

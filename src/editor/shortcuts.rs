@@ -22,8 +22,7 @@ fn fullscreen_key(platform: &str, key: Key, modifiers: egui::Modifiers) -> bool 
 }
 
 fn project_search_key(key: Key, modifiers: egui::Modifiers) -> bool {
-    !modifiers.alt
-        && !(cfg!(target_os = "macos") && modifiers.ctrl)
+    !(modifiers.alt || cfg!(target_os = "macos") && modifiers.ctrl)
         && (key != Key::F || !modifiers.shift)
 }
 
@@ -433,9 +432,7 @@ impl EditorApp {
         let project = self.project.as_ref()?;
         Some(
             project
-                .level_keys()
-                .into_iter()
-                .filter(|key| key.world == self.active_world)
+                .level_keys_in_world(self.active_world)
                 .filter_map(|key| project.level(key)?["worldDepth"].as_i64())
                 .fold((0, 0), |(min, max), depth| (min.min(depth), max.max(depth))),
         )

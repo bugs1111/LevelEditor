@@ -827,10 +827,7 @@ impl EditorApp {
                     .project
                     .as_ref()
                     .unwrap()
-                    .level_keys()
-                    .iter()
-                    .filter(|k| k.world == destination)
-                    .count();
+                    .level_keys_in_world(destination).len();
                 if let Some(moved) = self.edit("Level moved to world", |p| {
                     p.move_level_to_world(key, destination, index)
                 }) {
@@ -1348,8 +1345,9 @@ impl EditorApp {
                                                 .field_value_errors(key, entity, uid)
                                         {
                                             for error in errors {
-                                                if !matches!(error.as_str(), "Array too short" | "Array too long")
-                                                    && !(kind == "Array<Point>" && error == "Value required")
+                                                let inline_error = matches!(error.as_str(), "Array too short" | "Array too long")
+                                                    || (kind == "Array<Point>" && error == "Value required");
+                                                if !inline_error
                                                 {
                                                     ui.colored_label(Color32::LIGHT_RED, error);
                                                 }

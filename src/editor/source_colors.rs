@@ -641,10 +641,10 @@ fn color_picker(
     }
     if let Some(mut draft) = state {
         ui.ctx().data_mut(|d| d.insert_temp(active_color_id(), id));
-        let mut open = !ui
+        let mut open = ui
             .ctx()
             .data_mut(|d| d.get_temp::<u64>(active_color_id().with("validate")))
-            .is_some_and(|frame| ui.ctx().cumulative_frame_nr() >= frame);
+            .is_none_or(|frame| ui.ctx().cumulative_frame_nr() < frame);
         let screen = ui.ctx().content_rect();
         egui::Area::new(id.with("backdrop"))
             .order(egui::Order::Foreground)

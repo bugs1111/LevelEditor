@@ -248,6 +248,8 @@ enum StartupWindow {
     EnteringFullscreen(Instant),
 }
 
+type OperationProgress = Arc<Mutex<Option<(usize, usize)>>>;
+
 pub struct EditorApp {
     project: Option<Project>,
     history: History,
@@ -291,9 +293,9 @@ pub struct EditorApp {
     quick_notification: Option<(String, Option<egui::ImageSource<'static>>, Instant)>,
     canvas_notices: Vec<notifications::CanvasNoticeEntry>,
     loading: Option<Receiver<Result<services::LoadedProject, services::LoadFailure>>>,
-    loading_progress: Option<Arc<Mutex<Option<(usize, usize)>>>>,
+    loading_progress: Option<OperationProgress>,
     saving_progress: Option<Arc<Mutex<save_progress::SaveProgress>>>,
-    exporting_progress: Option<Arc<Mutex<Option<(usize, usize)>>>>,
+    exporting_progress: Option<OperationProgress>,
     saving: Option<Receiver<ldtk_core::Result<services::SavedProject>>>,
     save_attempt: Option<PathBuf>,
     save_failure: Option<services::SaveFailure>,
@@ -341,7 +343,7 @@ pub struct EditorApp {
     int_grid_removal: Option<(i64, panels::IntGridRemoval)>,
     pending_auto_layer_rebuild: bool,
     rebuilding_auto_layers: Option<Receiver<ldtk_core::Result<Project>>>,
-    auto_layer_rebuild_progress: Option<Arc<Mutex<Option<(usize, usize)>>>>,
+    auto_layer_rebuild_progress: Option<OperationProgress>,
     last_file_check: Instant,
     command_result: Option<Receiver<command_tools::CommandEvent>>,
     command_cancel: Option<mpsc::Sender<()>>,
@@ -681,7 +683,7 @@ impl EditorApp {
         self.suggest_backups = project_dialogs::suggest_backups(&project);
         self.quick_notification = None;
         self.canvas_notices.clear();
-        self.selected = project.level_keys().first().copied();
+        self.selected = project.iter_level_keys().next();
         if self.settings.bool("openLastProject")
             && project.path.as_ref().is_some_and(|p| {
                 self.settings.value["lastProject"]["filePath"].as_str() == p.to_str()
@@ -689,8 +691,7 @@ impl EditorApp {
             && let Some(uid) = self.settings.value["lastProject"]["levelUid"].as_i64()
         {
             self.selected = project
-                .level_keys()
-                .into_iter()
+                .iter_level_keys()
                 .find(|key| {
                     project
                         .level(*key)
@@ -1122,7 +1123,6 @@ impl EditorApp {
             ctx.request_repaint_after(std::time::Duration::from_secs_f64((deadline - now).max(0.)));
         }
         self.visible_tiles = canvas::draw(
-            ctx,
             painter,
             rect,
             project,

@@ -439,201 +439,6 @@ fn modulo_field(
     .inner
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn modulo_settings_preview_the_period_and_reset_it_as_one_edit() {
-        let ctx = egui::Context::default();
-        theme::configure(&ctx);
-        ctx.style_mut(|style| style.animation_time = 0.);
-        let mut project = Project::new();
-        let layer = project.add_layer("Ground", "IntGrid", 16).unwrap();
-        let group_id = project.add_auto_rule_group(layer, "Terrain").unwrap();
-        let uid = project.add_auto_rule(layer, group_id, 1).unwrap();
-        project
-            .update_auto_rule(
-                layer,
-                group_id,
-                uid,
-                &json!({
-                    "xModulo": 3, "yModulo": 2, "xOffset": 1, "yOffset": 0, "checker": "Horizontal"
-                }),
-            )
-            .unwrap();
-        let mut app = EditorApp::empty();
-        app.set_project(project.clone());
-        app.set_rule_options(&ctx, layer, group_id, Some(uid), RuleOptions::Modulo);
-        let frame = |app: &mut EditorApp, events| {
-            ctx.run(
-                egui::RawInput {
-                    events,
-                    ..Default::default()
-                },
-                |ctx| app.rule_options_dialog(ctx),
-            )
-        };
-        frame(&mut app, vec![]);
-        let output = frame(&mut app, vec![]);
-        let reset = output
-            .shapes
-            .iter()
-            .find_map(|shape| match &shape.shape {
-                egui::Shape::Text(text) if text.galley.text() == "Reset" => {
-                    Some(text.pos + text.galley.size() * 0.5)
-                }
-                _ => None,
-            })
-            .expect("Reset modulo settings");
-        let active = output.shapes.iter().filter(|shape| {
-            matches!(&shape.shape, egui::Shape::Rect(cell) if cell.fill == Color32::from_rgb(60, 97, 72))
-        }).count();
-        assert_eq!(active, 12, "3 active columns by 4 active rows");
-        for pressed in [true, false] {
-            frame(
-                &mut app,
-                vec![
-                    egui::Event::PointerMoved(reset),
-                    egui::Event::PointerButton {
-                        pos: reset,
-                        button: egui::PointerButton::Primary,
-                        pressed,
-                        modifiers: Default::default(),
-                    },
-                ],
-            );
-        }
-        let saved = app
-            .project
-            .as_ref()
-            .unwrap()
-            .copy_auto_rule(layer, group_id, Some(uid))
-            .unwrap()
-            .value;
-        assert_eq!(saved["xModulo"], 1);
-        assert_eq!(saved["yModulo"], 1);
-        assert_eq!(saved["xOffset"], 0);
-        assert_eq!(saved["checker"], "None");
-        assert!(app.history.undo(app.project.as_mut().unwrap()));
-        assert_eq!(app.project.as_ref().unwrap().json, project.json);
-    }
-
-    #[test]
-    fn random_offset_reset_clears_both_axes_in_one_edit() {
-        let ctx = egui::Context::default();
-        theme::configure(&ctx);
-        let mut project = Project::new();
-        let layer = project.add_layer("Ground", "IntGrid", 16).unwrap();
-        let group_id = project.add_auto_rule_group(layer, "Terrain").unwrap();
-        let uid = project.add_auto_rule(layer, group_id, 1).unwrap();
-        project
-            .update_auto_rule(
-                layer,
-                group_id,
-                uid,
-                &json!({
-                    "tileXOffset": 7, "tileYOffset": -8,
-                    "tileRandomXMin": -2, "tileRandomXMax": 2,
-                    "tileRandomYMin": 1, "tileRandomYMax": 5
-                }),
-            )
-            .unwrap();
-        let mut app = EditorApp::empty();
-        app.set_project(project.clone());
-        app.set_rule_options(&ctx, layer, group_id, Some(uid), RuleOptions::Offsets);
-        let frame = |app: &mut EditorApp, events| {
-            ctx.run(
-                egui::RawInput {
-                    events,
-                    ..Default::default()
-                },
-                |ctx| app.rule_options_dialog(ctx),
-            )
-        };
-        frame(&mut app, vec![]);
-        let output = frame(&mut app, vec![]);
-        let point = output
-            .shapes
-            .iter()
-            .find_map(|shape| match &shape.shape {
-                egui::Shape::Text(text)
-                    if text.galley.text().eq_ignore_ascii_case("Reset all offsets") =>
-                {
-                    Some(text.pos + text.galley.size() * 0.5)
-                }
-                _ => None,
-            })
-            .expect("Reset all offsets");
-        for pressed in [true, false] {
-            frame(
-                &mut app,
-                vec![
-                    egui::Event::PointerMoved(point),
-                    egui::Event::PointerButton {
-                        pos: point,
-                        button: egui::PointerButton::Primary,
-                        pressed,
-                        modifiers: Default::default(),
-                    },
-                ],
-            );
-        }
-        let def = app.project.as_ref().unwrap().layer_def(layer).unwrap();
-        let saved = rule(group(def, group_id).unwrap(), uid).unwrap();
-        for key in [
-            "tileXOffset",
-            "tileYOffset",
-            "tileRandomXMin",
-            "tileRandomXMax",
-            "tileRandomYMin",
-            "tileRandomYMax",
-        ] {
-            assert_eq!(saved[key], 0, "{key}");
-        }
-        assert_eq!(saved["breakOnMatch"], true);
-        assert!(app.history.undo(app.project.as_mut().unwrap()));
-        assert_eq!(app.project.as_ref().unwrap().json, project.json);
-    }
-
-    #[test]
-    fn pattern_stroke_uses_the_starting_cell_to_choose_erase_or_paint() {
-        use egui::PointerButton::{Middle, Primary, Secondary};
-
-        let stroke = |button, initial| PatternStroke { button, initial };
-        assert_eq!(stroke(Secondary, 0).apply(1, 2_000), -2_000);
-        assert_eq!(stroke(Secondary, 1).apply(-2_000, 2_000), 0);
-        assert_eq!(stroke(Secondary, -1).apply(1, 2_000), 0);
-        assert_eq!(stroke(Primary, -1).apply(-2_000, 2_000), 0);
-        assert_eq!(stroke(Primary, -1).apply(1, 2_000), 1);
-        assert_eq!(stroke(Primary, 1).apply(-1, ANY_VALUE), ANY_VALUE);
-        assert_eq!(stroke(Middle, -1).apply(2_000, ANY_VALUE), 0);
-    }
-
-    #[test]
-    fn closing_rule_editor_trims_the_draft_in_one_undoable_edit() {
-        let mut project = Project::new();
-        let layer = project.add_layer("Ground", "IntGrid", 16).unwrap();
-        let group_id = project.add_auto_rule_group(layer, "Terrain").unwrap();
-        let uid = project.add_auto_rule(layer, group_id, 1).unwrap();
-        let mut app = EditorApp::empty();
-        app.set_project(project);
-        let before = app.project.as_ref().unwrap().json.clone();
-        app.begin_rule_edit(layer, group_id, uid);
-        let draft = app.rule_draft.as_mut().unwrap();
-        assert_eq!(draft.data["size"], 9);
-        draft.data["pattern"][42] = json!(1);
-        assert_eq!(app.project.as_ref().unwrap().json, before);
-        app.finish_rule_edit();
-        let def = app.project.as_ref().unwrap().layer_def(layer).unwrap();
-        let edited = rule(group(def, group_id).unwrap(), uid).unwrap();
-        assert_eq!(edited["size"], 5);
-        assert_eq!(edited["pattern"][14], 1);
-        assert!(app.history.undo(app.project.as_mut().unwrap()));
-        assert_eq!(app.project.as_ref().unwrap().json, before);
-    }
-}
-
 impl EditorApp {
     pub(super) fn rule_atlas(
         &mut self,
@@ -2004,4 +1809,199 @@ impl EditorApp {
     }
 
 
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn modulo_settings_preview_the_period_and_reset_it_as_one_edit() {
+        let ctx = egui::Context::default();
+        theme::configure(&ctx);
+        ctx.style_mut(|style| style.animation_time = 0.);
+        let mut project = Project::new();
+        let layer = project.add_layer("Ground", "IntGrid", 16).unwrap();
+        let group_id = project.add_auto_rule_group(layer, "Terrain").unwrap();
+        let uid = project.add_auto_rule(layer, group_id, 1).unwrap();
+        project
+            .update_auto_rule(
+                layer,
+                group_id,
+                uid,
+                &json!({
+                    "xModulo": 3, "yModulo": 2, "xOffset": 1, "yOffset": 0, "checker": "Horizontal"
+                }),
+            )
+            .unwrap();
+        let mut app = EditorApp::empty();
+        app.set_project(project.clone());
+        app.set_rule_options(&ctx, layer, group_id, Some(uid), RuleOptions::Modulo);
+        let frame = |app: &mut EditorApp, events| {
+            ctx.run(
+                egui::RawInput {
+                    events,
+                    ..Default::default()
+                },
+                |ctx| app.rule_options_dialog(ctx),
+            )
+        };
+        frame(&mut app, vec![]);
+        let output = frame(&mut app, vec![]);
+        let reset = output
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) if text.galley.text() == "Reset" => {
+                    Some(text.pos + text.galley.size() * 0.5)
+                }
+                _ => None,
+            })
+            .expect("Reset modulo settings");
+        let active = output.shapes.iter().filter(|shape| {
+            matches!(&shape.shape, egui::Shape::Rect(cell) if cell.fill == Color32::from_rgb(60, 97, 72))
+        }).count();
+        assert_eq!(active, 12, "3 active columns by 4 active rows");
+        for pressed in [true, false] {
+            frame(
+                &mut app,
+                vec![
+                    egui::Event::PointerMoved(reset),
+                    egui::Event::PointerButton {
+                        pos: reset,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: Default::default(),
+                    },
+                ],
+            );
+        }
+        let saved = app
+            .project
+            .as_ref()
+            .unwrap()
+            .copy_auto_rule(layer, group_id, Some(uid))
+            .unwrap()
+            .value;
+        assert_eq!(saved["xModulo"], 1);
+        assert_eq!(saved["yModulo"], 1);
+        assert_eq!(saved["xOffset"], 0);
+        assert_eq!(saved["checker"], "None");
+        assert!(app.history.undo(app.project.as_mut().unwrap()));
+        assert_eq!(app.project.as_ref().unwrap().json, project.json);
+    }
+
+    #[test]
+    fn random_offset_reset_clears_both_axes_in_one_edit() {
+        let ctx = egui::Context::default();
+        theme::configure(&ctx);
+        let mut project = Project::new();
+        let layer = project.add_layer("Ground", "IntGrid", 16).unwrap();
+        let group_id = project.add_auto_rule_group(layer, "Terrain").unwrap();
+        let uid = project.add_auto_rule(layer, group_id, 1).unwrap();
+        project
+            .update_auto_rule(
+                layer,
+                group_id,
+                uid,
+                &json!({
+                    "tileXOffset": 7, "tileYOffset": -8,
+                    "tileRandomXMin": -2, "tileRandomXMax": 2,
+                    "tileRandomYMin": 1, "tileRandomYMax": 5
+                }),
+            )
+            .unwrap();
+        let mut app = EditorApp::empty();
+        app.set_project(project.clone());
+        app.set_rule_options(&ctx, layer, group_id, Some(uid), RuleOptions::Offsets);
+        let frame = |app: &mut EditorApp, events| {
+            ctx.run(
+                egui::RawInput {
+                    events,
+                    ..Default::default()
+                },
+                |ctx| app.rule_options_dialog(ctx),
+            )
+        };
+        frame(&mut app, vec![]);
+        let output = frame(&mut app, vec![]);
+        let point = output
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Text(text)
+                    if text.galley.text().eq_ignore_ascii_case("Reset all offsets") =>
+                {
+                    Some(text.pos + text.galley.size() * 0.5)
+                }
+                _ => None,
+            })
+            .expect("Reset all offsets");
+        for pressed in [true, false] {
+            frame(
+                &mut app,
+                vec![
+                    egui::Event::PointerMoved(point),
+                    egui::Event::PointerButton {
+                        pos: point,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: Default::default(),
+                    },
+                ],
+            );
+        }
+        let def = app.project.as_ref().unwrap().layer_def(layer).unwrap();
+        let saved = rule(group(def, group_id).unwrap(), uid).unwrap();
+        for key in [
+            "tileXOffset",
+            "tileYOffset",
+            "tileRandomXMin",
+            "tileRandomXMax",
+            "tileRandomYMin",
+            "tileRandomYMax",
+        ] {
+            assert_eq!(saved[key], 0, "{key}");
+        }
+        assert_eq!(saved["breakOnMatch"], true);
+        assert!(app.history.undo(app.project.as_mut().unwrap()));
+        assert_eq!(app.project.as_ref().unwrap().json, project.json);
+    }
+
+    #[test]
+    fn pattern_stroke_uses_the_starting_cell_to_choose_erase_or_paint() {
+        use egui::PointerButton::{Middle, Primary, Secondary};
+
+        let stroke = |button, initial| PatternStroke { button, initial };
+        assert_eq!(stroke(Secondary, 0).apply(1, 2_000), -2_000);
+        assert_eq!(stroke(Secondary, 1).apply(-2_000, 2_000), 0);
+        assert_eq!(stroke(Secondary, -1).apply(1, 2_000), 0);
+        assert_eq!(stroke(Primary, -1).apply(-2_000, 2_000), 0);
+        assert_eq!(stroke(Primary, -1).apply(1, 2_000), 1);
+        assert_eq!(stroke(Primary, 1).apply(-1, ANY_VALUE), ANY_VALUE);
+        assert_eq!(stroke(Middle, -1).apply(2_000, ANY_VALUE), 0);
+    }
+
+    #[test]
+    fn closing_rule_editor_trims_the_draft_in_one_undoable_edit() {
+        let mut project = Project::new();
+        let layer = project.add_layer("Ground", "IntGrid", 16).unwrap();
+        let group_id = project.add_auto_rule_group(layer, "Terrain").unwrap();
+        let uid = project.add_auto_rule(layer, group_id, 1).unwrap();
+        let mut app = EditorApp::empty();
+        app.set_project(project);
+        let before = app.project.as_ref().unwrap().json.clone();
+        app.begin_rule_edit(layer, group_id, uid);
+        let draft = app.rule_draft.as_mut().unwrap();
+        assert_eq!(draft.data["size"], 9);
+        draft.data["pattern"][42] = json!(1);
+        assert_eq!(app.project.as_ref().unwrap().json, before);
+        app.finish_rule_edit();
+        let def = app.project.as_ref().unwrap().layer_def(layer).unwrap();
+        let edited = rule(group(def, group_id).unwrap(), uid).unwrap();
+        assert_eq!(edited["size"], 5);
+        assert_eq!(edited["pattern"][14], 1);
+        assert!(app.history.undo(app.project.as_mut().unwrap()));
+        assert_eq!(app.project.as_ref().unwrap().json, before);
+    }
 }

@@ -85,19 +85,18 @@ impl EditorApp {
     }
 
     pub(super) fn retain_entity_render(&mut self, snapshot: Option<EntityRenderSnapshot>) {
-        if let Some(snapshot) = snapshot {
-            if let Some(entities) = snapshot.entities
-                && let Some(preview) = self
-                    .async_paint
-                    .as_mut()
-                    .filter(|p| p.is_active_for(snapshot.level, snapshot.now))
-            {
-                preview
-                    .layers
-                    .entry(snapshot.layer_uid)
-                    .or_default()
-                    .old_entities = Some(entities);
-            }
+        if let Some(snapshot) = snapshot
+            && let Some(entities) = snapshot.entities
+            && let Some(preview) = self
+                .async_paint
+                .as_mut()
+                .filter(|p| p.is_active_for(snapshot.level, snapshot.now))
+        {
+            preview
+                .layers
+                .entry(snapshot.layer_uid)
+                .or_default()
+                .old_entities = Some(entities);
         }
     }
 
@@ -389,13 +388,13 @@ impl EditorApp {
                 return None;
             }
             let now = self.repaint.as_ref()?.input(|i| i.time);
-            let old_tiles = (!self
+            let old_tiles = self
                 .async_paint
                 .as_ref()
                 .filter(|p| p.is_active_for(key, now))
                 .and_then(|p| p.layers.get(&layer_uid))
-                .is_some_and(|p| p.old_tiles.is_some()))
-            .then(|| canvas::values(&layer["gridTiles"]).to_vec());
+                .is_none_or(|p| p.old_tiles.is_none())
+                .then(|| canvas::values(&layer["gridTiles"]).to_vec());
             let color = if erase {
                 Color32::RED
             } else {

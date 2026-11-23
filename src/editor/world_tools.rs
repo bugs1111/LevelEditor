@@ -105,9 +105,8 @@ fn overlaps(a: [f32; 4], b: [f32; 4]) -> bool {
 
 fn require_level(project: &Project, iid: &str) -> ldtk_core::Result<LevelKey> {
     project
-        .level_keys()
-        .into_iter()
-        .find(|key| project.level(*key).and_then(|l| l["iid"].as_str()) == Some(iid))
+        .level_by_iid(iid)
+        .map(|(key, _)| key)
         .ok_or_else(|| ldtk_core::Error::Invalid("selected level no longer exists".into()))
 }
 
@@ -332,9 +331,7 @@ impl EditorApp {
             return Vec::new();
         };
         let levels = project
-            .level_keys()
-            .into_iter()
-            .filter(|key| key.world == selected.world)
+            .level_keys_in_world(selected.world)
             .filter_map(|key| {
                 let level = project.level(key)?;
                 Some((level["iid"].as_str()?, level))
@@ -590,9 +587,8 @@ impl EditorApp {
                 linear_level_insert_point(project, *key, axis, origin[axis], end[axis])
         {
             let extent = project
-                .level_keys()
-                .into_iter()
-                .filter(|other| other.world == key.world && other != key)
+                .level_keys_in_world(key.world)
+                .filter(|other| other != key)
                 .filter_map(|other| project.level(other))
                 .map(|level| number(level, if axis == 0 { "pxHei" } else { "pxWid" }, 0.))
                 .fold(0., f32::max);

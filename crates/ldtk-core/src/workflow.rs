@@ -840,7 +840,6 @@ impl Project {
         })
     }
     pub(crate) fn refresh_table_of_contents(&mut self) -> Result<()> {
-        let keys = self.level_keys();
         let old_toc = self.json["toc"].as_array();
         let old_export = self.json["flags"].as_array().is_some_and(|flags| {
             flags
@@ -863,15 +862,16 @@ impl Project {
             entry["identifier"] = def["identifier"].clone();
             let mut instances = Vec::new();
             let mut data = Vec::new();
-            for &key in &keys {
-                let level = self
-                    .level(key)
-                    .ok_or_else(|| invalid("all external levels must be loaded"))?;
-                let world_iid = if key.world.is_some() {
-                    &container(self, key.world)?["iid"]
-                } else {
-                    &self.json["dummyWorldIid"]
+            let levels = self.world_indices().flat_map(|world| {
+                let world_iid = match world {
+                    Some(index) => &self.json["worlds"][index]["iid"],
+                    None => &self.json["dummyWorldIid"],
                 };
+                self.positioned_levels(world).map(move |level| (world_iid, level))
+            });
+            for (world_iid, level) in levels {
+                let (level, [world_x, world_y]) =
+                    level.ok_or_else(|| invalid("all external levels must be loaded"))?;
                 for layer in level["layerInstances"].as_array().into_iter().flatten() {
                     for entity in layer["entityInstances"]
                         .as_array()
@@ -900,7 +900,6 @@ impl Project {
                                 fields.insert(name.to_owned(), field["__value"].clone());
                             }
                         }
-                        let (world_x, world_y) = effective_position(self, key)?;
                         data.push(json!({
                             "iids": iids,
                             "worldX": world_x + entity["px"][0].as_i64().unwrap_or(0),
@@ -1473,7 +1472,7 @@ impl Project {
                 .unwrap_or(256)
                 .max(1);
             let mut linear_pos = 0;
-            for key in p.level_keys().into_iter().filter(|k| k.world == world) {
+            for key in p.level_keys_in_world(world) {
                 let l = p
                     .level_mut(key)
                     .ok_or_else(|| invalid("level not loaded"))?;
@@ -1812,42 +1811,6 @@ pub(crate) fn canonical_number(n: f64) -> Value {
         json!(n)
     }
 }
-pub(crate) fn effective_position(p: &Project, key: LevelKey) -> Result<(i64, i64)> {
-    let world = container(p, key.world)?;
-    let layout = world["worldLayout"].as_str().unwrap_or("Free");
-    if layout.starts_with("Linear") {
-        let mut pos = 0;
-        for other in p
-            .level_keys()
-            .into_iter()
-            .filter(|other| other.world == key.world)
-        {
-            if other == key {
-                break;
-            }
-            let l = p.level(other).ok_or_else(|| invalid("level not loaded"))?;
-            pos += l[if layout == "LinearHorizontal" {
-                "pxWid"
-            } else {
-                "pxHei"
-            }]
-            .as_i64()
-            .unwrap_or(0)
-                + 48;
-        }
-        Ok(if layout == "LinearHorizontal" {
-            (pos, 0)
-        } else {
-            (0, pos)
-        })
-    } else {
-        let l = p.level(key).ok_or_else(|| invalid("level not loaded"))?;
-        Ok((
-            l["worldX"].as_i64().unwrap_or(0),
-            l["worldY"].as_i64().unwrap_or(0),
-        ))
-    }
-}
 impl Project {
     pub fn move_level_to_world(
         &mut self,
@@ -1878,15 +1841,10 @@ impl Project {
     pub fn duplicate_world(&mut self, index: usize, name: &str) -> Result<usize> {
         self.edit_document(|p| {
             let original = container(p, Some(index))?.clone();
-            let source_keys: Vec<_> = p
-                .level_keys()
-                .into_iter()
-                .filter(|k| k.world == Some(index))
-                .collect();
-            let source_levels = source_keys
-                .iter()
+            let source_levels = p
+                .level_keys_in_world(Some(index))
                 .map(|k| {
-                    p.level(*k)
+                    p.level(k)
                         .cloned()
                         .ok_or_else(|| invalid("source level not loaded"))
                 })

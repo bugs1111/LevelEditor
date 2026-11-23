@@ -1,0 +1,138 @@
+use super::Project;
+use serde_json::Value;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct LevelKey {
+    pub world: Option<usize>,
+    pub level: usize,
+}
+
+impl Project {
+    /// Snapshot the keys when an operation needs to mutate the project during traversal.
+    pub fn level_keys(&self) -> Vec<LevelKey> {
+        self.iter_level_keys().collect()
+    }
+
+    /// Visit root levels first, then each world's levels in document order.
+    pub fn iter_level_keys(&self) -> impl Iterator<Item = LevelKey> + '_ {
+        self.world_indices()
+            .flat_map(|world| self.level_keys_in_world(world))
+    }
+
+    pub(crate) fn world_indices(&self) -> impl Iterator<Item = Option<usize>> + use<> {
+        let count = self.json["worlds"].as_array().map_or(0, Vec::len);
+        std::iter::once(None).chain((0..count).map(Some))
+    }
+
+    /// Only the length is captured, so callers can edit levels while walking this world.
+    pub fn level_keys_in_world(
+        &self,
+        world: Option<usize>,
+    ) -> impl ExactSizeIterator<Item = LevelKey> + DoubleEndedIterator + use<> {
+        let container = match world {
+            Some(index) => self.json["worlds"].get(index),
+            None => Some(&self.json),
+        };
+        let count = container
+            .and_then(|c| c["levels"].as_array())
+            .map_or(0, Vec::len);
+        (0..count).map(move |level| LevelKey { world, level })
+    }
+
+    /// Missing external documents retain their slot so each caller can report the load error.
+    pub(crate) fn positioned_levels(
+        &self,
+        world: Option<usize>,
+    ) -> impl ExactSizeIterator<Item = Option<(&Value, [i64; 2])>> {
+        let container = match world {
+            Some(index) => &self.json["worlds"][index],
+            None => &self.json,
+        };
+        let layout = container["worldLayout"].as_str().unwrap_or("Free");
+        let mut cursor = 0_i64;
+        self.level_keys_in_world(world).map(move |key| {
+            let level = self.level(key)?;
+            let position = if layout.starts_with("Linear") {
+                let horizontal = layout == "LinearHorizontal";
+                let origin = cursor;
+                let extent = level[if horizontal { "pxWid" } else { "pxHei" }]
+                    .as_i64()
+                    .unwrap_or(0);
+                cursor = cursor.saturating_add(extent).saturating_add(48);
+                if horizontal { [origin, 0] } else { [0, origin] }
+            } else {
+                [
+                    level["worldX"].as_i64().unwrap_or(0),
+                    level["worldY"].as_i64().unwrap_or(0),
+                ]
+            };
+            Some((level, position))
+        })
+    }
+
+    pub fn level_by_iid(&self, iid: &str) -> Option<(LevelKey, &Value)> {
+        self.iter_level_keys().find_map(|key| {
+            let level = self.level(key)?;
+            (level["iid"] == iid).then_some((key, level))
+        })
+    }
+
+    pub(super) fn level_stub(&self, key: LevelKey) -> Option<&Value> {
+        let container = match key.world {
+            Some(world) => self.json.get("worlds")?.get(world)?,
+            None => &self.json,
+        };
+        container.get("levels")?.get(key.level)
+    }
+
+    pub(super) fn level_stub_mut(&mut self, key: LevelKey) -> Option<&mut Value> {
+        let container = match key.world {
+            Some(world) => self.json.get_mut("worlds")?.get_mut(world)?,
+            None => &mut self.json,
+        };
+        container.get_mut("levels")?.get_mut(key.level)
+    }
+
+    pub fn level(&self, key: LevelKey) -> Option<&Value> {
+        let stub = self.level_stub(key)?;
+        match stub.get("externalRelPath").and_then(Value::as_str) {
+            Some(rel) => self.external_levels.get(rel),
+            None => Some(stub),
+        }
+    }
+
+    pub fn level_mut(&mut self, key: LevelKey) -> Option<&mut Value> {
+        let rel = self
+            .level_stub(key)?
+            .get("externalRelPath")
+            .and_then(Value::as_str)
+            .map(str::to_owned);
+        if let Some(rel) = rel {
+            return self.external_levels.get_mut(&rel);
+        }
+        self.level_stub_mut(key)
+    }
+
+    pub fn layer(&self, key: LevelKey, layer: usize) -> Option<&Value> {
+        self.level(key)?.get("layerInstances")?.get(layer)
+    }
+    pub fn layer_mut(&mut self, key: LevelKey, layer: usize) -> Option<&mut Value> {
+        self.level_mut(key)?
+            .get_mut("layerInstances")?
+            .get_mut(layer)
+    }
+    pub fn layer_def(&self, uid: i64) -> Option<&Value> {
+        self.definition("layers", uid)
+    }
+    pub fn tileset(&self, uid: i64) -> Option<&Value> {
+        self.definition("tilesets", uid)
+    }
+    pub(crate) fn definition(&self, kind: &str, uid: i64) -> Option<&Value> {
+        self.json
+            .get("defs")?
+            .get(kind)?
+            .as_array()?
+            .iter()
+            .find(|value| value.get("uid").and_then(Value::as_i64) == Some(uid))
+    }
+}

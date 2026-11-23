@@ -528,13 +528,14 @@ impl EditorApp {
             toast = (self.status.clone(), Instant::now());
             ctx.data_mut(|d| d.insert_temp(id, toast.clone()));
         }
+        let resize_notice = self.status == "Level resized" && self.canvas_notices.iter().any(|entry| {
+            matches!(entry.notice, CanvasNotice::ResizeRemovals(_))
+        });
         if !self.is_busy()
             && !self.status.is_empty()
             && self.status != SAVED_PROJECT_TITLE
             && !self.status.starts_with("Save failed: ")
-            && !(self.status == "Level resized" && self.canvas_notices.iter().any(|entry| {
-                matches!(entry.notice, CanvasNotice::ResizeRemovals(_))
-            }))
+            && !resize_notice
             && (self.status_error || toast.1.elapsed().as_secs_f32() < 4.0)
             && !self.status.starts_with("Project opened.")
             && !self.status.starts_with("Open a project")

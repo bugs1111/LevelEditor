@@ -317,8 +317,7 @@ impl Session {
         }
         let levels: Vec<_> = self
             .project
-            .level_keys()
-            .into_iter()
+            .iter_level_keys()
             .filter(|&key| world_iid.is_none_or(|iid| self.world_iid(key) == Some(iid)))
             .filter_map(|key| {
                 self.project
@@ -365,10 +364,7 @@ impl Session {
 
     fn level(&self, iid: &str) -> Result<(LevelKey, &Value), String> {
         self.project
-            .level_keys()
-            .into_iter()
-            .filter_map(|key| self.project.level(key).map(|level| (key, level)))
-            .find(|(_, level)| level["iid"] == iid)
+            .level_by_iid(iid)
             .ok_or_else(|| format!("Level IID not found: {iid}"))
     }
 
@@ -488,32 +484,19 @@ impl Session {
             return Ok(());
         }
         let base = self.path.parent().expect("absolute project path");
-        let directory = self
-            .project
-            .external_files_directory()
-            .expect("loaded project");
         let sources: HashSet<_> = self
             .project
             .external_levels
             .keys()
             .filter_map(|path| base.join(path).canonicalize().ok())
             .collect();
-        let indexed =
-            items(&self.project.json["flags"]).any(|flag| flag == "PrependIndexToLevelFileNames");
         // The core may rename legacy external level paths on save. An existing
         // file at a derived destination must belong to the loaded project.
-        for (index, key) in self.project.level_keys().into_iter().enumerate() {
+        for (index, key) in self.project.iter_level_keys().enumerate() {
             let level = self.project.level(key).expect("loaded level");
-            let identifier = level["identifier"].as_str().unwrap_or("Level");
-            if identifier.contains(['/', '\\']) || matches!(identifier, "." | "..") {
-                return Err("Unsafe external level identifier.".into());
-            }
-            let prefix = if indexed {
-                format!("{index:04}-")
-            } else {
-                String::new()
-            };
-            let target = directory.join(format!("./{prefix}{identifier}.ldtkl"));
+            let relative = self.project.external_level_rel_path(&self.path, index, level)
+                .map_err(|_| "Unsafe external level identifier.")?;
+            let target = base.join(relative);
             match fs::symlink_metadata(&target) {
                 Ok(_)
                     if target

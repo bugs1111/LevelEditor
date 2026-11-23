@@ -1,0 +1,22 @@
+Correct ONLY the camera projection and the resulting geometry of the attached pixel-art app icon. Preserve the four terrains, color palette, tree, dune, waterfall, lava, small golden tile selection, dark pixel outline and transparent background. Keep it WITHOUT A PENCIL.
+
+The previous candidate is WRONG because the slab's left and right outer edges converge toward the back, making a trapezoid. The user's explicit requirement is a TRUE ORTHOGRAPHIC CAMERA. Eliminate perspective convergence entirely. Do not simply label the same tapered result orthographic.
+
+Required camera: elevated frontal orthographic projection, azimuth exactly 0 degrees so one flat front face faces us squarely, elevation about 40 degrees, zero roll. We see a broad TOP plane plus a shallow FRONT soil face. Orthographic parallel projection means:
+- the BACK EDGE and FRONT EDGE of the top map have EXACTLY THE SAME LENGTH;
+- the left and right edges of the top map are exactly parallel to one another, and project as vertical lines in the image;
+- the top map is a PERFECT WIDE RECTANGLE in screen space, never a trapezoid or diamond;
+- the slab's front face is a shallow rectangle directly beneath that top rectangle;
+- NO LEFT OR RIGHT SIDE FACE is visible;
+- objects at the back and front have the same scale, with no vanishing point.
+
+GEOMETRIC LAYOUT, use these proportional screen positions as a hard guide:
+Top ground plane rectangle corners at (14% canvas width, 28% canvas height), (86%,28%), (86%,75%), (14%,75%).
+Front soil rectangle corners at (14%,75%), (86%,75%), (86%,86%), (14%,86%).
+Both planes share the exact horizontal line from (14%,75%) to (86%,75%).
+The outer left boundary of the slab from y=28% to y=86% stays at x=14%, and the outer right boundary stays at x=86%. THEY MUST NOT SLOPE OUTWARDS TOWARDS THE BOTTOM.
+Use clean straight pixel borders on the outer slab, without irregular outward expansions. The tree may extend above the back edge and the waterfall may extend a little below the bottom front edge, but the terrain slab itself obeys these rectangular bounds.
+
+Within the TOP plane, preserve a coherent miniature editable terrain map: emerald grass/tree in the upper-left, golden sand with one small stepped dune in the upper-right, turquoise lake in the lower-left, charcoal basalt with orange lava fissure in the lower-right. Natural chunky pixel boundaries join these four regions. A small sandy path joins grass and desert. The waterfall drops vertically over the FRONT edge of the blue-water area onto the shallow soil face. A small yellow rectangular tile-selection outline sits ON the grass top surface near the front center. It is an ordinary foreshortened rectangle, not a diamond. Tree canopy and sand dune should show their tops and fronts consistently with this elevated parallel camera; do not draw a flat side-view landscape or a pure overhead flat map.
+
+Style stays the same crisp chunky pixel art, saturated controlled palette, solid pixel highlights, minimal detail, bold dark outline, no smooth vector contours, no blur, no anti-aliased illustration, no 3D rendering aesthetic. One centered finished app icon on TRUE transparent alpha, without any backdrop, cast shadow, checkerboard, text, watermark, pencil, tool, brush or cursor. The rectangular parallel slab silhouette is the highest-priority correction.

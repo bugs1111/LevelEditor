@@ -10,11 +10,8 @@ use std::{
     sync::{Arc, LazyLock, Weak},
 };
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct LevelKey {
-    pub world: Option<usize>,
-    pub level: usize,
-}
+mod levels;
+pub use levels::LevelKey;
 
 /// External documents share data between project snapshots until edited.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -274,6 +271,28 @@ impl Project {
         Ok(project)
     }
 
+    /// Project-relative path used when publishing a level under its generated filename.
+    pub fn external_level_rel_path(
+        &self,
+        project_file: &Path,
+        index: usize,
+        level: &Value,
+    ) -> Result<String> {
+        let id = level["identifier"].as_str().unwrap_or("Level");
+        if id.contains(['/', '\\']) || matches!(id, "." | "..") {
+            return Err(Error::Invalid("unsafe external level identifier".into()));
+        }
+        let directory = project_file.file_stem().unwrap_or_default().to_string_lossy();
+        let indexed = self.json["flags"]
+            .as_array()
+            .is_some_and(|flags| flags.iter().any(|f| f == "PrependIndexToLevelFileNames"));
+        Ok(if indexed {
+            format!("{directory}/{index:04}-{id}.ldtkl")
+        } else {
+            format!("{directory}/{id}.ldtkl")
+        })
+    }
+
     pub fn save(&mut self, path: impl AsRef<Path>) -> Result<()> {
         self.save_document(path, true)
     }
@@ -333,23 +352,7 @@ impl Project {
                     let level = candidate.external_levels.0.remove(&old).ok_or_else(|| {
                         Error::Invalid(format!("external level {old} has not been loaded"))
                     })?;
-                    let id = level["identifier"].as_str().unwrap_or("Level");
-                    if id.contains('/') || id.contains('\\') || id == "." || id == ".." {
-                        return Err(Error::Invalid("unsafe external level identifier".into()));
-                    }
-                    let indexed = candidate.json["flags"].as_array().is_some_and(|flags| {
-                        flags.iter().any(|f| f == "PrependIndexToLevelFileNames")
-                    });
-                    let rel = format!(
-                        "{}/{}{}.ldtkl",
-                        path.file_stem().unwrap_or_default().to_string_lossy(),
-                        if indexed {
-                            format!("{idx:04}-")
-                        } else {
-                            String::new()
-                        },
-                        id
-                    );
+                    let rel = candidate.external_level_rel_path(&path, idx, &level)?;
                     if levels.contains_key(&rel) {
                         return Err(Error::Invalid(format!(
                             "duplicate external level path: {rel}"
@@ -383,28 +386,11 @@ impl Project {
                             .clone(),
                     )
                 };
-                let id = level["identifier"].as_str().unwrap_or("Level");
-                if id.contains('/') || id.contains('\\') || id == "." || id == ".." {
-                    return Err(Error::Invalid("unsafe external level identifier".into()));
-                }
-                let indexed = candidate.json["flags"]
-                    .as_array()
-                    .is_some_and(|flags| flags.iter().any(|f| f == "PrependIndexToLevelFileNames"));
-                let rel = if self.path.is_none()
-                    && let Some(old_rel) = old_rel
-                {
-                    old_rel
+                let generated = candidate.external_level_rel_path(&path, idx, &level)?;
+                let rel = if self.path.is_none() {
+                    old_rel.unwrap_or(generated)
                 } else {
-                    format!(
-                        "{}/{}{}.ldtkl",
-                        path.file_stem().unwrap_or_default().to_string_lossy(),
-                        if indexed {
-                            format!("{idx:04}-")
-                        } else {
-                            String::new()
-                        },
-                        id
-                    )
+                    generated
                 };
                 if external.contains_key(&rel) {
                     return Err(Error::Invalid(format!(
@@ -613,87 +599,6 @@ impl Project {
         self.path = Some(path);
         progress(SaveStage::WriteProject, 1, 1, None);
         Ok(())
-    }
-
-    pub fn level_keys(&self) -> Vec<LevelKey> {
-        let mut keys = Vec::new();
-        if let Some(levels) = self.json.get("levels").and_then(Value::as_array) {
-            keys.extend((0..levels.len()).map(|level| LevelKey { world: None, level }));
-        }
-        if let Some(worlds) = self.json.get("worlds").and_then(Value::as_array) {
-            for (world, value) in worlds.iter().enumerate() {
-                if let Some(levels) = value.get("levels").and_then(Value::as_array) {
-                    keys.extend((0..levels.len()).map(|level| LevelKey {
-                        world: Some(world),
-                        level,
-                    }));
-                }
-            }
-        }
-        keys
-    }
-
-    fn level_stub(&self, key: LevelKey) -> Option<&Value> {
-        let container = match key.world {
-            Some(world) => self.json.get("worlds")?.get(world)?,
-            None => &self.json,
-        };
-        container.get("levels")?.get(key.level)
-    }
-
-    fn level_stub_mut(&mut self, key: LevelKey) -> Option<&mut Value> {
-        let container = match key.world {
-            Some(world) => self.json.get_mut("worlds")?.get_mut(world)?,
-            None => &mut self.json,
-        };
-        container.get_mut("levels")?.get_mut(key.level)
-    }
-
-    pub fn level(&self, key: LevelKey) -> Option<&Value> {
-        let stub = self.level_stub(key)?;
-        match stub.get("externalRelPath").and_then(Value::as_str) {
-            Some(rel) => self.external_levels.get(rel),
-            None => Some(stub),
-        }
-    }
-
-    pub fn level_mut(&mut self, key: LevelKey) -> Option<&mut Value> {
-        let rel = self
-            .level_stub(key)?
-            .get("externalRelPath")
-            .and_then(Value::as_str)
-            .map(str::to_owned);
-        if let Some(rel) = rel {
-            return self.external_levels.get_mut(&rel);
-        }
-        let container = match key.world {
-            Some(world) => self.json.get_mut("worlds")?.get_mut(world)?,
-            None => &mut self.json,
-        };
-        container.get_mut("levels")?.get_mut(key.level)
-    }
-
-    pub fn layer(&self, key: LevelKey, layer: usize) -> Option<&Value> {
-        self.level(key)?.get("layerInstances")?.get(layer)
-    }
-    pub fn layer_mut(&mut self, key: LevelKey, layer: usize) -> Option<&mut Value> {
-        self.level_mut(key)?
-            .get_mut("layerInstances")?
-            .get_mut(layer)
-    }
-    pub fn layer_def(&self, uid: i64) -> Option<&Value> {
-        self.definition("layers", uid)
-    }
-    pub fn tileset(&self, uid: i64) -> Option<&Value> {
-        self.definition("tilesets", uid)
-    }
-    pub(crate) fn definition(&self, kind: &str, uid: i64) -> Option<&Value> {
-        self.json
-            .get("defs")?
-            .get(kind)?
-            .as_array()?
-            .iter()
-            .find(|value| value.get("uid").and_then(Value::as_i64) == Some(uid))
     }
 }
 
@@ -1336,9 +1241,7 @@ fn format_json(
                 format_json(val, style, indent + 1, false, out)?;
                 if i + 1 < array.len() {
                     out.push(',');
-                    if grid && i % 35 == 34 {
-                        out.push('\n');
-                    } else if !grid && !array_inline {
+                    if (grid && i % 35 == 34) || (!grid && !array_inline) {
                         out.push('\n');
                     } else if space {
                         out.push(' ');
@@ -2182,11 +2085,10 @@ fn valid_backup_name(name: &str, id: &str) -> bool {
     }
     let suffix = &date[19..];
     let suffix = suffix.strip_prefix("_crash").unwrap_or(suffix);
-    if !suffix.is_empty()
-        && !(suffix.len() == 5
-            && suffix.starts_with('_')
-            && suffix[1..].bytes().all(|c| c.is_ascii_digit()))
-    {
+    let numbered = suffix.strip_prefix('_').is_some_and(|digits| {
+        digits.len() == 4 && digits.bytes().all(|c| c.is_ascii_digit())
+    });
+    if !suffix.is_empty() && !numbered {
         return false;
     }
     date[..19].bytes().enumerate().all(|(i, c)| match i {

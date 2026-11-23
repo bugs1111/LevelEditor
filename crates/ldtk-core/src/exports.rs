@@ -1,6 +1,5 @@
 //! Filesystem exporters ported from the pinned LDtk exporters and ProjectSaver.
 use crate::project::{atomic_save, relative_to};
-use crate::workflow::effective_position;
 use crate::{Error, LevelKey, Project, Result};
 use image::{GenericImage, Rgba, RgbaImage};
 use serde_json::{Value, json};
@@ -883,19 +882,14 @@ impl Project {
         }
         let grid = grid.max(1);
         let first_world = self.tiled_world_index();
-        let keys: Vec<_> = self
-            .level_keys()
-            .into_iter()
-            .filter(|k| k.world == first_world)
-            .collect();
+        let levels = self.positioned_levels(first_world);
         let mut maps = Vec::new();
-        let total = keys.len();
+        let total = levels.len();
         if total > 0 {
             progress(0, total);
         }
-        for (index, key) in keys.iter().enumerate() {
-            let l = self
-                .level(*key)
+        for (index, level) in levels.enumerate() {
+            let (l, [x, y]) = level
                 .ok_or_else(|| Error::Invalid("missing external level".into()))?;
             let mut tilesets = String::new();
             let mut gids = BTreeMap::new();
@@ -1130,13 +1124,12 @@ impl Project {
                 (n(l, "pxHei") + grid - 1) / grid,
                 xml(s(l, "__bgColor"))
             );
-            let filename = if keys.len() > 1 {
+            let filename = if total > 1 {
                 format!("{:04}_{}.tmx", index + 1, safe_name(s(l, "identifier"))?)
             } else {
                 format!("{}.tmx", safe_name(s(l, "identifier"))?)
             };
             out.push((dir.join(&filename), xml.into_bytes()));
-            let (x, y) = effective_position(self, *key)?;
             maps.push(json!({"fileName":filename,"x":x,"y":y}));
             progress(index + 1, total);
         }

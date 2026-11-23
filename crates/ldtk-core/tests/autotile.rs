@@ -177,7 +177,7 @@ fn baked_layers_match_ldtk_154_saved_projects() {
         let mut actual = Project::load(&input).unwrap();
         actual.migrate_to_current().unwrap();
         let expected =
-            Project::load(&captures.join(format!("source-bake-{name}-saved.ldtk"))).unwrap();
+            Project::load(captures.join(format!("source-bake-{name}-saved.ldtk"))).unwrap();
         let uid = actual.bake_auto_layer(source, mode, |_, _| {}).unwrap();
         assert_eq!(actual.json["nextUid"], expected.json["nextUid"], "{name}");
         assert_eq!(

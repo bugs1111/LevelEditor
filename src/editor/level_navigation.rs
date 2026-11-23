@@ -98,7 +98,7 @@ impl EditorApp {
         if let Some(key) = self
             .project
             .as_ref()
-            .and_then(|p| p.level_keys().into_iter().find(|key| key.world == world))
+            .and_then(|p| p.level_keys_in_world(world).next())
         {
             self.navigate_level(key, true);
         } else {

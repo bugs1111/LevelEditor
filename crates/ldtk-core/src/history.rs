@@ -20,11 +20,6 @@ fn stub_mut(json: &mut Value, key: LevelKey) -> &mut Value {
         None => &mut json["levels"][key.level],
     }
 }
-fn find_level(p: &Project, iid: &str) -> Option<LevelKey> {
-    p.level_keys()
-        .into_iter()
-        .find(|&key| p.level(key).is_some_and(|level| level["iid"] == iid))
-}
 struct Snapshot {
     json: Value,
     grid_presence: GridPresences,
@@ -66,9 +61,9 @@ impl Snapshot {
         }
     }
     fn capture_layers(p: &Project, level_iid: &str, layer_uids: &BTreeSet<i64>) -> Self {
-        let layers = find_level(p, level_iid)
-            .and_then(|key| p.level(key))
-            .and_then(|level| level["layerInstances"].as_array())
+        let layers = p
+            .level_by_iid(level_iid)
+            .and_then(|(_, level)| level["layerInstances"].as_array())
             .into_iter()
             .flatten()
             .filter(|layer| {
@@ -402,7 +397,7 @@ impl Action {
         }
     }
     fn reload_level_grid_presence(&self, p: &mut Project) {
-        let Some(level) = self.level_iid.as_deref().and_then(|iid| find_level(p, iid)) else {
+        let Some((level, _)) = self.level_iid.as_deref().and_then(|iid| p.level_by_iid(iid)) else {
             return;
         };
         // LDtk's level timeline reconstructs every layer from its saved CSV.
@@ -419,7 +414,7 @@ impl Action {
     }
     fn restore(&self, p: &mut Project, undo: bool, selective: bool) {
         if let (Some(iid), Some(uids)) = (&self.level_iid, &self.layer_uids) {
-            let Some(key) = find_level(p, iid) else {
+            let Some((key, _)) = p.level_by_iid(iid) else {
                 return;
             };
             let mut current = Snapshot::capture_layers(p, iid, uids);

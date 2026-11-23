@@ -609,7 +609,7 @@ impl EditorApp {
         let biome_width = if view.def["biomeFieldUid"].is_null() {
             0.
         } else {
-            ((required.len() as f32 * 25. - 4.).max(24.)).min(108.)
+            (required.len() as f32 * 25. - 4.).clamp(24., 108.)
         };
         let mut biome_anchor = None;
         let target = ClipTarget::Rule {
@@ -822,10 +822,8 @@ impl EditorApp {
         if rename {
             ui.data_mut(|d| d.insert_temp(rename_group_id(), (view.uid, gid)));
         }
-        if add {
-            if self.insert_rule(view.uid, gid, 0) {
-                open = true;
-            }
+        if add && self.insert_rule(view.uid, gid, 0) {
+            open = true;
         }
         if open {
             self.open_rule_groups.insert(group_key);
@@ -890,7 +888,7 @@ impl EditorApp {
             if index != 0 {
                 ui.add_space(1.);
             }
-            self.rule_row(ui, view, gid, rule, index, managed, insertion);
+            self.rule_row(ui, view, gid, (index, rule), managed, insertion);
         }
         ui.add_space(7.);
     }
@@ -944,7 +942,7 @@ impl EditorApp {
             "",
             atlas
                 .is_none()
-                .then(|| egui::include_image!("../../assets/icons/pickIcon.svg")),
+                .then_some(egui::include_image!("../../assets/icons/pickIcon.svg")),
             atlas.is_some(),
         );
         if let Some(atlas) = atlas {
@@ -1235,8 +1233,7 @@ impl EditorApp {
         ui: &mut egui::Ui,
         view: &RulesView,
         gid: i64,
-        rule: &Value,
-        index: usize,
+        (index, rule): (usize, &Value),
         managed: bool,
         insertion: &mut Option<RuleInsertion>,
     ) {
@@ -1995,7 +1992,7 @@ mod tests {
                 ];
                 for (index, pattern) in patterns.into_iter().enumerate() {
                     let rule = json!({"uid": index, "size": 3, "pattern": pattern});
-                    app.rule_row(ui, &view, 7, &rule, index, false, &mut None);
+                    app.rule_row(ui, &view, 7, (index, &rule), false, &mut None);
                 }
             });
         });

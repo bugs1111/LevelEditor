@@ -147,6 +147,24 @@ fn entity_toc_toggle_clears_field_exports_and_rebuilds_the_table() {
 }
 
 #[test]
+fn linear_toc_positions_restart_in_each_world() {
+    let mut p = sample();
+    p.resize_level(K, 64, 96, 0, 0).unwrap();
+    p.duplicate_level(K, "Second").unwrap();
+    p.set_world_layout(None, "LinearHorizontal", 256, 256).unwrap();
+    p.enable_multiworlds().unwrap();
+    let vertical = p.duplicate_world(0, "Vertical").unwrap();
+    p.set_world_layout(Some(vertical), "LinearVertical", 256, 256).unwrap();
+    p.json["defs"]["entities"][0]["exportToToc"] = json!(true);
+    p.refresh_derived_data().unwrap();
+
+    let positions: Vec<_> = p.json["toc"][0]["instancesData"].as_array().unwrap().iter()
+        .map(|entry| [entry["worldX"].as_i64().unwrap(), entry["worldY"].as_i64().unwrap()])
+        .collect();
+    assert_eq!(positions, [[16, 16], [128, 16], [16, 16], [16, 160]]);
+}
+
+#[test]
 fn save_rebuilds_table_of_contents_after_flag_and_position_changes() {
     let dir = tempfile::tempdir().unwrap();
     for external in [false, true] {
@@ -373,15 +391,16 @@ fn entity_definition_preserves_outside_pivots_on_instances_and_reopen() {
     assert_eq!(reopened.json, before);
 
     let ratio = 7. / 22.;
+    let rounded = 318. / 1000.;
     reopened
         .update_entity_definition(uid, &json!({"pivotX":ratio}))
         .unwrap();
     reopened.save(&path).unwrap();
     let saved = Project::load(&path).unwrap();
-    assert_eq!(saved.json["defs"]["entities"][0]["pivotX"], json!(0.318));
+    assert_eq!(saved.json["defs"]["entities"][0]["pivotX"], json!(rounded));
     assert_eq!(
         saved.layer(K, 0).unwrap()["entityInstances"][0]["__pivot"],
-        json!([0.318, 1.75])
+        json!([rounded, 1.75])
     );
     assert_eq!(reopened.json["defs"]["entities"][0]["pivotX"], json!(ratio));
 }

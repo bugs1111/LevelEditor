@@ -89,6 +89,12 @@ fn world_and_legacy_level_access_are_both_lossless() {
         level: 0,
     };
     assert_eq!(p.level_keys(), vec![KEY, world_key]);
+    assert_eq!(p.level_keys_in_world(Some(0)).next(), Some(world_key));
+    assert_eq!(p.level_keys_in_world(Some(1)).len(), 0);
+    // Duplicate IIDs in mixed documents resolve in root-first document order.
+    assert_eq!(p.level_by_iid("l").unwrap().0, KEY);
+    p.level_mut(world_key).unwrap()["iid"] = json!("world-level");
+    assert_eq!(p.level_by_iid("world-level").unwrap().0, world_key);
     p.layer_mut(world_key, 0).unwrap()["future"] = json!(99);
     assert_eq!(p.layer(KEY, 0).unwrap()["future"], 42);
     assert_eq!(p.layer(world_key, 0).unwrap()["future"], 99);
