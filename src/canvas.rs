@@ -253,6 +253,22 @@ impl Transform {
 pub(super) fn values(value: &Value) -> &[Value] {
     value.as_array().map_or(&[], Vec::as_slice)
 }
+// A brush preview may touch only one color even on a layer with a large palette.
+fn intgrid_cell_colors(def: &Value, alpha: f32) -> impl FnMut(i64) -> Color32 + '_ {
+    let palette = values(&def["intGridValues"]);
+    let mut colors = std::collections::HashMap::new();
+    move |value| {
+        *colors.entry(value).or_insert_with(|| {
+            palette
+                .iter()
+                .find(|entry| entry["value"].as_i64() == Some(value))
+                .map(|entry| theme::color(text(entry, "color", "#ffcc00")))
+                .unwrap_or(theme::ACCENT)
+                .gamma_multiply(alpha)
+        })
+    }
+}
+
 pub(super) fn pair(value: &Value, fallback: [f32; 2]) -> [f32; 2] {
     [
         value[0].as_f64().map_or(fallback[0], |v| v as f32),
@@ -874,6 +890,7 @@ impl Scene<'_> {
         let cells = pending
             .and_then(|p| p.old_intgrid_cells.as_deref())
             .unwrap_or(cells);
+        let mut cell_color = intgrid_cell_colors(def, alpha);
         let mut count = 0;
         for y in y0..y1 {
             for x in x0..x1 {
@@ -885,18 +902,13 @@ impl Scene<'_> {
                 if value == 0 {
                     continue;
                 }
-                let color = values(&def["intGridValues"])
-                    .iter()
-                    .find(|v| v["value"].as_i64() == Some(value))
-                    .map(|v| theme::color(text(v, "color", "#ffcc00")))
-                    .unwrap_or(theme::ACCENT);
                 painter.rect_filled(
                     self.screen(transform.rect(Rect::from_min_size(
                         [x as f32 * grid, y as f32 * grid].into(),
                         egui::vec2(grid, grid),
                     ))),
                     0.,
-                    color.gamma_multiply(alpha),
+                    cell_color(value),
                 );
                 count += 1;
             }
@@ -1863,8 +1875,10 @@ pub fn draw_group_ghost(
         };
 
         if width > 0 {
+            let mut cell_color = intgrid_cell_colors(def, 1.);
             for (i, value) in values(&clipboard["intGridCsv"]).iter().enumerate() {
-                if value.as_i64().unwrap_or(0) == 0 {
+                let value = value.as_i64().unwrap_or(0);
+                if value == 0 {
                     continue;
                 }
                 let local = moved(
@@ -1874,11 +1888,7 @@ pub fn draw_group_ghost(
                     ],
                     [grid; 2],
                 );
-                let color = values(&def["intGridValues"])
-                    .iter()
-                    .find(|v| v["value"] == *value)
-                    .map(|v| theme::color(text(v, "color", "#ffcc00")))
-                    .unwrap_or(theme::ACCENT);
+                let color = cell_color(value);
                 let rect = scene.screen(transform.rect(Rect::from_min_size(
                     egui::pos2(local[0] - offset[0], local[1] - offset[1]),
                     egui::vec2(grid, grid),

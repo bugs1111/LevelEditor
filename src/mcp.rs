@@ -1,8 +1,9 @@
 mod project_tools;
+mod tools;
 
 use project_tools::Session;
 use serde_json::{Map, Value, json};
-use std::io::{self, BufRead, Write};
+use std::io::{self, BufRead, BufWriter, Write};
 use std::path::PathBuf;
 
 const VERSIONS: &[&str] = &["2025-11-25", "2025-06-18", "2024-11-05"];
@@ -15,7 +16,7 @@ pub fn run(path: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
     let mut session = Session::open(path)?;
     let mut version = None;
     let mut initialized = false;
-    let mut stdout = io::stdout().lock();
+    let mut stdout = BufWriter::new(io::stdout().lock());
     for line in io::stdin().lock().split(b'\n') {
         let response = match serde_json::from_slice::<Value>(&line?) {
             Ok(message) => {
@@ -110,7 +111,7 @@ fn request(
             if params.contains_key("cursor") {
                 return error(id, -32602, "Invalid tool-list cursor");
             }
-            json!({"tools":project_tools::list()})
+            json!({"tools":tools::list()})
         }
         "tools/call" => {
             let Some(name) = params.get("name").and_then(Value::as_str) else {
@@ -123,12 +124,14 @@ fn request(
                 },
                 None => &empty,
             };
-            match session.call(name, args) {
-                None => return error(id, -32602, &format!("Unknown tool: {name}")),
-                Some(Err(message)) => json!({
+            let Some(tool) = tools::Tool::named(name) else {
+                return error(id, -32602, &format!("Unknown tool: {name}"));
+            };
+            match tool.validate(args).and_then(|()| session.execute(name, args)) {
+                Err(message) => json!({
                     "isError":true,"content":[{"type":"text","text":message}]
                 }),
-                Some(Ok(data)) => {
+                Ok(data) => {
                     let mut result = json!({
                         "isError":false,"content":[{"type":"text","text":data.to_string()}]
                     });
@@ -141,7 +144,9 @@ fn request(
         }
         _ => return error(id, -32601, "Method not found"),
     };
-    json!({"jsonrpc":"2.0","id":id,"result":result})
+    let mut response = json!({"jsonrpc":"2.0","id":id});
+    response["result"] = result;
+    response
 }
 
 fn error(id: &Value, code: i32, message: &str) -> Value {

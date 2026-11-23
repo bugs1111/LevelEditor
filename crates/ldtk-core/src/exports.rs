@@ -478,27 +478,25 @@ impl Project {
             .ok_or_else(|| Error::Invalid("missing external level".into()))?;
         let (w, h) = dimensions(l)?;
         let name = safe_name(s(l, "identifier"))?;
-        let background = if options.include_background {
-            self.render_background(l, diagnostics)?
-        } else {
-            RgbaImage::new(w, h)
-        };
-        if options.include_background && options.mode != PngExportMode::OneImagePerLevel {
-            batch.add(
-                dir.join(if simple {
+        let mut combined = if options.include_background {
+            let background = self.render_background(l, diagnostics)?;
+            if options.mode != PngExportMode::OneImagePerLevel {
+                let filename = if simple {
                     "_bg.png".into()
                 } else {
                     format!("{name}_bg.png")
-                }),
-                &png(&background)?,
-            )?;
-        }
-        let mut combined = match options.mode {
-            PngExportMode::OneImagePerLayer => None,
-            PngExportMode::LayersAndLevels if options.include_background => {
-                Some(RgbaImage::from_pixel(w, h, self.level_background_color(l)))
+                };
+                batch.add(dir.join(filename), &png(&background)?)?;
             }
-            _ => Some(background),
+            match options.mode {
+                PngExportMode::OneImagePerLevel => Some(background),
+                PngExportMode::LayersAndLevels => {
+                    Some(RgbaImage::from_pixel(w, h, self.level_background_color(l)))
+                }
+                PngExportMode::OneImagePerLayer => None,
+            }
+        } else {
+            (options.mode != PngExportMode::OneImagePerLayer).then(|| RgbaImage::new(w, h))
         };
         let mut premultiplied = false;
         for li in arr(&l["layerInstances"]).iter().rev() {
@@ -537,24 +535,7 @@ impl Project {
                 }
             }
             if typ == "IntGrid" && options.mode != PngExportMode::OneImagePerLevel {
-                let cw = n(li, "__cWid").max(0) as u32;
-                let ch = n(li, "__cHei").max(0) as u32;
-                let mut img = RgbaImage::new(cw, ch);
-                let values = arr(&li["intGridCsv"]);
-                for y in 0..ch {
-                    for x in 0..cw {
-                        let v = values
-                            .get((x + y * cw) as usize)
-                            .and_then(Value::as_i64)
-                            .unwrap_or(0);
-                        if let Some(c) = arr(&def["intGridValues"])
-                            .iter()
-                            .find(|c| n(c, "value") == v)
-                        {
-                            img.put_pixel(x, y, color(s(c, "color")));
-                        }
-                    }
-                }
+                let img = intgrid_image(li, def);
                 batch.add(dir.join(format!("{file}-int.png")), &png(&img)?)?;
             }
         }
@@ -713,17 +694,17 @@ impl Project {
         let alpha = num(def, "displayOpacity", 1.);
         let ox = n(li, "__pxTotalOffsetX");
         let oy = n(li, "__pxTotalOffsetY");
-        let values = if s(li, "__type") == "Tiles" {
+        let values = if classic {
             arr(&li["gridTiles"])
         } else {
             arr(&li["autoLayerTiles"])
         };
+        let grid = n(li, "__gridSize").max(1) as f64;
+        let pivot_x = num(def, "tilePivotX", 0.);
+        let pivot_y = num(def, "tilePivotY", 0.);
         for t in values {
             let f = n(t, "f");
-            let grid = n(li, "__gridSize").max(1) as f64;
-            let pivot_x = num(def, "tilePivotX", 0.);
-            let pivot_y = num(def, "tilePivotY", 0.);
-            let (tx, ty) = if s(li, "__type") == "Tiles" {
+            let (tx, ty) = if classic {
                 (
                     t["px"][0].as_i64().unwrap_or(0)
                         + ox
@@ -760,7 +741,7 @@ impl Project {
             };
             let sx = t["src"][0].as_i64().unwrap_or(0);
             let sy = t["src"][1].as_i64().unwrap_or(0);
-            let f = n(t, "f");
+            let tile_alpha = alpha * num(t, "a", 1.);
             for y in 0..size {
                 for x in 0..size {
                     let ax = sx + if f & 1 != 0 { size - 1 - x } else { x };
@@ -772,7 +753,7 @@ impl Project {
                             tx + x,
                             ty + y,
                             *atlas.get_pixel(ax as u32, ay as u32),
-                            alpha * num(t, "a", 1.),
+                            tile_alpha,
                         );
                     }
                 }
@@ -781,6 +762,26 @@ impl Project {
         Ok((img, false))
     }
 }
+fn intgrid_image(layer: &Value, def: &Value) -> RgbaImage {
+    let mut colors = std::collections::HashMap::new();
+    for entry in arr(&def["intGridValues"]) {
+        colors
+            .entry(n(entry, "value"))
+            .or_insert_with(|| color(s(entry, "color")));
+    }
+    let cells = arr(&layer["intGridCsv"]);
+    let width = n(layer, "__cWid").max(0) as u32;
+    let height = n(layer, "__cHei").max(0) as u32;
+    let mut image = RgbaImage::new(width, height);
+    for (index, pixel) in image.pixels_mut().enumerate() {
+        let value = cells.get(index).and_then(Value::as_i64).unwrap_or(0);
+        if let Some(color) = colors.get(&value) {
+            *pixel = *color;
+        }
+    }
+    image
+}
+
 fn dimensions(l: &Value) -> Result<(u32, u32)> {
     let (w, h) = (n(l, "pxWid"), n(l, "pxHei"));
     if w <= 0 || h <= 0 || w.checked_mul(h).is_none_or(|area| area > 268_435_456) {

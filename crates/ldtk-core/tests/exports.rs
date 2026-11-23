@@ -241,6 +241,28 @@ fn png_renders_intgrid_pixels() {
     assert_eq!(image.get_pixel(1, 0).0, [0, 255, 0, 255]);
 }
 #[test]
+fn intgrid_png_uses_first_palette_match_and_preserves_transparent_cells() {
+    let mut p = project();
+    p.json["defs"]["layers"][0]["intGridValues"] = json!([
+        {"value":7,"color":"#aa113377"}, {"value":7,"color":"#ffffff"},
+        {"value":0,"color":"#010203"}
+    ]);
+    let layer = &mut p.json["levels"][0]["layerInstances"][0];
+    layer["__cWid"] = json!(4);
+    layer["intGridCsv"] = json!([7, 999, null]);
+    let dir = tempfile::tempdir().unwrap();
+    p.export_png(dir.path()).unwrap();
+    let image = image::open(dir.path().join("Level_0__Solid-int.png"))
+        .unwrap()
+        .to_rgba8();
+    let pixels: Vec<_> = image.pixels().map(|p| p.0).collect();
+    assert_eq!(
+        pixels,
+        [[170, 17, 51, 119], [0; 4], [1, 2, 3, 255], [1, 2, 3, 255]]
+    );
+}
+
+#[test]
 fn gamemaker_matches_original_experimental_room_schema() {
     let p = project();
     let t = tempfile::tempdir().unwrap();
