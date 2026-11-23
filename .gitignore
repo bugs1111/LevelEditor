@@ -1,5 +1,7 @@
 /target/
 /dist/
+/output/
+__pycache__/
 /.tools/
 /.reference/
 /.superpowers/
