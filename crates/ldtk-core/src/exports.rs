@@ -7,6 +7,7 @@ use image::{GenericImage, Rgba, RgbaImage};
 use serde_json::{Value, json};
 use std::{
     collections::HashSet,
+    fmt::Write as _,
     fs,
     io::{BufReader, Cursor, Read},
     path::{Path, PathBuf},
@@ -301,7 +302,7 @@ impl Project {
                         }
                         let value =
                             values.get(x + y * w).and_then(Value::as_i64).unwrap_or(0) as u8;
-                        text.push_str(&value.to_string());
+                        write!(text, "{value}").expect("writing to a String is infallible");
                     }
                     if y + 1 < h {
                         text.push(',');

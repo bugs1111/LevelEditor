@@ -169,14 +169,18 @@ impl EditorApp {
         };
         let documents = document_paths(project);
         let root_missing = project.path.as_deref().is_some_and(is_missing_file);
-        self.file_snapshot
-            .as_ref()
-            .and_then(|snapshot| snapshot.changed_files().ok())
-            .unwrap_or_default()
+        let Some(snapshot) = &self.file_snapshot else {
+            return Vec::new();
+        };
+        let changed = match snapshot.changed_files_matching(|p| documents.contains(&clean(p))) {
+            Ok(paths) => paths,
+            // A document we cannot verify must also be resolved before saving.
+            Err(ldtk_core::Error::Io { path, .. }) => vec![path],
+            Err(_) => return Vec::new(),
+        };
+        changed
             .into_iter()
-            .filter(|path| {
-                documents.contains(&clean(path)) && (!root_missing || !is_missing_file(path))
-            })
+            .filter(|path| !root_missing || !is_missing_file(path))
             .collect()
     }
     pub(super) fn changed_resource_files(&self) -> Vec<PathBuf> {
@@ -186,11 +190,12 @@ impl EditorApp {
         let documents = document_paths(project);
         self.file_snapshot
             .as_ref()
-            .and_then(|snapshot| snapshot.changed_files().ok())
+            .and_then(|snapshot| {
+                snapshot
+                    .changed_files_matching(|p| !documents.contains(&clean(p)))
+                    .ok()
+            })
             .unwrap_or_default()
-            .into_iter()
-            .filter(|path| !documents.contains(&clean(path)))
-            .collect()
     }
     fn resource_failure(&mut self, path: PathBuf, uids: Vec<i64>, error: String) {
         self.status = format!("Could not reload {}: {error}", path.display());
@@ -1102,6 +1107,32 @@ mod missing_tests {
             app.changed_document_files().into_iter().collect();
         assert_eq!(actual, std::collections::HashSet::from([source, external]));
         assert_eq!(app.changed_resource_files(), vec![enums]);
+    }
+
+    #[test]
+    fn unreadable_resource_does_not_hide_a_document_conflict_before_save() {
+        let dir = tempfile::tempdir().unwrap();
+        let atlas = dir.path().join("atlas.png");
+        std::fs::write(&atlas, b"original resource").unwrap();
+        let mut project = Project::new();
+        project.add_tileset(&atlas, 16, 32, 32).unwrap();
+        let path = dir.path().join("project.ldtk");
+        project.save(&path).unwrap();
+        let mut app = EditorApp::empty();
+        app.set_project(project);
+        std::fs::remove_file(&atlas).unwrap();
+        std::fs::create_dir(&atlas).unwrap();
+        std::fs::write(&path, b"external edit").unwrap();
+
+        app.save_document(&egui::Context::default(), path.clone());
+
+        assert_eq!(app.external_changes, Some(vec![path.clone()]));
+        assert!(app.saving.is_none());
+        assert_eq!(std::fs::read(&path).unwrap(), b"external edit");
+
+        std::fs::remove_file(&path).unwrap();
+        std::fs::create_dir(&path).unwrap();
+        assert_eq!(app.changed_document_files(), vec![path]);
     }
 
     #[test]

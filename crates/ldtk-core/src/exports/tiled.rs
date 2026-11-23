@@ -4,6 +4,7 @@ use crate::{Error, Project, Result};
 use image::RgbaImage;
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, HashMap};
+use std::fmt::Write;
 use std::path::{Path, PathBuf};
 
 fn xml(v: impl std::fmt::Display) -> String {
@@ -350,21 +351,17 @@ impl Project {
             }
             if typ == "IntGrid" {
                 let base = *gids.get(&n(li, "layerDefUid")).unwrap_or(&1);
-                let values: Vec<u32> = (0..cw * ch)
-                    .map(|i| {
-                        let v = arr(&li["intGridCsv"])
-                            .get(i)
-                            .and_then(Value::as_i64)
-                            .unwrap_or(0);
-                        if v > 0 { base + v as u32 - 1 } else { 0 }
-                    })
-                    .collect();
+                let cells = arr(&li["intGridCsv"]);
+                let values = (0..cw * ch).map(|i| {
+                    let v = cells.get(i).and_then(Value::as_i64).unwrap_or(0);
+                    if v > 0 { base + v as u32 - 1 } else { 0 }
+                });
                 let name = if li["__tilesetDefUid"].is_number() {
                     format!("{name}_values")
                 } else {
                     name.to_owned()
                 };
-                layers.push_str(&tmx_layer(layer_id, &name, cw, ch, opacity, &values));
+                write_tmx_layer(&mut layers, layer_id, &name, [cw, ch], opacity, values);
                 layer_id += 1;
             }
             let tiles = if typ == "Tiles" {
@@ -402,7 +399,14 @@ impl Project {
                     } else {
                         name.to_owned()
                     };
-                    layers.push_str(&tmx_layer(layer_id, &name, cw, ch, opacity, data));
+                    write_tmx_layer(
+                        &mut layers,
+                        layer_id,
+                        &name,
+                        [cw, ch],
+                        opacity,
+                        data.iter().copied(),
+                    );
                     layer_id += 1;
                 }
             }
@@ -416,13 +420,21 @@ impl Project {
     }
 }
 
-fn tmx_layer(id: i32, name: &str, w: usize, h: usize, opacity: f64, data: &[u32]) -> String {
-    format!(
-        "<layer id=\"{id}\" name=\"{}\" width=\"{w}\" height=\"{h}\" opacity=\"{opacity}\"><data encoding=\"csv\">{}</data></layer>",
-        xml(name),
-        data.iter()
-            .map(u32::to_string)
-            .collect::<Vec<_>>()
-            .join(",")
-    )
+fn write_tmx_layer(
+    out: &mut String,
+    id: i32,
+    name: &str,
+    [w, h]: [usize; 2],
+    opacity: f64,
+    data: impl Iterator<Item = u32>,
+) {
+    write!(out, "<layer id=\"{id}\" name=\"{}\" width=\"{w}\" height=\"{h}\" opacity=\"{opacity}\"><data encoding=\"csv\">", xml(name))
+        .expect("writing to a String is infallible");
+    for (index, value) in data.enumerate() {
+        if index > 0 {
+            out.push(',');
+        }
+        write!(out, "{value}").expect("writing to a String is infallible");
+    }
+    out.push_str("</data></layer>");
 }

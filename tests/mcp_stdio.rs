@@ -420,11 +420,15 @@ fn inspects_worlds_edits_cells_and_entities_and_reopens_the_saved_project() {
 }
 
 #[test]
-fn refuses_to_overwrite_changed_root_and_external_level_files() {
+fn save_detects_changes_to_root_external_levels_and_watched_assets() {
     let temp = tempfile::tempdir().unwrap();
     let path = copy_external_project(temp.path());
     let external_path = path.with_extension("").join("World_Level_0.ldtkl");
-    let root: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    let asset = temp.path().join("watched.png");
+    fs::write(&asset, vec![0; 128 * 1024 + 1]).unwrap();
+    let mut root: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    root["levels"][0]["bgRelPath"] = json!("watched.png");
+    fs::write(&path, serde_json::to_vec(&root).unwrap()).unwrap();
     let external: Value = serde_json::from_slice(&fs::read(&external_path).unwrap()).unwrap();
     let level_iid = root["levels"][0]["iid"].as_str().unwrap();
     let layer_iid = external["layerInstances"][0]["iid"].as_str().unwrap();
@@ -434,13 +438,17 @@ fn refuses_to_overwrite_changed_root_and_external_level_files() {
     let mut client = Client::start(&path);
     client.initialize(PROTOCOL);
     client.initialized();
-    for changed in [&path, &external_path] {
+    for changed in [&path, &external_path, &asset] {
         assert_eq!(
             client.tool("paint_int_grid", paint.clone())["changed"],
             true
         );
         let mut bytes = fs::read(changed).unwrap();
-        bytes.push(b'\n');
+        if changed == &asset {
+            *bytes.last_mut().unwrap() = 1;
+        } else {
+            bytes.push(b'\n');
+        }
         fs::write(changed, &bytes).unwrap();
         let root_before = fs::read(&path).unwrap();
         let level_before = fs::read(&external_path).unwrap();

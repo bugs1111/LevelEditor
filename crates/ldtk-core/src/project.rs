@@ -11,7 +11,10 @@ use std::{
 };
 
 mod levels;
+mod snapshot;
 pub use levels::{EntityMatch, LevelKey};
+pub use snapshot::FilesystemSnapshot;
+use snapshot::bytes_fingerprint;
 
 /// External documents share data between project snapshots until edited.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -1537,54 +1540,7 @@ pub(crate) fn sync_summary(root: &mut Value, key: LevelKey, external: &Value) {
     }
 }
 
-/// A content snapshot, independent of the mutable project, for filesystem watchers.
-#[derive(Clone, Debug)]
-pub struct FilesystemSnapshot {
-    files: BTreeMap<PathBuf, Option<u64>>,
-}
-impl FilesystemSnapshot {
-    pub fn refresh_file(&mut self, path: &Path) -> Result<()> {
-        self.files.insert(path.to_owned(), file_fingerprint(path)?);
-        Ok(())
-    }
-
-    pub fn changed_files(&self) -> Result<Vec<PathBuf>> {
-        let mut changed = Vec::new();
-        for (path, fingerprint) in &self.files {
-            if &file_fingerprint(path)? != fingerprint {
-                changed.push(path.clone());
-            }
-        }
-        Ok(changed)
-    }
-}
 impl Project {
-    pub fn filesystem_snapshot(&self) -> Result<FilesystemSnapshot> {
-        let mut snapshot = FilesystemSnapshot {
-            files: BTreeMap::new(),
-        };
-        self.snapshot_resources(&mut snapshot)?;
-        Ok(snapshot)
-    }
-
-    fn snapshot_resources(&self, snapshot: &mut FilesystemSnapshot) -> Result<()> {
-        let mut paths = BTreeSet::new();
-        if let Some(path) = &self.path {
-            paths.insert(path.clone());
-            let base = path.parent().expect("absolute project path");
-            collect_resource_paths(&self.json, base, &mut paths)?;
-            for level in self.external_levels.values() {
-                collect_resource_paths(level, base, &mut paths)?;
-            }
-        }
-        for path in paths {
-            if let std::collections::btree_map::Entry::Vacant(entry) = snapshot.files.entry(path) {
-                let fingerprint = file_fingerprint(entry.key())?;
-                entry.insert(fingerprint);
-            }
-        }
-        Ok(())
-    }
     /// Copy the currently saved project and external documents, retaining backupLimit copies.
     pub fn backup(&self) -> Result<Option<PathBuf>> {
         self.backup_with_progress(None, &mut |_, _, _| {})
@@ -1745,85 +1701,6 @@ impl Project {
         progress(total, total, None);
         Ok(Some(destination))
     }
-}
-fn bytes_fingerprint(bytes: &[u8]) -> u64 {
-    use std::hash::{Hash, Hasher};
-    let mut hash = std::collections::hash_map::DefaultHasher::new();
-    bytes.hash(&mut hash);
-    hash.finish()
-}
-fn file_fingerprint(path: &Path) -> Result<Option<u64>> {
-    match fs::read(path) {
-        Ok(bytes) => Ok(Some(bytes_fingerprint(&bytes))),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(source) => Err(Error::Io {
-            path: path.to_path_buf(),
-            source,
-        }),
-    }
-}
-fn collect_resource_paths(value: &Value, base: &Path, paths: &mut BTreeSet<PathBuf>) -> Result<()> {
-    match value {
-        Value::Object(object) => {
-            let file = object
-                .get("__type")
-                .and_then(Value::as_str)
-                .is_some_and(|t| t.contains("FilePath"))
-                || object
-                    .get("type")
-                    .and_then(Value::as_str)
-                    .is_some_and(|t| t == "F_Path" || t == "F_File");
-            for (key, value) in object {
-                if key != "backupRelPath"
-                    && matches!(
-                        key.as_str(),
-                        "relPath" | "externalRelPath" | "bgRelPath" | "__tilesetRelPath"
-                    )
-                    && value.as_str().is_some_and(|s| !s.is_empty())
-                {
-                    paths.insert(absolute(&base.join(value.as_str().unwrap()))?);
-                }
-                if file
-                    && [
-                        "__value",
-                        "realEditorValues",
-                        "realEditorValue",
-                        "defaultOverride",
-                    ]
-                    .contains(&key.as_str())
-                {
-                    collect_field_paths(value, base, paths)?;
-                }
-                collect_resource_paths(value, base, paths)?;
-            }
-        }
-        Value::Array(values) => {
-            for value in values {
-                collect_resource_paths(value, base, paths)?;
-            }
-        }
-        _ => (),
-    }
-    Ok(())
-}
-fn collect_field_paths(value: &Value, base: &Path, paths: &mut BTreeSet<PathBuf>) -> Result<()> {
-    match value {
-        Value::String(s) if !s.is_empty() => {
-            paths.insert(absolute(&base.join(s))?);
-        }
-        Value::Array(v) => {
-            for v in v {
-                collect_field_paths(v, base, paths)?;
-            }
-        }
-        Value::Object(o) => {
-            if let Some(v) = o.get("params") {
-                collect_field_paths(v, base, paths)?;
-            }
-        }
-        _ => (),
-    }
-    Ok(())
 }
 pub(crate) fn relative_to(path: &Path, base: &Path) -> Result<String> {
     let path = absolute(path)?;
