@@ -22,7 +22,8 @@ pub use edit::EntityPlacement;
 pub use field_edit::FieldArrayEdit;
 pub use history::History;
 pub use project::{
-    BackupInfo, ExternalLevels, FilesystemSnapshot, LevelKey, Project, SaveReport, SaveStage,
+    BackupInfo, EntityMatch, ExternalLevels, FilesystemSnapshot, LevelKey, Project, SaveReport,
+    SaveStage,
 };
 pub use selection_group::{SelectionDragReport, selection_group_is_entity_only};
 pub use workflow::{constrained_entity_size, snapped_entity_position};

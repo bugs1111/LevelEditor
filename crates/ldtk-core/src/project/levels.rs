@@ -7,6 +7,14 @@ pub struct LevelKey {
     pub level: usize,
 }
 
+/// A borrowed entity and its position in the project document.
+pub struct EntityMatch<'a> {
+    pub level: LevelKey,
+    pub layer_index: usize,
+    pub entity_index: usize,
+    pub entity: &'a Value,
+}
+
 impl Project {
     /// Snapshot the keys when an operation needs to mutate the project during traversal.
     pub fn level_keys(&self) -> Vec<LevelKey> {
@@ -74,6 +82,23 @@ impl Project {
         self.iter_level_keys().find_map(|key| {
             let level = self.level(key)?;
             (level["iid"] == iid).then_some((key, level))
+        })
+    }
+
+    pub fn entity_by_iid(&self, iid: &str) -> Option<EntityMatch<'_>> {
+        self.iter_level_keys().find_map(|level| {
+            let layers = self.level(level)?["layerInstances"].as_array()?;
+            layers.iter().enumerate().find_map(|(layer_index, layer)| {
+                let entities = layer["entityInstances"].as_array()?;
+                let (entity_index, entity) =
+                    entities.iter().enumerate().find(|(_, e)| e["iid"] == iid)?;
+                Some(EntityMatch {
+                    level,
+                    layer_index,
+                    entity_index,
+                    entity,
+                })
+            })
         })
     }
 

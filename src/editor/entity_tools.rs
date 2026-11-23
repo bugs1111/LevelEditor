@@ -57,24 +57,11 @@ impl EditorApp {
             }
             return;
         };
-        let source = project.level_keys().into_iter().find_map(|key| {
-            project.level(key)?["layerInstances"]
-                .as_array()?
-                .iter()
-                .enumerate()
-                .find_map(|(layer, l)| {
-                    l["entityInstances"]
-                        .as_array()?
-                        .iter()
-                        .find(|e| e["iid"] == previous)
-                        .cloned()
-                        .map(|e| (key, layer, e))
-                })
-        });
-        let Some((source_key, source_layer, source)) = source else {
+        let Some(found) = project.entity_by_iid(&previous) else {
             self.chain_entity = created.then_some(target_iid);
             return;
         };
+        let (source_key, source_layer, source) = (found.level, found.layer_index, found.entity);
         let accepts = |definition: &Value, target_uid: i64| {
             if definition["allowOutOfLevelRef"] == false && source_key != key {
                 return false;
@@ -143,7 +130,7 @@ impl EditorApp {
         if source_key == key {
             self.history.begin(project, key);
             self.history
-                .mark_entity_change(project, source_key, source_layer, &source);
+                .mark_entity_change(project, source_key, source_layer, source);
         }
         let project = self.project.as_mut().unwrap();
         let result = if is_array {

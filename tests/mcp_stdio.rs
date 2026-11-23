@@ -220,6 +220,40 @@ fn negotiates_mcp_and_discover_tools_without_a_window() {
 }
 
 #[test]
+fn world_filter_distinguishes_empty_unknown_and_legacy_root_worlds() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("worlds.ldtk");
+    let mut root = Project::new().json;
+    let level = root["levels"][0].take();
+    root["levels"] = json!([]);
+    root["dummyWorldIid"] = json!("legacy");
+    root["worlds"] = json!([{"iid":"empty","levels":[]}, {"iid":"populated","levels":[level]}]);
+    fs::write(&path, serde_json::to_vec(&root).unwrap()).unwrap();
+    let mut client = Client::start(&path);
+    client.initialize(PROTOCOL);
+    client.initialized();
+    assert_eq!(
+        client.tool("list_worlds", json!({}))["worlds"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+    assert_eq!(
+        client.tool("list_levels", json!({"world_iid":"empty"}))["levels"],
+        json!([])
+    );
+    assert_eq!(
+        client.call("list_levels", json!({"world_iid":"legacy"}))["isError"],
+        true
+    );
+    let all = client.tool("list_levels", json!({}));
+    assert_eq!(all["levels"].as_array().unwrap().len(), 1);
+    assert_eq!(all["levels"][0]["world_iid"], "populated");
+    client.close();
+}
+
+#[test]
 fn inspects_worlds_edits_cells_and_entities_and_reopens_the_saved_project() {
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("中文 示例.ldtk");

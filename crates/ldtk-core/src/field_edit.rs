@@ -843,10 +843,11 @@ impl Project {
             } else if kind == "EntityRef" {
                 let target = value["entityIid"]
                     .as_str()
-                    .and_then(|id| find_entity(self, id));
+                    .and_then(|id| self.entity_by_iid(id));
                 match target {
                     None => Some("Lost reference!".to_owned()),
-                    Some((_, target)) => {
+                    Some(found) => {
+                        let target = found.entity;
                         let target_def =
                             self.definition("entities", target["defUid"].as_i64().unwrap_or(-1));
                         match d["allowedRefs"].as_str().unwrap_or("Any") {
@@ -1434,23 +1435,6 @@ impl Project {
         })
     }
 }
-fn find_entity(p: &Project, iid: &str) -> Option<(LevelKey, Value)> {
-    for key in p.level_keys() {
-        let level = p.level(key)?;
-        if let Some(ls) = level["layerInstances"].as_array() {
-            for l in ls {
-                if let Some(es) = l["entityInstances"].as_array() {
-                    for e in es {
-                        if e["iid"] == iid {
-                            return Some((key, e.clone()));
-                        }
-                    }
-                }
-            }
-        }
-    }
-    None
-}
 fn validate_refs(
     p: &Project,
     key: LevelKey,
@@ -1459,8 +1443,8 @@ fn validate_refs(
     values: &[Value],
 ) -> Result<()> {
     let source_def = source
-        .and_then(|s| find_entity(p, s))
-        .map(|(_, e)| e["defUid"].clone());
+        .and_then(|s| p.entity_by_iid(s))
+        .map(|found| &found.entity["defUid"]);
     for v in values {
         if v.is_null() {
             continue;
@@ -1469,9 +1453,11 @@ fn validate_refs(
             .as_str()
             .or_else(|| v["entityIid"].as_str())
             .ok_or_else(|| invalid("EntityRef requires an IID"))?;
-        let (target_key, target) =
-            find_entity(p, id).ok_or_else(|| invalid("referenced entity does not exist"))?;
-        if d["allowOutOfLevelRef"] == false && target_key != key {
+        let found = p
+            .entity_by_iid(id)
+            .ok_or_else(|| invalid("referenced entity does not exist"))?;
+        let target = found.entity;
+        if d["allowOutOfLevelRef"] == false && found.level != key {
             return Err(invalid("field disallows references outside this level"));
         }
         let target_def = p
@@ -1479,7 +1465,7 @@ fn validate_refs(
             .ok_or_else(|| invalid("referenced entity definition missing"))?;
         match d["allowedRefs"].as_str().unwrap_or("Any") {
             "OnlySame" => {
-                if source_def.as_ref().is_some_and(|s| *s != target["defUid"]) {
+                if source_def.is_some_and(|s| *s != target["defUid"]) {
                     return Err(invalid("field only allows entities of the same type"));
                 }
             }
@@ -1522,10 +1508,10 @@ fn symmetry(p: &mut Project, source: &str, d: &Value, old: &Value, new: &Value) 
     let new_ids: BTreeSet<_> = wrapper_ids(new).into_iter().collect();
     let mut touched = BTreeSet::new();
     for target in old_ids.symmetric_difference(&new_ids) {
-        let Some((key, _)) = find_entity(p, target) else {
+        let Some(found) = p.entity_by_iid(target) else {
             continue;
         };
-        let fields = fields_at_mut(p, key, Some(target))?;
+        let fields = fields_at_mut(p, found.level, Some(target))?;
         let Some(f) = fields.iter_mut().find(|f| f["defUid"] == uid) else {
             continue;
         };

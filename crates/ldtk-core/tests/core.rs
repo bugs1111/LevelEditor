@@ -103,6 +103,37 @@ fn world_and_legacy_level_access_are_both_lossless() {
 }
 
 #[test]
+fn entity_lookup_keeps_document_order_and_resolves_external_levels() {
+    let mut p = project();
+    let root_entity = json!({"iid":"shared","origin":"root"});
+    p.layer_mut(KEY, 2).unwrap()["entityInstances"] = json!([root_entity]);
+    p.json["worlds"] = json!([{"levels":[{"externalRelPath":"external.ldtkl"}]}]);
+    p.external_levels.insert(
+        "external.ldtkl".into(),
+        json!({
+            "layerInstances":[{}, {"entityInstances":[{"iid":"shared"}, {"iid":"external"}]}]
+        }),
+    );
+
+    let first = p.entity_by_iid("shared").unwrap();
+    assert_eq!(
+        (first.level, first.layer_index, first.entity_index),
+        (KEY, 2, 0)
+    );
+    assert_eq!(first.entity, &root_entity);
+    let external = p.entity_by_iid("external").unwrap();
+    assert_eq!(
+        external.level,
+        LevelKey {
+            world: Some(0),
+            level: 0
+        }
+    );
+    assert_eq!((external.layer_index, external.entity_index), (1, 1));
+    assert!(p.entity_by_iid("absent").is_none());
+}
+
+#[test]
 fn int_grid_checks_bounds_and_rejects_malformed_cells_without_mutating() {
     let mut p = project();
     assert!(p.paint_int_grid(KEY, 0, 1, 0, 2).unwrap());

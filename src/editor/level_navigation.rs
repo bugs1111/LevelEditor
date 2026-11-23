@@ -251,24 +251,10 @@ impl EditorApp {
         self.show_panel(open.then_some(panel));
     }
     pub(super) fn follow_entity(&mut self, iid: &str) -> bool {
-        let target = self.project.as_ref().and_then(|p| {
-            p.level_keys().into_iter().find_map(|key| {
-                p.level(key)?["layerInstances"]
-                    .as_array()?
-                    .iter()
-                    .enumerate()
-                    .find_map(|(layer, l)| {
-                        l["entityInstances"]
-                            .as_array()?
-                            .iter()
-                            .position(|e| e["iid"] == iid)
-                            .map(|index| (key, layer, index))
-                    })
-            })
-        });
-        let Some((key, layer, index)) = target else {
+        let Some(found) = self.project.as_ref().and_then(|p| p.entity_by_iid(iid)) else {
             return false;
         };
+        let (key, layer, index) = (found.level, found.layer_index, found.entity_index);
         let ctx = self.repaint.clone().unwrap_or_default();
         if self.defer_ui_action(&ctx, ui_commit::DeferredUiAction::FollowEntity(iid.into())) {
             return true;

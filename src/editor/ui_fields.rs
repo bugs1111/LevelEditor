@@ -982,14 +982,8 @@ pub(super) fn reference_target<'a>(
     reference: &Value,
 ) -> Option<(LevelKey, &'a Value, &'a Value)> {
     let iid = reference["entityIid"].as_str()?;
-    project.level_keys().into_iter().find_map(|key| {
-        let level = project.level(key)?;
-        let entity = canvas::values(&level["layerInstances"])
-            .iter()
-            .flat_map(|layer| canvas::values(&layer["entityInstances"]))
-            .find(|entity| entity["iid"] == iid)?;
-        Some((key, level, entity))
-    })
+    let found = project.entity_by_iid(iid)?;
+    Some((found.level, project.level(found.level)?, found.entity))
 }
 
 pub(super) fn reference_preview<'a>(

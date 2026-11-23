@@ -23,19 +23,10 @@ impl EditorApp {
             .iter()
             .find(|def| def["uid"].as_i64() == self.entity_uid)?;
         let previous = self.chain_entity.as_deref()?;
-        let (source_key, source_layer, source) =
-            project.level_keys().into_iter().find_map(|key| {
-                project.level(key)?["layerInstances"]
-                    .as_array()?
-                    .iter()
-                    .find_map(|layer| {
-                        layer["entityInstances"]
-                            .as_array()?
-                            .iter()
-                            .find(|entity| entity["iid"] == previous)
-                            .map(|entity| (key, layer, entity))
-                    })
-            })?;
+        let found = project.entity_by_iid(previous)?;
+        let source_key = found.level;
+        let source_layer = project.layer(source_key, found.layer_index)?;
+        let source = found.entity;
         let source_def = definitions
             .iter()
             .find(|def| def["uid"] == source["defUid"])?;

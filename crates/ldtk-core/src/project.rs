@@ -11,7 +11,7 @@ use std::{
 };
 
 mod levels;
-pub use levels::LevelKey;
+pub use levels::{EntityMatch, LevelKey};
 
 /// External documents share data between project snapshots until edited.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]

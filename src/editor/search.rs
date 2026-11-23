@@ -143,21 +143,12 @@ fn field_display(project: &Project, kind: &str, value: &Value, def: &Value) -> S
             value["x"], value["y"], value["w"], value["h"]
         ),
         "EntityRef" => {
-            let found = value["entityIid"].as_str().and_then(|iid| {
-                project.level_keys().into_iter().find_map(|key| {
-                    let level = project.level(key)?;
-                    values(&level["layerInstances"])
-                        .iter()
-                        .flat_map(|layer| values(&layer["entityInstances"]))
-                        .find(|entity| entity["iid"] == iid)
-                        .map(|entity| {
-                            format!(
-                                "@({} in {})",
-                                text(entity, "__identifier", "Entity"),
-                                text(level, "identifier", "Level")
-                            )
-                        })
-                })
+            let found = ui_fields::reference_target(project, value).map(|(_, level, entity)| {
+                format!(
+                    "@({} in {})",
+                    text(entity, "__identifier", "Entity"),
+                    text(level, "identifier", "Level")
+                )
             });
             found.unwrap_or_else(|| "@(Lost reference!)".into())
         }
@@ -554,22 +545,9 @@ impl EditorApp {
                 self.switch_layer(layer);
             }
             Destination::Entity(iid) => {
-                let target = self.project.as_ref().and_then(|p| {
-                    p.level_keys().into_iter().find_map(|key| {
-                        p.level(key)?["layerInstances"]
-                            .as_array()?
-                            .iter()
-                            .enumerate()
-                            .find_map(|(layer, li)| {
-                                li["entityInstances"]
-                                    .as_array()?
-                                    .iter()
-                                    .find(|e| e["iid"] == iid)
-                                    .map(|e| (key, layer, e.clone()))
-                            })
-                    })
-                });
-                if let Some((key, layer, entity)) = target {
+                if let Some(found) = self.project.as_ref().and_then(|p| p.entity_by_iid(&iid)) {
+                    let (key, layer, entity) =
+                        (found.level, found.layer_index, found.entity.clone());
                     self.focus_search_level(key);
                     self.bleep_entity_effect(key, layer, &entity, None, 0.2, 5);
                 }

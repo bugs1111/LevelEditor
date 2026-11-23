@@ -231,7 +231,7 @@ impl Session {
                 .as_object()
                 .cloned()
                 .map_or_else(|| json!({}), Value::Object)),
-            "list_worlds" => Ok(json!({"worlds":self.worlds()})),
+            "list_worlds" => Ok(self.list_worlds()),
             "list_levels" => self.list_levels(args.get("world_iid").and_then(Value::as_str)),
             "get_level" => self.get_level(args[LEVEL.0].as_str().unwrap()),
             "get_layer" => {
@@ -266,47 +266,51 @@ impl Session {
             .unwrap_or("root")
     }
 
-    fn world_iid(&self, key: LevelKey) -> Option<&str> {
-        match key.world {
+    fn world_iid(&self, world: Option<usize>) -> Option<&str> {
+        match world {
             Some(index) => self.project.json["worlds"][index]["iid"].as_str(),
             None => Some(self.root_world_iid()),
         }
     }
 
-    fn worlds(&self) -> Vec<Value> {
+    fn worlds(&self) -> impl Iterator<Item = (Option<usize>, &Value)> {
         let root = &self.project.json;
-        let mut worlds: Vec<_> = items(&root["worlds"])
-            .map(|world| {
-                json!({
-                    "iid":world["iid"],
-                    "identifier":world["identifier"],
-                    "layout":world["worldLayout"]
-                })
-            })
-            .collect();
-        if worlds.is_empty() || items(&root["levels"]).next().is_some() {
-            worlds.insert(
-                0,
-                json!({
-                    "iid":self.root_world_iid(),
-                    "identifier":"World",
-                    "layout":root["worldLayout"]
-                }),
-            );
-        }
-        worlds
+        let nested = root["worlds"]
+            .as_array()
+            .map(Vec::as_slice)
+            .unwrap_or_default();
+        let include_root = nested.is_empty() || items(&root["levels"]).next().is_some();
+        include_root.then_some((None, root)).into_iter().chain(
+            nested
+                .iter()
+                .enumerate()
+                .map(|(index, world)| (Some(index), world)),
+        )
+    }
+
+    fn list_worlds(&self) -> Value {
+        let worlds: Vec<_> = self.worlds().map(|(index, world)| {
+            if index.is_some() {
+                json!({"iid":world["iid"], "identifier":world["identifier"], "layout":world["worldLayout"]})
+            } else {
+                json!({"iid":self.root_world_iid(), "identifier":"World", "layout":world["worldLayout"]})
+            }
+        }).collect();
+        json!({"worlds": worlds})
     }
 
     fn list_levels(&self, world_iid: Option<&str>) -> ToolResult {
+        let mut worlds = self
+            .worlds()
+            .filter(|(index, _)| world_iid.is_none_or(|iid| self.world_iid(*index) == Some(iid)))
+            .peekable();
         if let Some(iid) = world_iid
-            && !self.worlds().iter().any(|world| world["iid"] == iid)
+            && worlds.peek().is_none()
         {
             return Err(format!("World IID not found: {iid}"));
         }
-        let levels: Vec<_> = self
-            .project
-            .iter_level_keys()
-            .filter(|&key| world_iid.is_none_or(|iid| self.world_iid(key) == Some(iid)))
+        let levels: Vec<_> = worlds
+            .flat_map(|(index, _)| self.project.level_keys_in_world(index))
             .filter_map(|key| {
                 self.project
                     .level(key)
@@ -320,7 +324,7 @@ impl Session {
         json!({
             "iid":level["iid"],
             "identifier":level["identifier"],
-            "world_iid":self.world_iid(key),
+            "world_iid":self.world_iid(key.world),
             "world_x":level["worldX"],
             "world_y":level["worldY"],
             "px_width":level["pxWid"],
