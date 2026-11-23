@@ -26,7 +26,7 @@ pub(super) fn array_field_border(ui: &egui::Ui, rect: Rect) {
     ui.painter().vline(
         rect.left() + 4.,
         (rect.top() + 4.)..=(rect.bottom() - 4.),
-        Stroke::new(1., Color32::from_white_alpha(180)),
+        Stroke::new(1_f32, Color32::from_white_alpha(180)),
     );
 }
 
@@ -344,7 +344,7 @@ fn paint_array_field_drag(
             edge.left_bottom(),
             edge.left_top(),
         ],
-        Stroke::new(1., theme::ACCENT),
+        Stroke::new(1_f32, theme::ACCENT),
         2.,
         1.,
     ));
@@ -425,7 +425,7 @@ pub(super) fn picker_banner(
             picker_outline(
                 ui.painter(),
                 shown.response.rect.shrink(0.5),
-                Stroke::new(1., theme::ACCENT),
+                Stroke::new(1_f32, theme::ACCENT),
                 2.,
                 2.,
             );
@@ -656,7 +656,7 @@ impl EditorApp {
         picker_outline(
             &painter,
             rect.shrink(14.),
-            Stroke::new(4., theme::ACCENT),
+            Stroke::new(4_f32, theme::ACCENT),
             8.,
             4.,
         );
@@ -859,7 +859,7 @@ impl EditorApp {
         ui.painter().rect_stroke(
             rect,
             4.,
-            Stroke::new(1., if highlighted { theme::ACCENT } else { theme::LIGHT }),
+            Stroke::new(1_f32, if highlighted { theme::ACCENT } else { theme::LIGHT }),
             egui::StrokeKind::Inside,
         );
         let painter = ui.painter().with_clip_rect(rect.shrink(1.));
@@ -1007,7 +1007,7 @@ impl EditorApp {
                                             ui.painter().rect_stroke(
                                                 response.rect,
                                                 0.,
-                                                Stroke::new(1., theme::ACCENT),
+                                                Stroke::new(1_f32, theme::ACCENT),
                                                 StrokeKind::Outside,
                                             );
                                             response

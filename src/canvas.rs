@@ -1004,7 +1004,9 @@ impl Scene<'_> {
                 .missing_atlas_tiles(painter, level, layer, def, transform, alpha, grid_tiles);
         };
         let tile_size = number(tileset, "tileGridSize", grid);
-        let atlas = texture.size_vec2();
+        let atlas = texture.size_vec2().into();
+        let pivot = [number(def, "tilePivotX", 0.), number(def, "tilePivotY", 0.)];
+        let clip = painter.clip_rect();
         let mut mesh = Mesh::with_texture(texture.id());
         let mut count = 0;
         let tile_groups = [values(&layer["autoLayerTiles"]), grid_tiles];
@@ -1014,28 +1016,23 @@ impl Scene<'_> {
                 continue;
             }
             for tile in group {
+                let px = pair(&tile["px"], [0.; 2]);
                 if region.is_some_and(|r| {
-                    let px = pair(&tile["px"], [0.; 2]);
                     px[0] < r.left() || px[0] >= r.right() || px[1] < r.top() || px[1] >= r.bottom()
                 }) {
                     continue;
                 }
                 let flips = tile["f"].as_i64().unwrap_or(0);
-                let dst = self.screen(transform.rect(geometry::layer_tile_rect(
-                    pair(&tile["px"], [0.; 2]),
-                    grid,
-                    tile_size,
-                    [number(def, "tilePivotX", 0.), number(def, "tilePivotY", 0.)],
-                    flips,
-                    auto,
-                )));
-                if !dst.intersects(painter.clip_rect()) {
+                let dst = self.screen(
+                    transform.rect(geometry::layer_tile_rect(px, grid, tile_size, pivot, flips, auto)),
+                );
+                if !dst.intersects(clip) {
                     continue;
                 }
                 let uv = tile_uv(
                     pair(&tile["src"], [0.; 2]),
                     [tile_size; 2],
-                    atlas.into(),
+                    atlas,
                     flips,
                 );
                 mesh.add_rect_with_uv(

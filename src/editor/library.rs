@@ -108,7 +108,7 @@ fn palette_item(
         painter.rect_stroke(
             rect,
             0.,
-            Stroke::new(1., Color32::WHITE),
+            Stroke::new(1_f32, Color32::WHITE),
             StrokeKind::Inside,
         );
     }
@@ -391,7 +391,7 @@ impl EditorApp {
                     .uv(Rect::from_min_size(egui::Pos2::ZERO, rect.size() / 8.))
                     .paint_at(ui, rect);
                 ui.painter()
-                    .hline(rect.x_range(), rect.top(), Stroke::new(1., theme::MEDIUM));
+                    .hline(rect.x_range(), rect.top(), Stroke::new(1_f32, theme::MEDIUM));
             }
             return;
         };
@@ -593,7 +593,7 @@ impl EditorApp {
                                                     );
                                                     let border = if columns == 1 {
                                                         Stroke::new(
-                                                            1.,
+                                                            1_f32,
                                                             color
                                                                 .lerp_to_gamma(Color32::WHITE, 0.2),
                                                         )
@@ -1089,7 +1089,7 @@ impl EditorApp {
                     let selected = active.as_deref() == name;
                     if selected || response.hovered() {
                         ui.painter().rect_stroke(
-                            row, 0., Stroke::new(2., Color32::from_white_alpha(if selected { 255 } else { 166 })),
+                            row, 0., Stroke::new(2_f32, Color32::from_white_alpha(if selected { 255 } else { 166 })),
                             StrokeKind::Inside,
                         );
                     }
@@ -1277,7 +1277,7 @@ impl EditorApp {
                     frame,
                     0.,
                     theme::DARK,
-                    Stroke::new(1., if wizard { theme::LIGHT } else { Color32::WHITE }),
+                    Stroke::new(1_f32, if wizard { theme::LIGHT } else { Color32::WHITE }),
                     StrokeKind::Inside,
                 );
                 view = frame.shrink(if wizard { 4. } else { 1. });
@@ -1743,17 +1743,17 @@ impl EditorApp {
                     let from = target(x, y);
                     if offset != [0, 0] {
                         ui.painter().rect_stroke(
-                            from, 0., Stroke::new(2., Color32::DARK_GREEN), StrokeKind::Inside,
+                            from, 0., Stroke::new(2_f32, Color32::DARK_GREEN), StrokeKind::Inside,
                         );
                     }
                     if (0..grid.columns).contains(&to_x) && (0..grid.rows).contains(&to_y) {
                         let to = target(to_x, to_y);
                         let ink = if valid { Color32::GREEN } else { Color32::RED };
-                        ui.painter().rect_stroke(to, 0., Stroke::new(2., ink), StrokeKind::Inside);
+                        ui.painter().rect_stroke(to, 0., Stroke::new(2_f32, ink), StrokeKind::Inside);
                         if offset != [0, 0] {
                             ui.painter().arrow(
                                 from.center(), to.center() - from.center(),
-                                Stroke::new(1., if valid { Color32::WHITE } else { ink }),
+                                Stroke::new(1_f32, if valid { Color32::WHITE } else { ink }),
                             );
                         }
                     }
@@ -1791,7 +1791,7 @@ impl EditorApp {
                     target,
                     0.,
                     Stroke::new(
-                        if rule_picker { 3. } else { 2. },
+                        if rule_picker { 3. } else { 2_f32 },
                         if rule_picker {
                             Color32::from_rgb(153, 255, 153)
                         } else {
@@ -2088,7 +2088,7 @@ pub(super) fn paint_entity_definition_icon(
                 Color32::WHITE.gamma_multiply(number(def, "tileOpacity", 1.)),
             );
         }
-        painter.rect_stroke(rect, 0., Stroke::new(1., line), StrokeKind::Inside);
+        painter.rect_stroke(rect, 0., Stroke::new(1_f32, line), StrokeKind::Inside);
         return;
     }
 

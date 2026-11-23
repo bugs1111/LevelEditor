@@ -689,7 +689,7 @@ impl EditorApp {
                             border.left_bottom(),
                             border.left_top(),
                         ],
-                        Stroke::new(1., green),
+                        Stroke::new(1_f32, green),
                         3.,
                         3.,
                     ));
@@ -869,7 +869,7 @@ fn auto_layer_blockers(
                 continue;
             };
             egui::Frame::new()
-                .stroke(Stroke::new(1., theme::LIGHT))
+                .stroke(Stroke::new(1_f32, theme::LIGHT))
                 .inner_margin(3)
                 .show(ui, |ui| {
                     ui.horizontal(|ui| {

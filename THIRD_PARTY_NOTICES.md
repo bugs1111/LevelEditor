@@ -22,12 +22,15 @@ Resource provenance is not a blanket MIT relicensing of independent art. The pin
 
 The original changelog text and release illustrations under `assets/CHANGELOG.md` and `assets/changelogImg/` also originate from the same pinned LDtk source. They are displayed with a Rust Markdown viewer.
 
-The native syntax definitions `assets/syntax/Haxe.sublime-syntax` and `assets/syntax/TTCNConfig.sublime-syntax` translate the CodeMirror 5 Haxe and TTCN configuration tokenizers bundled in LDtk 1.5.3 (`app.asar/node_modules/codemirror/mode/haxe/haxe.js` and `mode/ttcn-cfg/ttcn-cfg.js`). Source project: https://codemirror.net/5/ . They run through Rust syntect; no CodeMirror JavaScript runtime is shipped. The upstream license follows:
+The native syntax definitions `assets/syntax/Haxe.sublime-syntax` and `assets/syntax/TTCNConfig.sublime-syntax` translate the CodeMirror 5 Haxe and TTCN configuration tokenizers bundled in LDtk 1.5.3 (`app.asar/node_modules/codemirror/mode/haxe/haxe.js` and `mode/ttcn-cfg/ttcn-cfg.js`). Source project: https://codemirror.net/5/ . They run through Rust syntect; no CodeMirror JavaScript runtime is shipped.
+
+[block 0.1.6](https://github.com/SSheldon/rust-block) by Steven Sheldon is vendored for the macOS Metal backend. The local patch models Apple's external Blocks class storage as opaque memory and declares the existing C calling conventions explicitly. The following MIT terms apply to both block and the CodeMirror tokenizers.
 
 ```text
 MIT License
 
 Copyright (C) 2017 by Marijn Haverbeke <marijn@haverbeke.berlin> and others
+Copyright (c) Steven Sheldon (block)
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal

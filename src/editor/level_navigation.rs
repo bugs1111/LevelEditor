@@ -390,6 +390,71 @@ mod tests {
     }
 
     #[test]
+    fn space_fits_the_clicked_neighbor_once_and_restores_it_after_panning() {
+        for density in [1., 2.] {
+            let (mut app, ctx) = camera_editor(density);
+            let project = app.project.as_mut().unwrap();
+            project.json["worldLayout"] = json!("Free");
+            let neighbor = project.add_level(None, "Below", 320, 240).unwrap();
+            project.move_level(neighbor, 1016, 2256, 0).unwrap();
+            app.viewport.center = [128., 128.];
+            app.viewport.zoom = 1.4;
+            let pos = egui::pos2(900., 700.);
+            let pointer_button = |pos, button, pressed| egui::Event::PointerButton {
+                pos,
+                button,
+                pressed,
+                modifiers: egui::Modifiers::NONE,
+            };
+            frame(&mut app, &ctx, vec![egui::Event::PointerMoved(pos)]);
+            for pressed in [true, false] {
+                frame(
+                    &mut app,
+                    &ctx,
+                    vec![pointer_button(pos, egui::PointerButton::Primary, pressed)],
+                );
+            }
+            assert_eq!(app.selected, Some(neighbor));
+
+            let fit = |app: &mut EditorApp| {
+                press(app, &ctx, Key::Space, egui::Modifiers::NONE);
+                for _ in 0..120 {
+                    if !app.camera_motion.is_active() {
+                        return (app.viewport.center, app.viewport.zoom);
+                    }
+                    frame(app, &ctx, vec![]);
+                }
+                panic!("space fit did not settle");
+            };
+            let settled = fit(&mut app);
+            for _ in 0..3 {
+                assert_eq!(fit(&mut app), settled, "repeated Space shifted the camera");
+            }
+            assert_eq!(settled.0, [160., 120.]);
+            let margin = 80. * density;
+            assert_eq!(
+                settled.1,
+                (1140. / (320. + margin)).min(900. / (240. + margin))
+            );
+
+            let end = pos + egui::vec2(36., -24.);
+            frame(
+                &mut app,
+                &ctx,
+                vec![pointer_button(pos, egui::PointerButton::Middle, true)],
+            );
+            frame(&mut app, &ctx, vec![egui::Event::PointerMoved(end)]);
+            frame(
+                &mut app,
+                &ctx,
+                vec![pointer_button(end, egui::PointerButton::Middle, false)],
+            );
+            assert_ne!(app.viewport.center, settled.0);
+            assert_eq!(fit(&mut app), settled);
+        }
+    }
+
+    #[test]
     fn manual_world_entry_animates_only_zoom_at_backing_density_and_exit_fits_the_level() {
         let (mut app, ctx) = camera_editor(2.);
         app.viewport.center = [80., 112.];

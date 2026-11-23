@@ -315,7 +315,7 @@ impl EditorApp {
                     ui.add_space(14.);
                     egui::Frame::new()
                         .fill(theme::DARK)
-                        .stroke(Stroke::new(1., REMOVED))
+                        .stroke(Stroke::new(1_f32, REMOVED))
                         .inner_margin(4)
                         .show(ui, |ui| {
                             ui.set_width(width - 10.);
@@ -376,7 +376,7 @@ impl EditorApp {
                     ui.set_width(width);
                     egui::Frame::new()
                         .fill(Color32::from_rgb(85, 3, 1))
-                        .stroke(Stroke::new(1., Color32::RED))
+                        .stroke(Stroke::new(1_f32, Color32::RED))
                         .inner_margin(8)
                         .show(ui, |ui| {
                             ui.set_width(width - 18.);
@@ -386,7 +386,7 @@ impl EditorApp {
                     let height = (ctx.content_rect().height() - 205.).clamp(100., 300.);
                     egui::Frame::new()
                         .fill(theme::DARK)
-                        .stroke(Stroke::new(1., theme::LIGHT))
+                        .stroke(Stroke::new(1_f32, theme::LIGHT))
                         .inner_margin(12)
                         .show(ui, |ui| {
                             let log_width = (ctx.content_rect().width() * 0.8).min(width);

@@ -89,7 +89,7 @@ impl EditorApp {
                             let painter = ui.painter();
                             painter.rect(
                                 rect, 3., theme::LIGHT,
-                                Stroke::new(1., Color32::from_rgb(115, 127, 157)),
+                                Stroke::new(1_f32, Color32::from_rgb(115, 127, 157)),
                                 StrokeKind::Inside,
                             );
                             painter.with_clip_rect(rect.shrink2(egui::vec2(8., 0.))).text(
@@ -102,7 +102,7 @@ impl EditorApp {
                             let arrow = rect.right_center() - egui::vec2(9., 0.);
                             painter.add(egui::Shape::line(
                                 vec![arrow + egui::vec2(-4., -2.), arrow + egui::vec2(0., 2.), arrow + egui::vec2(4., -2.)],
-                                Stroke::new(1.5, Color32::WHITE),
+                                Stroke::new(1.5_f32, Color32::WHITE),
                             ));
                             let options = choices.iter().map(|(_, label)| (label.as_str(), Color32::WHITE)).collect::<Vec<_>>();
                             if let Some(picked) = source_controls::select_popup(&response, id.with("value"), selected, &options) {

@@ -601,7 +601,7 @@ impl EditorApp {
                             ui.add_space(14.);
                             egui::Frame::new()
                                 .fill(theme::DARK)
-                                .stroke(Stroke::new(1., Color32::from_rgb(227, 77, 0)))
+                                .stroke(Stroke::new(1_f32, Color32::from_rgb(227, 77, 0)))
                                 .inner_margin(4)
                                 .show(ui, |ui| {
                                     ui.set_width(width - 10.);

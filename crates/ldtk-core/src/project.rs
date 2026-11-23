@@ -1016,7 +1016,7 @@ impl OutputCompatibility {
         level: &'a Value,
         presence: &GridPresences,
     ) -> std::borrow::Cow<'a, Value> {
-        if self.text_arrays.is_empty()
+        if !self.level_has_stale_text_types(level)
             && !self.legacy_int_grid
             && !level["layerInstances"].as_array().is_some_and(|layers| {
                 layers.iter().any(|layer| {
@@ -1031,14 +1031,42 @@ impl OutputCompatibility {
         std::borrow::Cow::Owned(output)
     }
 
+    fn projected_text_type(&self, field: &Value, multiline: bool) -> Option<&'static str> {
+        let array = *self.text_arrays.get(&field["defUid"].as_i64()?)?;
+        let expected = Self::text_type(multiline, array);
+        (field["__type"].as_str() != Some(expected)).then_some(expected)
+    }
+
+    fn level_has_stale_text_types(&self, level: &Value) -> bool {
+        if self.text_arrays.is_empty() {
+            return false;
+        }
+        // Keep the existing projection for missing containers: the mutable
+        // visitor inserts a null slot when it indexes an absent key.
+        let stale_fields = |owner: &Value| {
+            owner.get("fieldInstances").is_none_or(|fields| {
+                fields
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .any(|field| self.projected_text_type(field, self.multiline).is_some())
+            })
+        };
+        stale_fields(level)
+            || level.get("layerInstances").is_none_or(|layers| {
+                layers.as_array().into_iter().flatten().any(|layer| {
+                    layer.get("entityInstances").is_none_or(|entities| {
+                        entities.as_array().into_iter().flatten().any(stale_fields)
+                    })
+                })
+            })
+    }
+
     fn apply_field_types(&self, level: &mut Value, multiline: bool) {
         if !self.text_arrays.is_empty() {
             crate::workflow::visit_fields_mut(level, |field| {
-                if let Some(&array) = field["defUid"]
-                    .as_i64()
-                    .and_then(|uid| self.text_arrays.get(&uid))
-                {
-                    field["__type"] = Self::text_type(multiline, array).into();
+                if let Some(expected) = self.projected_text_type(field, multiline) {
+                    field["__type"] = expected.into();
                 }
             });
         }

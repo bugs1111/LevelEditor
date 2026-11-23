@@ -82,7 +82,7 @@ fn drag_handle(ui: &mut egui::Ui) -> egui::Response {
     for dy in [-1.5, 1.5] {
         let p = rect.center() + egui::vec2(0., dy);
         ui.painter()
-            .hline(p.x - 6.0..=p.x + 6., p.y, Stroke::new(1., color));
+            .hline(p.x - 6.0..=p.x + 6., p.y, Stroke::new(1_f32, color));
     }
     response.on_hover_and_drag_cursor(egui::CursorIcon::Grab)
 }
@@ -158,7 +158,7 @@ fn value_drop(
         response.rect.bottom()
     };
     ui.painter()
-        .hline(response.rect.x_range(), y, Stroke::new(2., theme::ACCENT));
+        .hline(response.rect.x_range(), y, Stroke::new(2_f32, theme::ACCENT));
     response.dnd_release_payload::<ValueDrag>()?;
     Some((drag.value, group, index))
 }
@@ -258,7 +258,7 @@ impl EditorApp {
                                             hover.dnd_set_drag_payload(GroupDrag { layer, index });
                                             let color = if hover.hovered() { Color32::WHITE } else { Color32::from_white_alpha(92) };
                                             for dy in [-1.5, 1.5] {
-                                                ui.painter().hline(handle.center().x - 6.0..=handle.center().x + 6., handle.center().y + dy, Stroke::new(1., color));
+                                                ui.painter().hline(handle.center().x - 6.0..=handle.center().x + 6., handle.center().y + dy, Stroke::new(1_f32, color));
                                             }
                                         }
                                     }
@@ -309,7 +309,7 @@ impl EditorApp {
                         {
                             let slot = drop_slot(&row, index);
                             let y = if slot == index { row.rect.top() } else { row.rect.bottom() };
-                            ui.painter().hline(row.rect.x_range(), y, Stroke::new(2., theme::ACCENT));
+                            ui.painter().hline(row.rect.x_range(), y, Stroke::new(2_f32, theme::ACCENT));
                             if row.dnd_release_payload::<GroupDrag>().is_some() {
                                 group_move = Some((drag.index, slot - usize::from(drag.index < slot)));
                             }
@@ -563,7 +563,7 @@ impl EditorApp {
         ui.painter().rect_stroke(
             badge,
             2.,
-            Stroke::new(1., color.lerp_to_gamma(Color32::WHITE, 0.2)),
+            Stroke::new(1_f32, color.lerp_to_gamma(Color32::WHITE, 0.2)),
             StrokeKind::Inside,
         );
         ui.painter().text(
@@ -578,7 +578,7 @@ impl EditorApp {
         ui.painter().rect_stroke(
             swatch.rect.shrink(1.),
             0.,
-            Stroke::new(3., Color32::from_gray(229)),
+            Stroke::new(3_f32, Color32::from_gray(229)),
             StrokeKind::Inside,
         );
         if swatch.changed() {
@@ -673,7 +673,7 @@ impl EditorApp {
                 project_dialogs::dialog_frame(20)
                     .fill(Color32::from_rgb(121, 17, 5))
                     .corner_radius(0.)
-                    .stroke(Stroke::new(1., SOURCE_ORANGE)),
+                    .stroke(Stroke::new(1_f32, SOURCE_ORANGE)),
             )
             .backdrop_color(Color32::from_black_alpha(140));
         if let IntGridRemoval::Value(_, anchor) = action {

@@ -133,7 +133,7 @@ fn source_panel_header(
         close_rect,
         3.,
         if hovered { Color32::WHITE } else { theme::LIGHT },
-        Stroke::new(1., if hovered { Color32::WHITE } else { theme::MEDIUM }),
+        Stroke::new(1_f32, if hovered { Color32::WHITE } else { theme::MEDIUM }),
         StrokeKind::Inside,
     );
     let color = if backup_locked {
@@ -198,7 +198,7 @@ fn source_definition_menu(
         ui.visuals_mut().widgets.inactive.weak_bg_fill = fill;
         ui.visuals_mut().widgets.inactive.bg_fill = fill;
         ui.visuals_mut().widgets.inactive.bg_stroke =
-            Stroke::new(1., Color32::from_black_alpha(45));
+            Stroke::new(1_f32, Color32::from_black_alpha(45));
         let mut button = egui::Button::new(" ");
         if let Some(size) = size {
             button = button.min_size(size);
@@ -1032,7 +1032,7 @@ impl EditorApp {
             let frame = if compact || panel == Panel::Enums {
                 egui::Frame::new()
                     .fill(theme::DARK)
-                    .stroke(Stroke::new(1., theme::LIGHT))
+                    .stroke(Stroke::new(1_f32, theme::LIGHT))
                     .inner_margin(4)
             } else {
                 egui::Frame::NONE
@@ -1204,7 +1204,7 @@ impl EditorApp {
             .stroke(if shared_frame {
                 Stroke::NONE
             } else {
-                Stroke::new(1., theme::LIGHT)
+                Stroke::new(1_f32, theme::LIGHT)
             })
             .inner_margin(if shared_frame { 0 } else { 4 })
             .show(ui, |ui| {
@@ -1457,7 +1457,7 @@ impl EditorApp {
                                     }
                                     if !selected && item.response.contains_pointer() {
                                         ui.painter().rect_stroke(
-                                            rect, 0., Stroke::new(2., Color32::from_white_alpha(166)),
+                                            rect, 0., Stroke::new(2_f32, Color32::from_white_alpha(166)),
                                             StrokeKind::Inside,
                                         );
                                     }
@@ -2147,7 +2147,7 @@ impl EditorApp {
                 }
                 egui::Frame::new()
                     .inner_margin(4.)
-                    .stroke(Stroke::new(1., theme::DARK))
+                    .stroke(Stroke::new(1_f32, theme::DARK))
                     .corner_radius(3.)
                     .show(ui, |ui| {
                         ui.spacing_mut().item_spacing.x = 4.;
@@ -2576,7 +2576,7 @@ impl EditorApp {
             let type_width = (ui.available_width() - 73.).max(40.);
             let (rect, _) = ui.allocate_exact_size(egui::vec2(type_width, 33.), Sense::hover());
             let painter = ui.painter().with_clip_rect(rect.intersect(ui.clip_rect()));
-            painter.rect_stroke(rect, 0., Stroke::new(1., theme::LIGHT), StrokeKind::Inside);
+            painter.rect_stroke(rect, 0., Stroke::new(1_f32, theme::LIGHT), StrokeKind::Inside);
             painter.text(
                 rect.left_center() + egui::vec2(8., 0.),
                 Align2::LEFT_CENTER,

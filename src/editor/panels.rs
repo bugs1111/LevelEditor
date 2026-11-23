@@ -126,7 +126,7 @@ fn embedded_tileset_notice(ui: &mut egui::Ui) {
     let rect = card.response.rect.shrink(0.5);
     ui.painter().extend(egui::Shape::dashed_line(
         &[rect.left_top(), rect.right_top(), rect.right_bottom(), rect.left_bottom(), rect.left_top()],
-        Stroke::new(1., Color32::from_rgb(115, 127, 157)),
+        Stroke::new(1_f32, Color32::from_rgb(115, 127, 157)),
         3.,
         2.,
     ));
@@ -1290,7 +1290,7 @@ impl EditorApp {
                                                     }).response.rect;
                                                 ui.painter().extend(egui::Shape::dashed_line(
                                                     &[rect.left_top(), rect.right_top(), rect.right_bottom(), rect.left_bottom(), rect.left_top()],
-                                                    Stroke::new(1., Color32::RED),
+                                                    Stroke::new(1_f32, Color32::RED),
                                                     2.,
                                                     2.,
                                                 ));
@@ -1818,7 +1818,7 @@ impl EditorApp {
                         ui.painter().rect_stroke(
                             item.rect,
                             2.,
-                            egui::Stroke::new(1., theme::ACCENT),
+                            egui::Stroke::new(1_f32, theme::ACCENT),
                             egui::StrokeKind::Inside,
                         );
                     }
@@ -2173,7 +2173,7 @@ impl EditorApp {
             border,
             4.,
             Stroke::new(
-                1.,
+                1_f32,
                 if preview.hovered() && enabled {
                     theme::ACCENT
                 } else {
@@ -2246,7 +2246,7 @@ impl EditorApp {
             let viewport = ctx.content_rect();
             let modal = egui::Modal::new(id)
                 .frame(project_dialogs::dialog_frame(0).corner_radius(0.)
-                    .fill(theme::DARK).stroke(Stroke::new(1., theme::LIGHT)))
+                    .fill(theme::DARK).stroke(Stroke::new(1_f32, theme::LIGHT)))
                 .area(egui::Area::new(id).kind(egui::UiKind::Modal)
                     .sense(Sense::hover()).order(egui::Order::Foreground)
                     .fixed_pos(viewport.left_top() + Vec2::splat(50.)))
@@ -3092,7 +3092,7 @@ fn enum_values_heading(ui: &mut egui::Ui) {
     ui.painter().hline(
         rect.x_range(),
         rect.bottom() - 1.,
-        Stroke::new(1., theme::ACCENT),
+        Stroke::new(1_f32, theme::ACCENT),
     );
 }
 

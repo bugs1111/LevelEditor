@@ -228,7 +228,7 @@ impl EditorApp {
                 selector,
                 3.,
                 theme::LIGHT,
-                Stroke::new(1., border),
+                Stroke::new(1_f32, border),
                 StrokeKind::Inside,
             );
             let font = FontId::proportional(13.333);
@@ -254,7 +254,7 @@ impl EditorApp {
                     arrow + egui::vec2(0., 2.),
                     arrow + egui::vec2(4., -2.),
                 ],
-                Stroke::new(1.5, Color32::WHITE),
+                Stroke::new(1.5_f32, Color32::WHITE),
             ));
             let options = choices_text
                 .iter()
@@ -299,7 +299,7 @@ impl EditorApp {
                     rect,
                     2.,
                     theme::DARK,
-                    Stroke::new(1., outline),
+                    Stroke::new(1_f32, outline),
                     StrokeKind::Outside,
                 );
                 if on {
@@ -310,7 +310,7 @@ impl EditorApp {
                         painter.rect_stroke(
                             rect.shrink(inset as f32),
                             2.,
-                            Stroke::new(1., green.gamma_multiply(amount)),
+                            Stroke::new(1_f32, green.gamma_multiply(amount)),
                             StrokeKind::Inside,
                         );
                     }
@@ -335,7 +335,7 @@ impl EditorApp {
                     painter.rect_stroke(
                         rect.shrink(inset as f32),
                         0.,
-                        Stroke::new(1., Color32::from_white_alpha(alpha)),
+                        Stroke::new(1_f32, Color32::from_white_alpha(alpha)),
                         StrokeKind::Inside,
                     );
                 }

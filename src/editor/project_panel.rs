@@ -484,7 +484,7 @@ impl EditorApp {
                     rect.center(),
                     12.5,
                     Color32::from_rgb(121, 17, 5),
-                    Stroke::new(3., red),
+                    Stroke::new(3_f32, red),
                 );
                 ui.painter().text(
                     rect.center(),

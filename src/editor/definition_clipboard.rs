@@ -349,7 +349,7 @@ impl EditorApp {
             .frame(
                 project_dialogs::dialog_frame(20)
                     .fill(Color32::from_rgb(121, 17, 5))
-                    .stroke(Stroke::new(1., Color32::from_rgb(121, 17, 5))),
+                    .stroke(Stroke::new(1_f32, Color32::from_rgb(121, 17, 5))),
             )
             .show(ctx, |ui| {
                 let width = (ctx.content_rect().width() - 42.).clamp(1., 358.);
@@ -569,7 +569,7 @@ impl EditorApp {
                     clip.left_bottom(),
                     clip.left_top(),
                 ],
-                Stroke::new(1., theme::ACCENT),
+                Stroke::new(1_f32, theme::ACCENT),
                 3.,
                 2.,
             ));

@@ -432,7 +432,7 @@ impl EditorApp {
                 ui.painter().hline(
                     rect.x_range(),
                     rect.top() + 0.5,
-                    Stroke::new(1., theme::MEDIUM),
+                    Stroke::new(1_f32, theme::MEDIUM),
                 );
             }
             if let Some(icon) = icon {

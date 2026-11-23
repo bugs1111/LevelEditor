@@ -326,7 +326,7 @@ impl EditorApp {
         ui.painter().hline(
             separator.x_range(),
             separator.center().y,
-            Stroke::new(1., theme::LIGHT),
+            Stroke::new(1_f32, theme::LIGHT),
         );
         ui.add_space(2.);
         let mut extra_open = self

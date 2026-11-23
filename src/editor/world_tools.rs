@@ -632,7 +632,7 @@ impl EditorApp {
                 painter.rect_stroke(
                     area,
                     0.,
-                    egui::Stroke::new(3., egui::Color32::from_rgba_unmultiplied(0, 255, 0, 204)),
+                    egui::Stroke::new(3_f32, egui::Color32::from_rgba_unmultiplied(0, 255, 0, 204)),
                     egui::StrokeKind::Middle,
                 );
             }
@@ -651,7 +651,7 @@ impl EditorApp {
             painter.rect_stroke(
                 area,
                 0.,
-                egui::Stroke::new(2., egui::Color32::from_rgba_unmultiplied(0, 255, 0, 204)),
+                egui::Stroke::new(2_f32, egui::Color32::from_rgba_unmultiplied(0, 255, 0, 204)),
                 egui::StrokeKind::Middle,
             );
         }

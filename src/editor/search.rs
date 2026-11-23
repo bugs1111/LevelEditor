@@ -737,7 +737,7 @@ impl EditorApp {
                                         .color(orange),
                                 )
                                 .fill(theme::DARK)
-                                .stroke(Stroke::new(1., orange))
+                                .stroke(Stroke::new(1_f32, orange))
                                 .corner_radius(0.);
                                 if ui.add_sized([ui.available_width(), 35.], button).clicked() {
                                     self.search_show_all = true;

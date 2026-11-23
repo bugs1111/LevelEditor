@@ -53,7 +53,7 @@ fn group_heading(
         painter.rect_stroke(
             rect,
             2.,
-            Stroke::new(1., Color32::WHITE),
+            Stroke::new(1_f32, Color32::WHITE),
             StrokeKind::Inside,
         );
     }
@@ -81,7 +81,7 @@ fn any_condition(ui: &mut egui::Ui, selected: bool) -> bool {
         ui.painter().rect_stroke(
             rect,
             0.,
-            Stroke::new(if selected { 2. } else { 1. }, Color32::WHITE),
+            Stroke::new(if selected { 2. } else { 1_f32 }, Color32::WHITE),
             StrokeKind::Inside,
         );
     }
@@ -140,7 +140,7 @@ impl EditorApp {
             swatch,
             2.,
             tint.lerp_to_gamma(Color32::BLACK, 0.5),
-            Stroke::new(1., tint.lerp_to_gamma(Color32::WHITE, 0.2)),
+            Stroke::new(1_f32, tint.lerp_to_gamma(Color32::WHITE, 0.2)),
             StrokeKind::Inside,
         );
         self.rule_value_tile(ui, swatch.shrink(2.), value);
@@ -175,7 +175,7 @@ impl EditorApp {
             painter.rect_stroke(
                 rect,
                 0.,
-                Stroke::new(if selected { 2. } else { 1. }, Color32::WHITE),
+                Stroke::new(if selected { 2. } else { 1_f32 }, Color32::WHITE),
                 StrokeKind::Inside,
             );
         }
@@ -263,7 +263,7 @@ impl EditorApp {
                 ui.painter().rect_stroke(
                     body.response.rect,
                     0.,
-                    Stroke::new(2., Color32::WHITE),
+                    Stroke::new(2_f32, Color32::WHITE),
                     StrokeKind::Inside,
                 );
             }

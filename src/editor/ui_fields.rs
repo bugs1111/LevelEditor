@@ -544,7 +544,7 @@ fn file_path_editor(
             ui.painter().rect_stroke(
                 rect,
                 0.,
-                Stroke::new(1., if highlight { theme::ACCENT } else { theme::LIGHT }),
+                Stroke::new(1_f32, if highlight { theme::ACCENT } else { theme::LIGHT }),
                 StrokeKind::Inside,
             );
             let filename = path_text
@@ -1080,7 +1080,7 @@ fn instance_scalar_editor(
                 border.left_bottom(),
                 border.left_top(),
             ],
-            Stroke::new(1., if hovered { theme::ACCENT } else { theme::LIGHT }),
+            Stroke::new(1_f32, if hovered { theme::ACCENT } else { theme::LIGHT }),
             2.,
             1.,
         ));

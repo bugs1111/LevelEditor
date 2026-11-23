@@ -182,7 +182,7 @@ fn variable_menu(
                         ui.painter().hline(
                             rect.x_range(),
                             rect.bottom() - 0.5,
-                            Stroke::new(1., theme::MEDIUM),
+                            Stroke::new(1_f32, theme::MEDIUM),
                         );
                         if row.clicked() {
                             ui.close();
@@ -246,7 +246,7 @@ pub(super) fn show(
         let has_choices = variables.iter().any(|var| !used.contains(&var.0));
         egui::Frame::new()
             .fill(theme::DARK)
-            .stroke(Stroke::new(1., theme::LIGHT))
+            .stroke(Stroke::new(1_f32, theme::LIGHT))
             .inner_margin(egui::Margin::same(4))
             .show(ui, |ui| {
                 ui.set_width((width - 10.).max(14.));
@@ -365,7 +365,7 @@ pub(super) fn show(
                             let button = egui::Button::new(label)
                                 .min_size(egui::vec2(if empty { 10. } else { 0. }, 20.))
                                 .fill(if empty { theme::DARK } else { background })
-                                .stroke(Stroke::new(1., stroke))
+                                .stroke(Stroke::new(1_f32, stroke))
                                 .sense(if empty {
                                     Sense::click()
                                 } else {

@@ -260,7 +260,7 @@ fn rule_settings_modal(ctx: &egui::Context, size: Vec2, bottom: i8) -> egui::Mod
         .frame(
             project_dialogs::dialog_frame(0)
                 .corner_radius(0.)
-                .stroke(Stroke::new(1., theme::LIGHT))
+                .stroke(Stroke::new(1_f32, theme::LIGHT))
                 .inner_margin(egui::Margin {
                     left: 20,
                     right: 20,
@@ -358,8 +358,8 @@ fn modulo_preview(ui: &mut egui::Ui, [x_step, y_step, x_offset, y_offset]: [i64;
     let (rect, _) =
         ui.allocate_exact_size(egui::vec2(MODULO_PREVIEW_WIDTH, height), Sense::hover());
     ui.painter()
-        .rect_stroke(rect, 0., Stroke::new(1., theme::LIGHT), StrokeKind::Inside);
-    let cell_stroke = Stroke::new(1., Color32::from_rgb(115, 127, 157));
+        .rect_stroke(rect, 0., Stroke::new(1_f32, theme::LIGHT), StrokeKind::Inside);
+    let cell_stroke = Stroke::new(1_f32, Color32::from_rgb(115, 127, 157));
     for y in 0..rows {
         for x in 0..columns {
             let origin = rect.min
@@ -815,7 +815,7 @@ impl EditorApp {
                             .rect_stroke(
                                 guidance.inner,
                                 0.,
-                                Stroke::new(1., rule_guidance::GREEN),
+                                Stroke::new(1_f32, rule_guidance::GREEN),
                                 StrokeKind::Inside,
                             );
                     } else {
@@ -905,7 +905,7 @@ impl EditorApp {
                                 ui.painter().rect_stroke(
                                     rect,
                                     1.,
-                                    Stroke::new(1., theme::LIGHT),
+                                    Stroke::new(1_f32, theme::LIGHT),
                                     StrokeKind::Inside,
                                 );
                                 if let (Some(atlas), Some(ids)) = (atlas, ids.as_array()) {
@@ -1068,7 +1068,7 @@ impl EditorApp {
                         ui.painter().rect_stroke(
                             Rect::from_min_size(origin, span),
                             0.,
-                            Stroke::new(2., theme::ACCENT),
+                            Stroke::new(2_f32, theme::ACCENT),
                             StrokeKind::Inside,
                         );
                     }
@@ -1282,7 +1282,7 @@ impl EditorApp {
         } else {
             theme::LIGHT.gamma_multiply(0.62)
         };
-        painter.rect_stroke(rect, 2., Stroke::new(1., border), StrokeKind::Inside);
+        painter.rect_stroke(rect, 2., Stroke::new(1_f32, border), StrokeKind::Inside);
     }
 
     fn rule_output_picker(&mut self, ctx: &egui::Context, atlas: i64, draft: &mut RuleDraft) {
@@ -1321,7 +1321,7 @@ impl EditorApp {
                     project_dialogs::dialog_frame(0)
                         .fill(theme::DARK)
                         .corner_radius(0.)
-                        .stroke(Stroke::new(1., theme::LIGHT)),
+                        .stroke(Stroke::new(1_f32, theme::LIGHT)),
                 )
                 .area(
                     egui::Area::new(id)
@@ -1637,7 +1637,7 @@ impl EditorApp {
                     }
                     ui.add_space(16.);
                     let (line, _) = ui.allocate_exact_size(egui::vec2(400., 1.), Sense::hover());
-                    ui.painter().hline(line.x_range(), line.top(), Stroke::new(1., theme::LIGHT));
+                    ui.painter().hline(line.x_range(), line.top(), Stroke::new(1_f32, theme::LIGHT));
                     ui.add_space(8.);
                     ui.horizontal(|ui| {
                         ui.add_sized([120., 30.], egui::Label::new(

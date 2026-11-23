@@ -235,6 +235,8 @@ impl Project {
         }
         let mut p = self.clone();
         let version = s(&p.json, "jsonVersion").to_owned();
+        let pre_06 = before(&version, 0, 6);
+        let pre_05 = before(&version, 0, 5);
         let template = Project::new();
         alias(&mut p.json, "advancedOptionFlags", "flags");
         if !p.json["flags"]
@@ -297,7 +299,7 @@ impl Project {
         if let Some(flags) = p.json["flags"].as_array_mut() {
             flags.retain(|v| v != "DiscardPreCsvIntGrid");
         }
-        if before(&version, 0, 6) && self.json.get("worldLayout").is_none() {
+        if pre_06 && self.json.get("worldLayout").is_none() {
             p.json["worldLayout"] = json!("LinearHorizontal");
         }
         // Default records are the same complete definitions used by native creation.
@@ -500,6 +502,9 @@ impl Project {
         let mut grid_presence = std::mem::take(&mut p.grid_presence);
         let mut positions: BTreeMap<Option<usize>, i64> = BTreeMap::new();
         let world_layout = s(&p.json, "worldLayout").to_owned();
+        let layer_defaults = json!({"pxOffsetX":0,"pxOffsetY":0,"visible":true,"optionalRules":[],"seed":0,"overrideTilesetUid":null,"autoLayerTiles":[],"gridTiles":[],"entityInstances":[]});
+        let tile_defaults = json!({"f":0,"a":1});
+        let auto_tile_defaults = json!({"a":1});
         for key in p.level_keys() {
             let l = p
                 .level_mut(key)
@@ -510,7 +515,7 @@ impl Project {
             defaults(l, &template.json["levels"][0]);
             l["uid"] = id;
             l["identifier"] = name;
-            if before(&version, 0, 6) {
+            if pre_06 {
                 let pos = positions.entry(key.world).or_default();
                 match world_layout.as_str() {
                     "LinearHorizontal" => {
@@ -570,10 +575,7 @@ impl Project {
                 li["__cHei"] = json!(ch);
                 li["__gridSize"] = json!(grid);
                 li["levelId"] = level_uid.clone();
-                defaults(
-                    li,
-                    &json!({"pxOffsetX":0,"pxOffsetY":0,"visible":true,"optionalRules":[],"seed":0,"overrideTilesetUid":null,"autoLayerTiles":[],"gridTiles":[],"entityInstances":[]}),
-                );
+                defaults(li, &layer_defaults);
                 if li["intGridCsv"].is_null() {
                     let mut presence = GridPresence::empty();
                     let count = if d["type"] == "IntGrid" {
@@ -609,7 +611,7 @@ impl Project {
                     if tile["d"].is_null() {
                         tile["d"] = json!([tile["coordId"], tile["tileId"]]);
                     }
-                    if tile["t"].is_null() || before(&version, 0, 6) {
+                    if tile["t"].is_null() || pre_06 {
                         tile["t"] = tile["d"][1].clone();
                     }
                     let coord = tile["d"][0].as_i64().unwrap_or(0);
@@ -622,7 +624,7 @@ impl Project {
                         let r = rect(td, n(tile, "t"));
                         tile["src"] = json!([r["x"], r["y"]]);
                     }
-                    defaults(tile, &json!({"f":0,"a":1}));
+                    defaults(tile, &tile_defaults);
                 }
                 let cached_tiles = &mut li["autoLayerTiles"];
                 if cached_tiles.is_null() {
@@ -632,14 +634,14 @@ impl Project {
                     .as_array_mut()
                     .ok_or_else(|| Error::Invalid("auto-layer tiles must be an array".into()))?;
                 for tile in cached_tiles {
-                    if before(&version, 0, 6) {
+                    if pre_06 {
                         tile["t"] = tile["d"][2].clone();
                     }
-                    if before(&version, 0, 5) {
+                    if pre_05 {
                         tile["px"][0] = json!(tile["px"][0].as_i64().unwrap_or(0) - ox);
                         tile["px"][1] = json!(tile["px"][1].as_i64().unwrap_or(0) - oy);
                     }
-                    defaults(tile, &json!({"a":1}));
+                    defaults(tile, &auto_tile_defaults);
                 }
                 for e in li["entityInstances"].as_array_mut().unwrap() {
                     alias(e, "defId", "defUid");

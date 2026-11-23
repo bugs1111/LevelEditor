@@ -155,7 +155,7 @@ pub(super) fn form_warning_dialog(id: egui::Id) -> egui::Modal {
             dialog_frame(20)
                 .corner_radius(0.)
                 .fill(Color32::from_rgb(121, 17, 5))
-                .stroke(Stroke::new(1., Color32::from_rgb(227, 77, 0))),
+                .stroke(Stroke::new(1_f32, Color32::from_rgb(227, 77, 0))),
         )
         .backdrop_color(Color32::from_black_alpha(140))
 }
@@ -269,7 +269,7 @@ pub(super) fn paint_warning(
     ] {
         painter.extend(egui::Shape::dashed_line(
             &side,
-            Stroke::new(1., Color32::RED),
+            Stroke::new(1_f32, Color32::RED),
             2.,
             3.,
         ));

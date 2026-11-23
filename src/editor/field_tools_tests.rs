@@ -1084,7 +1084,7 @@ fn point_path_cursor_draws_the_source_line_from_the_last_accepted_point() {
     let line_at = |out: &egui::FullOutput, start, end| {
         out.shapes.iter().any(|shape| {
             matches!(&shape.shape, egui::Shape::LineSegment {points,stroke}
-            if *points == [start,end] && *stroke == Stroke::new(1.,color))
+            if *points == [start,end] && *stroke == Stroke::new(1_f32,color))
         })
     };
     let first = draw(&mut f, screen([130., 146.]));

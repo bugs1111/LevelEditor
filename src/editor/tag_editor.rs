@@ -69,7 +69,7 @@ fn tag_action(
             rect,
             1.,
             fill,
-            Stroke::new(1., Color32::from_rgb(30, 34, 43)),
+            Stroke::new(1_f32, Color32::from_rgb(30, 34, 43)),
             StrokeKind::Inside,
         );
     }
@@ -181,7 +181,7 @@ pub(super) fn show(
                     rect.left_bottom(),
                     rect.left_top(),
                 ],
-                Stroke::new(1., Color32::from_rgb(84, 93, 115)),
+                Stroke::new(1_f32, Color32::from_rgb(84, 93, 115)),
                 2.,
                 2.,
             ));
@@ -267,7 +267,7 @@ pub(super) fn show(
             }
             egui::Frame::new()
                 .fill(Color32::from_rgb(161, 114, 80))
-                .stroke(Stroke::new(1., Color32::from_rgb(197, 146, 109)))
+                .stroke(Stroke::new(1_f32, Color32::from_rgb(197, 146, 109)))
                 .corner_radius(egui::CornerRadius {
                     nw: 2,
                     sw: 2,
@@ -359,7 +359,7 @@ pub(super) fn show(
                     .frame(
                         egui::Frame::new()
                             .fill(theme::DARK)
-                            .stroke(Stroke::new(1., theme::LIGHT))
+                            .stroke(Stroke::new(1_f32, theme::LIGHT))
                             .corner_radius(2.)
                             .shadow(egui::Shadow {
                                 offset: [0, 4],
@@ -404,7 +404,7 @@ pub(super) fn show(
                             ui.painter().hline(
                                 rect.x_range(),
                                 rect.bottom(),
-                                Stroke::new(1., theme::MEDIUM),
+                                Stroke::new(1_f32, theme::MEDIUM),
                             );
                             response.widget_info(|| {
                                 egui::WidgetInfo::labeled(

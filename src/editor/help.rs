@@ -165,7 +165,7 @@ fn video_card(ui: &mut egui::Ui, id: &'static str, title: &'static str, width: f
     }
     if response.hovered() {
         ui.painter()
-            .rect_stroke(rect, 0., Stroke::new(1., theme::ACCENT), StrokeKind::Inside);
+            .rect_stroke(rect, 0., Stroke::new(1_f32, theme::ACCENT), StrokeKind::Inside);
     }
     response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Link, true, title));
     response.on_hover_text(title)
@@ -760,7 +760,7 @@ impl EditorApp {
                                 egui::Frame::new()
                                     .fill(if latest { theme::LIGHT } else { theme::MEDIUM })
                                     .stroke(Stroke::new(
-                                        1.,
+                                        1_f32,
                                         if latest { theme::TEXT } else { theme::LIGHT },
                                     ))
                                     .corner_radius(2.)

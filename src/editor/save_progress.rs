@@ -230,7 +230,7 @@ impl EditorApp {
 
 fn card(ui: &mut egui::Ui, width: f32, title: &str, ratio: f32, task_label: Option<&str>) {
     project_dialogs::dialog_frame(8)
-        .stroke(Stroke::new(1., theme::LIGHT))
+        .stroke(Stroke::new(1_f32, theme::LIGHT))
         .corner_radius(0)
         .show(ui, |ui| {
             let width = (width - 18.).max(1.);
@@ -252,7 +252,7 @@ fn card(ui: &mut egui::Ui, width: f32, title: &str, ratio: f32, task_label: Opti
                 track,
                 2.,
                 theme::DARK,
-                Stroke::new(1., theme::ACCENT),
+                Stroke::new(1_f32, theme::ACCENT),
                 StrokeKind::Inside,
             );
             let bounds = track.shrink(2.);

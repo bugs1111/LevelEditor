@@ -223,7 +223,7 @@ pub(in crate::app) fn number_input_sized(
                     rect.left_bottom(),
                     rect.left_top(),
                 ],
-                Stroke::new(1., theme::ACCENT),
+                Stroke::new(1_f32, theme::ACCENT),
                 3.,
                 2.,
             ));
@@ -274,7 +274,7 @@ fn columns_menu(button: &egui::Response, picker_id: Option<egui::Id>) -> Option<
         .frame(
             egui::Frame::new()
                 .fill(theme::DARK)
-                .stroke(Stroke::new(1., theme::LIGHT))
+                .stroke(Stroke::new(1_f32, theme::LIGHT))
                 .shadow(egui::Shadow {
                     offset: [0, 3],
                     blur: 10,
@@ -339,7 +339,7 @@ fn columns_menu(button: &egui::Response, picker_id: Option<egui::Id>) -> Option<
                     ui.painter().hline(
                         rect.x_range(),
                         rect.bottom(),
-                        Stroke::new(1., theme::MEDIUM),
+                        Stroke::new(1_f32, theme::MEDIUM),
                     );
                 }
                 if response.clicked() {
@@ -380,7 +380,7 @@ pub(super) fn pivot_grid_sized(ui: &mut egui::Ui, pivot: [f64; 2], cell: f32) ->
             ui.painter().rect_stroke(
                 rect,
                 0.,
-                Stroke::new(1., Color32::from_rgb(117, 130, 164)),
+                Stroke::new(1_f32, Color32::from_rgb(117, 130, 164)),
                 StrokeKind::Inside,
             );
             if ui
@@ -436,7 +436,7 @@ pub(in crate::app) fn help_card(
     ];
     ui.painter().extend(egui::Shape::dashed_line(
         &points,
-        Stroke::new(1., HELP_GREEN),
+        Stroke::new(1_f32, HELP_GREEN),
         2.,
         2.,
     ));
@@ -595,7 +595,7 @@ fn form_row_inner<R>(
             ui.painter().rect_stroke(
                 rect.expand(2.),
                 3.,
-                Stroke::new(1., Color32::from_rgb(94, 171, 107)),
+                Stroke::new(1_f32, Color32::from_rgb(94, 171, 107)),
                 egui::StrokeKind::Outside,
             );
         }
@@ -891,7 +891,7 @@ pub(super) fn field_instance_label(
 pub(in crate::app) fn context_menu_frame(style: &egui::Style) -> egui::Frame {
     egui::Frame::popup(style)
         .fill(theme::DARK)
-        .stroke(Stroke::new(1., theme::LIGHT))
+        .stroke(Stroke::new(1_f32, theme::LIGHT))
         .corner_radius(2.)
         .inner_margin(0.)
 }
@@ -1013,7 +1013,7 @@ pub(super) fn form_select(
             theme::LIGHT
         };
         style.bg_stroke = Stroke::new(
-            1.,
+            1_f32,
             if invalid {
                 Color32::from_rgb(227, 77, 0)
             } else {
@@ -1043,14 +1043,14 @@ pub(super) fn form_select(
                     center + egui::vec2(0., 1.5),
                     center + egui::vec2(3., -1.5),
                 ],
-                Stroke::new(1.5, visuals.text_color()),
+                Stroke::new(1.5_f32, visuals.text_color()),
             ));
         })
         .selected_text(RichText::new(name).font(font.clone()))
         .popup_style(egui::style::StyleModifier::new(|style| {
             style.spacing.menu_margin = egui::Margin::ZERO;
             style.visuals.window_fill = theme::LIGHT;
-            style.visuals.window_stroke = Stroke::new(1., Color32::from_gray(118));
+            style.visuals.window_stroke = Stroke::new(1_f32, Color32::from_gray(118));
             style.visuals.menu_corner_radius = 2.into();
             style.visuals.popup_shadow = egui::epaint::Shadow::NONE;
         }))
@@ -1254,7 +1254,7 @@ pub(super) fn searchable_select_button(
         2.,
         theme::DARK,
         Stroke::new(
-            1.,
+            1_f32,
             if response.hovered() {
                 theme::ACCENT
             } else {
@@ -1279,7 +1279,7 @@ pub(super) fn searchable_select_button(
             arrow + egui::vec2(0., 1.5),
             arrow + egui::vec2(3., -1.5),
         ],
-        Stroke::new(1., ui.visuals().text_color()),
+        Stroke::new(1_f32, ui.visuals().text_color()),
     ));
     response
 }

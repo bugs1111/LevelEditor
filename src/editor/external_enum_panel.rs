@@ -85,7 +85,7 @@ impl EditorApp {
         ui.push_id(source, |ui| {
             egui::Frame::new()
                 .fill(theme::DARK)
-                .stroke(Stroke::new(1., theme::LIGHT))
+                .stroke(Stroke::new(1_f32, theme::LIGHT))
                 .show(ui, |ui| {
                     egui::Frame::new()
                         .fill(if missing {
@@ -113,7 +113,7 @@ impl EditorApp {
                                 };
                                 ui.painter().add(egui::Shape::line(
                                     offsets.map(|offset| arrow_rect.center() + offset).to_vec(),
-                                    Stroke::new(2., Color32::WHITE),
+                                    Stroke::new(2_f32, Color32::WHITE),
                                 ));
                                 let row_width = (ui.available_width()
                                     - if missing { 48. } else { 72. })
@@ -183,7 +183,7 @@ impl EditorApp {
                                         bottom: 1,
                                     })
                                     .fill(SOURCE_ORANGE)
-                                    .stroke(Stroke::new(1., Color32::WHITE.gamma_multiply(0.60)))
+                                    .stroke(Stroke::new(1_f32, Color32::WHITE.gamma_multiply(0.60)))
                                     .corner_radius(3.)
                                     .inner_margin(8)
                                     .show(ui, |ui| {
@@ -266,7 +266,7 @@ impl EditorApp {
         let Some(uid) = self.definition_uid else {
             let green = Color32::from_rgb(101, 178, 117);
             egui::Frame::new()
-                .stroke(Stroke::new(1., green))
+                .stroke(Stroke::new(1_f32, green))
                 .inner_margin(10)
                 .corner_radius(4.)
                 .show(ui, |ui| {
@@ -295,7 +295,7 @@ impl EditorApp {
         source_controls::form_row(ui, "Source file", "Source file", 110., |ui| {
             let width = (ui.available_width() - 28.).max(20.);
             egui::Frame::new()
-                .stroke(Stroke::new(1., theme::LIGHT))
+                .stroke(Stroke::new(1_f32, theme::LIGHT))
                 .inner_margin(4)
                 .show(ui, |ui| {
                     ui.set_width((width - 10.).max(10.));

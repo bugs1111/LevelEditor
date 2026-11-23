@@ -150,6 +150,7 @@ fn fit_zoom(bounds: [f32; 4], size: [f32; 2], pixels_per_point: f32, world: bool
 const CAMERA_FPS: f32 = 60.0;
 const CAMERA_MOTION_FRAMES: f32 = 1.8 * CAMERA_FPS;
 const MAX_CAMERA_FRAME_GAP: f32 = 0.5;
+const FIT_SETTLE_PIXELS: f32 = 0.25;
 
 enum ZoomRequest {
     Fit {
@@ -167,11 +168,31 @@ enum ZoomRequest {
     },
 }
 
+struct CameraTween<T> {
+    target: T,
+    remaining: f32,
+    exact: bool,
+}
+
+impl<T> CameraTween<T> {
+    fn new(target: T, exact: bool) -> Self {
+        Self {
+            target,
+            remaining: CAMERA_MOTION_FRAMES,
+            exact,
+        }
+    }
+
+    fn step(&self, fraction: f32) -> f32 {
+        fraction.min(if self.exact { 0.5 } else { 1.0 })
+    }
+}
+
 #[derive(Default)]
 pub struct CameraMotion {
     zoom_request: Option<ZoomRequest>,
-    zoom: Option<(f32, f32)>,
-    center: Option<([f32; 2], f32)>,
+    zoom: Option<CameraTween<f32>>,
+    center: Option<CameraTween<[f32; 2]>>,
     last_frame: Option<u64>,
     last_tmod: Option<f32>,
     last_window_frame: Option<f64>,
@@ -181,12 +202,12 @@ pub struct CameraMotion {
 
 impl CameraMotion {
     pub fn fit(&mut self, bounds: [f32; 4], world: bool) {
-        self.scroll_to(fit_center(bounds));
+        self.center = Some(CameraTween::new(fit_center(bounds), true));
         self.zoom_request = Some(ZoomRequest::Fit { bounds, world });
     }
 
     pub fn scroll_to(&mut self, center: [f32; 2]) {
-        self.center = Some((center, CAMERA_MOTION_FRAMES));
+        self.center = Some(CameraTween::new(center, false));
     }
 
     pub fn enter_world(&mut self, bounds: [f32; 4], one_level: bool) {
@@ -199,7 +220,7 @@ impl CameraMotion {
         world_bounds: [f32; 4],
         level_origin: [f32; 2],
     ) {
-        self.center = Some((fit_center(level_bounds), CAMERA_MOTION_FRAMES));
+        self.scroll_to(fit_center(level_bounds));
         self.zoom_request = Some(ZoomRequest::LevelEntry {
             level_bounds,
             world_bounds,
@@ -208,9 +229,9 @@ impl CameraMotion {
     }
 
     pub fn translate_center(&mut self, offset: [f32; 2]) {
-        if let Some((center, _)) = &mut self.center {
-            center[0] += offset[0];
-            center[1] += offset[1];
+        if let Some(center) = &mut self.center {
+            center.target[0] += offset[0];
+            center.target[1] += offset[1];
         }
     }
 
@@ -304,7 +325,10 @@ impl CameraMotion {
         self.last_frame = Some(frame);
         self.last_tmod = Some(tmod);
         let size = canvas.size().into();
+        let min_zoom = 0.03 / pixels_per_point;
+        let max_zoom = 32.0 / pixels_per_point;
         if let Some(request) = self.zoom_request.take() {
+            let exact = matches!(request, ZoomRequest::Fit { .. });
             let target = match request {
                 ZoomRequest::Fit { bounds, world } => {
                     fit_zoom(bounds, size, pixels_per_point, world)
@@ -324,26 +348,55 @@ impl CameraMotion {
                     fit_zoom(level_bounds, size, pixels_per_point, false)
                 }
             };
-            self.zoom = Some((target, CAMERA_MOTION_FRAMES));
+            self.zoom = Some(CameraTween::new(target, exact));
         }
-        if let Some((target, remaining)) = &mut self.zoom {
-            let step = (0.22 * view.zoom * pixels_per_point).max(0.1) * tmod;
-            let zoom = (view.zoom + (*target - view.zoom) * step.min(1.0))
-                .clamp(0.03 / pixels_per_point, 32.0 / pixels_per_point);
-            view.zoom_at_level_point(zoom, canvas, level_origin, view.center, pixels_per_point);
-            *remaining -= tmod;
-            if (*target - view.zoom).abs() <= 0.04 * view.zoom || *remaining <= 0.0 {
+        if let Some(motion) = &mut self.zoom {
+            let target = if motion.exact {
+                motion.target.clamp(min_zoom, max_zoom)
+            } else {
+                motion.target
+            };
+            let step = motion.step((0.22 * view.zoom * pixels_per_point).max(0.1) * tmod);
+            let zoom = (view.zoom + (target - view.zoom) * step).clamp(min_zoom, max_zoom);
+            let error = (target - zoom).abs();
+            motion.remaining -= tmod;
+            let settled = if motion.exact {
+                // Measure the remaining zoom at the edge of the canvas.
+                let half_extent = canvas.width().max(canvas.height()) * 0.5 * pixels_per_point;
+                error * half_extent <= zoom * FIT_SETTLE_PIXELS
+                    || (step > 0.0 && zoom == view.zoom)
+            } else {
+                error <= 0.04 * zoom || motion.remaining <= 0.0
+            };
+            if motion.exact {
+                // Fitting has its own center target. Keep zoom from shifting it
+                // through pixel anchoring, even once the pan has settled.
+                view.zoom = if settled { target } else { zoom };
+            } else {
+                view.zoom_at_level_point(zoom, canvas, level_origin, view.center, pixels_per_point);
+            }
+            if settled {
                 self.zoom = None;
             }
         }
-        if let Some((target, remaining)) = &mut self.center {
-            let step = (0.15 * tmod).min(1.0);
+        if let Some(motion) = &mut self.center {
+            let target = motion.target;
+            let previous = view.center;
+            let step = motion.step(0.15 * tmod);
             view.center[0] += (target[0] - view.center[0]) * step;
             view.center[1] += (target[1] - view.center[1]) * step;
-            *remaining -= tmod;
-            if (target[0] - view.center[0]).hypot(target[1] - view.center[1]) <= 6.0
-                || *remaining <= 0.0
-            {
+            motion.remaining -= tmod;
+            let error = (target[0] - view.center[0]).hypot(target[1] - view.center[1]);
+            let settled = if motion.exact {
+                error * view.zoom * pixels_per_point <= FIT_SETTLE_PIXELS
+                    || (step > 0.0 && view.center == previous)
+            } else {
+                error <= 6.0 || motion.remaining <= 0.0
+            };
+            if settled {
+                if motion.exact {
+                    view.center = target;
+                }
                 self.center = None;
             }
         }
@@ -545,7 +598,52 @@ mod tests {
     }
 
     #[test]
-    fn camera_motion_times_out_even_when_the_fit_target_is_beyond_the_zoom_limit() {
+    fn camera_fit_finishes_pan_and_zoom_with_subpixel_steps() {
+        let bounds = [0., 0., 320., 240.];
+        let canvas = Rect::from_min_size(
+            eframe::egui::pos2(300., 0.),
+            eframe::egui::vec2(1140., 900.),
+        );
+        for density in [1., 2.] {
+            let mut view = Viewport {
+                center: [440., 550.],
+                zoom: 1.4,
+            };
+            let mut motion = CameraMotion::default();
+            motion.fit(bounds, false);
+            let center = fit_center(bounds);
+            let zoom = fit_zoom(bounds, canvas.size().into(), density, false);
+            let (mut last_pan, mut last_zoom) = (None, None);
+            for frame in 1..=120 {
+                let previous = view.clone();
+                let active = motion.tick(&mut view, canvas, [0.; 2], density, frame, 1. / 60.);
+                if view.center == center && previous.center != center {
+                    let dx = view.center[0] - previous.center[0];
+                    let dy = view.center[1] - previous.center[1];
+                    last_pan = Some(dx.hypot(dy) * view.zoom * density);
+                }
+                if view.zoom == zoom && previous.zoom != zoom {
+                    last_zoom = Some(
+                        (view.zoom / previous.zoom - 1.).abs() * canvas.width() * 0.5 * density,
+                    );
+                }
+                if !active {
+                    break;
+                }
+            }
+            assert!(!motion.is_active());
+            assert_eq!(view.center, center);
+            assert_eq!(view.zoom, zoom);
+            let (pan, zoom) = (last_pan.unwrap(), last_zoom.unwrap());
+            assert!(
+                pan < 0.51 && zoom < 0.51,
+                "at {density}x, final pan and zoom moved {pan} and {zoom} physical pixels"
+            );
+        }
+    }
+
+    #[test]
+    fn camera_fit_settles_at_the_zoom_limit() {
         let mut view = Viewport::default();
         let mut motion = CameraMotion::default();
         motion.fit([0.0, 0.0, 16.0, 16.0], false);
@@ -553,13 +651,14 @@ mod tests {
             eframe::egui::Pos2::ZERO,
             eframe::egui::vec2(10_000., 10_000.),
         );
-        for frame in 1..=54 {
-            assert_eq!(
-                motion.tick(&mut view, canvas, [0.; 2], 2.0, frame, 1.0 / 30.0),
-                frame < 54,
-            );
-            assert_eq!(view.zoom, 16.0);
+        for frame in 1..54 {
+            if !motion.tick(&mut view, canvas, [0.; 2], 2.0, frame, 1.0 / 30.0) {
+                break;
+            }
         }
+        assert!(!motion.is_active());
+        assert_eq!(view.center, [8.0, 8.0]);
+        assert_eq!(view.zoom, 16.0);
     }
 
     #[test]

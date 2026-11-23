@@ -171,7 +171,7 @@ fn empty_layer_list(ui: &mut egui::Ui) {
         .uv(Rect::from_min_size(egui::Pos2::ZERO, rect.size() / 8.))
         .paint_at(ui, rect);
     ui.painter()
-        .rect_stroke(rect, 0., Stroke::new(1., theme::MEDIUM), StrokeKind::Inside);
+        .rect_stroke(rect, 0., Stroke::new(1_f32, theme::MEDIUM), StrokeKind::Inside);
     let caption = egui::WidgetText::from(
         RichText::new(locale::tr(ui, "No layer"))
             .font(FontId::new(
@@ -264,7 +264,7 @@ fn sidebar_guide(ui: &mut egui::Ui, kind: &str, empty: bool) {
         })
         .response
         .rect;
-    let edge = Stroke::new(1., Color32::from_rgb(94, 171, 107));
+    let edge = Stroke::new(1_f32, Color32::from_rgb(94, 171, 107));
     ui.painter().hline(guide.x_range(), guide.top() + 0.5, edge);
     ui.painter()
         .hline(guide.x_range(), guide.bottom() - 0.5, edge);
@@ -484,7 +484,7 @@ fn canvas_option(
             painter.rect_stroke(
                 rect.shrink(inset as f32),
                 (3 - inset).max(0) as f32,
-                Stroke::new(1., rgb(border).gamma_multiply((12 - inset) as f32 / 16.)),
+                Stroke::new(1_f32, rgb(border).gamma_multiply((12 - inset) as f32 / 16.)),
                 egui::StrokeKind::Inside,
             );
         }
@@ -497,7 +497,7 @@ fn canvas_option(
     painter.rect_stroke(
         rect,
         3.,
-        Stroke::new(1., border.gamma_multiply(opacity)),
+        Stroke::new(1_f32, border.gamma_multiply(opacity)),
         egui::StrokeKind::Inside,
     );
     let icon_opacity = if !supported {
@@ -638,11 +638,11 @@ fn toolbar_button(
         } else {
             Color32::from_white_alpha(15)
         };
-        painter.rect_stroke(rect, 0., Stroke::new(1., edge), StrokeKind::Inside);
+        painter.rect_stroke(rect, 0., Stroke::new(1_f32, edge), StrokeKind::Inside);
         painter.rect_stroke(
             rect.shrink(1.),
             0.,
-            Stroke::new(1., edge.gamma_multiply(0.2)),
+            Stroke::new(1_f32, edge.gamma_multiply(0.2)),
             StrokeKind::Inside,
         );
     } else if state == ToolbarButtonState::Faded {
@@ -691,7 +691,7 @@ impl EditorApp {
             rect,
             3.,
             theme::DARK,
-            Stroke::new(1., stroke),
+            Stroke::new(1_f32, stroke),
             StrokeKind::Inside,
         );
         let text_rect = rect.shrink2(egui::vec2(7., 0.));
@@ -711,7 +711,7 @@ impl EditorApp {
                 arrow + egui::vec2(0., 2.),
                 arrow + egui::vec2(4., -2.),
             ],
-            Stroke::new(1.5, theme::LIGHT),
+            Stroke::new(1.5_f32, theme::LIGHT),
         ));
 
         let options = std::iter::once(all)
@@ -843,7 +843,7 @@ impl EditorApp {
                                 } else {
                                     Color32::TRANSPARENT
                                 },
-                                Stroke::new(1., border),
+                                Stroke::new(1_f32, border),
                                 StrokeKind::Inside,
                             );
                             ui.painter().galley(
@@ -929,7 +929,7 @@ impl EditorApp {
                     ui.painter().vline(
                         rect.right() - 0.5,
                         rect.y_range(),
-                        Stroke::new(1., Color32::WHITE),
+                        Stroke::new(1_f32, Color32::WHITE),
                     );
                 });
         }
@@ -991,7 +991,7 @@ impl EditorApp {
             .backdrop_color(Color32::TRANSPARENT)
             .frame(
                 panels::source_controls::context_menu_frame(&ctx.style())
-                    .stroke(Stroke::new(1., Color32::BLACK))
+                    .stroke(Stroke::new(1_f32, Color32::BLACK))
                     .shadow(egui::epaint::Shadow {
                         offset: [0, 4],
                         blur: 16,
@@ -1054,7 +1054,7 @@ impl EditorApp {
                         painter.hline(
                             rect.x_range(),
                             rect.top() + 0.5,
-                            Stroke::new(1., theme::MEDIUM),
+                            Stroke::new(1_f32, theme::MEDIUM),
                         );
                     }
                     let left = egui::pos2(rect.left() + 20., rect.top() + 8. + border);
@@ -1360,21 +1360,21 @@ impl EditorApp {
                                 ui.painter().rect_stroke(
                                     row.shrink(1.),
                                     0.,
-                                    Stroke::new(1., fade(Color32::WHITE)),
+                                    Stroke::new(1_f32, fade(Color32::WHITE)),
                                     StrokeKind::Inside,
                                 );
                             } else if active {
                                 ui.painter().rect_stroke(
                                     row,
                                     0.,
-                                    Stroke::new(1., fade(Color32::from_rgb(255, 223, 77))),
+                                    Stroke::new(1_f32, fade(Color32::from_rgb(255, 223, 77))),
                                     StrokeKind::Inside,
                                 );
                             } else if ui.is_enabled() && ui.rect_contains_pointer(row) {
                                 ui.painter().rect_stroke(
                                     row,
                                     0.,
-                                    Stroke::new(2., fade(fill.lerp_to_gamma(Color32::WHITE, 0.65))),
+                                    Stroke::new(2_f32, fade(fill.lerp_to_gamma(Color32::WHITE, 0.65))),
                                     StrokeKind::Inside,
                                 );
                             }
@@ -1550,7 +1550,7 @@ impl EditorApp {
                                     rect,
                                     3.,
                                     fill,
-                                    Stroke::new(1., border),
+                                    Stroke::new(1_f32, border),
                                     StrokeKind::Inside,
                                 );
                                 ui.painter().with_clip_rect(rect.shrink(1.)).text(
@@ -1776,7 +1776,7 @@ impl EditorApp {
                                         .strong().size(11.733).color(theme::LIGHT)));
                                     let hint = Rect::from_min_size(title_rect.right_top(), Vec2::splat(16.));
                                     let help_color = Color32::from_rgb(94, 171, 107);
-                                    ui.painter().circle_stroke(hint.center(), 7., Stroke::new(2., help_color));
+                                    ui.painter().circle_stroke(hint.center(), 7., Stroke::new(2_f32, help_color));
                                     ui.painter().text(hint.center(), Align2::CENTER_CENTER, "?", FontId::proportional(11.), help_color);
                                     if !panning {
                                         let response = ui.interact(hint, ui.id().with("depth-help"), Sense::hover())
@@ -3679,7 +3679,7 @@ mod tests {
                 })
                 .expect("first palette row");
             let stripe = Rect::from_min_size(first_row.min, egui::vec2(6., row_height));
-            let outline = Stroke::new(1., Color32::WHITE);
+            let outline = Stroke::new(1_f32, Color32::WHITE);
             assert!(
                 has_rect(
                     &before,
@@ -3730,7 +3730,7 @@ mod tests {
                     &before,
                     swatch,
                     Color32::from_rgb(17, 85, 60),
-                    Stroke::new(1., Color32::from_rgb(78, 187, 146))
+                    Stroke::new(1_f32, Color32::from_rgb(78, 187, 146))
                 ));
             }
         }

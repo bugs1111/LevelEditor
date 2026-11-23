@@ -7,7 +7,7 @@ description = "Native Rust port of the LDtk level editor (in development)"
 
 [workspace]
 members = ["crates/ldtk-core"]
-exclude = ["vendor/winit"]
+exclude = ["vendor/winit", "vendor/block"]
 resolver = "2"
 
 [dependencies]
@@ -47,6 +47,8 @@ wgpu = { version = "27", default-features = false, features = ["std", "vulkan", 
 [patch.crates-io]
 # Winit 0.30.13 with the X11 wheel-release backport and macOS quit handling.
 winit = { path = "vendor/winit" }
+# Keep the Metal dependency's Apple Blocks ABI declaration valid on newer Rust.
+block = { path = "vendor/block" }
 
 [profile.release]
 lto = "thin"

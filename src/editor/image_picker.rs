@@ -18,7 +18,7 @@ fn recall_image(button: &egui::Response, images: &[PathBuf]) -> Option<PathBuf> 
         .frame(
             egui::Frame::new()
                 .fill(theme::DARK)
-                .stroke(Stroke::new(1., Color32::BLACK))
+                .stroke(Stroke::new(1_f32, Color32::BLACK))
                 .shadow(egui::Shadow {
                     offset: [0, 4],
                     blur: 16,
@@ -273,7 +273,7 @@ impl EditorApp {
                 .frame(
                     egui::Frame::new()
                         .fill(Color32::from_rgb(117, 18, 0))
-                        .stroke(Stroke::new(1., orange))
+                        .stroke(Stroke::new(1_f32, orange))
                         .inner_margin(20),
                 )
                 .show(ui.ctx(), |ui| {

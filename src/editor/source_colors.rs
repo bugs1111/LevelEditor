@@ -408,7 +408,7 @@ fn spectrum(ui: &mut egui::Ui, state: &mut ColorDraft) {
         Color32::BLACK
     };
     ui.painter()
-        .circle_stroke(selected, 6., Stroke::new(2., marker));
+        .circle_stroke(selected, 6., Stroke::new(2_f32, marker));
     let y = hue.top() + (1. - state.hsv[0]) as f32 * 148.;
     ui.painter().rect_filled(
         Rect::from_min_size(egui::pos2(hue.right() - 7., y), egui::vec2(10., 2.)),
@@ -537,9 +537,9 @@ fn color_palette(ui: &mut egui::Ui, id: egui::Id, draft: &mut ColorDraft) {
                                     0.,
                                     Color32::from_rgb(r, g, b),
                                     if response.hovered() {
-                                        Stroke::new(2., Color32::WHITE)
+                                        Stroke::new(2_f32, Color32::WHITE)
                                     } else {
-                                        Stroke::new(1., Color32::BLACK)
+                                        Stroke::new(1_f32, Color32::BLACK)
                                     },
                                     StrokeKind::Inside,
                                 );
@@ -576,7 +576,7 @@ fn color_palette(ui: &mut egui::Ui, id: egui::Id, draft: &mut ColorDraft) {
         ui.painter().vline(
             rect.left() + 0.5,
             rect.y_range(),
-            Stroke::new(1., theme::LIGHT),
+            Stroke::new(1_f32, theme::LIGHT),
         );
     });
 }
@@ -723,7 +723,7 @@ fn color_picker(
                                 field.rect,
                                 0.,
                                 Stroke::new(
-                                    1.,
+                                    1_f32,
                                     if field.has_focus() {
                                         theme::ACCENT
                                     } else {
@@ -906,7 +906,7 @@ pub(super) fn form_color_editor(ui: &mut egui::Ui, color: &mut Option<[u8; 3]>) 
         painter.rect_stroke(
             rect,
             0.,
-            Stroke::new(1., theme::ACCENT),
+            Stroke::new(1_f32, theme::ACCENT),
             StrokeKind::Outside,
         );
     }

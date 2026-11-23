@@ -306,7 +306,7 @@ impl EditorApp {
                     );
                 }
                 let border = shade(edge);
-                painter.rect_stroke(row, corners, Stroke::new(1., border), egui::StrokeKind::Inside);
+                painter.rect_stroke(row, corners, Stroke::new(1_f32, border), egui::StrokeKind::Inside);
                 painter.rect_filled(
                     Rect::from_min_max(egui::pos2(row.right() - edge_width, top), row.max),
                     0., border,

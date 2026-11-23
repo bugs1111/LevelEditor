@@ -372,6 +372,9 @@ fn preview_154_same_path_save_reuses_verified_external_files() {
     project.json["backupOnSave"] = json!(false);
     project.json["jsonStyle"] = json!("Minified");
     let edited = project.add_level(None, "Edited", 32, 32).unwrap();
+    project
+        .add_field_definition(None, "Notes", "Multilines", false)
+        .unwrap();
     project.level_mut(edited).unwrap()["extension"] = json!("old value");
     project.set_external_levels(true).unwrap();
     project.save(&path).unwrap();
@@ -1759,6 +1762,52 @@ fn benchmark_large_external_project_save() {
                 .unwrap_or("VmHWM unavailable")
         );
     }
+}
+
+#[test]
+#[ignore = "controlled repeat-save benchmark with a multiline field definition"]
+fn benchmark_large_external_project_repeat_save() {
+    let temp = tempfile::tempdir().unwrap();
+    fs::create_dir(temp.path().join("levels")).unwrap();
+    let path = temp.path().join("large.ldtk");
+    let mut project = large_external_project_fixture();
+    project
+        .add_field_definition(None, "Notes", "Multilines", false)
+        .unwrap();
+    project.json["flags"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!("UseMultilinesType"));
+    project.save(&path).unwrap();
+    drop(project);
+    let mut project = Project::load(&path).unwrap();
+    project.migrate_to_current().unwrap();
+    let mut times = [std::time::Duration::ZERO; 7];
+    for elapsed in &mut times {
+        let start = std::time::Instant::now();
+        project.save(&path).unwrap();
+        *elapsed = start.elapsed();
+    }
+    times.sort_unstable();
+    let median = times[3];
+    eprintln!("large external repeat save: median {median:?}; samples {times:?}");
+}
+
+#[test]
+#[ignore = "release migration timing for the pinned upstream large world fixture"]
+fn benchmark_large_world_migration() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../.reference/ldtk/tests/largeLevels/world1.ldtk");
+    let mut times = [std::time::Duration::ZERO; 7];
+    for elapsed in &mut times {
+        let mut project = Project::load(&path).unwrap();
+        let start = std::time::Instant::now();
+        project.migrate_to_current().unwrap();
+        *elapsed = start.elapsed();
+    }
+    times.sort_unstable();
+    let median = times[3];
+    eprintln!("large world migration: median {median:?}; samples {times:?}");
 }
 
 #[test]

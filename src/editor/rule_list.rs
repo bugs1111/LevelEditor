@@ -112,7 +112,7 @@ fn rule_menu_row(
     if response.hovered() {
         painter.rect_filled(rect, 0., theme::ACCENT);
     }
-    painter.hline(rect.x_range(), rect.max.y, Stroke::new(1., theme::MEDIUM));
+    painter.hline(rect.x_range(), rect.max.y, Stroke::new(1_f32, theme::MEDIUM));
     if let Some(image) = &icon {
         let icon_rect = rule_menu_icon_rect(rect);
         let icon_rect = if detail.is_empty() {
@@ -303,7 +303,7 @@ impl EditorApp {
         }
         egui::Frame::new()
             .fill(theme::DARK)
-            .stroke(Stroke::new(1., theme::LIGHT))
+            .stroke(Stroke::new(1_f32, theme::LIGHT))
             .show(ui, |ui| {
                 ui.spacing_mut().scroll = source_controls::scroll_style();
                 let scroll = egui::ScrollArea::vertical()
@@ -389,7 +389,7 @@ impl EditorApp {
                             rect.left_bottom(),
                             rect.left_top(),
                         ],
-                        Stroke::new(1., theme::ACCENT),
+                        Stroke::new(1_f32, theme::ACCENT),
                         3.,
                         2.,
                     ));
@@ -511,7 +511,7 @@ impl EditorApp {
                 let widgets = &mut ui.visuals_mut().widgets;
                 for style in [&mut widgets.inactive, &mut widgets.hovered, &mut widgets.open] {
                     style.weak_bg_fill = theme::LIGHT;
-                    style.bg_stroke = Stroke::new(1., Color32::from_rgb(115, 127, 157));
+                    style.bg_stroke = Stroke::new(1_f32, Color32::from_rgb(115, 127, 157));
                     style.corner_radius = egui::CornerRadius::same(3);
                     style.expansion = 0.;
                 }
@@ -529,7 +529,7 @@ impl EditorApp {
                                 center + egui::vec2(0., 2.),
                                 center + egui::vec2(4., -2.),
                             ],
-                            Stroke::new(1.5, Color32::WHITE),
+                            Stroke::new(1.5_f32, Color32::WHITE),
                         ));
                     })
                     .show_ui(ui, |ui| {
@@ -1040,7 +1040,7 @@ impl EditorApp {
             ui.painter().rect_stroke(
                 Rect::from_center_size(rect.center(), Vec2::splat(14.)),
                 2.,
-                Stroke::new(1., Color32::from_white_alpha(100)),
+                Stroke::new(1_f32, Color32::from_white_alpha(100)),
                 StrokeKind::Inside,
             );
             return;
@@ -1297,7 +1297,7 @@ impl EditorApp {
                         ui.painter().rect_stroke(
                             preview,
                             0.,
-                            Stroke::new(1., theme::ACCENT),
+                            Stroke::new(1_f32, theme::ACCENT),
                             StrokeKind::Outside,
                         );
                     }
@@ -1492,7 +1492,7 @@ impl EditorApp {
                     rect.left_bottom(),
                     rect.left_top(),
                 ],
-                Stroke::new(1., Color32::WHITE),
+                Stroke::new(1_f32, Color32::WHITE),
                 3.,
                 2.,
             ));
@@ -1548,7 +1548,7 @@ fn rule_flag(
             } else {
                 theme::MEDIUM
             },
-            Stroke::new(1., ink),
+            Stroke::new(1_f32, ink),
             StrokeKind::Inside,
         );
     } else {
@@ -1562,7 +1562,7 @@ fn rule_flag(
                 edge.left_bottom(),
                 edge.left_top(),
             ],
-            Stroke::new(1., SOURCE_ORANGE.gamma_multiply(0.4)),
+            Stroke::new(1_f32, SOURCE_ORANGE.gamma_multiply(0.4)),
             3.,
             2.,
         ));
@@ -1656,7 +1656,7 @@ fn rule_number(ui: &mut egui::Ui, number: &mut f64, chance: bool) -> egui::Respo
     ui.painter().set(fill, shape);
     if focused {
         ui.painter()
-            .rect_stroke(rect, 4., Stroke::new(1., SOURCE_ORANGE), StrokeKind::Inside);
+            .rect_stroke(rect, 4., Stroke::new(1_f32, SOURCE_ORANGE), StrokeKind::Inside);
     }
     let icon = if chance {
         egui::include_image!("../../assets/icons/random.svg")
@@ -1751,7 +1751,7 @@ impl EditorApp {
             let ink = Color32::from_rgb(227, 77, 0);
             painter.rect_filled(warning, 0., Color32::from_rgb(121, 17, 5));
             paint_preview_stripes(ui, warning, 1.);
-            painter.rect_stroke(warning, 0., Stroke::new(1., ink), StrokeKind::Inside);
+            painter.rect_stroke(warning, 0., Stroke::new(1_f32, ink), StrokeKind::Inside);
             painter.text(
                 warning.center(),
                 Align2::CENTER_CENTER,
@@ -1774,7 +1774,7 @@ impl EditorApp {
         } = *layout;
         let center = size / 2;
         let grid = Rect::from_center_size(rect.center(), span);
-        painter.rect_stroke(grid, 0., Stroke::new(1., theme::MEDIUM), StrokeKind::Inside);
+        painter.rect_stroke(grid, 0., Stroke::new(1_f32, theme::MEDIUM), StrokeKind::Inside);
         let mut cells = ui.new_child(egui::UiBuilder::new().max_rect(grid));
         cells.multiply_opacity(0.5);
         let stamp = rule["tileMode"] == "Stamp";
@@ -1957,7 +1957,7 @@ impl EditorApp {
             painter.rect_stroke(
                 box_rect,
                 0.,
-                Stroke::new(1., Color32::from_rgb(255, 0, 255)),
+                Stroke::new(1_f32, Color32::from_rgb(255, 0, 255)),
                 StrokeKind::Inside,
             );
         }

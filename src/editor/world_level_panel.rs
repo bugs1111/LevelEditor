@@ -156,7 +156,7 @@ fn background_pivot_inputs(
 ) -> Option<[f64; 2]> {
     let mut next = pivot;
     egui::Frame::new()
-        .stroke(Stroke::new(1., theme::DARK))
+        .stroke(Stroke::new(1_f32, theme::DARK))
         .inner_margin(4)
         .show(ui, |ui| {
             let layout = if ui.available_width() >= 280. {

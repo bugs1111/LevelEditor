@@ -414,7 +414,7 @@ impl EditorApp {
                             painter.hline(
                                 rect.x_range(),
                                 rect.top() + 0.5,
-                                Stroke::new(1., theme::MEDIUM),
+                                Stroke::new(1_f32, theme::MEDIUM),
                             );
                         }
                         let origin = rect.left_top() + egui::vec2(20., 15.5 + f32::from(separator));
@@ -484,7 +484,7 @@ impl EditorApp {
         field_tools::picker_outline(
             &painter,
             rect.shrink(14.),
-            Stroke::new(4., theme::ACCENT),
+            Stroke::new(4_f32, theme::ACCENT),
             8.,
             4.,
         );
@@ -1183,11 +1183,11 @@ mod tests {
             }));
             assert!(output.shapes.iter().any(|shape| {
                 matches!(&shape.shape, egui::Shape::Rect(r) if
-                    r.stroke == Stroke::new(1.5, color.gamma_multiply(0.7)))
+                    r.stroke == Stroke::new(1.5_f32, color.gamma_multiply(0.7)))
             }));
             let cross = output.shapes.iter().filter(|shape| {
                 matches!(&shape.shape, egui::Shape::LineSegment { points, stroke } if
-                    *stroke == Stroke::new(7.5, color) &&
+                    *stroke == Stroke::new(7.5_f32, color) &&
                     ((points[0].distance(points[1])) - 76.8).abs() < 0.01)
             });
             assert_eq!(cross.count(), 2);

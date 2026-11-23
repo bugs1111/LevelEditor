@@ -194,7 +194,7 @@ pub(in crate::app) fn show_text<'a>(
         rect,
         3.,
         theme::DARK,
-        Stroke::new(1., border),
+        Stroke::new(1_f32, border),
         egui::StrokeKind::Inside,
     );
     painter.text(
@@ -371,7 +371,7 @@ fn show_popup(
         .frame(
             egui::Frame::new()
                 .fill(theme::DARK)
-                .stroke(Stroke::new(1., PICKER_BORDER))
+                .stroke(Stroke::new(1_f32, PICKER_BORDER))
                 .inner_margin(1)
                 .corner_radius(3),
         )
@@ -404,7 +404,7 @@ fn show_popup(
                         ] {
                             style.corner_radius = 0.into();
                             style.expansion = 0.;
-                            style.bg_stroke = Stroke::new(1., theme::LIGHT);
+                            style.bg_stroke = Stroke::new(1_f32, theme::LIGHT);
                         }
                         let width = (width - if has_icons { 33. } else { 0. }).max(1.);
                         ui.add(
@@ -700,9 +700,9 @@ fn paint_choice(
     if let Some(tint) = tint {
         painter.rect_filled(rect, 0., tint);
     }
-    painter.hline(rect.x_range(), rect.top(), Stroke::new(1., PICKER_BORDER));
+    painter.hline(rect.x_range(), rect.top(), Stroke::new(1_f32, PICKER_BORDER));
     if grid {
-        painter.vline(rect.left(), rect.y_range(), Stroke::new(1., theme::DARK));
+        painter.vline(rect.left(), rect.y_range(), Stroke::new(1_f32, theme::DARK));
     }
     if focused {
         painter.rect_filled(rect, 0., theme::ACCENT);
@@ -710,7 +710,7 @@ fn paint_choice(
             painter.rect_stroke(
                 rect.shrink(1.),
                 0.,
-                Stroke::new(1., Color32::from_rgb(255, 255, 68)),
+                Stroke::new(1_f32, Color32::from_rgb(255, 255, 68)),
                 egui::StrokeKind::Inside,
             );
         }
@@ -725,7 +725,7 @@ fn paint_choice(
                 border.left_bottom(),
                 border.left_top(),
             ],
-            Stroke::new(if has_icons { 2. } else { 1. }, Color32::WHITE),
+            Stroke::new(if has_icons { 2. } else { 1_f32 }, Color32::WHITE),
             4.,
             3.,
         ));
