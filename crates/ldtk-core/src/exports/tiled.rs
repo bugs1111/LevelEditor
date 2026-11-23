@@ -1,4 +1,4 @@
-use super::{ExportBatch, ExportReport, arr, bytes, color, n, num, png, s, safe_name};
+use super::{ExportBatch, ExportReport, arr, bytes, color, n, num, encode_png, s, safe_name};
 use crate::project::relative_to;
 use crate::{Error, Project, Result};
 use image::RgbaImage;
@@ -179,7 +179,7 @@ impl Project {
                         }
                     }
                 }
-                batch.add(path, &png(&image)?)?;
+                batch.add(path, &encode_png(&image)?)?;
             }
             gids.insert(n(d, "uid"), gid);
             tilesets.push_str(&format!("<tileset firstgid=\"{gid}\" name=\"{}\" tilewidth=\"{size}\" tileheight=\"{size}\" tilecount=\"{}\" columns=\"{}\" objectalignment=\"topleft\"><image source=\"{}\" width=\"{}\" height=\"{size}\"/></tileset>",xml(s(d,"identifier")),values.len(),values.len(),xml(filename),width));

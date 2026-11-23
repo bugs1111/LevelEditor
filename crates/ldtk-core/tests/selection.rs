@@ -156,9 +156,14 @@ fn batch_intgrid_paint_is_atomic_and_last_write_wins() {
     );
     assert_eq!(p.layer(K, 0).unwrap()["intGridCsv"][0], 0);
     assert_eq!(p.layer(K, 0).unwrap()["intGridCsv"][1], 1);
+    let changes = [([1, 0], 0), ([0, 0], 1), ([1, 0], 1), ([0, 0], 0), ([1, 0], 0)];
+    assert_eq!(p.paint_int_grid_cells(K, 0, &changes).unwrap(), 1);
+    assert_eq!(p.layer(K, 0).unwrap()["intGridCsv"][0], 0);
+    assert_eq!(p.layer(K, 0).unwrap()["intGridCsv"][1], 0);
+    assert_eq!(p.paint_int_grid_cells(K, 0, &changes).unwrap(), 0);
     let before = p.json.clone();
     assert!(
-        p.paint_int_grid_cells(K, 0, &[([2, 0], 1), ([3, 0], 99)])
+        p.paint_int_grid_cells(K, 0, &[([2, 0], 1), ([3, 0], 99), ([3, 0], 0)])
             .is_err()
     );
     assert_eq!(p.json, before);

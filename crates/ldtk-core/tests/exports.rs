@@ -415,6 +415,48 @@ fn tiles_png_project() -> Project {
 }
 
 #[test]
+fn png_exports_follow_tileset_switches_and_reload_changed_files() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut p = tiles_png_project();
+    p.path = Some(dir.path().join("map.ldtk"));
+    p.json["defs"]["tilesets"] = json!([
+        {"uid":11, "tileGridSize":16, "relPath":"a.png"},
+        {"uid":12, "tileGridSize":16, "relPath":"b.png"}
+    ]);
+    let template = p.json["levels"][0].clone();
+    let mut levels = Vec::new();
+    for (index, uid) in [11, 11, 12, 11].into_iter().enumerate() {
+        let mut level = template.clone();
+        level["identifier"] = json!(format!("Level_{index}"));
+        level["layerInstances"][0]["__tilesetDefUid"] = json!(uid);
+        level["layerInstances"][0]["gridTiles"] = json!([{"px":[0,0], "src":[0,0], "t":0}]);
+        levels.push(level);
+    }
+    p.json["levels"] = json!(levels);
+    let write_atlas = |name, rgba| {
+        image::RgbaImage::from_pixel(16, 16, image::Rgba(rgba))
+            .save(dir.path().join(name))
+            .unwrap();
+    };
+    let green = [0, 255, 0, 255];
+    write_atlas("b.png", green);
+    for color in [[255, 0, 0, 255], [0, 0, 255, 255]] {
+        write_atlas("a.png", color);
+        p.export_png(dir.path().join("png")).unwrap();
+        p.export_simplified(dir.path().join("simple")).unwrap();
+        for (index, expected) in [color, color, green, color].into_iter().enumerate() {
+            for path in [
+                format!("png/Level_{index}__Ground.png"),
+                format!("simple/Level_{index}/Ground.png"),
+            ] {
+                let image = image::open(dir.path().join(path)).unwrap().to_rgba8();
+                assert_eq!(image.get_pixel(0, 0).0, expected);
+            }
+        }
+    }
+}
+
+#[test]
 fn configured_classic_tiles_png_matches_source_for_unavailable_atlases() {
     // RGBA pixels measured from the pinned preview's Ctrl+S PNG for these cells.
     let marker = [

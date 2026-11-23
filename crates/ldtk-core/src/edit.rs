@@ -96,13 +96,21 @@ impl Project {
         }
         let uid = layer["layerDefUid"].as_i64();
         let definition = uid.and_then(|uid| self.layer_def(uid));
-        let palette: std::collections::BTreeSet<i64> = definition
+        let palette = definition
             .and_then(|d| d["intGridValues"].as_array())
             .into_iter()
             .flatten()
-            .filter_map(|v| v["value"].as_i64())
-            .collect();
-        let mut touched = std::collections::BTreeMap::new();
+            .filter_map(|v| v["value"].as_i64());
+        let batch_palette =
+            std::cell::LazyCell::new(|| palette.clone().collect::<std::collections::HashSet<_>>());
+        let is_defined = |value| {
+            if cells.len() == 1 {
+                palette.clone().any(|id| id == value)
+            } else {
+                batch_palette.contains(&value)
+            }
+        };
+        let mut touched = Vec::new();
         for &([x, y], value) in cells {
             if value < 0 {
                 return Err(invalid("IntGrid values must be nonnegative"));
@@ -110,7 +118,7 @@ impl Project {
             if !inside(x, y, width, height) {
                 continue;
             }
-            if value > 0 && !palette.contains(&i64::from(value)) {
+            if value > 0 && !is_defined(i64::from(value)) {
                 return Err(invalid(
                     "IntGrid replacement value is not defined in this layer's palette",
                 ));
@@ -120,9 +128,18 @@ impl Project {
                 .as_i64()
                 .filter(|v| *v >= 0 && i32::try_from(*v).is_ok())
                 .ok_or_else(|| invalid("invalid IntGrid cell value"))?;
-            touched.insert(index, (old, value));
+            touched.push((index, old, value));
         }
-        touched.retain(|_, (old, new)| *old != i64::from(*new));
+        // A stable sort keeps repeated coordinates in brush order. The final write wins.
+        touched.sort_by_key(|&(index, _, _)| index);
+        touched.dedup_by(|later, earlier| {
+            if later.0 != earlier.0 {
+                return false;
+            }
+            earlier.2 = later.2;
+            true
+        });
+        touched.retain(|&(_, old, new)| old != i64::from(new));
         if touched.is_empty() {
             return Ok(0);
         }
@@ -130,9 +147,11 @@ impl Project {
         let mut min_y = height;
         let mut max_x = 0;
         let mut max_y = 0;
-        for (&index, &(_, value)) in &touched {
-            self.layer_mut(key, layer_index).expect("validated layer")["intGridCsv"][index] =
-                json!(value);
+        let values = self.layer_mut(key, layer_index).expect("validated layer")["intGridCsv"]
+            .as_array_mut()
+            .expect("validated cells");
+        for &(index, _, value) in &touched {
+            values[index] = value.into();
             let x = index as i32 % width;
             let y = index as i32 / width;
             min_x = min_x.min(x);
@@ -157,15 +176,17 @@ impl Project {
                 deferred,
             )
         {
-            for (&index, &(old, _)) in &touched {
-                self.layer_mut(key, layer_index).expect("validated layer")["intGridCsv"][index] =
-                    json!(old);
+            let values = self.layer_mut(key, layer_index).expect("validated layer")["intGridCsv"]
+                .as_array_mut()
+                .expect("validated cells");
+            for &(index, old, _) in &touched {
+                values[index] = old.into();
             }
             return Err(error);
         }
         let mut erased = touched
             .iter()
-            .filter_map(|(&index, &(_, value))| (value == 0).then_some(index))
+            .filter_map(|&(index, _, value)| (value == 0).then_some(index))
             .peekable();
         if erased.peek().is_some() {
             let iid = self
