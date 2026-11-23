@@ -1181,9 +1181,9 @@ fn encode_with_style(
     if style == JsonStyle::Minified {
         return serde_json::to_vec(value).map_err(|e| Error::Invalid(e.to_string()));
     }
-    let mut output = String::new();
-    format_json(value, style, 0, false, &mut output)?;
-    Ok(output.into_bytes())
+    let mut output = Vec::new();
+    format_json(value, style, 0, false, &mut output).map_err(|e| Error::Invalid(e.to_string()))?;
+    Ok(output)
 }
 
 fn compact_length(value: &Value, depth: usize) -> usize {
@@ -1223,63 +1223,53 @@ fn format_json(
     style: JsonStyle,
     indent: usize,
     force_multiline: bool,
-    out: &mut String,
-) -> Result<()> {
-    let inline = style == JsonStyle::Compact && !force_multiline && compact_length(value, 0) <= 85;
-    let write_indent = |out: &mut String, n| {
-        for _ in 0..n {
-            out.push('\t');
-        }
+    out: &mut Vec<u8>,
+) -> serde_json::Result<()> {
+    let fits_inline =
+        || style == JsonStyle::Compact && !force_multiline && compact_length(value, 0) <= 85;
+    let write_indent = |out: &mut Vec<u8>, n| {
+        out.resize(out.len() + n, b'\t');
     };
     match value {
         Value::Object(map) if !map.is_empty() => {
-            out.push('{');
-            if inline {
-                out.push(' ');
-            } else {
-                out.push('\n');
-            }
+            let inline = fits_inline();
+            out.push(b'{');
+            out.push(if inline { b' ' } else { b'\n' });
             for (i, (key, val)) in map.iter().enumerate() {
                 if !inline {
                     write_indent(out, indent + 1);
                 }
-                out.push_str(
-                    &serde_json::to_string(key).map_err(|e| Error::Invalid(e.to_string()))?,
-                );
-                out.push_str(": ");
+                serde_json::to_writer(&mut *out, key)?;
+                out.extend_from_slice(b": ");
                 format_json(val, style, indent + 1, key == "__header__", out)?;
                 if i + 1 < map.len() {
-                    out.push(',');
-                    if inline {
-                        out.push(' ');
-                    } else {
-                        out.push('\n');
-                    }
+                    out.push(b',');
+                    out.push(if inline { b' ' } else { b'\n' });
                 }
             }
             if inline {
-                out.push(' ');
+                out.push(b' ');
             } else {
-                out.push('\n');
+                out.push(b'\n');
                 write_indent(out, indent);
             }
-            out.push('}');
+            out.push(b'}');
         }
         Value::Array(array) if !array.is_empty() => {
             let numeric = array[0].is_number();
             let grid = numeric && array.len() > 85 && !force_multiline;
-            let array_inline = inline && !grid;
+            let array_inline = !grid && fits_inline();
             let space = array_inline
                 && !numeric
                 && (array[0].as_bool().is_none() && array.len() != 1
                     || array[0].is_boolean() && array.len() <= 5);
-            out.push('[');
+            out.push(b'[');
             if array_inline {
                 if space {
-                    out.push(' ');
+                    out.push(b' ');
                 }
             } else {
-                out.push('\n');
+                out.push(b'\n');
             }
             for (i, val) in array.iter().enumerate() {
                 if !array_inline && (!grid || i % 35 == 0) {
@@ -1287,27 +1277,25 @@ fn format_json(
                 }
                 format_json(val, style, indent + 1, false, out)?;
                 if i + 1 < array.len() {
-                    out.push(',');
+                    out.push(b',');
                     if (grid && i % 35 == 34) || (!grid && !array_inline) {
-                        out.push('\n');
+                        out.push(b'\n');
                     } else if space {
-                        out.push(' ');
+                        out.push(b' ');
                     }
                 }
             }
             if array_inline {
                 if space {
-                    out.push(' ');
+                    out.push(b' ');
                 }
             } else {
-                out.push('\n');
+                out.push(b'\n');
                 write_indent(out, indent);
             }
-            out.push(']');
+            out.push(b']');
         }
-        _ => {
-            out.push_str(&serde_json::to_string(value).map_err(|e| Error::Invalid(e.to_string()))?)
-        }
+        _ => serde_json::to_writer(out, value)?,
     }
     Ok(())
 }
