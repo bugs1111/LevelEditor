@@ -144,93 +144,98 @@ fn points_in(layer: &Value, rect: [i64; 4], all: bool) -> Vec<Value> {
     }
     out
 }
-fn build(p: &Project, key: LevelKey, layers: &[usize], rect: [i32; 4], all: bool) -> Result<Value> {
-    if rect[2] <= 0
-        || rect[3] <= 0
-        || rect[0].checked_add(rect[2]).is_none()
-        || rect[1].checked_add(rect[3]).is_none()
-    {
-        return Err(invalid("selection rectangle must have positive dimensions"));
+fn capture_layer(
+    p: &Project,
+    key: LevelKey,
+    index: usize,
+    rect: [i32; 4],
+    all: bool,
+) -> Result<Option<Value>> {
+    let layer = p
+        .layer(key, index)
+        .ok_or_else(|| invalid("selection layer not found"))?;
+    if !matches!(
+        layer["__type"].as_str(),
+        Some("IntGrid" | "Tiles" | "Entities")
+    ) {
+        return Ok(None);
     }
+    let g = grid(layer)?;
+    let offset = [n(layer, "__pxTotalOffsetX"), n(layer, "__pxTotalOffsetY")];
+    let cell = if all {
+        [0, 0, n(layer, "__cWid"), n(layer, "__cHei")]
+    } else {
+        let left = (i64::from(rect[0]) - offset[0]) / g;
+        let top = (i64::from(rect[1]) - offset[1]) / g;
+        let right = (i64::from(rect[0]) + i64::from(rect[2]) - 1 - offset[0]) / g;
+        let bottom = (i64::from(rect[1]) + i64::from(rect[3]) - 1 - offset[1]) / g;
+        [left, top, right - left + 1, bottom - top + 1]
+    };
+    let cell32 = cell.map(|v| {
+        i32::try_from(v).map_err(|_| invalid("selection rectangle exceeds integer range"))
+    });
+    let [a, b, c, d] = cell32;
+    let mut clipboard = p.copy_region(key, index, [a?, b?, c?, d?])?;
+    if layer["__type"] == "Entities" {
+        let mut selected = vec![];
+        for entity in layer["entityInstances"].as_array().into_iter().flatten() {
+            let px = pair(&entity["px"])?;
+            let pivot = &entity["__pivot"];
+            let cx = (px[0] - i64::from(pivot[0].as_f64() == Some(1.))) / g;
+            let cy = (px[1] - i64::from(pivot[1].as_f64() == Some(1.))) / g;
+            if all
+                || (cx >= cell[0]
+                    && cy >= cell[1]
+                    && cx < cell[0] + cell[2]
+                    && cy < cell[1] + cell[3])
+            {
+                let mut e = entity.clone();
+                e["px"] = json!([px[0] - cell[0] * g, px[1] - cell[1] * g]);
+                selected.push(e);
+            }
+        }
+        clipboard["entityInstances"] = Value::Array(selected);
+    }
+    let mask = clipboard["intGridCsv"]
+        .as_array()
+        .map(|vs| {
+            vs.iter()
+                .enumerate()
+                .filter_map(|(i, v)| (v.as_i64().unwrap_or(0) != 0).then_some(i))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let points = points_in(layer, cell, all);
+    let mut entry = json!({
+        "layerDefUid": layer["layerDefUid"], "identifier": layer["__identifier"],
+        "layerIndex": index, "origin": [offset[0]+cell[0]*g, offset[1]+cell[1]*g], "rect": cell
+    });
+    entry["clipboard"] = clipboard;
+    entry["cellMask"] = mask.into();
+    entry["points"] = Value::Array(points);
+    Ok(Some(entry))
+}
+fn empty_group(p: &Project, key: LevelKey, rect: [i32; 4]) -> Result<Value> {
+    crate::selection::rect_valid(rect)?;
     let level = p.level(key).ok_or_else(|| invalid("level not loaded"))?;
-    let mut entries = vec![];
-    let mut grids = vec![];
+    Ok(json!({
+        "type":"SelectionGroup", "levelIid":level["iid"], "origin":[rect[0],rect[1]],
+        "size":[rect[2],rect[3]], "gridSize":1, "compatibleGrids":true, "emptySpace":false,
+        "layers":[], "elementCount":0
+    }))
+}
+fn build(p: &Project, key: LevelKey, layers: &[usize], rect: [i32; 4], all: bool) -> Result<Value> {
+    let mut group = empty_group(p, key, rect)?;
+    let mut entries = Vec::new();
     let mut unique = BTreeSet::new();
     for &index in layers {
-        if !unique.insert(index) {
-            continue;
+        if unique.insert(index)
+            && let Some(entry) = capture_layer(p, key, index, rect, all)?
+        {
+            entries.push(entry);
         }
-        let layer = p
-            .layer(key, index)
-            .ok_or_else(|| invalid("selection layer not found"))?;
-        if !matches!(
-            layer["__type"].as_str(),
-            Some("IntGrid" | "Tiles" | "Entities")
-        ) {
-            continue;
-        }
-        let g = grid(layer)?;
-        let offset = [n(layer, "__pxTotalOffsetX"), n(layer, "__pxTotalOffsetY")];
-        let cell = if all {
-            [0, 0, n(layer, "__cWid"), n(layer, "__cHei")]
-        } else {
-            let left = (i64::from(rect[0]) - offset[0]) / g;
-            let top = (i64::from(rect[1]) - offset[1]) / g;
-            let right = (i64::from(rect[0]) + i64::from(rect[2]) - 1 - offset[0]) / g;
-            let bottom = (i64::from(rect[1]) + i64::from(rect[3]) - 1 - offset[1]) / g;
-            [left, top, right - left + 1, bottom - top + 1]
-        };
-        let cell32 = cell.map(|v| {
-            i32::try_from(v).map_err(|_| invalid("selection rectangle exceeds integer range"))
-        });
-        let [a, b, c, d] = cell32;
-        let mut clipboard = p.copy_region(key, index, [a?, b?, c?, d?])?;
-        if layer["__type"] == "Entities" {
-            let mut selected = vec![];
-            for entity in layer["entityInstances"].as_array().into_iter().flatten() {
-                let px = pair(&entity["px"])?;
-                let pivot = &entity["__pivot"];
-                let cx = (px[0] - i64::from(pivot[0].as_f64() == Some(1.))) / g;
-                let cy = (px[1] - i64::from(pivot[1].as_f64() == Some(1.))) / g;
-                if all
-                    || (cx >= cell[0]
-                        && cy >= cell[1]
-                        && cx < cell[0] + cell[2]
-                        && cy < cell[1] + cell[3])
-                {
-                    let mut e = entity.clone();
-                    e["px"] = json!([px[0] - cell[0] * g, px[1] - cell[1] * g]);
-                    selected.push(e);
-                }
-            }
-            clipboard["entityInstances"] = json!(selected);
-        }
-        let mask = clipboard["intGridCsv"]
-            .as_array()
-            .map(|vs| {
-                vs.iter()
-                    .enumerate()
-                    .filter_map(|(i, v)| (v.as_i64().unwrap_or(0) != 0).then_some(i))
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
-        let points = points_in(layer, cell, all);
-        let nonempty = !mask.is_empty()
-            || clipboard["gridTiles"]
-                .as_array()
-                .is_some_and(|v| !v.is_empty())
-            || clipboard["entityInstances"]
-                .as_array()
-                .is_some_and(|v| !v.is_empty())
-            || !points.is_empty();
-        if nonempty {
-            grids.push(g);
-        }
-        entries.push(json!({"layerDefUid":layer["layerDefUid"],"identifier":layer["__identifier"],"layerIndex":index,"origin":[offset[0]+cell[0]*g,offset[1]+cell[1]*g],"rect":cell,"clipboard":clipboard,"cellMask":mask,"points":points}));
     }
-    let largest = grids.iter().copied().max().unwrap_or(1);
-    let compatible = grids.iter().all(|g| largest % g == 0);
-    let mut group = json!({"type":"SelectionGroup","levelIid":level["iid"],"origin":[rect[0],rect[1]],"size":[rect[2],rect[3]],"gridSize":largest,"compatibleGrids":compatible,"emptySpace":false,"layers":entries});
+    group["layers"] = Value::Array(entries);
     update_group_stats(&mut group);
     Ok(group)
 }
@@ -979,23 +984,24 @@ fn element_count(group: &Value) -> usize {
         .as_array()
         .into_iter()
         .flatten()
-        .map(|entry| {
-            let cells = entry["cellMask"].as_array().map_or(0, Vec::len);
-            let tiles = entry["clipboard"]["gridTiles"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .map(|t| t["px"].to_string())
-                .collect::<BTreeSet<_>>()
-                .len();
-            cells
-                + tiles
-                + entry["clipboard"]["entityInstances"]
-                    .as_array()
-                    .map_or(0, Vec::len)
-                + entry["points"].as_array().map_or(0, Vec::len)
-        })
+        .map(layer_element_count)
         .sum()
+}
+fn layer_element_count(entry: &Value) -> usize {
+    let cells = entry["cellMask"].as_array().map_or(0, Vec::len);
+    let tiles = entry["clipboard"]["gridTiles"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|t| t["px"].to_string())
+        .collect::<BTreeSet<_>>()
+        .len();
+    cells
+        + tiles
+        + entry["clipboard"]["entityInstances"]
+            .as_array()
+            .map_or(0, Vec::len)
+        + entry["points"].as_array().map_or(0, Vec::len)
 }
 #[allow(clippy::too_many_arguments)]
 fn selection_result(
@@ -1215,9 +1221,11 @@ impl Project {
 }
 fn update_group_stats(group: &mut Value) {
     let mut grids = vec![];
+    let mut total = 0;
     for entry in group["layers"].as_array().into_iter().flatten() {
-        let wrapper = json!({"layers":[entry]});
-        if element_count(&wrapper) > 0
+        let count = layer_element_count(entry);
+        total += count;
+        if count > 0
             && let Some(grid) = entry["clipboard"]["gridSize"].as_i64().filter(|g| *g > 0)
         {
             grids.push(grid);
@@ -1226,7 +1234,7 @@ fn update_group_stats(group: &mut Value) {
     let largest = grids.iter().copied().max().unwrap_or(1);
     group["gridSize"] = json!(largest);
     group["compatibleGrids"] = json!(grids.iter().all(|g| largest % g == 0));
-    group["elementCount"] = json!(element_count(group));
+    group["elementCount"] = total.into();
 }
 fn apply(
     p: &mut Project,
@@ -1263,6 +1271,7 @@ fn geometry(entry: &Value) -> Result<([f64; 2], f64)> {
 fn geometry_stats(group: &mut Value) -> Result<()> {
     let mut smart: Option<(f64, i64)> = None;
     let mut grids = vec![];
+    let mut total = 0;
     for entry in group["layers"]
         .as_array_mut()
         .ok_or_else(|| invalid("selection layers missing"))?
@@ -1274,7 +1283,9 @@ fn geometry_stats(group: &mut Value) -> Result<()> {
             origin[0] + cell[0] as f64 * raw as f64 * scale,
             origin[1] + cell[1] as f64 * raw as f64 * scale
         ]);
-        if element_count(&json!({"layers":[entry]})) > 0 {
+        let count = layer_element_count(entry);
+        total += count;
+        if count > 0 {
             let scaled = raw as f64 * scale;
             grids.push(raw);
             if smart.is_none_or(|previous| scaled > previous.0) {
@@ -1287,7 +1298,7 @@ fn geometry_stats(group: &mut Value) -> Result<()> {
     group["scaledGridSize"] = json!(smart.0);
     group["gridSize"] = json!(smart.1);
     group["compatibleGrids"] = json!(grids.iter().all(|g| *g >= smart.1 || smart.1 % g == 0));
-    group["elementCount"] = json!(element_count(group));
+    group["elementCount"] = total.into();
     Ok(())
 }
 
@@ -1455,7 +1466,7 @@ impl Project {
         regions: &Value,
         bounds_px: [i32; 4],
     ) -> Result<Value> {
-        let mut group = build(self, key, &[], bounds_px, false)?;
+        let mut group = empty_group(self, key, bounds_px)?;
         let mut entries = vec![];
         let mut seen = BTreeSet::new();
         for region in regions
@@ -1491,21 +1502,17 @@ impl Project {
                 *dst = i32::try_from(v)
                     .map_err(|_| invalid("selection rectangle exceeds integer range"))?;
             }
-            let mut one = build(self, key, &[index], r, region["all"] == true)?;
-            for mut entry in one["layers"]
-                .as_array_mut()
-                .expect("group layers")
-                .drain(..)
-            {
+            crate::selection::rect_valid(r)?;
+            if let Some(mut entry) = capture_layer(self, key, index, r, region["all"] == true)? {
                 entry["geometry"] = region["geometry"].clone();
                 geometry(&entry)?;
                 entries.push(entry);
             }
         }
-        group["layers"] = json!(entries);
+        group["layers"] = Value::Array(entries);
         geometry_stats(&mut group)?;
         let level = self.level(key).ok_or_else(|| invalid("level not loaded"))?;
-        group["originalRects"] = if element_count(&group) == 0 {
+        group["originalRects"] = if group["elementCount"] == 0 {
             json!([])
         } else {
             json!([{

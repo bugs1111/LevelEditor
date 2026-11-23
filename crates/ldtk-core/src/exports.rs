@@ -201,7 +201,7 @@ impl Project {
                     || typ == "AutoLayer"
                     || (typ == "IntGrid" && !li["__tilesetDefUid"].is_null())
                 {
-                    layers.push(json!(format!("{}.png", s(li, "__identifier"))));
+                    layers.push(Value::String(format!("{}.png", s(li, "__identifier"))));
                 }
             }
             for li in arr(&l["layerInstances"]) {
@@ -209,10 +209,23 @@ impl Project {
                     let entry = entities
                         .entry(s(e, "__identifier").to_owned())
                         .or_insert_with(|| json!([]));
-                    entry.as_array_mut().unwrap().push(json!({"id":e["__identifier"],"iid":e["iid"],"layer":li["__identifier"],"x":e["px"][0],"y":e["px"][1],"width":e["width"],"height":e["height"],"color":u32::from_str_radix(s(e,"__smartColor").trim_start_matches('#'),16).unwrap_or(0),"customFields":fields(e)}));
+                    let mut entity = json!({
+                        "id": e["__identifier"], "iid": e["iid"], "layer": li["__identifier"],
+                        "x": e["px"][0], "y": e["px"][1], "width": e["width"], "height": e["height"],
+                        "color": u32::from_str_radix(s(e, "__smartColor").trim_start_matches('#'), 16).unwrap_or(0)
+                    });
+                    entity["customFields"] = fields(e);
+                    entry.as_array_mut().unwrap().push(entity);
                 }
             }
-            let simple = json!({"identifier":l["identifier"],"uniqueIdentifer":l["iid"],"x":l["worldX"],"y":l["worldY"],"width":l["pxWid"],"height":l["pxHei"],"bgColor":l["__bgColor"],"neighbourLevels":l["__neighbours"],"customFields":fields(l),"layers":layers,"entities":entities});
+            let mut simple = json!({
+                "identifier": l["identifier"], "uniqueIdentifer": l["iid"],
+                "x": l["worldX"], "y": l["worldY"], "width": l["pxWid"], "height": l["pxHei"],
+                "bgColor": l["__bgColor"], "neighbourLevels": l["__neighbours"]
+            });
+            simple["customFields"] = fields(l);
+            simple["layers"] = Value::Array(layers);
+            simple["entities"] = Value::Object(entities);
             batch.add(
                 dir.join(safe_name(s(l, "identifier"))?).join("data.json"),
                 &bytes(&simple)?,

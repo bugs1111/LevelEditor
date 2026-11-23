@@ -18,7 +18,7 @@ fn dims(layer: &Value) -> Result<(i64, i64, i64)> {
         .ok_or_else(|| invalid("invalid layer grid"))?;
     Ok((w, h, g))
 }
-fn rect_valid(rect: [i32; 4]) -> Result<()> {
+pub(super) fn rect_valid(rect: [i32; 4]) -> Result<()> {
     if rect[2] <= 0
         || rect[3] <= 0
         || rect[0].checked_add(rect[2]).is_none()
@@ -315,7 +315,7 @@ impl Project {
             if csv.len() != w as usize * h as usize {
                 return Err(invalid("IntGrid size mismatch"));
             }
-            let mut cells = vec![];
+            let mut cells = Vec::with_capacity(count as usize);
             for cy in 0..rect[3] {
                 for cx in 0..rect[2] {
                     let x = i64::from(rect[0]) + i64::from(cx);
@@ -327,7 +327,7 @@ impl Project {
                     });
                 }
             }
-            clip["intGridCsv"] = json!(cells);
+            clip["intGridCsv"] = Value::Array(cells);
         } else {
             let name = if layer["__type"] == "Tiles" {
                 "gridTiles"
@@ -348,7 +348,7 @@ impl Project {
                     selected.push(e);
                 }
             }
-            clip[name] = json!(selected);
+            clip[name] = Value::Array(selected);
         }
         Ok(clip)
     }

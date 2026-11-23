@@ -95,7 +95,7 @@ impl Session {
                 json!({"iid":self.root_world_iid(), "identifier":"World", "layout":world["worldLayout"]})
             }
         }).collect();
-        json!({"worlds": worlds})
+        Value::from_iter([("worlds", Value::Array(worlds))])
     }
 
     fn list_levels(&self, world_iid: Option<&str>) -> ToolResult {
@@ -116,7 +116,7 @@ impl Session {
                     .map(|level| self.level_summary(key, level))
             })
             .collect();
-        Ok(json!({"levels":levels}))
+        Ok(Value::from_iter([("levels", Value::Array(levels))]))
     }
 
     fn level_summary(&self, key: LevelKey, level: &Value) -> Value {
@@ -148,7 +148,7 @@ impl Session {
                 })
             })
             .collect();
-        summary["layers"] = json!(layers);
+        summary["layers"] = Value::Array(layers);
         summary["field_instances"] = level["fieldInstances"].clone();
         Ok(summary)
     }
