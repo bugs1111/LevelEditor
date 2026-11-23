@@ -1,5 +1,7 @@
 # Third-party notices
 
+The standalone Godot plugin under `importer/godot/addons/ldtk-importer/` integrates [heygleeson/godot-ldtk-importer](https://github.com/heygleeson/godot-ldtk-importer), commit `0ecab8d1cc6531801b487157848059c3b8971aa0`. Copyright (c) 2023 Andrew Gleeson, MIT. The complete license accompanies the plugin in `importer/godot/addons/ldtk-importer/LICENSE`; provenance and local changes are recorded in `importer/godot/UPSTREAM.md`. This independent GDScript plugin is not a Rust editor runtime dependency.
+
 This project ports LDtk by Sébastien Bénard / deepnight. Reference source commit: `2b7b5512f2f88fa281cb6492debbb26ead7838d4`, https://github.com/deepnight/ldtk . The upstream MIT notice is retained in `LICENSE`. The empty project fixture/template and schema-derived definition defaults originate from that project.
 
 The bundled `examples/topdown/Typical_TopDown_example.ldtk` and `atlas/TopDown_by_deepnight.png` originate from the upstream official samples. Their source sample notices are retained in `examples/topdown/UPSTREAM_SAMPLES_README.md`. The complete original sample library is also retained under `examples/original/`, including its original README and individual asset notices. This includes Cavernas (Adam Saltsman), SunnyLand (Ansimuz), Inca (Kronbits), and Nuclear Blaze (Sébastien Bénard, CC BY-SA 4.0). See `examples/original/README.md` for attribution links.

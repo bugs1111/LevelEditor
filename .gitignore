@@ -5,3 +5,7 @@
 /.superpowers/
 *.log
 .DS_Store
+/importer/godot/.godot/
+/importer/godot/tests/maps/levels/
+/importer/godot/tests/maps/tilesets/
+/importer/godot/tests/maps/*.import
