@@ -138,6 +138,17 @@ impl Project {
         self.level_stub_mut(key)
     }
 
+    pub(crate) fn set_level_name(&mut self, key: LevelKey, name: String) {
+        if self.level(key).expect("validated level")["identifier"] != name {
+            self.level_mut(key).expect("validated level")["identifier"] =
+                Value::String(name.clone());
+        }
+        let stub = self.level_stub_mut(key).expect("validated level");
+        if stub["identifier"] != name {
+            stub["identifier"] = Value::String(name);
+        }
+    }
+
     pub fn layer(&self, key: LevelKey, layer: usize) -> Option<&Value> {
         self.level(key)?.get("layerInstances")?.get(layer)
     }

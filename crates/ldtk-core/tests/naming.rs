@@ -221,3 +221,48 @@ fn empty_pattern_fallback_obeys_active_style_and_remains_unique() {
     assert_eq!(p.level(first).unwrap()["identifier"], "unnamed");
     assert_eq!(p.level(second).unwrap()["identifier"], "unnamed2");
 }
+
+#[test]
+fn each_world_releases_only_its_automatic_names_before_assigning_suffixes() {
+    let mut p = Project::new();
+    let world = |names: &[(&str, bool)]| {
+        json!({
+            "levels": names.iter().map(|(name, auto)| json!({"identifier":name, "useAutoIdentifier":auto})).collect::<Vec<_>>()
+        })
+    };
+    p.json["levels"] = json!([]);
+    p.json["worlds"] = json!([
+        world(&[("Room2", true), ("Old", true), ("Room4", false)]),
+        world(&[("Room", true), ("Room2", true), ("Other", true)])
+    ]);
+    p.json["levelNamePattern"] = json!("Room");
+    p.refresh_level_names().unwrap();
+    let names: Vec<_> = p
+        .iter_level_keys()
+        .map(|key| p.level(key).unwrap()["identifier"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, ["Room3", "Room5", "Room4", "Room", "Room2", "Room6"]);
+}
+
+#[test]
+fn correcting_an_external_summary_keeps_the_unchanged_level_shared() {
+    for automatic in [false, true] {
+        let mut p = Project::new();
+        let key = p.level_keys()[0];
+        p.json["levelNamePattern"] = json!("Room");
+        let mut level = p.level(key).unwrap().clone();
+        level["identifier"] = json!("Room");
+        level["useAutoIdentifier"] = json!(automatic);
+        p.external_levels.insert("room.ldtkl".into(), level);
+        p.json["levels"][0] =
+            json!({"identifier":"Old", "externalRelPath":"room.ldtkl","extension":1});
+        let before = p.clone();
+        p.refresh_level_names().unwrap();
+        assert_eq!(p.json["levels"][0]["identifier"], "Room");
+        assert_eq!(p.json["levels"][0]["extension"], 1);
+        assert!(std::ptr::eq(
+            p.level(key).unwrap(),
+            before.level(key).unwrap()
+        ));
+    }
+}

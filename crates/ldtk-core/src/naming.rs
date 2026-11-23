@@ -1,10 +1,10 @@
 //! Original identifier conventions and automatic world level names.
 use crate::{
-    LevelKey, Project, Result,
+    Project, Result,
     workflow::{invalid, visit_fields_mut},
 };
 use serde_json::{Value, json};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 pub(crate) fn cleanup(input: &str, style: &str) -> String {
     let mut clean = String::new();
@@ -40,28 +40,37 @@ pub(crate) fn cleanup(input: &str, style: &str) -> String {
     clean
 }
 pub(crate) fn unique_name(input: &str, style: &str, occupied: &BTreeSet<String>) -> String {
+    available_name(input, style, |name| occupied.contains(name), None)
+}
+
+fn available_name(
+    input: &str,
+    style: &str,
+    occupied: impl Fn(&str) -> bool,
+    next_suffix: Option<&mut HashMap<String, u64>>,
+) -> String {
     let mut base = cleanup(input, style);
     if base.is_empty() || base == "_" {
         base = cleanup("Unnamed", style);
     }
-    if !occupied.contains(&base) {
+    if !occupied(&base) {
         return base;
     }
-    let split = base.trim_end_matches(|c: char| c.is_ascii_digit()).len();
-    let (prefix, mut suffix) = if split < base.len() {
-        (
-            base[..split].to_owned(),
-            base[split..].parse::<u64>().unwrap_or(2),
-        )
-    } else {
-        (base, 2)
-    };
+    let prefix = base.trim_end_matches(|c: char| c.is_ascii_digit());
+    let mut suffix = next_suffix
+        .as_deref()
+        .and_then(|cache| cache.get(&base))
+        .copied()
+        .unwrap_or_else(|| base[prefix.len()..].parse().unwrap_or(2));
     loop {
         let candidate = format!("{prefix}{suffix}");
-        if !occupied.contains(&candidate) {
+        suffix = suffix.checked_add(1).unwrap_or(2);
+        if !occupied(&candidate) {
+            if let Some(cache) = next_suffix {
+                cache.insert(base, suffix);
+            }
             return candidate;
         }
-        suffix = suffix.checked_add(1).unwrap_or(2);
     }
 }
 fn replace_string(value: &mut Value, replacements: &BTreeMap<String, String>) {
@@ -252,10 +261,13 @@ impl Project {
     /// Refresh automatic names in world/level order, reserving manual names
     /// throughout the project. Does not recurse into derived-data refresh.
     pub fn refresh_level_names(&mut self) -> Result<()> {
-        let keys = self.level_keys();
-        for key in &keys {
-            if self.level(*key).is_none() {
-                return Err(invalid("all external levels must be loaded"));
+        let mut occupied: HashMap<String, usize> = HashMap::new();
+        for key in self.iter_level_keys() {
+            let level = self
+                .level(key)
+                .ok_or_else(|| invalid("all external levels must be loaded"))?;
+            if let Some(name) = level["identifier"].as_str() {
+                *occupied.entry(name.to_owned()).or_default() += 1;
             }
         }
         let style = self.json["identifierStyle"]
@@ -266,18 +278,28 @@ impl Project {
             .as_str()
             .unwrap_or("Level_%idx")
             .to_owned();
-        let mut worlds = Vec::new();
-        for key in &keys {
-            if !worlds.contains(&key.world) {
-                worlds.push(key.world);
+        for world in self.world_indices() {
+            let mut origin = [i64::MAX; 2];
+            let mut automatic = Vec::new();
+            for key in self.level_keys_in_world(world) {
+                let level = self.level(key).expect("validated level");
+                for (axis, field) in ["worldX", "worldY"].iter().enumerate() {
+                    origin[axis] = origin[axis].min(level[field].as_i64().unwrap_or(0));
+                }
+                let name = level["identifier"].as_str();
+                if level["useAutoIdentifier"] == true {
+                    // Only this world's old automatic names become available.
+                    if let Some(name) = name {
+                        *occupied.get_mut(name).expect("counted level name") -= 1;
+                    }
+                    automatic.push(key);
+                } else {
+                    self.set_level_name(key, name.unwrap_or("").to_owned());
+                }
             }
-        }
-        for world in worlds {
-            let current = keys
-                .iter()
-                .copied()
-                .filter(|key| key.world == world)
-                .collect::<Vec<_>>();
+            if automatic.is_empty() {
+                continue;
+            }
             let container = world
                 .and_then(|i| self.json["worlds"].get(i))
                 .unwrap_or(&self.json);
@@ -293,25 +315,11 @@ impl Project {
                 container["worldGridWidth"].as_i64().unwrap_or(256).max(1),
                 container["worldGridHeight"].as_i64().unwrap_or(256).max(1),
             ];
-            let origin = ["worldX", "worldY"].map(|axis| {
-                current
-                    .iter()
-                    .filter_map(|key| self.level(*key))
-                    .map(|l| l[axis].as_i64().unwrap_or(0))
-                    .min()
-                    .unwrap_or(0)
-            });
-            let mut occupied = keys
-                .iter()
-                .filter_map(|key| self.level(*key).map(|l| (*key, l)))
-                .filter(|(key, l)| key.world != world || l["useAutoIdentifier"] != true)
-                .filter_map(|(_, l)| l["identifier"].as_str().map(str::to_owned))
-                .collect::<BTreeSet<_>>();
-            for (index, key) in current.into_iter().enumerate() {
+            // Reservations only grow until we begin the next world.
+            let mut next_suffix = HashMap::new();
+            for key in automatic {
+                let index = key.level;
                 let level = self.level(key).expect("validated level");
-                if level["useAutoIdentifier"] != true {
-                    continue;
-                }
                 let (x, y, depth) = (
                     level["worldX"].as_i64().unwrap_or(0),
                     level["worldY"].as_i64().unwrap_or(0),
@@ -345,28 +353,16 @@ impl Project {
                 ] {
                     name = name.replace(token, &value);
                 }
-                let name = unique_name(&name, &style, &occupied);
-                occupied.insert(name.clone());
+                let name = available_name(
+                    &name,
+                    &style,
+                    |candidate| occupied.get(candidate).copied().unwrap_or(0) > 0,
+                    Some(&mut next_suffix),
+                );
+                *occupied.entry(name.clone()).or_default() += 1;
                 self.set_level_name(key, name);
             }
         }
-        // Inline summaries for external documents must expose the same identifier.
-        for key in keys {
-            let name = self.level(key).expect("validated level")["identifier"]
-                .as_str()
-                .unwrap_or("")
-                .to_owned();
-            self.set_level_name(key, name);
-        }
         Ok(())
-    }
-    fn set_level_name(&mut self, key: LevelKey, name: String) {
-        self.level_mut(key).expect("validated level")["identifier"] = json!(name);
-        let container = if let Some(world) = key.world {
-            &mut self.json["worlds"][world]
-        } else {
-            &mut self.json
-        };
-        container["levels"][key.level]["identifier"] = json!(name);
     }
 }
