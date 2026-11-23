@@ -990,56 +990,9 @@ impl Project {
             visit_fields_mut(level, |f| refresh_refs(f, &refs));
         }
         self.refresh_table_of_contents()?;
-        for key in &keys {
-            let neighbours = level_neighbours(self, *key)?;
-            let l = self.level_mut(*key).expect("validated level");
-            l["__neighbours"] = json!(neighbours);
-        }
+        self.refresh_level_neighbours()?;
         for key in keys {
-            let rel = match container(self, key.world)?
-                .get("levels")
-                .and_then(|l| l.get(key.level))
-                .and_then(|l| l["externalRelPath"].as_str())
-            {
-                Some(s) => s.to_owned(),
-                None => continue,
-            };
-            let external = self
-                .external_levels
-                .get(&rel)
-                .expect("validated external")
-                .clone();
-            let stub = &mut levels_mut(self, key.world)?[key.level];
-            if let (Some(stub), Some(doc)) = (stub.as_object_mut(), external.as_object()) {
-                for (k, v) in doc {
-                    if [
-                        "identifier",
-                        "iid",
-                        "uid",
-                        "worldX",
-                        "worldY",
-                        "worldDepth",
-                        "pxWid",
-                        "pxHei",
-                        "__bgColor",
-                        "bgColor",
-                        "useAutoIdentifier",
-                        "bgRelPath",
-                        "bgPos",
-                        "bgPivotX",
-                        "bgPivotY",
-                        "__smartColor",
-                        "__bgPos",
-                        "fieldInstances",
-                        "__neighbours",
-                    ]
-                    .contains(&k.as_str())
-                    {
-                        stub.insert(k.clone(), v.clone());
-                    }
-                }
-                stub.insert("layerInstances".into(), Value::Null);
-            }
+            self.refresh_external_summary(key);
         }
         Ok(())
     }
@@ -1116,62 +1069,6 @@ fn refresh_refs(field: &mut Value, refs: &BTreeMap<String, Value>) {
             .cloned()
             .unwrap_or(Value::Null);
     }
-}
-fn level_neighbours(p: &Project, key: LevelKey) -> Result<Vec<Value>> {
-    let w = container(p, key.world)?;
-    if w["worldLayout"]
-        .as_str()
-        .is_some_and(|l| l.starts_with("Linear"))
-    {
-        return Ok(vec![]);
-    }
-    let l = p.level(key).ok_or_else(|| invalid("level missing"))?;
-    let x = l["worldX"].as_i64().unwrap_or(0);
-    let y = l["worldY"].as_i64().unwrap_or(0);
-    let r = x + l["pxWid"].as_i64().unwrap_or(0);
-    let b = y + l["pxHei"].as_i64().unwrap_or(0);
-    let z = l["worldDepth"].as_i64().unwrap_or(0);
-    let mut overlaps = vec![];
-    let mut touching = vec![];
-    for other in p.level_keys() {
-        if other == key || other.world != key.world {
-            continue;
-        }
-        let o = p.level(other).ok_or_else(|| invalid("level missing"))?;
-        let ox = o["worldX"].as_i64().unwrap_or(0);
-        let oy = o["worldY"].as_i64().unwrap_or(0);
-        let or = ox + o["pxWid"].as_i64().unwrap_or(0);
-        let ob = oy + o["pxHei"].as_i64().unwrap_or(0);
-        let oz = o["worldDepth"].as_i64().unwrap_or(0);
-        if ox < r && or > x && oy < b && ob > y {
-            if (oz - z).abs() <= 1 {
-                overlaps.push(
-                    json!({"levelIid":o["iid"],"dir":if oz==z{"o"}else if oz>z{">"}else{"<"}}),
-                );
-            }
-        } else if oz == z && ox <= r && or >= x && oy <= b && ob >= y {
-            let dir = if ox == r && oy == b {
-                "se"
-            } else if or == x && oy == b {
-                "sw"
-            } else if ox == r && ob == y {
-                "ne"
-            } else if or == x && ob == y {
-                "nw"
-            } else if ox >= r {
-                "e"
-            } else if or <= x {
-                "w"
-            } else if ob <= y {
-                "n"
-            } else {
-                "s"
-            };
-            touching.push(json!({"levelIid":o["iid"],"dir":dir}));
-        }
-    }
-    overlaps.extend(touching);
-    Ok(overlaps)
 }
 impl Project {
     /// Rename a definition tag using LDtk's Free identifier rules.

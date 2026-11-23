@@ -11,6 +11,7 @@ use std::{
 };
 
 mod levels;
+mod neighbours;
 mod snapshot;
 mod toc;
 pub use levels::{EntityMatch, LevelKey};
@@ -1508,33 +1509,39 @@ mod save_transaction_tests {
     }
 }
 
-pub(crate) fn sync_summary(root: &mut Value, key: LevelKey, external: &Value) {
+const LEVEL_SUMMARY_FIELDS: &[&str] = &[
+    "identifier",
+    "iid",
+    "uid",
+    "worldX",
+    "worldY",
+    "worldDepth",
+    "pxWid",
+    "pxHei",
+    "__bgColor",
+    "bgColor",
+    "useAutoIdentifier",
+    "bgRelPath",
+    "bgPos",
+    "bgPivotX",
+    "bgPivotY",
+    "__smartColor",
+    "__bgPos",
+    "fieldInstances",
+    "__neighbours",
+];
+
+fn summary_mut(root: &mut Value, key: LevelKey) -> &mut Value {
     let container = match key.world {
         Some(world) => &mut root["worlds"][world],
         None => root,
     };
-    let stub = &mut container["levels"][key.level];
-    for field in [
-        "identifier",
-        "iid",
-        "uid",
-        "worldX",
-        "worldY",
-        "worldDepth",
-        "pxWid",
-        "pxHei",
-        "__bgColor",
-        "bgColor",
-        "useAutoIdentifier",
-        "bgRelPath",
-        "bgPos",
-        "bgPivotX",
-        "bgPivotY",
-        "__smartColor",
-        "__bgPos",
-        "fieldInstances",
-        "__neighbours",
-    ] {
+    &mut container["levels"][key.level]
+}
+
+pub(crate) fn sync_summary(root: &mut Value, key: LevelKey, external: &Value) {
+    let stub = summary_mut(root, key);
+    for &field in LEVEL_SUMMARY_FIELDS {
         if let Some(value) = external.get(field) {
             stub[field] = value.clone();
         }
@@ -1542,6 +1549,26 @@ pub(crate) fn sync_summary(root: &mut Value, key: LevelKey, external: &Value) {
 }
 
 impl Project {
+    pub(crate) fn refresh_external_summary(&mut self, key: LevelKey) {
+        let stub = summary_mut(&mut self.json, key);
+        let Some(rel) = stub["externalRelPath"].as_str() else {
+            return;
+        };
+        let external = self
+            .external_levels
+            .get(rel)
+            .expect("validated external level");
+        if let Some(doc) = external.as_object() {
+            // Newly added summary keys follow the external document's order during editing.
+            for (name, value) in doc {
+                if LEVEL_SUMMARY_FIELDS.contains(&name.as_str()) {
+                    stub[name] = value.clone();
+                }
+            }
+            stub["layerInstances"] = Value::Null;
+        }
+    }
+
     /// Copy the currently saved project and external documents, retaining backupLimit copies.
     pub fn backup(&self) -> Result<Option<PathBuf>> {
         self.backup_with_progress(None, &mut |_, _, _| {})

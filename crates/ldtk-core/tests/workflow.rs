@@ -693,6 +693,59 @@ fn resize_removes_entities_outside_bounds_and_cleans_incoming_refs() {
     assert!(p.level(K).unwrap()["fieldInstances"][0]["__value"].is_null());
 }
 #[test]
+fn neighbours_keep_document_order_with_overlaps_before_edge_and_corner_contacts() {
+    let mut p = Project::new();
+    let template = p.level(K).unwrap().clone();
+    let placements = [
+        ("Center", 0, 0, 0, 16),
+        ("East", 16, 0, 0, 16),
+        ("Above", 0, 0, 1, 16),
+        ("Corner", -16, -16, 0, 16),
+        ("Wide", -128, 0, 0, 130),
+        ("Below", 0, 0, -1, 16),
+        ("DistantDepth", 0, 0, 2, 16),
+        ("EdgeOtherDepth", 0, 16, 1, 16),
+    ];
+    let mut next_uid = 1;
+    let mut make_level = |(name, x, y, z, width)| {
+        let mut level = template.clone();
+        level["uid"] = json!(next_uid);
+        next_uid += 1;
+        level["iid"] = json!(name);
+        level["identifier"] = json!(name);
+        level["worldX"] = json!(x);
+        level["worldY"] = json!(y);
+        level["worldDepth"] = json!(z);
+        level["pxWid"] = json!(width);
+        level["pxHei"] = json!(16);
+        level
+    };
+    p.json["levels"] =
+        serde_json::Value::Array(placements.into_iter().map(&mut make_level).collect());
+    p.json["worldLayout"] = json!("Free");
+    p.json["worlds"] = json!([
+        {"worldLayout":"Free", "levels":[make_level(("Isolated", 0, 0, 0, 16))]},
+        {"worldLayout":"LinearHorizontal", "levels":[
+            make_level(("First", 0, 0, 0, 16)), make_level(("Second", 16, 0, 0, 16))
+        ]}
+    ]);
+    p.refresh_derived_data().unwrap();
+    assert_eq!(
+        p.level(K).unwrap()["__neighbours"],
+        json!([
+            {"levelIid":"Above","dir":">"}, {"levelIid":"Wide","dir":"o"},
+            {"levelIid":"Below","dir":"<"}, {"levelIid":"East","dir":"e"},
+            {"levelIid":"Corner","dir":"nw"}
+        ])
+    );
+    for world in p.json["worlds"].as_array().unwrap() {
+        for level in world["levels"].as_array().unwrap() {
+            assert_eq!(level["__neighbours"], json!([]));
+        }
+    }
+}
+
+#[test]
 fn official_toc_neighbours_and_entity_caches_match_original_saved_exports() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/original");
     let mut toc_rows = 0;
