@@ -10,7 +10,11 @@ const WORLD_SWITCH: [(&str, &str); 3] = [
     ("ZoomOutOnly", "Switch when zooming out"),
     ("ZoomInAndOut", "Switch when zooming in or out (default)"),
 ];
-const LANGUAGES: [(&str, &str); 2] = [("en", "English"), ("zh-CN", "简体中文")];
+const LANGUAGES: [(&str, &str); 3] = [
+    ("system", "Follow system"),
+    ("en", "English"),
+    ("zh-CN", "简体中文"),
+];
 const SINGLE_LAYER_INTENSITIES: &[f64] = &[0., 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.];
 const NEARBY_TILE_DISTANCES: &[f64] = &[0., 1., 1.5, 2.];
 const SINGLE_LAYER_DEFAULT_PRESET: f64 = 0.9;
@@ -611,6 +615,20 @@ mod tests {
         label(&output, "APPLICATION SETTINGS");
         let saved: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
         assert_eq!(saved["language"], "en");
+
+        click(&mut app, &ctx, label(&output, "English"));
+        let output = frame(&mut app, &ctx, vec![]);
+        click(&mut app, &ctx, label(&output, "Follow system"));
+        let output = frame(&mut app, &ctx, vec![]);
+        label(&output, locale::tr_ctx(&ctx, "Follow system"));
+        assert_eq!(
+            settings::Settings::load_at(Some(path)).value["language"],
+            "system"
+        );
+        assert_eq!(
+            app.settings.language(),
+            locale::Language::from_code(Some("system"))
+        );
         assert_eq!(app.project.as_ref().unwrap().json, project);
         assert!(!app.dirty);
     }

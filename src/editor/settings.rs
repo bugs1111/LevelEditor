@@ -52,6 +52,8 @@ impl Settings {
             path,
             ..Self::default()
         };
+        // A fresh profile follows the desktop. The saved value can override it below.
+        settings.value["language"] = "system".into();
         if let Some(path) = &settings.path
             && let Ok(bytes) = std::fs::read(path)
             && let Ok(value) = serde_json::from_slice::<Value>(&bytes)
@@ -260,6 +262,36 @@ impl Settings {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn settings_default_to_system_language_and_preserve_explicit_preferences() {
+        use crate::app::locale::Language;
+
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        let settings = Settings::load_at(Some(path.clone()));
+        assert_eq!(settings.value["language"], "system");
+        settings.save().unwrap();
+        assert_eq!(
+            Settings::load_at(Some(path.clone())).value["language"],
+            "system"
+        );
+
+        std::fs::write(&path, br#"{"grid": false}"#).unwrap();
+        let settings = Settings::load_at(Some(path.clone()));
+        assert_eq!(settings.value["language"], "system");
+        assert!(!settings.bool("grid"));
+
+        for (code, expected) in [
+            ("en", Language::English),
+            ("zh-CN", Language::SimplifiedChinese),
+        ] {
+            std::fs::write(&path, json!({"language": code}).to_string()).unwrap();
+            let settings = Settings::load_at(Some(path.clone()));
+            assert_eq!(settings.value["language"], code);
+            assert_eq!(settings.language(), expected);
+        }
+    }
+
     #[test]
     fn file_dialog_directories_use_source_project_path_and_ui_identifiers() {
         let mut s = Settings::default();
