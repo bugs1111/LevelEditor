@@ -12,8 +12,13 @@ import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
 VERSION = re.search(r'^version = "([^"]+)"', (ROOT / "Cargo.toml").read_text(), re.M)[1]
+MANIFEST_NAME = "level-editor-updates.json"
 TARGETS = {"aarch64-apple-darwin", "x86_64-apple-darwin",
            "x86_64-pc-windows-msvc", "x86_64-unknown-linux-gnu"}
+
+
+def archive_name(target):
+    return f"level-editor-v{VERSION}-{target}.zip"
 
 
 def macho_matches(executable, header, cpu):
@@ -125,19 +130,21 @@ def main():
                 raise ValueError(f"Release version mismatch: {path}")
             target = metadata["target"]
             entry = metadata["entry"]
+            if target not in TARGETS or target in targets or entry["asset"] != archive_name(target):
+                raise ValueError(f"Invalid release package name or target: {path}")
             archive = args.merge / entry["asset"]
             if archive.stat().st_size != entry["size"] or hashlib.sha256(archive.read_bytes()).hexdigest() != entry["sha256"]:
                 raise ValueError(f"Release checksum mismatch: {archive}")
             targets[target] = entry
         if set(targets) != TARGETS:
             raise ValueError(f"Incomplete release targets: {sorted(targets)}")
-        manifest = args.merge / "ldtk-rs-updates.json"
+        manifest = args.merge / MANIFEST_NAME
         manifest.write_text(json.dumps({"version": VERSION, "targets": targets}, indent=2) + "\n")
         print(manifest)
     elif args.target:
         output = ROOT / "dist"
         output.mkdir(exist_ok=True)
-        name = f"ldtk-rs-v{VERSION}-{args.target}.zip"
+        name = archive_name(args.target)
         archive = output / name
         package(args.target, archive)
         entry = {"asset": name, "sha256": hashlib.sha256(archive.read_bytes()).hexdigest(), "size": archive.stat().st_size}

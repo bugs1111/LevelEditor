@@ -1,10 +1,13 @@
 """Check that native release archives preserve the updater layout and target."""
+import hashlib
 import importlib.util
+import json
 from pathlib import Path
 import plistlib
 import struct
 import tempfile
 import unittest
+from unittest.mock import patch
 import zipfile
 
 
@@ -59,6 +62,34 @@ class ReleasePackageTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "x86_64-apple-darwin"):
             release.package("x86_64-apple-darwin", output)
         self.assertFalse(output.exists())
+
+    def test_packaging_and_manifest_use_branded_release_asset_names(self):
+        self.make_bundle().write_bytes(macho(0x0100000C))
+        arm = "aarch64-apple-darwin"
+        with patch("sys.argv", ["package-release.py", "--target", arm]):
+            release.main()
+        output = self.root / "dist"
+        arm_asset = output / f"level-editor-v{release.VERSION}-{arm}.zip"
+        self.assertTrue(arm_asset.is_file())
+        for target in release.TARGETS - {arm}:
+            asset = f"level-editor-v{release.VERSION}-{target}.zip"
+            with zipfile.ZipFile(output / asset, "w") as archive:
+                archive.writestr("fixture", target)
+            contents = (output / asset).read_bytes()
+            (output / f"target-{target}.json").write_text(json.dumps({
+                "version": release.VERSION, "target": target, "entry": {
+                    "asset": asset, "size": len(contents),
+                    "sha256": hashlib.sha256(contents).hexdigest(),
+                },
+            }))
+        with patch("sys.argv", ["package-release.py", "--merge", str(output)]):
+            release.main()
+        manifest = json.loads((output / "level-editor-updates.json").read_text())
+        self.assertEqual(manifest["version"], release.VERSION)
+        self.assertEqual(set(manifest["targets"]), release.TARGETS)
+        self.assertEqual({entry["asset"] for entry in manifest["targets"].values()},
+                         {path.name for path in output.glob("level-editor-v*.zip")})
+        self.assertEqual(list(output.glob("ldtk-rs-*")), [])
 
     def test_universal_bundle_accepts_only_architectures_in_its_slices(self):
         executable = self.make_bundle()

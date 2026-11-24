@@ -163,7 +163,7 @@ scripts/cargo run --release --example native_smoke -- examples/topdown/Typical_T
 
 先提交要发布的改动并合入最新的 `origin/main`，再运行 `just pub`。它取源码版本和最新稳定 Release 中较高的版本，将补丁号加一。也可以通过 `just pub 0.2.0` 指定稳定版本。命令更新 `Cargo.toml` 和 `Cargo.lock`，将发布提交和标签一起推送到 `main`。
 
-标签 `v<版本>` 触发 `Build and release` 工作流。四个平台完成检查、测试和打包后，工作流会发布 ZIP 和包含各平台校验值的 `ldtk-rs-updates.json`。macOS 本地仍可用 `scripts/package-macos` 生成应用，用 `python3 scripts/package-release.py --target aarch64-apple-darwin` 生成对应 ZIP。
+标签 `v<版本>` 触发 `Build and release` 工作流。四个平台完成检查、测试和打包后，工作流会发布 `level-editor-v<版本>-<构建目标>.zip` 和自动更新清单 `level-editor-updates.json`。已安装 v0.1.7 或更早版本的用户需要从 Releases 手动下载一次使用新文件名的版本，之后可继续应用内更新。macOS 本地可用 `scripts/package-macos` 生成应用，用 `python3 scripts/package-release.py --target aarch64-apple-darwin` 生成对应 ZIP。
 
 [v0.1.0 四平台下载](https://github.com/bugs1111/LevelEditor/releases/tag/v0.1.0)已发布。四平台原生 CI、发布包校验、真实私有更新源和 ARM macOS 下载包冷/热打开均已通过，具体结果与验收范围见[最终集成记录](docs/status/final-verification.md)。
 

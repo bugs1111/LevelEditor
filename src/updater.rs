@@ -27,7 +27,8 @@ pub fn apply_update_cli() -> Option<Result<()>> {
 pub const RELEASES_URL: &str = "https://github.com/bugs1111/LevelEditor/releases";
 const API: &str = "https://api.github.com/repos/bugs1111/LevelEditor/releases/latest";
 const ASSETS: &str = "https://api.github.com/repos/bugs1111/LevelEditor/releases/assets/";
-const MANIFEST: &str = "ldtk-rs-updates.json";
+const MANIFEST: &str = "level-editor-updates.json";
+const LEGACY_MANIFEST: &str = "ldtk-rs-updates.json";
 const MAX_DOWNLOAD: u64 = 1024 * 1024 * 1024;
 const MAX_UNPACKED: u64 = 4 * 1024 * 1024 * 1024;
 const MARKER: &str = "ldtk-rs-install.json";
@@ -475,14 +476,18 @@ fn check_release(
         }
         Ok(url.into())
     };
-    let manifest = http.json(&url(asset(MANIFEST)?)?, true, cancel)?;
+    let manifest_asset =
+        asset(MANIFEST).or_else(|missing| asset(LEGACY_MANIFEST).or(Err(missing)))?;
+    let manifest = http.json(&url(manifest_asset)?, true, cancel)?;
     if manifest["version"].as_str() != Some(version.to_string().as_str()) {
         return Err("Update manifest version does not match the release tag".into());
     }
     let target = target().ok_or("No Rust update package is available for this OS/architecture")?;
     let selected = &manifest["targets"][target];
-    let expected = format!("ldtk-rs-v{version}-{target}.zip");
-    if selected["asset"] != expected {
+    let expected = format!("level-editor-v{version}-{target}.zip");
+    let legacy = format!("ldtk-rs-v{version}-{target}.zip");
+    let name = selected["asset"].as_str().unwrap_or_default();
+    if name != expected && name != legacy {
         return Err(format!(
             "No compatible Rust package for {target} in this release"
         ));
@@ -496,7 +501,7 @@ fn check_release(
         .as_u64()
         .filter(|&n| n > 0 && n <= MAX_DOWNLOAD)
         .ok_or("Update manifest has an invalid archive size")?;
-    let asset = asset(&expected)?;
+    let asset = asset(name)?;
     if asset["size"].as_u64() != Some(size) {
         return Err("GitHub asset size does not match the update manifest".into());
     }
@@ -513,7 +518,7 @@ fn check_release(
             .take(16_000)
             .collect(),
         page: page.into(),
-        asset: expected,
+        asset: name.into(),
         url: url(asset)?,
         sha256,
         size,
@@ -911,10 +916,33 @@ mod tests {
         writer.finish().unwrap().into_inner()
     }
     fn publish(server: &Server, bytes: &[u8], version: &str) {
-        let name = format!("ldtk-rs-v{version}-{}.zip", target().unwrap());
+        publish_with_prefix(server, bytes, version, "ldtk-rs");
+    }
+    fn publish_with_prefix(server: &Server, bytes: &[u8], version: &str, prefix: &str) {
+        let name = format!("{prefix}-v{version}-{}.zip", target().unwrap());
+        let manifest = format!("{prefix}-updates.json");
         server.reply("/assets/package", bytes.to_vec());
         server.json("/assets/manifest",json!({"version":version,"targets":{target().unwrap():{"asset":name,"sha256":format!("{:x}",Sha256::digest(bytes)),"size":bytes.len()}}}));
-        server.json("/latest",json!({"tag_name":format!("v{version}"),"draft":false,"prerelease":false,"html_url":format!("{RELEASES_URL}/tag/v{version}"),"body":"Fixture Rust release","assets":[{"name":MANIFEST,"url":format!("{}/assets/manifest",server.base)},{"name":name,"url":format!("{}/assets/package",server.base),"size":bytes.len()}]}));
+        server.json("/latest",json!({"tag_name":format!("v{version}"),"draft":false,"prerelease":false,"html_url":format!("{RELEASES_URL}/tag/v{version}"),"body":"Fixture Rust release","assets":[{"name":manifest,"url":format!("{}/assets/manifest",server.base)},{"name":name,"url":format!("{}/assets/package",server.base),"size":bytes.len()}]}));
+    }
+    #[test]
+    fn checks_and_stages_a_release_with_only_level_editor_asset_names() {
+        let server = Server::new();
+        publish_with_prefix(&server, &archive(), "1.1.0", "level-editor");
+        let cancel = AtomicBool::new(false);
+        let release = check_release(&server.feed(), "0.1.0", None, &cancel)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            release.asset,
+            format!("level-editor-v1.1.0-{}.zip", target().unwrap())
+        );
+        let prepared = stage_release(&server.feed(), &release, None, &cancel, |_, _| {}).unwrap();
+        assert_eq!(
+            fs::read(executable(&prepared.root)).unwrap(),
+            b"fixture-new-executable"
+        );
+        fs::remove_dir_all(prepared.work).unwrap();
     }
     #[test]
     fn private_release_check_download_sha_and_executable_staging_use_native_http() {

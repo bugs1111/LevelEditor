@@ -6,14 +6,14 @@ The native flow follows the original `App.hx` update entry: background check, av
 
 ## Release contract
 
-Each release has `ldtk-rs-updates.json`:
+New releases publish `level-editor-updates.json`. The updater also reads `ldtk-rs-updates.json` from older releases.
 
 ```json
 {
-  "version": "0.1.1",
+  "version": "<version>",
   "targets": {
     "aarch64-apple-darwin": {
-      "asset": "ldtk-rs-v0.1.1-aarch64-apple-darwin.zip",
+      "asset": "level-editor-v<version>-aarch64-apple-darwin.zip",
       "sha256": "64 lowercase hexadecimal characters",
       "size": 123456
     }

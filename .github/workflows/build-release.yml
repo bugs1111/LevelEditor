@@ -56,7 +56,7 @@ jobs:
         with:
           name: release-${{ matrix.target }}
           path: |
-            dist/ldtk-rs-v*.zip
+            dist/level-editor-v*.zip
             dist/target-*.json
           if-no-files-found: error
   publish:
@@ -77,6 +77,6 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           python scripts/package-release.py --merge release-assets
-          version=$(python -c 'import json; print(json.load(open("release-assets/ldtk-rs-updates.json"))["version"])')
+          version=$(python -c 'import json; print(json.load(open("release-assets/level-editor-updates.json"))["version"])')
           if [[ "$GITHUB_REF_NAME" != "v$version" ]]; then exit 1; fi
-          gh release create "v$version" release-assets/*.zip release-assets/ldtk-rs-updates.json --repo "$GITHUB_REPOSITORY" --verify-tag --title "LevelEditor v$version" --generate-notes
+          gh release create "v$version" release-assets/level-editor-v*.zip release-assets/level-editor-updates.json --repo "$GITHUB_REPOSITORY" --verify-tag --title "LevelEditor v$version" --generate-notes
