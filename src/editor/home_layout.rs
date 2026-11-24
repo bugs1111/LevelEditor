@@ -256,35 +256,13 @@ impl EditorApp {
         ) {
             paint_contained(parent.painter(), &texture, main, egui::Align2::CENTER_TOP);
         }
-        if let Some(texture) =
-            self.assets
-                .builtin(ctx, "home-icon", include_bytes!("../../assets/appIcon.png"))
-        {
-            paint_contained(
-                parent.painter(),
-                &texture,
-                Rect::from_center_size(
-                    egui::pos2(header.left() + 70., header.center().y),
-                    Vec2::splat(140.),
-                ),
-                egui::Align2::CENTER_CENTER,
-            );
-        }
-        if let Some(texture) = self.assets.builtin(
-            ctx,
-            "home-logo",
-            include_bytes!("../../assets/img/LDtk-shine-1024.png"),
-        ) {
-            paint_contained(
-                parent.painter(),
-                &texture,
-                Rect::from_center_size(
-                    egui::pos2(header.left() + 306., header.center().y),
-                    egui::vec2(300., 128.),
-                ),
-                egui::Align2::LEFT_CENTER,
-            );
-        }
+        parent.painter().text(
+            egui::pos2(header.left() + 8., header.center().y),
+            egui::Align2::LEFT_CENTER,
+            "Level Editor",
+            FontId::new(80., egui::FontFamily::Name("heading".into())),
+            Color32::from_rgb(255, 125, 10),
+        );
         let version = env!("CARGO_PKG_VERSION")
             .strip_suffix(".0")
             .unwrap_or(env!("CARGO_PKG_VERSION"));
@@ -485,22 +463,65 @@ impl EditorApp {
             );
         }
         self.home_about(&mut child(parent, about, "home-about"));
-        if let Some(texture) = self.assets.builtin(
-            ctx,
-            "home-deepnight",
-            include_bytes!("../../assets/img/deepnight.png"),
-        ) {
-            let logo = Rect::from_min_size(
-                egui::pos2(footer.left(), footer.center().y - 20.),
-                egui::vec2(111., 40.),
-            );
-            paint_contained(parent.painter(), &texture, logo, egui::Align2::LEFT_CENTER);
+        let scale = (footer.height() / 40.).clamp(0., 1.);
+        let footer_item = |left, width, height| {
+            Rect::from_min_size(
+                egui::pos2(
+                    footer.left() + left * scale,
+                    footer.center().y - height * scale * 0.5,
+                ),
+                egui::vec2(width * scale, height * scale),
+            )
+        };
+        let studio = footer_item(0., 111., 40.);
+        let deepnight = footer_item(129., 111., 40.);
+        let ldtk_icon = footer_item(258., 38., 38.);
+        let ldtk_wordmark = footer_item(300., 69., 40.);
+        for (id, bytes, rect) in [
+            (
+                "home-pixem",
+                include_bytes!("../../assets/img/pixem_games.png").as_slice(),
+                studio,
+            ),
+            (
+                "home-deepnight",
+                include_bytes!("../../assets/img/deepnight.png").as_slice(),
+                deepnight,
+            ),
+            (
+                "home-ldtk-icon",
+                include_bytes!("../../assets/appIcon.png").as_slice(),
+                ldtk_icon,
+            ),
+            (
+                "home-logo",
+                include_bytes!("../../assets/img/LDtk-shine-1024.png").as_slice(),
+                ldtk_wordmark,
+            ),
+        ] {
+            if let Some(texture) = self.assets.builtin(ctx, id, bytes) {
+                paint_contained(
+                    parent.painter(),
+                    &texture,
+                    rect,
+                    egui::Align2::CENTER_CENTER,
+                );
+            }
+        }
+        for (rect, id, url) in [
+            (deepnight, "deepnight-link", "https://deepnight.net"),
+            (
+                ldtk_icon.union(ldtk_wordmark),
+                "ldtk-link",
+                "https://ldtk.io",
+            ),
+        ] {
             if parent
-                .interact(logo, parent.id().with("deepnight-link"), Sense::click())
+                .interact(rect, parent.id().with(id), Sense::click())
                 .on_hover_cursor(egui::CursorIcon::PointingHand)
                 .clicked()
             {
-                ctx.open_url(egui::OpenUrl::new_tab("https://deepnight.net"));
+                ctx.open_url(egui::OpenUrl::new_tab(url));
             }
         }
         parent.painter().text(
@@ -1260,6 +1281,54 @@ mod tests {
         let output = home_frame(&mut app, &ctx, vec![]);
         let examples = text_rect(&output, "Examples");
         let support = text_rect(&output, "Support my work");
+        let title = text_rect(&output, "Level Editor");
+        let version = env!("CARGO_PKG_VERSION");
+        assert!(title.right() < text_rect(&output, version.strip_suffix(".0").unwrap_or(version)).left());
+        assert!(title.bottom() < examples.top());
+        assert!(output.shapes.iter().any(|shape| matches!(&shape.shape, egui::Shape::Text(text)
+            if text.galley.text() == "Level Editor"
+                && text.galley.job.sections[0].format.font_id.family == egui::FontFamily::Name("heading".into()))));
+        let logos = [
+            (
+                "home-pixem",
+                include_bytes!("../../assets/img/pixem_games.png").as_slice(),
+            ),
+            (
+                "home-deepnight",
+                include_bytes!("../../assets/img/deepnight.png").as_slice(),
+            ),
+            (
+                "home-ldtk-icon",
+                include_bytes!("../../assets/appIcon.png").as_slice(),
+            ),
+            (
+                "home-logo",
+                include_bytes!("../../assets/img/LDtk-shine-1024.png").as_slice(),
+            ),
+        ]
+        .map(|(id, bytes)| {
+            let texture = app.assets.builtin(&ctx, id, bytes).unwrap();
+            output
+                .shapes
+                .iter()
+                .find_map(|shape| match &shape.shape {
+                    egui::Shape::Mesh(mesh) if mesh.texture_id == texture.id() => {
+                        Some(mesh.calc_bounds())
+                    }
+                    _ => None,
+                })
+                .expect("branding texture should be painted")
+        });
+        assert!(
+            logos
+                .windows(2)
+                .all(|pair| pair[0].right() < pair[1].left())
+        );
+        assert!(
+            logos
+                .iter()
+                .all(|rect| rect.top() > 810. && rect.height() <= 40.)
+        );
         text_rect(&output, "Update 1.5.4");
         assert!(examples.top() > 280. && examples.top() < 345.);
         assert!(support.left() > examples.right() + 400.);

@@ -18,7 +18,12 @@ run *args:
 demo-godot *args:
     exec python3 importer/godot/run_demo.py "$@"
 
-# 在 Mac 上构建指定平台和模式的便携目录
+# 在 Mac 上构建便携目录，默认 all / release，-a 可选 Mac 架构
 [positional-arguments]
 build *args:
     exec python3 scripts/build.py "$@"
+
+# 发布当前提交到 main，默认递增补丁版本，可指定稳定版版本号
+[positional-arguments]
+pub *args:
+    exec python3 scripts/publish.py "$@"

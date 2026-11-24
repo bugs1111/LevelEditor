@@ -2,10 +2,24 @@
 set -eu
 project_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$project_dir"
-scripts/cargo build --release --locked
-bundle="$project_dir/dist/LevelEditor.app"
-mkdir -p "$project_dir/dist"
-staging_dir=$(mktemp -d "$project_dir/dist/.ldtk-rust-app.XXXXXX")
+case "$#" in
+    0)
+        scripts/cargo build --release --locked
+        binary="$project_dir/target/release/ldtk-rs"
+        bundle="$project_dir/dist/LevelEditor.app"
+        ;;
+    2)
+        binary="$1"
+        bundle="$2"
+        ;;
+    *)
+        printf 'Usage: %s [binary output.app]\n' "$0" >&2
+        exit 2
+        ;;
+esac
+bundle_parent=$(dirname -- "$bundle")
+mkdir -p "$bundle_parent"
+staging_dir=$(mktemp -d "$bundle_parent/.leveleditor-app.XXXXXX")
 staged_bundle="$staging_dir/LevelEditor.app"
 previous_bundle="$staging_dir/previous.app"
 cleanup() {
@@ -20,7 +34,7 @@ cleanup() {
 trap cleanup EXIT
 trap 'exit 1' HUP INT TERM
 mkdir -p "$staged_bundle/Contents/MacOS" "$staged_bundle/Contents/Resources/examples"
-cp target/release/ldtk-rs "$staged_bundle/Contents/MacOS/ldtk-rs"
+cp "$binary" "$staged_bundle/Contents/MacOS/ldtk-rs"
 cp -R examples/original "$staged_bundle/Contents/Resources/examples/"
 cp -R assets "$staged_bundle/Contents/Resources/"
 cp assets/LevelEditor.icns "$staged_bundle/Contents/Resources/LevelEditor.icns"

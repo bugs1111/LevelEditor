@@ -4,11 +4,6 @@ on:
   push:
     tags: ['v*']
   workflow_dispatch:
-    inputs:
-      publish:
-        description: Publish the verified version to this repository's Releases
-        type: boolean
-        default: false
 permissions:
   contents: read
 jobs:
@@ -65,7 +60,7 @@ jobs:
             dist/target-*.json
           if-no-files-found: error
   publish:
-    if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.publish)
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     needs: build
     runs-on: ubuntu-24.04
     permissions:
@@ -83,5 +78,5 @@ jobs:
         run: |
           python scripts/package-release.py --merge release-assets
           version=$(python -c 'import json; print(json.load(open("release-assets/ldtk-rs-updates.json"))["version"])')
-          if [[ "$GITHUB_REF" == refs/tags/* && "$GITHUB_REF_NAME" != "v$version" ]]; then exit 1; fi
-          gh release create "v$version" release-assets/*.zip release-assets/ldtk-rs-updates.json --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "LDtk Rust v$version" --generate-notes
+          if [[ "$GITHUB_REF_NAME" != "v$version" ]]; then exit 1; fi
+          gh release create "v$version" release-assets/*.zip release-assets/ldtk-rs-updates.json --repo "$GITHUB_REPOSITORY" --verify-tag --title "LevelEditor v$version" --generate-notes

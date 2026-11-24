@@ -1,9 +1,9 @@
 [package]
-name = "ldtk-rs"
+name = "LevelEditor"
 version = "0.1.1"
 edition = "2024"
 license = "MIT"
-description = "Native Rust port of the LDtk level editor (in development)"
+description = "LevelEditor, a native Rust port of the LDtk level editor"
 
 [workspace]
 members = ["crates/ldtk-core"]

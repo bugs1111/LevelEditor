@@ -99,6 +99,8 @@ pub struct Updater {
     #[cfg(test)]
     test_install: bool,
     #[cfg(test)]
+    test_check: bool,
+    #[cfg(test)]
     pub(crate) test_install_requests: usize,
 }
 impl Default for Updater {
@@ -109,6 +111,8 @@ impl Default for Updater {
             cancel: Arc::new(AtomicBool::new(false)),
             #[cfg(test)]
             test_install: false,
+            #[cfg(test)]
+            test_check: false,
             #[cfg(test)]
             test_install_requests: 0,
         }
@@ -142,7 +146,23 @@ impl Updater {
     pub fn busy(&self) -> bool {
         self.receiver.is_some()
     }
+    #[cfg(test)]
+    pub(crate) fn failed_fixture(error: &str) -> Self {
+        let mut updater = Self::default();
+        updater.state = State::Failed(error.into());
+        updater.test_check = true;
+        updater
+    }
     pub fn check(&mut self, token: Option<String>, wake: impl Fn() + Send + 'static) {
+        #[cfg(test)]
+        if self.test_check {
+            let (sender, receiver) = mpsc::channel();
+            self.state = State::Checking;
+            self.receiver = Some(receiver);
+            sender.send(Event::Checked(Ok(None))).unwrap();
+            wake();
+            return;
+        }
         self.check_feed(Feed::github(), token, wake);
     }
     fn check_feed(&mut self, feed: Feed, token: Option<String>, wake: impl Fn() + Send + 'static) {

@@ -30,27 +30,32 @@ scripts/run examples/original/Typical_TopDown_example.ldtk
 
 Linux 的 X11 运行环境还需要 Vulkan 驱动与 `libxkbcommon-x11`；Ubuntu/Debian 对应运行库为 `libvulkan1`、`libxkbcommon-x11-0`。GUI CI 使用独立 Xvfb 显示和 Mesa lavapipe，实际适配器及硬件验收范围见[GUI/GPU 记录](docs/status/gui-platform-acceptance.md)。
 
-在 Mac 上构建三平台程序：
+在 Mac 上构建便携程序：
 
 ```sh
+just build
+just build -m debug
 just build -t mac -m debug
+just build -t mac -a arm64
+just build -t mac -a x86_64
 just build -t win -m release
 just build -t linux -m release
 ```
 
-`-t` 和 `-m` 均必填；三个目标都支持 `debug`、`release`。构建成功后生成独立便携目录，包含可执行文件、原版资源、examples 和许可文件，可整体复制到目标系统。
+`-t` 默认是 `all`，依次构建 macOS、Windows 和 Linux。`-m` 默认是 `release`。macOS 默认使用本机工具链的架构，也可通过 `-a arm64` 指定 Apple Silicon，或通过 `-a x86_64` 指定 Intel Mac。`-t all` 搭配 `-a` 时，该参数只选择 macOS 的架构。构建成功后生成独立便携目录，包含可执行文件、原版资源、examples 和许可文件，可整体复制到目标系统。
 
 | `-t` | 构建目标 | 输出目录 |
 |---|---|---|
-| `mac` | 本机 macOS CPU 架构 | `dist/mac/<模式>/ldtk-rs` |
+| `mac` | 本机 macOS 架构 | `dist/mac/<模式>/LevelEditor.app` |
+| `mac -a <架构>` | Apple Silicon 或 Intel | `dist/mac/<架构>/<模式>/LevelEditor.app` |
 | `win` | `x86_64-pc-windows-gnu` | `dist/win/<模式>/ldtk-rs.exe` |
 | `linux` | `x86_64-unknown-linux-gnu`，glibc ≥ 2.28 | `dist/linux/<模式>/ldtk-rs` |
 
-首次构建会按需安装缺少的 Rust target。Windows 使用 [Homebrew MinGW](https://formulae.brew.sh/formula/mingw-w64)，缺少编译器时执行 `brew install mingw-w64`。编译器运行库静态链接。Linux 构建所需的 [cargo-zigbuild](https://github.com/rust-cross/cargo-zigbuild) 0.21.8 和 Zig 0.15.2 会自动安装到 `~/.cargo/cross`，已设置 `CARGO_HOME` 时使用其 `cross` 子目录。其他项目可以通过 Cargo 的 `bin` 目录调用这两个命令。首次安装需要网络，后续构建复用已安装的工具和缓存。
+本机 macOS 构建可以直接使用 Homebrew Rust。跨平台或跨架构构建需要已安装并选中的 Rustup 工具链，脚本会为它按需安装缺少的 Rust target。Windows 使用 [Homebrew MinGW](https://formulae.brew.sh/formula/mingw-w64)，缺少编译器时执行 `brew install mingw-w64`。编译器运行库静态链接。Linux 构建所需的 [cargo-zigbuild](https://github.com/rust-cross/cargo-zigbuild) 0.21.8 和 Zig 0.15.2 会自动安装到 `~/.cargo/cross`，已设置 `CARGO_HOME` 时使用其 `cross` 子目录。其他项目可以通过 Cargo 的 `bin` 目录调用这两个命令。首次安装需要网络，后续构建复用已安装的工具和缓存。
 
 这些命令使用 `Cargo.lock` 构建当前源码并打印最终路径。Linux 运行时仍需 Vulkan 驱动及 X11/Wayland 运行库。Windows/Linux 的交叉编译与目标系统的 GUI 运行分别验收；本地构建记录见 [构建命令验收](docs/status/build-command.md)。
 
-macOS 应用打包：
+macOS 的 `just build` 产物可在 Finder 中双击打开。发布流程也可以在根输出目录生成本机 Release 应用：
 
 ```sh
 scripts/package-macos
@@ -153,10 +158,12 @@ scripts/cargo run --release --example native_smoke -- examples/topdown/Typical_T
 
 源码和 Rust 发布源为 [bugs1111/LevelEditor](https://github.com/bugs1111/LevelEditor)。更新从该仓库的 Releases 获取匹配系统/架构的 Rust 包，下载后验证大小及 SHA-256。安装前处理未保存修改，复制的 Rust 更新助手负责替换、重启和失败回滚；开发目录中的 `cargo run` 不允许原地替换。
 
-仓库目前为私有：在应用设置的 `Check for updates` 窗口输入仅本次会话有效的 GitHub token，或由启动环境提供 `GH_TOKEN` / `GITHUB_TOKEN`。token 需要仓库 Contents 读取权限，不写入应用配置文件。
+公开 Releases 可直接检查更新。如果发布源需要身份验证，可在 `Check for updates` 窗口输入会话令牌，或由启动环境提供 `GH_TOKEN` / `GITHUB_TOKEN`。令牌需要仓库 Contents 读取权限，仅用于当前会话。
 
-仓库的 `Build and release` 工作流会在四个平台运行检查、测试并打包。标签 `v<版本>` 或手动选择发布会生成包含所有平台校验值的 `ldtk-rs-updates.json`；稳定通道拒绝预发布版本。macOS 本地仍可用 `scripts/package-macos` 生成应用，用 `python3 scripts/package-release.py --target aarch64-apple-darwin` 生成对应 ZIP。
+先提交要发布的改动并合入最新的 `origin/main`，再运行 `just pub`。它取源码版本和最新稳定 Release 中较高的版本，将补丁号加一。也可以通过 `just pub 0.2.0` 指定稳定版本。命令更新 `Cargo.toml` 和 `Cargo.lock`，将发布提交和标签一起推送到 `main`。
+
+标签 `v<版本>` 触发 `Build and release` 工作流。四个平台完成检查、测试和打包后，工作流会发布 ZIP 和包含各平台校验值的 `ldtk-rs-updates.json`。macOS 本地仍可用 `scripts/package-macos` 生成应用，用 `python3 scripts/package-release.py --target aarch64-apple-darwin` 生成对应 ZIP。
 
 [v0.1.0 四平台下载](https://github.com/bugs1111/LevelEditor/releases/tag/v0.1.0)已发布。四平台原生 CI、发布包校验、真实私有更新源和 ARM macOS 下载包冷/热打开均已通过，具体结果与验收范围见[最终集成记录](docs/status/final-verification.md)。
 
-0.1.1 已修复取帧失败时 GPU 上传缓冲累积导致的 Home 高内存，四平台构建、GUI/GPU 与应用包验收通过；四包及清单位于本地 `.tools/release-v0.1.1/`，正式发布等待当前用户明确授权。证据见 [0.1.1 包验收](docs/status/release-0.1.1-acceptance.json)及 [Home 内存调查](docs/status/home-memory-investigation.md)。
+0.1.1 已修复取帧失败时 GPU 上传缓冲累积导致的 Home 高内存。四平台构建、GUI/GPU 与应用包的历史验证结果见 [0.1.1 包验收](docs/status/release-0.1.1-acceptance.json)及 [Home 内存调查](docs/status/home-memory-investigation.md)。
