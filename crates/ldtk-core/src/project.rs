@@ -1436,6 +1436,10 @@ impl Drop for TemporaryFile {
         };
         // A staging copy can inherit the destination's read-only bit.
         #[cfg(windows)]
+        #[allow(
+            clippy::permissions_set_readonly_false,
+            reason = "Only clears the Windows read-only file attribute"
+        )]
         if _error.kind() == std::io::ErrorKind::PermissionDenied
             && let Ok(metadata) = fs::metadata(&self.0)
             && metadata.permissions().readonly()
