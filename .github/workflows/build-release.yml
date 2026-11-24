@@ -4,6 +4,11 @@ on:
   push:
     tags: ['v*']
   workflow_dispatch:
+    inputs:
+      notarize_macos:
+        description: Verify Developer ID signing and Apple notarization on main
+        type: boolean
+        default: false
 permissions:
   contents: read
 jobs:
@@ -50,8 +55,33 @@ jobs:
       - name: macOS application
         if: runner.os == 'macOS'
         run: scripts/package-macos
+      - name: Sign and notarize macOS application
+        id: notarize_macos
+        if: >-
+          runner.os == 'macOS' &&
+          (github.event_name == 'push' ||
+          (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.notarize_macos))
+        timeout-minutes: 35
+        env:
+          MACOS_CERTIFICATE_BASE64: ${{ secrets.MACOS_CERTIFICATE_BASE64 }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_NOTARY_PASSWORD: ${{ secrets.APPLE_NOTARY_PASSWORD }}
+        run: scripts/notarize-macos 'dist/Level Editor.app'
       - name: Release package
         run: python scripts/package-release.py --target '${{ matrix.target }}'
+      - name: Verify notarization survives release packaging
+        if: steps.notarize_macos.outcome == 'success'
+        run: |
+          set -- dist/level-editor-v*-${{ matrix.target }}.zip
+          test "$#" -eq 1
+          verify_dir=$(mktemp -d "$RUNNER_TEMP/level-editor-verify.XXXXXX")
+          trap 'rm -rf "$verify_dir"' EXIT
+          ditto -x -k "$1" "$verify_dir"
+          bundle="$verify_dir/Level Editor.app"
+          codesign --verify --deep --strict "$bundle"
+          syspolicy_check distribution "$bundle"
       - uses: actions/upload-artifact@v7
         with:
           name: release-${{ matrix.target }}

@@ -161,9 +161,21 @@ scripts/cargo run --release --example native_smoke -- examples/topdown/Typical_T
 
 公开 Releases 可直接检查更新。如果发布源需要身份验证，可在 `Check for updates` 窗口输入会话令牌，或由启动环境提供 `GH_TOKEN` / `GITHUB_TOKEN`。令牌需要仓库 Contents 读取权限，仅用于当前会话。
 
-先提交要发布的改动并合入最新的 `origin/main`，再运行 `just pub`。它取源码版本和最新稳定 Release 中较高的版本，将补丁号加一。也可以通过 `just pub 0.2.0` 指定稳定版本。命令更新 `Cargo.toml` 和 `Cargo.lock`，将发布提交和标签一起推送到 `main`。
+先提交要发布的改动并合入最新的 `origin/main`，确认已配置下文的 macOS 公证凭据，再运行 `just pub`。它取源码版本和最新稳定 Release 中较高的版本，将补丁号加一。也可以通过 `just pub 0.2.0` 指定稳定版本。命令更新 `Cargo.toml` 和 `Cargo.lock`，将发布提交和标签一起推送到 `main`。
 
-标签 `v<版本>` 触发 `Build and release` 工作流。四个平台完成检查、测试和打包后，工作流会发布 `level-editor-v<版本>-<构建目标>.zip` 和自动更新清单 `level-editor-updates.json`。macOS 本地可用 `scripts/package-macos` 生成应用，用 `python3 scripts/package-release.py --target aarch64-apple-darwin` 生成对应 ZIP。
+标签 `v<版本>` 触发 `Build and release` 工作流。两个 macOS 架构的应用会用 Developer ID 签名、提交 Apple 公证并附上票据。工作流解压最终 ZIP，验证签名和公证后才上传构建产物。四个平台全部通过后，GitHub Releases 发布 `level-editor-v<版本>-<构建目标>.zip` 和自动更新清单 `level-editor-updates.json`。macOS 本地可用 `scripts/package-macos` 生成临时签名的应用，用 `python3 scripts/package-release.py --target aarch64-apple-darwin` 生成对应 ZIP。
+
+在 [仓库的 Actions Secrets 设置](https://github.com/bugs1111/LevelEditor/settings/secrets/actions) 创建以下五项。
+
+| Secret | 值 |
+| --- | --- |
+| `MACOS_CERTIFICATE_BASE64` | `Developer ID Application` 证书和私钥导出为 `.p12` 后的 Base64，可在 Mac 用 `base64 -i DeveloperID.p12 \| pbcopy` 复制 |
+| `MACOS_CERTIFICATE_PASSWORD` | 导出 `.p12` 时设置的密码 |
+| `APPLE_ID` | 所属 Apple Developer 团队的 Apple 账号邮箱 |
+| `APPLE_TEAM_ID` | Apple Developer 账号页的 Team ID |
+| `APPLE_NOTARY_PASSWORD` | 专为 `notarytool` 创建的 Apple 应用专用密码 |
+
+配置后，可在 Actions 的 `Build and release` 页面选择 `main`，勾选 `notarize_macos` 并运行一次。这个手动任务会构建和上传测试产物，正式 Release 仍由 `just pub` 推送的版本标签触发。
 
 从 v0.1.8 或更早版本升级时，请从 Releases 下载并手动替换一次应用，之后可继续使用应用内更新。MCP 客户端和启动脚本中的旧可执行文件路径也需要改为上文对应平台的新路径。
 

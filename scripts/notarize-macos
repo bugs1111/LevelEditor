@@ -1,0 +1,64 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ $# -ne 1 || ! -d "$1" ]]; then
+    printf 'Usage: %s path/to/App.app\n' "$0" >&2
+    exit 2
+fi
+bundle=$1
+
+: "${MACOS_CERTIFICATE_BASE64:?Set MACOS_CERTIFICATE_BASE64 in GitHub Actions secrets}"
+: "${MACOS_CERTIFICATE_PASSWORD:?Set MACOS_CERTIFICATE_PASSWORD in GitHub Actions secrets}"
+: "${APPLE_ID:?Set APPLE_ID in GitHub Actions secrets}"
+: "${APPLE_TEAM_ID:?Set APPLE_TEAM_ID in GitHub Actions secrets}"
+: "${APPLE_NOTARY_PASSWORD:?Set APPLE_NOTARY_PASSWORD in GitHub Actions secrets}"
+
+work=$(mktemp -d "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/level-editor-notary.XXXXXX")
+keychain="$work/signing.keychain-db"
+cleanup() {
+    security delete-keychain "$keychain" >/dev/null 2>&1 || true
+    rm -rf "$work"
+}
+trap cleanup EXIT
+trap 'exit 1' HUP INT TERM
+
+certificate="$work/developer-id.p12"
+printf '%s' "$MACOS_CERTIFICATE_BASE64" | base64 --decode > "$certificate"
+keychain_password=$(openssl rand -hex 32)
+security create-keychain -p "$keychain_password" "$keychain"
+security set-keychain-settings -lut 3600 "$keychain"
+security unlock-keychain -p "$keychain_password" "$keychain"
+security import "$certificate" -k "$keychain" -f pkcs12 \
+    -P "$MACOS_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+security set-key-partition-list -S apple-tool:,apple:,codesign: -s \
+    -k "$keychain_password" "$keychain" >/dev/null
+rm -f "$certificate"
+
+identity=$(security find-identity -v -p codesigning "$keychain" |
+    awk '/"Developer ID Application: / { print $2 }')
+if [[ ! "$identity" =~ ^[[:xdigit:]]{40}$ ]]; then
+    printf 'Expected one valid Developer ID Application signing identity in the certificate.\n' >&2
+    exit 1
+fi
+
+codesign --force --options runtime --timestamp --sign "$identity" --keychain "$keychain" "$bundle"
+codesign --verify --deep --strict "$bundle"
+ditto -c -k --keepParent "$bundle" "$work/submission.zip"
+
+notary_credentials=(--apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" --password "$APPLE_NOTARY_PASSWORD")
+response="$work/notary-response.json"
+submit_exit=0
+xcrun notarytool submit "$work/submission.zip" "${notary_credentials[@]}" \
+    --wait --output-format json > "$response" || submit_exit=$?
+cat "$response"
+if [[ "$submit_exit" -ne 0 ]] || ! python3 -c 'import json, sys; sys.exit(json.load(sys.stdin)["status"] != "Accepted")' < "$response"; then
+    submission_id=$(python3 -c 'import json, sys; print(json.load(sys.stdin).get("id") or "")' < "$response" 2>/dev/null) || submission_id=''
+    if [[ -n "$submission_id" ]]; then
+        xcrun notarytool log "$submission_id" "${notary_credentials[@]}" >&2 || true
+    fi
+    printf 'Apple notarization did not accept the app.\n' >&2
+    exit 1
+fi
+
+xcrun stapler staple "$bundle"
+xcrun stapler validate "$bundle"
