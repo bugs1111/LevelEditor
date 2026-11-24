@@ -34,6 +34,45 @@ fn project_checkbox(ui: &mut egui::Ui, values: &Value, patch: &mut Value, key: &
     }
 }
 
+fn project_help_link(ui: &mut egui::Ui, label: &str, url: &str) -> egui::Response {
+    let text = RichText::new(locale::tr(ui, label)).color(theme::ACCENT);
+    let (pos, galley, response) = egui::Label::new(text)
+        .wrap()
+        .sense(Sense::click())
+        .layout_in_ui(ui);
+    response.widget_info(|| {
+        egui::WidgetInfo::labeled(egui::WidgetType::Link, ui.is_enabled(), galley.text())
+    });
+    if ui.is_rect_visible(response.rect) {
+        let underline = Stroke::new(1., theme::ACCENT);
+        if ui.style().interaction.selectable_labels {
+            egui::text_selection::LabelSelectionState::label_text_selection(
+                ui,
+                &response,
+                pos,
+                galley,
+                theme::ACCENT,
+                underline,
+            );
+        } else {
+            ui.painter().add(
+                egui::epaint::TextShape::new(pos, galley, theme::ACCENT).with_underline(underline),
+            );
+        }
+    }
+    if response.clicked_with_open_in_background() {
+        ui.ctx().open_url(egui::OpenUrl::new_tab(url));
+    } else if response.clicked() {
+        ui.ctx().open_url(egui::OpenUrl::same_tab(url));
+    }
+    let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
+    if ui.style().url_in_tooltip {
+        response.on_hover_text(url)
+    } else {
+        response
+    }
+}
+
 fn project_locate_button(ui: &mut egui::Ui, is_file: bool) -> bool {
     ui.scope(|ui| {
         ui.spacing_mut().button_padding = Vec2::splat(4.);
@@ -304,10 +343,9 @@ impl EditorApp {
                     });
                 }
             }
-            ui.hyperlink_to(
-                RichText::new(locale::tr(ui, "Learn more about this format"))
-                    .color(theme::ACCENT)
-                    .underline(),
+            project_help_link(
+                ui,
+                "Learn more about this format",
                 "https://ldtk.io/go/simple",
             );
         });
@@ -388,10 +426,9 @@ impl EditorApp {
             {
                 locate = Some((dir.join("tiled"), false));
             }
-            ui.hyperlink_to(
-                RichText::new(locale::tr(ui, "Learn more about Tiled export limitations"))
-                    .color(theme::ACCENT)
-                    .underline(),
+            project_help_link(
+                ui,
+                "Learn more about Tiled export limitations",
                 "https://ldtk.io/go/tiled",
             );
         });
@@ -1238,6 +1275,119 @@ mod tests {
             }
         }
         output.shapes.iter().find_map(|s| find(&s.shape, expected))
+    }
+
+    #[test]
+    fn tiled_help_link_uses_a_row_underline_and_keeps_link_activation() {
+        const LABEL: &str = "Learn more about Tiled export limitations";
+        const URL: &str = "https://ldtk.io/go/tiled";
+        for (language, force_fallback) in [
+            (locale::Language::English, false),
+            (locale::Language::SimplifiedChinese, false),
+            (locale::Language::SimplifiedChinese, true),
+        ] {
+            let ctx = egui::Context::default();
+            theme::configure(&ctx);
+            locale::set(&ctx, language);
+            if force_fallback {
+                let mut fonts = None;
+                let _ = ctx.run(egui::RawInput::default(), |ctx| {
+                    fonts = Some(ctx.fonts(|fonts| fonts.definitions().clone()));
+                });
+                let mut fonts = fonts.unwrap();
+                fonts
+                    .families
+                    .get_mut(&egui::FontFamily::Proportional)
+                    .unwrap()
+                    .insert(0, "ldtk-regular".into());
+                ctx.set_fonts(fonts);
+            }
+            let draw = |events, modifiers| {
+                let mut id = None;
+                let out = ctx.run(
+                    egui::RawInput {
+                        screen_rect: Some(Rect::from_min_size(
+                            egui::Pos2::ZERO,
+                            egui::vec2(130., 180.),
+                        )),
+                        events,
+                        modifiers,
+                        ..Default::default()
+                    },
+                    |ctx| {
+                        egui::CentralPanel::default().show(ctx, |ui| {
+                            ui.horizontal(|ui| {
+                                id = Some(project_help_link(ui, LABEL, URL).id);
+                            });
+                        });
+                    },
+                );
+                (out, id.unwrap())
+            };
+            let (initial, id) = draw(vec![], egui::Modifiers::NONE);
+            let text = initial
+                .shapes
+                .iter()
+                .find_map(|shape| match &shape.shape {
+                    egui::Shape::Text(text)
+                        if text.galley.text() == locale::tr_ctx(&ctx, LABEL) =>
+                    {
+                        Some(text)
+                    }
+                    _ => None,
+                })
+                .expect("Tiled help link");
+            assert!(text.galley.rows.len() > 1, "narrow link must wrap");
+            assert_eq!(text.underline, Stroke::new(1., theme::ACCENT));
+            assert!(
+                text.galley
+                    .job
+                    .sections
+                    .iter()
+                    .all(|section| section.format.underline == Stroke::NONE)
+            );
+            let pos = text.galley.rows[0].rect().center() + text.pos.to_vec2();
+            let (hover, _) = draw(vec![egui::Event::PointerMoved(pos)], egui::Modifiers::NONE);
+            assert_eq!(
+                hover.platform_output.cursor_icon,
+                egui::CursorIcon::PointingHand
+            );
+            assert!(hover.shapes.iter().any(|shape| {
+                matches!(&shape.shape, egui::Shape::Text(text) if text.galley.text() == locale::tr_ctx(&ctx, LABEL)
+                    && text.underline == Stroke::new(1., theme::ACCENT))
+            }));
+
+            let opened = |out: egui::FullOutput, new_tab| {
+                assert!(out.platform_output.commands.iter().any(|cmd| {
+                    matches!(cmd, egui::OutputCommand::OpenUrl(open) if open.url == URL && open.new_tab == new_tab)
+                }));
+            };
+            for modifiers in [egui::Modifiers::NONE, egui::Modifiers::SHIFT] {
+                let click = |pressed| egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers,
+                };
+                draw(vec![click(true)], modifiers);
+                opened(draw(vec![click(false)], modifiers).0, modifiers.any());
+            }
+            ctx.memory_mut(|mem| mem.request_focus(id));
+            opened(
+                draw(
+                    vec![egui::Event::Key {
+                        key: Key::Enter,
+                        physical_key: Some(Key::Enter),
+                        pressed: true,
+                        repeat: false,
+                        modifiers: egui::Modifiers::NONE,
+                    }],
+                    egui::Modifiers::NONE,
+                )
+                .0,
+                false,
+            );
+        }
     }
 
     #[test]

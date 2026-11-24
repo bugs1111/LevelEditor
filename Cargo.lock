@@ -7,6 +7,7 @@ name = "LevelEditor"
 version = "0.1.2"
 dependencies = [
  "cc",
+ "core-foundation 0.10.1",
  "eframe",
  "egui_commonmark",
  "egui_extras",
@@ -23,6 +24,7 @@ dependencies = [
  "sha2",
  "syntect",
  "tempfile",
+ "ttf-parser",
  "ureq",
  "wgpu",
  "winit",

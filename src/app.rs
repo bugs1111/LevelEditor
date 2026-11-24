@@ -433,6 +433,7 @@ impl EditorApp {
         app.repaint = Some(cc.egui_ctx.clone());
         crate::platform_files::set_context(&cc.egui_ctx);
         app.settings = settings::Settings::load();
+        locale::set(&cc.egui_ctx, app.settings.language());
         app.random_state ^= std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_nanos() as u64)

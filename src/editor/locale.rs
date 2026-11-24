@@ -36,7 +36,14 @@ fn locale_id() -> egui::Id {
 }
 
 pub(super) fn set(ctx: &egui::Context, language: Language) {
-    ctx.data_mut(|data| data.insert_temp(locale_id(), language));
+    let changed = ctx.data_mut(|data| {
+        let previous = data.get_temp::<Language>(locale_id()).unwrap_or_default();
+        data.insert_temp(locale_id(), language);
+        previous != language
+    });
+    if changed {
+        crate::theme::set_font_language(ctx, language == Language::SimplifiedChinese);
+    }
 }
 
 pub(super) fn tr_ctx<'a>(ctx: &egui::Context, text: &'a str) -> &'a str {
@@ -82,4 +89,32 @@ pub(super) fn widget(ui: &egui::Ui, text: egui::WidgetText) -> egui::WidgetText 
         }
     }
     text
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn changing_language_switches_font_priority_on_the_next_frame() {
+        let ctx = egui::Context::default();
+        crate::theme::configure(&ctx);
+        let primary = || {
+            let mut name = String::new();
+            let _ = ctx.run(egui::RawInput::default(), |ctx| {
+                name = ctx.fonts(|fonts| {
+                    fonts.definitions().families[&egui::FontFamily::Proportional][0].clone()
+                });
+            });
+            name
+        };
+        let english = primary();
+        set(&ctx, Language::SimplifiedChinese);
+        assert!(matches!(
+            primary().as_str(),
+            "system-cjk-regular" | "bundled-cjk"
+        ));
+        set(&ctx, Language::English);
+        assert_eq!(primary(), english);
+    }
 }
