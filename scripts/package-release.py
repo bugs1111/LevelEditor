@@ -85,13 +85,11 @@ def check_executable_target(path, target):
 
 def package(target, destination):
     if target.endswith("apple-darwin"):
-        source = ROOT / "dist/LevelEditor.app"
+        source = ROOT / "dist/Level Editor.app"
         if not (source / "Contents/Resources/ldtk-rs-install.json").is_file():
             raise ValueError("Run scripts/package-macos before creating the release archive")
         check_executable_target(source / "Contents/MacOS/ldtk-rs", target)
-        # Installed updaters require this archive root; the app's display name
-        # and the local bundle are LevelEditor independently of that format.
-        write_zip(source, destination, "LDtk Rust.app")
+        write_zip(source, destination)
     else:
         binary = "ldtk-rs.exe" if "windows" in target else "ldtk-rs"
         executable = ROOT / "target/release" / binary
@@ -108,11 +106,11 @@ def package(target, destination):
             write_zip(source, destination)
 
 
-def write_zip(source, destination, archive_root=None):
+def write_zip(source, destination):
     with zipfile.ZipFile(destination, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as archive:
         for path in sorted(source.rglob("*")):
             if path.is_file():
-                archive.write(path, Path(archive_root or source.name) / path.relative_to(source))
+                archive.write(path, Path(source.name) / path.relative_to(source))
 
 
 def main():

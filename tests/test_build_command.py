@@ -11,7 +11,7 @@ import unittest
 
 
 ROOT = Path(__file__).resolve().parents[1]
-MAC_EXECUTABLE = "LevelEditor.app/Contents/MacOS/ldtk-rs"
+MAC_EXECUTABLE = "Level Editor.app/Contents/MacOS/ldtk-rs"
 
 
 class BuildCommandTests(unittest.TestCase):
@@ -183,10 +183,10 @@ else:
                     out = self.root / "dist" / platform / mode
                     if platform == "mac":
                         binary = out / MAC_EXECUTABLE
-                        resources = out / "LevelEditor.app/Contents/Resources"
+                        resources = out / "Level Editor.app/Contents/Resources"
                         prefix = resources
                         plist = plistlib.loads((resources.parent / "Info.plist").read_bytes())
-                        self.assertEqual(plist["CFBundleName"], "LevelEditor")
+                        self.assertEqual(plist["CFBundleName"], "Level Editor")
                         self.assertEqual(plist["CFBundleExecutable"], binary.name)
                         self.assertEqual(plist["CFBundleShortVersionString"], "0.42.0")
                         self.assertEqual(plist["CFBundleIconFile"], "LevelEditor.icns")
@@ -228,7 +228,7 @@ else:
         self.assertIn("17", result.stdout)
 
     def test_success_removes_stale_resources(self):
-        stale = self.root / "dist/mac/debug/LevelEditor.app/Contents/Resources/old-file"
+        stale = self.root / "dist/mac/debug/Level Editor.app/Contents/Resources/old-file"
         stale.parent.mkdir(parents=True)
         stale.touch()
         result = self.run_build("-t", "mac", "-m", "debug")

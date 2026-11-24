@@ -6,7 +6,7 @@ case "$#" in
     0)
         scripts/cargo build --release --locked
         binary="$project_dir/target/release/ldtk-rs"
-        bundle="$project_dir/dist/LevelEditor.app"
+        bundle="$project_dir/dist/Level Editor.app"
         ;;
     2)
         binary="$1"
@@ -20,7 +20,7 @@ esac
 bundle_parent=$(dirname -- "$bundle")
 mkdir -p "$bundle_parent"
 staging_dir=$(mktemp -d "$bundle_parent/.leveleditor-app.XXXXXX")
-staged_bundle="$staging_dir/LevelEditor.app"
+staged_bundle="$staging_dir/Level Editor.app"
 previous_bundle="$staging_dir/previous.app"
 cleanup() {
     if [ -e "$previous_bundle" ] && [ ! -e "$bundle" ]; then

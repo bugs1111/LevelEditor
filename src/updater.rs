@@ -5,7 +5,7 @@ use sha2::{Digest, Sha256};
 use std::{
     fs::{self, File, OpenOptions},
     io::{Read, Write},
-    path::{Path, PathBuf},
+    path::{Component, Path, PathBuf},
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -32,6 +32,11 @@ const LEGACY_MANIFEST: &str = "ldtk-rs-updates.json";
 const MAX_DOWNLOAD: u64 = 1024 * 1024 * 1024;
 const MAX_UNPACKED: u64 = 4 * 1024 * 1024 * 1024;
 const MARKER: &str = "ldtk-rs-install.json";
+const BUNDLE_NAMES: &[&str] = if cfg!(target_os = "macos") {
+    &["Level Editor.app", "LDtk Rust.app"]
+} else {
+    &["ldtk-rs"]
+};
 type Result<T> = std::result::Result<T, String>;
 
 pub fn target() -> Option<&'static str> {
@@ -678,14 +683,6 @@ fn stage_release(
     }
     result
 }
-fn bundle_name() -> &'static str {
-    if cfg!(target_os = "macos") {
-        // Keep the archive format accepted by already installed updaters.
-        "LDtk Rust.app"
-    } else {
-        "ldtk-rs"
-    }
-}
 fn marker_path(root: &Path) -> PathBuf {
     if cfg!(target_os = "macos") {
         root.join("Contents/Resources").join(MARKER)
@@ -726,13 +723,25 @@ fn extract(archive: &Path, work: &Path, cancel: &AtomicBool) -> Result<PathBuf> 
         return Err("Update ZIP contains too many files".into());
     }
     let mut total = 0_u64;
+    let mut root_name = None;
     for index in 0..archive.len() {
         cancelled(cancel)?;
         let mut entry = archive.by_index(index).map_err(|e| e.to_string())?;
         let enclosed = entry.enclosed_name().ok_or("Unsafe path in update ZIP")?;
-        if entry.name().contains(['\\', ':']) || !enclosed.starts_with(bundle_name()) {
+        let name = BUNDLE_NAMES
+            .iter()
+            .copied()
+            .find(|name| enclosed.starts_with(name))
+            .ok_or("Update ZIP contains an unexpected path")?;
+        if entry.name().contains(['\\', ':'])
+            || enclosed
+                .components()
+                .any(|part| part == Component::ParentDir)
+            || root_name.is_some_and(|root| root != name)
+        {
             return Err("Update ZIP contains an unexpected path".into());
         }
+        root_name = Some(name);
         let mode = entry.unix_mode().unwrap_or(0);
         if mode & 0o170000 == 0o120000 {
             return Err("Symbolic links are not allowed in update ZIPs".into());
@@ -774,7 +783,7 @@ fn extract(archive: &Path, work: &Path, cancel: &AtomicBool) -> Result<PathBuf> 
             .map_err(|e| e.to_string())?;
         }
     }
-    let root = work.join(bundle_name());
+    let root = work.join(root_name.ok_or("Update ZIP is empty")?);
     validate_root(&root)?;
     Ok(root)
 }
@@ -893,11 +902,14 @@ mod tests {
         }
     }
     fn archive() -> Vec<u8> {
+        archive_with_root(BUNDLE_NAMES[0])
+    }
+    fn archive_with_root(root: &str) -> Vec<u8> {
         let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
-        let marker = marker_path(Path::new(bundle_name()))
+        let marker = marker_path(Path::new(root))
             .to_string_lossy()
             .replace('\\', "/");
-        let exe = executable(Path::new(bundle_name()))
+        let exe = executable(Path::new(root))
             .to_string_lossy()
             .replace('\\', "/");
         writer
@@ -914,6 +926,31 @@ mod tests {
             .unwrap();
         writer.write_all(b"fixture-new-executable").unwrap();
         writer.finish().unwrap().into_inner()
+    }
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_updates_accept_both_bundle_names_in_separate_archives() {
+        let cancel = AtomicBool::new(false);
+        for name in ["Level Editor.app", "LDtk Rust.app"] {
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("update.zip");
+            fs::write(&path, archive_with_root(name)).unwrap();
+            assert_eq!(
+                extract(&path, directory.path(), &cancel).unwrap(),
+                directory.path().join(name)
+            );
+        }
+
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("mixed.zip");
+        let mut zip = zip::ZipWriter::new_append(Cursor::new(archive())).unwrap();
+        zip.add_directory("LDtk Rust.app/", zip::write::SimpleFileOptions::default())
+            .unwrap();
+        fs::write(&path, zip.finish().unwrap().into_inner()).unwrap();
+        assert_eq!(
+            extract(&path, directory.path(), &cancel).unwrap_err(),
+            "Update ZIP contains an unexpected path"
+        );
     }
     fn publish(server: &Server, bytes: &[u8], version: &str) {
         publish_with_prefix(server, bytes, version, "ldtk-rs");

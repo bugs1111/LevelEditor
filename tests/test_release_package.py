@@ -30,7 +30,7 @@ class ReleasePackageTests(unittest.TestCase):
         release.ROOT = self.root
 
     def make_bundle(self):
-        bundle = self.root / "dist/LevelEditor.app"
+        bundle = self.root / "dist/Level Editor.app"
         executable = bundle / "Contents/MacOS/ldtk-rs"
         executable.parent.mkdir(parents=True)
         marker = bundle / "Contents/Resources/ldtk-rs-install.json"
@@ -39,7 +39,7 @@ class ReleasePackageTests(unittest.TestCase):
         (bundle / "Contents/Info.plist").write_bytes((ROOT / "scripts/macos-info.plist").read_bytes())
         return executable
 
-    def test_level_editor_bundle_keeps_the_legacy_updater_archive_root(self):
+    def test_macos_archives_use_the_level_editor_application_name(self):
         executable = self.make_bundle()
         for target, cpu in [("aarch64-apple-darwin", 0x0100000C), ("x86_64-apple-darwin", 0x01000007)]:
             with self.subTest(target=target):
@@ -49,12 +49,12 @@ class ReleasePackageTests(unittest.TestCase):
                 output = self.root / f"{target}.zip"
                 release.package(target, output)
                 with zipfile.ZipFile(output) as archive:
-                    self.assertTrue(all(Path(name).parts[0] == "LDtk Rust.app" for name in archive.namelist()), "existing updaters reject other archive roots")
-                    info = plistlib.loads(archive.read("LDtk Rust.app/Contents/Info.plist"))
-                    self.assertEqual(info["CFBundleName"], "LevelEditor")
-                    self.assertEqual(info["CFBundleDisplayName"], "LevelEditor")
-                    self.assertEqual(archive.read("LDtk Rust.app/Contents/MacOS/ldtk-rs"), binary)
-                    self.assertTrue((archive.getinfo("LDtk Rust.app/Contents/MacOS/ldtk-rs").external_attr >> 16) & 0o111)
+                    self.assertEqual({Path(name).parts[0] for name in archive.namelist()}, {"Level Editor.app"})
+                    info = plistlib.loads(archive.read("Level Editor.app/Contents/Info.plist"))
+                    self.assertEqual(info["CFBundleName"], "Level Editor")
+                    self.assertEqual(info["CFBundleDisplayName"], "Level Editor")
+                    self.assertEqual(archive.read("Level Editor.app/Contents/MacOS/ldtk-rs"), binary)
+                    self.assertTrue((archive.getinfo("Level Editor.app/Contents/MacOS/ldtk-rs").external_attr >> 16) & 0o111)
 
     def test_arm_bundle_cannot_be_archived_as_intel(self):
         self.make_bundle().write_bytes(macho(0x0100000C))

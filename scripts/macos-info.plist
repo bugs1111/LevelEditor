@@ -4,8 +4,8 @@
   <key>CFBundleExecutable</key><string>ldtk-rs</string>
   <key>CFBundleIdentifier</key><string>io.ldtk.rust-port</string>
   <key>CFBundleIconFile</key><string>LevelEditor.icns</string>
-  <key>CFBundleName</key><string>LevelEditor</string>
-  <key>CFBundleDisplayName</key><string>LevelEditor</string>
+  <key>CFBundleName</key><string>Level Editor</string>
+  <key>CFBundleDisplayName</key><string>Level Editor</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleShortVersionString</key><string>0.1.0</string>
   <key>CFBundleVersion</key><string>1</string>

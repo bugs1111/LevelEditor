@@ -47,8 +47,8 @@ just build -t linux -m release
 
 | `-t` | 构建目标 | 输出目录 |
 |---|---|---|
-| `mac` | 本机 macOS 架构 | `dist/mac/<模式>/LevelEditor.app` |
-| `mac -a <架构>` | Apple Silicon 或 Intel | `dist/mac/<架构>/<模式>/LevelEditor.app` |
+| `mac` | 本机 macOS 架构 | `dist/mac/<模式>/Level Editor.app` |
+| `mac -a <架构>` | Apple Silicon 或 Intel | `dist/mac/<架构>/<模式>/Level Editor.app` |
 | `win` | `x86_64-pc-windows-gnu` | `dist/win/<模式>/ldtk-rs.exe` |
 | `linux` | `x86_64-unknown-linux-gnu`，glibc ≥ 2.28 | `dist/linux/<模式>/ldtk-rs` |
 
@@ -62,7 +62,7 @@ macOS 的 `just build` 产物可在 Finder 中双击打开。发布流程也可�
 scripts/package-macos
 ```
 
-生成 `dist/LevelEditor.app`。四平台已通过六场景原生 GUI 和三项 GPU 自动验收，CI 实际使用的虚拟/软件驱动与物理 M6、RTX 2060 验证范围见 [GUI/GPU 记录](docs/status/gui-platform-acceptance.md)。包支持 Finder 打开 .ldtk，并保留原版默认文件关联。
+生成 `dist/Level Editor.app`。四平台已通过六场景原生 GUI 和三项 GPU 自动验收，CI 实际使用的虚拟/软件驱动与物理 M6、RTX 2060 验证范围见 [GUI/GPU 记录](docs/status/gui-platform-acceptance.md)。包支持 Finder 打开 .ldtk，并保留原版默认文件关联。
 
 打包后可运行 `scripts/verify-macos-bundle`，使用独立设置和复制的示例检查含空格/中文路径的冷启动、运行时打开文件与进程复用；结束时关闭本次测试创建的进程。
 
@@ -88,7 +88,7 @@ scripts/package-macos
 codex mcp add leveleditor -- "/path/to/ldtk-rs" --mcp "/path/to/My Game/world.ldtk"
 ```
 
-macOS 应用包中的可执行文件是 `/Applications/LevelEditor.app/Contents/MacOS/ldtk-rs`，Windows 使用发布包里的 `ldtk-rs.exe`。其他 MCP 客户端可使用以下 stdio 配置。
+macOS 应用包中的可执行文件是 `/Applications/Level Editor.app/Contents/MacOS/ldtk-rs`，Windows 使用发布包里的 `ldtk-rs.exe`。其他 MCP 客户端可使用以下 stdio 配置。
 
 ```json
 {
@@ -164,6 +164,8 @@ scripts/cargo run --release --example native_smoke -- examples/topdown/Typical_T
 先提交要发布的改动并合入最新的 `origin/main`，再运行 `just pub`。它取源码版本和最新稳定 Release 中较高的版本，将补丁号加一。也可以通过 `just pub 0.2.0` 指定稳定版本。命令更新 `Cargo.toml` 和 `Cargo.lock`，将发布提交和标签一起推送到 `main`。
 
 标签 `v<版本>` 触发 `Build and release` 工作流。四个平台完成检查、测试和打包后，工作流会发布 `level-editor-v<版本>-<构建目标>.zip` 和自动更新清单 `level-editor-updates.json`。已安装 v0.1.7 或更早版本的用户需要从 Releases 手动下载一次使用新文件名的版本，之后可继续应用内更新。macOS 本地可用 `scripts/package-macos` 生成应用，用 `python3 scripts/package-release.py --target aarch64-apple-darwin` 生成对应 ZIP。
+
+macOS 上从 v0.1.8 或更早版本升级到 `Level Editor.app` 时，需要手动替换一次应用。现有更新器只接受旧应用包名 `LDtk Rust.app`。
 
 [v0.1.0 四平台下载](https://github.com/bugs1111/LevelEditor/releases/tag/v0.1.0)已发布。四平台原生 CI、发布包校验、真实私有更新源和 ARM macOS 下载包冷/热打开均已通过，具体结果与验收范围见[最终集成记录](docs/status/final-verification.md)。
 

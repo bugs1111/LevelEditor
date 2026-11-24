@@ -89,7 +89,7 @@ def build(platform, mode, target, host, cargo, env, output, parser):
 
     name = "ldtk-rs.exe" if platform == "win" else "ldtk-rs"
     binary = build_root / (target if target != host else "") / mode / name
-    product = "LevelEditor.app" if platform == "mac" else name
+    product = "Level Editor.app" if platform == "mac" else name
     output.parent.mkdir(parents=True, exist_ok=True)
     staging = Path(tempfile.mkdtemp(prefix=f".{mode}-", dir=output.parent))
     previous = staging / "previous"
