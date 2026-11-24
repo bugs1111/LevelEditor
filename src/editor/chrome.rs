@@ -85,29 +85,37 @@ fn short_world_name(name: &str) -> String {
     short
 }
 
-fn shortcut_label(key: &str) -> &str {
+pub(super) fn shortcut_label(key: &str, macos: bool) -> &str {
     match key {
-        "SHIFT" => "⇧",
-        "CTRL" if cfg!(target_os = "macos") => "⌘",
+        "CTRL" if macos => "CMD",
         _ => key,
     }
 }
 
-fn shortcut_width(ui: &egui::Ui, key: &str) -> f32 {
+fn keycap_font() -> FontId {
+    FontId::new(13.2, egui::FontFamily::Name("heading".into()))
+}
+
+pub(super) fn keycap_label_width(ui: &egui::Ui, label: &str) -> f32 {
     ui.painter()
-        .layout_no_wrap(
-            shortcut_label(key).into(),
-            FontId::new(13.2, egui::FontFamily::Name("heading".into())),
-            Color32::WHITE,
-        )
+        .layout_no_wrap(label.into(), keycap_font(), Color32::WHITE)
         .size()
         .x
         .max(16.)
-        + 12.
+}
+
+fn shortcut_width(ui: &egui::Ui, key: &str) -> f32 {
+    keycap_label_width(ui, shortcut_label(key, cfg!(target_os = "macos"))) + 12.
 }
 
 fn paint_shortcut(ui: &egui::Ui, rect: Rect, key: &str, shadow: bool) {
-    paint_keycap(ui, rect, shortcut_label(key), Color32::WHITE, shadow);
+    paint_keycap(
+        ui,
+        rect,
+        shortcut_label(key, cfg!(target_os = "macos")),
+        Color32::WHITE,
+        shadow,
+    );
 }
 
 pub(super) fn paint_keycap(ui: &egui::Ui, rect: Rect, label: &str, tint: Color32, shadow: bool) {
@@ -150,8 +158,8 @@ pub(super) fn paint_keycap(ui: &egui::Ui, rect: Rect, label: &str, tint: Color32
             ui.painter().with_clip_rect(cap).add(mesh);
         }
     }
-    let font = FontId::new(13.2, egui::FontFamily::Name("heading".into()));
     let pos = cap.center() - egui::vec2(0., 2.);
+    let font = keycap_font();
     ui.painter().text(
         pos + egui::vec2(0., 1.),
         Align2::CENTER_CENTER,
@@ -201,11 +209,6 @@ fn sidebar_guide(ui: &mut egui::Ui, kind: &str, empty: bool) {
             _ => return,
         }
     };
-    let key_width = |key: &str| match key {
-        "ALT" => 26.625,
-        "CTRL" if !cfg!(target_os = "macos") => 34.78125,
-        _ => 26.,
-    };
     let color = Color32::from_rgb(121, 221, 138);
     let font = FontId::new(13.2, egui::FontFamily::Name("panel-title".into()));
     let guide = egui::Frame::new()
@@ -235,7 +238,11 @@ fn sidebar_guide(ui: &mut egui::Ui, kind: &str, empty: bool) {
                         egui::TextStyle::Body,
                     );
                     let mouse_size = if keys.is_empty() { 0. } else { 17.15625 };
-                    let keys_width = keys.iter().map(|key| key_width(key) + 1.).sum::<f32>();
+                    let key_widths = keys
+                        .iter()
+                        .map(|key| (shortcut_width(ui, key) - 4.).max(26.))
+                        .collect::<Vec<_>>();
+                    let keys_width = key_widths.iter().map(|width| width + 1.).sum::<f32>();
                     let width = 1. + keys_width + mouse_size + caption.size().x + 8.;
                     let height = if keys.is_empty() { 16.15625 } else { 20.0625 };
                     let (rect, _) =
@@ -243,8 +250,7 @@ fn sidebar_guide(ui: &mut egui::Ui, kind: &str, empty: bool) {
                     ui.painter()
                         .rect_filled(rect, 3., Color32::from_rgb(60, 97, 72));
                     let mut x = rect.left() + 1.;
-                    for key in *keys {
-                        let w = key_width(key);
+                    for (key, w) in keys.iter().zip(key_widths) {
                         let cap =
                             Rect::from_min_size(egui::pos2(x, rect.top()), egui::vec2(w, 20.));
                         paint_shortcut(ui, cap.expand(1.), key, false);
@@ -2158,7 +2164,7 @@ mod tests {
                 "Close project",
                 vec![
                     if cfg!(target_os = "macos") {
-                        "⌘"
+                        "CMD"
                     } else {
                         "CTRL"
                     },
@@ -2229,7 +2235,7 @@ mod tests {
     }
 
     #[test]
-    fn sidebar_guide_shows_source_shift_symbol_on_the_same_keycap_asset() {
+    fn sidebar_guide_shows_shift_and_alt_labels_on_keycaps() {
         let ctx = egui::Context::default();
         theme::configure(&ctx);
         let texture = source_key_texture(&ctx);
@@ -2257,12 +2263,23 @@ mod tests {
             output = Some(app_frame(&mut app, &ctx, vec![]));
         }
         let output = output.unwrap();
-        assert!(
-            output.shapes.iter().any(|shape| {
-                matches!(&shape.shape, egui::Shape::Text(text) if text.galley.text() == "⇧")
-            }),
-            "the rectangle guide must show the source Shift symbol"
-        );
+        for label in ["SHIFT", "ALT"] {
+            let text = output
+                .shapes
+                .iter()
+                .find_map(|shape| match &shape.shape {
+                    egui::Shape::Text(text) if text.galley.text() == label => {
+                        Some(text.galley.rect.translate(text.pos.to_vec2()))
+                    }
+                    _ => None,
+                })
+                .unwrap_or_else(|| panic!("missing {label} keycap label"));
+            assert!(output.shapes.iter().any(|shape| {
+                matches!(&shape.shape, egui::Shape::Mesh(mesh) if mesh.texture_id == texture)
+                    && shape.clip_rect.x_range().contains(text.left())
+                    && shape.clip_rect.x_range().contains(text.right())
+            }));
+        }
         assert_eq!(
             output
                 .shapes
@@ -2275,6 +2292,16 @@ mod tests {
             2,
             "the rectangle and picker guides must use source keycaps"
         );
+    }
+
+    #[test]
+    fn shortcut_modifier_labels_use_platform_key_names() {
+        assert_eq!(shortcut_label("CTRL", true), "CMD");
+        assert_eq!(shortcut_label("CTRL", false), "CTRL");
+        for label in ["SHIFT", "ALT", "ESC", "ENTER", "SPACE"] {
+            assert_eq!(shortcut_label(label, true), label);
+            assert_eq!(shortcut_label(label, false), label);
+        }
     }
 
     #[test]

@@ -1257,13 +1257,13 @@ mod tests {
             }
             assert!(label(&out, tooltip).is_some());
             let command = if cfg!(target_os = "macos") {
-                "⌘"
+                "CMD"
             } else {
                 "CTRL"
             };
             assert!(label(&out, command).is_some());
             assert!(label(&out, "S").is_some());
-            assert_eq!(label(&out, "⇧").is_some(), save_as);
+            assert_eq!(label(&out, "SHIFT").is_some(), save_as);
         }
     }
 

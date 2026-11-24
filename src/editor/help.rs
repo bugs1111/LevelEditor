@@ -213,18 +213,7 @@ impl<'a> HelpKey<'a> {
                     .x
                     + 4.
             }
-            Self::Key(label) => {
-                ui.painter()
-                    .layout_no_wrap(
-                        (*label).into(),
-                        FontId::new(13.2, egui::FontFamily::Name("heading".into())),
-                        Color32::WHITE,
-                    )
-                    .size()
-                    .x
-                    .max(16.)
-                    + 10.
-            }
+            Self::Key(label) => super::chrome::keycap_label_width(ui, label) + 10.,
         }
     }
 
@@ -245,8 +234,8 @@ impl<'a> HelpKey<'a> {
             }
             Self::Key(label) => {
                 let tint = match *label {
-                    "CTRL" | "⌘" | "SHIFT" | "ALT" => Color32::from_rgb(255, 92, 130),
-                    "ESCAPE" | "DELETE" => Color32::from_rgb(195, 145, 255),
+                    "CTRL" | "CMD" | "SHIFT" | "ALT" => Color32::from_rgb(255, 92, 130),
+                    "ESC" | "DELETE" => Color32::from_rgb(195, 145, 255),
                     name if name
                         .strip_prefix('F')
                         .is_some_and(|n| n.parse::<u8>().is_ok()) =>
@@ -493,18 +482,14 @@ impl EditorApp {
         let navigation = self.settings.value["navigationKeys"]
             .as_str()
             .unwrap_or("Wasd");
-        let ctrl = if cfg!(target_os = "macos") {
-            "⌘"
-        } else {
-            "CTRL"
-        };
+        let ctrl = super::chrome::shortcut_label("CTRL", cfg!(target_os = "macos"));
         let toggle_details = if cfg!(target_os = "macos") {
             "SHIFT H"
         } else {
             "CTRL H"
         };
         let fullscreen = if cfg!(target_os = "macos") {
-            "⌘ CTRL F"
+            "CMD CTRL F"
         } else if cfg!(target_os = "windows") {
             "F11"
         } else {
@@ -540,10 +525,7 @@ impl EditorApp {
                         ("mousemiddle or SPACE mouseleft", "Move the view"),
                         ("mousewheel or SPACE mouseright", "Zoom"),
                         ("+ / -", "Zoom"),
-                        (
-                            "ESCAPE",
-                            "Clear selection, close panel, cancel an action etc.",
-                        ),
+                        ("ESC", "Clear selection, close panel, cancel an action etc."),
                     ],
                     true,
                 );
@@ -872,6 +854,11 @@ mod tests {
                     (x - expected).abs() < 1.,
                     "{heading} starts at {x} with window width {width}"
                 );
+            }
+            for key in ["ESC", "SPACE", "SHIFT", "ALT"] {
+                assert!(output.shapes.iter().any(|shape| {
+                    matches!(&shape.shape, egui::Shape::Text(text) if text.galley.text() == key)
+                }));
             }
         }
         ctx.data_mut(|data| {
