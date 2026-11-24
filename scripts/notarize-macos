@@ -25,12 +25,24 @@ trap 'exit 1' HUP INT TERM
 certificate="$work/developer-id.p12"
 printf '%s' "$MACOS_CERTIFICATE_BASE64" | base64 --decode > "$certificate"
 keychain_password=$(openssl rand -hex 32)
+previous_keychains=$(security list-keychains -d user)
 security create-keychain -p "$keychain_password" "$keychain"
 security set-keychain-settings -lut 3600 "$keychain"
 security unlock-keychain -p "$keychain_password" "$keychain"
-security import "$certificate" -k "$keychain" -f pkcs12 \
+
+# Register the temporary keychain for codesign and preserve the runner's existing search list.
+keychains=("$keychain")
+while IFS='"' read -r _ entry _; do
+    if [[ -n "$entry" ]]; then
+        keychains+=("$entry")
+    fi
+done <<< "$previous_keychains"
+security list-keychains -d user -s "${keychains[@]}"
+
+printf 'Importing the Developer ID signing identity.\n'
+security import "$certificate" -k "$keychain" -t cert -f pkcs12 \
     -P "$MACOS_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
-security set-key-partition-list -S apple-tool:,apple:,codesign: -s \
+security set-key-partition-list -S apple-tool:,apple:,codesign: \
     -k "$keychain_password" "$keychain" >/dev/null
 rm -f "$certificate"
 
@@ -41,7 +53,8 @@ if [[ ! "$identity" =~ ^[[:xdigit:]]{40}$ ]]; then
     exit 1
 fi
 
-codesign --force --options runtime --timestamp --sign "$identity" --keychain "$keychain" "$bundle"
+printf 'Signing the application with Developer ID.\n'
+codesign --force --options runtime --timestamp --sign "$identity" "$bundle"
 codesign --verify --deep --strict "$bundle"
 ditto -c -k --keepParent "$bundle" "$work/submission.zip"
 

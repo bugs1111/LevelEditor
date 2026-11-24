@@ -43,6 +43,8 @@ tool = Path(tool).name
 name = tool
 if tool == "security":
     name += " " + args[0]
+    if args[0] == "list-keychains" and "-s" in args:
+        name += " -s"
 elif tool == "xcrun":
     name += " " + " ".join(args[:2])
 elif tool == "codesign":
@@ -51,9 +53,14 @@ elif tool == "codesign":
 with Path(os.environ["NOTARY_TEST_LOG"]).open("a") as log:
     print(name, file=log)
 
-if name == "security find-identity":
+if name == "security list-keychains":
+    print('    "/fixture/Runner Login.keychain-db"')
+elif name == "security list-keychains -s":
+    assert args[-1] == "/fixture/Runner Login.keychain-db"
+elif name == "security find-identity":
     print('  1) ' + 'A' * 40 + ' "Developer ID Application: Fixture (FIXTURE123)"')
 elif name == "codesign sign":
+    assert "security list-keychains -s" in Path(os.environ["NOTARY_TEST_LOG"]).read_text().splitlines()
     assert "--timestamp" in args
     assert args[args.index("--options") + 1] == "runtime"
 elif name == "xcrun notarytool submit":
