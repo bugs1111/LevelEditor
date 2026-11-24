@@ -11,13 +11,14 @@
 安装 `just` 后，可在项目目录执行：
 
 ```sh
+just push
 just push "提交说明"
 just pull
 just run
 just run examples/original/Typical_TopDown_example.ldtk
 ```
 
-`push` 暂存全部改动，有改动时提交，再推送到当前分支配置的上游（当前为 `origin/main`）；没有新改动时仍会推送已有提交。`pull` 仅允许快进更新。`run` 默认编译并启动 debug 版本，保留传入参数；运行状态和错误同时写入终端及 `LDtk.log`，重复状态不会每帧刷屏。默认开启 `RUST_BACKTRACE=1`，可用已有环境变量覆盖。
+`just push` 将已有提交推送到当前分支的上游（当前为 `origin/main`）。`just push "提交说明"` 会先暂存全部改动，有改动时提交，再推送。`pull` 仅允许快进更新。`run` 默认编译并启动 debug 版本，保留传入参数；运行状态和错误同时写入终端及 `LDtk.log`，重复状态不会每帧刷屏。默认开启 `RUST_BACKTRACE=1`，可用已有环境变量覆盖。
 
 也可直接使用脚本：
 
