@@ -150,7 +150,7 @@ impl EditorApp {
                         ui.heading(locale::tr(ui, "Installing update…"));
                         ui.label(locale::tr(
                             ui,
-                            "LevelEditor will restart when installation is ready.",
+                            "Level Editor will restart when installation is ready.",
                         ));
                     });
                 });
@@ -254,7 +254,7 @@ impl EditorApp {
                 .show(ctx, |ui| {
                     ui.set_width(width);
                     ui.set_max_height((screen.height() - 24.).max(0.));
-                    project_dialogs::dialog_title(ui, "LevelEditor updates", width, theme::LIGHT);
+                    project_dialogs::dialog_title(ui, "Level Editor updates", width, theme::LIGHT);
                     ui.spacing_mut().scroll = source_controls::scroll_style();
                     let visuals = source_controls::scroll_visuals(ui);
                     egui::ScrollArea::vertical()
@@ -315,7 +315,10 @@ impl EditorApp {
                 ui.set_width(ui.available_width());
                 match snapshot {
                     State::Idle => {
-                        ui.label(locale::tr(ui, "Check for a published LevelEditor release."));
+                        ui.label(locale::tr(
+                            ui,
+                            "Check for a published Level Editor release.",
+                        ));
                     }
                     State::Checking => {
                         ui.horizontal(|ui| {

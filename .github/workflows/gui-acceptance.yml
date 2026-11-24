@@ -55,7 +55,7 @@ jobs:
         run: |
           mkdir -p dist/gui-acceptance
           cargo build --release --example native_smoke --locked
-          cargo test --release --bin ldtk-rs --no-run --locked --message-format=json > dist/gui-acceptance/gpu-test-build.jsonl
+          cargo test --release --bin level-editor --no-run --locked --message-format=json > dist/gui-acceptance/gpu-test-build.jsonl
       - name: Portable harness for physical-platform follow-up
         run: |
           python - <<'PY'
@@ -68,7 +68,7 @@ jobs:
               archive.write(Path("target/release/examples") / binary, binary)
               tests = [event["executable"] for line in Path("dist/gui-acceptance/gpu-test-build.jsonl").read_text().splitlines()
                        if (event := json.loads(line)).get("reason") == "compiler-artifact"
-                       and event.get("target", {}).get("name") == "ldtk-rs"
+                       and event.get("target", {}).get("name") == "level-editor"
                        and event.get("profile", {}).get("test") and event.get("executable")]
               assert len(tests) == 1, tests
               archive.write(tests[0], "gpu-tests.exe" if os.name == "nt" else "gpu-tests")
@@ -92,19 +92,19 @@ jobs:
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         timeout-minutes: 3
         run: |
-          cargo test --release --bin ldtk-rs --locked canvas::blur::gpu_tests::gaussian_composites_original_layer_then_blurs_on_gpu -- --ignored --exact --nocapture --test-threads=1 2>&1 | tee dist/gui-acceptance/gpu-blur.log
+          cargo test --release --bin level-editor --locked canvas::blur::gpu_tests::gaussian_composites_original_layer_then_blurs_on_gpu -- --ignored --exact --nocapture --test-threads=1 2>&1 | tee dist/gui-acceptance/gpu-blur.log
           python -c 'from pathlib import Path; assert "test result: ok. 1 passed; 0 failed; 0 ignored;" in Path("dist/gui-acceptance/gpu-blur.log").read_text()'
       - name: GPU outline passes and cache reuse
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         timeout-minutes: 3
         run: |
-          cargo test --release --bin ldtk-rs --locked canvas::outline::tests::field_outline_uses_two_sixty_sample_passes_and_reuses_cached_flow -- --ignored --exact --nocapture --test-threads=1 2>&1 | tee dist/gui-acceptance/gpu-outline.log
+          cargo test --release --bin level-editor --locked canvas::outline::tests::field_outline_uses_two_sixty_sample_passes_and_reuses_cached_flow -- --ignored --exact --nocapture --test-threads=1 2>&1 | tee dist/gui-acceptance/gpu-outline.log
           python -c 'from pathlib import Path; assert "test result: ok. 1 passed; 0 failed; 0 ignored;" in Path("dist/gui-acceptance/gpu-outline.log").read_text()'
       - name: Surface-error pending GPU uploads
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         timeout-minutes: 3
         run: |
-          cargo test --release --bin ldtk-rs --locked app::gpu_surface_tests::surface_error_submits_pending_uploads_without_a_present -- --ignored --exact --nocapture --test-threads=1 2>&1 | tee dist/gui-acceptance/gpu-surface-error.log
+          cargo test --release --bin level-editor --locked app::gpu_surface_tests::surface_error_submits_pending_uploads_without_a_present -- --ignored --exact --nocapture --test-threads=1 2>&1 | tee dist/gui-acceptance/gpu-surface-error.log
           python -c 'from pathlib import Path; assert "test result: ok. 1 passed; 0 failed; 0 ignored;" in Path("dist/gui-acceptance/gpu-surface-error.log").read_text()'
       - uses: actions/upload-artifact@v7
         if: always()

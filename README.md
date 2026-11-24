@@ -1,4 +1,4 @@
-# LevelEditor
+# Level Editor
 
 正在进行的全 Rust 原生桌面移植，包含窗口、界面、GPU 画布和编辑核心，无 Electron、WebView、JavaScript 或 Haxe 运行时。
 
@@ -49,8 +49,8 @@ just build -t linux -m release
 |---|---|---|
 | `mac` | 本机 macOS 架构 | `dist/mac/<模式>/Level Editor.app` |
 | `mac -a <架构>` | Apple Silicon 或 Intel | `dist/mac/<架构>/<模式>/Level Editor.app` |
-| `win` | `x86_64-pc-windows-gnu` | `dist/win/<模式>/ldtk-rs.exe` |
-| `linux` | `x86_64-unknown-linux-gnu`，glibc ≥ 2.28 | `dist/linux/<模式>/ldtk-rs` |
+| `win` | `x86_64-pc-windows-gnu` | `dist/win/<模式>/level-editor.exe` |
+| `linux` | `x86_64-unknown-linux-gnu`，glibc ≥ 2.28 | `dist/linux/<模式>/level-editor` |
 
 本机 macOS 构建可以直接使用 Homebrew Rust。跨平台或跨架构构建需要已安装并选中的 Rustup 工具链，脚本会为它按需安装缺少的 Rust target。Windows 使用 [Homebrew MinGW](https://formulae.brew.sh/formula/mingw-w64)，缺少编译器时执行 `brew install mingw-w64`。编译器运行库静态链接。Linux 构建所需的 [cargo-zigbuild](https://github.com/rust-cross/cargo-zigbuild) 0.21.8 和 Zig 0.15.2 会自动安装到 `~/.cargo/cross`，已设置 `CARGO_HOME` 时使用其 `cross` 子目录。其他项目可以通过 Cargo 的 `bin` 目录调用这两个命令。首次安装需要网络，后续构建复用已安装的工具和缓存。
 
@@ -80,21 +80,21 @@ scripts/package-macos
 
 打开已保存的工程后，按 F12，在「高级选项 → AI 助手（MCP）」复制客户端配置。
 
-用同一个 LevelEditor 可执行文件启动 MCP。每个会话绑定一个本地 `.ldtk` 项目，通过标准输入输出通信，无需启动桌面窗口。
+用 `level-editor` 可执行文件启动 MCP。每个会话绑定一个本地 `.ldtk` 项目，通过标准输入输出通信，无需启动桌面窗口。
 
 在 Codex 中注册，替换为可执行文件和项目的实际绝对路径。
 
 ```sh
-codex mcp add leveleditor -- "/path/to/ldtk-rs" --mcp "/path/to/My Game/world.ldtk"
+codex mcp add level-editor -- "/path/to/level-editor" --mcp "/path/to/My Game/world.ldtk"
 ```
 
-macOS 应用包中的可执行文件是 `/Applications/Level Editor.app/Contents/MacOS/ldtk-rs`，Windows 使用发布包里的 `ldtk-rs.exe`。其他 MCP 客户端可使用以下 stdio 配置。
+macOS 应用包中的可执行文件是 `/Applications/Level Editor.app/Contents/MacOS/level-editor`，Windows 使用发布包里的 `level-editor.exe`。其他 MCP 客户端可使用以下 stdio 配置。
 
 ```json
 {
   "mcpServers": {
-    "leveleditor": {
-      "command": "/path/to/ldtk-rs",
+    "level-editor": {
+      "command": "/path/to/level-editor",
       "args": ["--mcp", "/path/to/My Game/world.ldtk"]
     }
   }
@@ -163,9 +163,9 @@ scripts/cargo run --release --example native_smoke -- examples/topdown/Typical_T
 
 先提交要发布的改动并合入最新的 `origin/main`，再运行 `just pub`。它取源码版本和最新稳定 Release 中较高的版本，将补丁号加一。也可以通过 `just pub 0.2.0` 指定稳定版本。命令更新 `Cargo.toml` 和 `Cargo.lock`，将发布提交和标签一起推送到 `main`。
 
-标签 `v<版本>` 触发 `Build and release` 工作流。四个平台完成检查、测试和打包后，工作流会发布 `level-editor-v<版本>-<构建目标>.zip` 和自动更新清单 `level-editor-updates.json`。已安装 v0.1.7 或更早版本的用户需要从 Releases 手动下载一次使用新文件名的版本，之后可继续应用内更新。macOS 本地可用 `scripts/package-macos` 生成应用，用 `python3 scripts/package-release.py --target aarch64-apple-darwin` 生成对应 ZIP。
+标签 `v<版本>` 触发 `Build and release` 工作流。四个平台完成检查、测试和打包后，工作流会发布 `level-editor-v<版本>-<构建目标>.zip` 和自动更新清单 `level-editor-updates.json`。macOS 本地可用 `scripts/package-macos` 生成应用，用 `python3 scripts/package-release.py --target aarch64-apple-darwin` 生成对应 ZIP。
 
-macOS 上从 v0.1.8 或更早版本升级到 `Level Editor.app` 时，需要手动替换一次应用。现有更新器只接受旧应用包名 `LDtk Rust.app`。
+从 v0.1.8 或更早版本升级时，请从 Releases 下载并手动替换一次应用，之后可继续使用应用内更新。MCP 客户端和启动脚本中的旧可执行文件路径也需要改为上文对应平台的新路径。
 
 [v0.1.0 四平台下载](https://github.com/bugs1111/LevelEditor/releases/tag/v0.1.0)已发布。四平台原生 CI、发布包校验、真实私有更新源和 ARM macOS 下载包冷/热打开均已通过，具体结果与验收范围见[最终集成记录](docs/status/final-verification.md)。
 

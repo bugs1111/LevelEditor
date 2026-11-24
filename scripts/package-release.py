@@ -86,23 +86,23 @@ def check_executable_target(path, target):
 def package(target, destination):
     if target.endswith("apple-darwin"):
         source = ROOT / "dist/Level Editor.app"
-        if not (source / "Contents/Resources/ldtk-rs-install.json").is_file():
+        if not (source / "Contents/Resources/level-editor-install.json").is_file():
             raise ValueError("Run scripts/package-macos before creating the release archive")
-        check_executable_target(source / "Contents/MacOS/ldtk-rs", target)
+        check_executable_target(source / "Contents/MacOS/level-editor", target)
         write_zip(source, destination)
     else:
-        binary = "ldtk-rs.exe" if "windows" in target else "ldtk-rs"
+        binary = "level-editor.exe" if "windows" in target else "level-editor"
         executable = ROOT / "target/release" / binary
         check_executable_target(executable, target)
         with tempfile.TemporaryDirectory(prefix="ldtk-release-") as staging:
-            source = Path(staging) / "ldtk-rs"
+            source = Path(staging) / "level-editor"
             source.mkdir()
             shutil.copy2(executable, source / binary)
             shutil.copytree(ROOT / "assets", source / "resources/assets")
             shutil.copytree(ROOT / "examples/original", source / "resources/examples/original")
             for name in ["LICENSE", "THIRD_PARTY_NOTICES.md"]:
                 shutil.copy2(ROOT / name, source / name)
-            shutil.copy2(ROOT / "scripts/ldtk-rs-install.json", source / "ldtk-rs-install.json")
+            shutil.copy2(ROOT / "scripts/level-editor-install.json", source / "level-editor-install.json")
             write_zip(source, destination)
 
 

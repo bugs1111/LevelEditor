@@ -1059,7 +1059,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let root = dir
             .path()
-            .join("LDtk Rust #test.app/Contents/Resources/assets/changelogImg");
+            .join("Level Editor #test.app/Contents/Resources/assets/changelogImg");
         std::fs::create_dir_all(&root).unwrap();
         let png = include_bytes!("../../assets/icons/intGrid.png");
         let image = root.join("logo#1.png");

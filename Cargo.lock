@@ -3,36 +3,6 @@
 version = 4
 
 [[package]]
-name = "LevelEditor"
-version = "0.1.8"
-dependencies = [
- "cc",
- "core-foundation 0.10.1",
- "eframe",
- "egui_commonmark",
- "egui_extras",
- "image 0.25.10",
- "ldtk-core",
- "libloading",
- "objc2 0.6.5",
- "objc2-app-kit 0.3.2",
- "objc2-foundation 0.3.2",
- "rfd",
- "semver",
- "serde",
- "serde_json",
- "sha2",
- "syntect",
- "tempfile",
- "ttf-parser",
- "ureq",
- "wgpu",
- "windows-sys 0.61.2",
- "winit",
- "zip",
-]
-
-[[package]]
 name = "ab_glyph"
 version = "0.2.32"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1837,6 +1807,36 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.21",
  "uuid",
+]
+
+[[package]]
+name = "level-editor"
+version = "0.1.8"
+dependencies = [
+ "cc",
+ "core-foundation 0.10.1",
+ "eframe",
+ "egui_commonmark",
+ "egui_extras",
+ "image 0.25.10",
+ "ldtk-core",
+ "libloading",
+ "objc2 0.6.5",
+ "objc2-app-kit 0.3.2",
+ "objc2-foundation 0.3.2",
+ "rfd",
+ "semver",
+ "serde",
+ "serde_json",
+ "sha2",
+ "syntect",
+ "tempfile",
+ "ttf-parser",
+ "ureq",
+ "wgpu",
+ "windows-sys 0.61.2",
+ "winit",
+ "zip",
 ]
 
 [[package]]

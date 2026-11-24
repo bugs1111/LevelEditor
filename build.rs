@@ -38,7 +38,10 @@ fn main() {
         .status()
         .expect("run resource compiler");
     assert!(status.success(), "resource compiler failed: {status}");
-    println!("cargo:rustc-link-arg-bin=ldtk-rs={}", resource.display());
+    println!(
+        "cargo:rustc-link-arg-bin=level-editor={}",
+        resource.display()
+    );
 }
 
 fn write_macos_app_icon(out: &Path) {

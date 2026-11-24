@@ -82,12 +82,12 @@ def build(platform, mode, target, host, cargo, env, output, parser):
         build_root /= "build/" + platform
         command += ["--target", target + (".2.28" if platform == "linux" else "")]
     env["CARGO_TARGET_DIR"] = str(build_root)
-    command += ["--bin", "ldtk-rs", "--locked"]
+    command += ["--bin", "level-editor", "--locked"]
     if mode == "release":
         command.append("--release")
     subprocess.run(command, cwd=ROOT, env=env, check=True)
 
-    name = "ldtk-rs.exe" if platform == "win" else "ldtk-rs"
+    name = "level-editor.exe" if platform == "win" else "level-editor"
     binary = build_root / (target if target != host else "") / mode / name
     product = "Level Editor.app" if platform == "mac" else name
     output.parent.mkdir(parents=True, exist_ok=True)

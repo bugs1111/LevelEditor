@@ -31,11 +31,13 @@ const MANIFEST: &str = "level-editor-updates.json";
 const LEGACY_MANIFEST: &str = "ldtk-rs-updates.json";
 const MAX_DOWNLOAD: u64 = 1024 * 1024 * 1024;
 const MAX_UNPACKED: u64 = 4 * 1024 * 1024 * 1024;
-const MARKER: &str = "ldtk-rs-install.json";
+const PRODUCT: &str = "level-editor";
+const LEGACY_PRODUCT: &str = "ldtk-rs";
+const UPDATE_DIR_PREFIX: &str = "level-editor-update-";
 const BUNDLE_NAMES: &[&str] = if cfg!(target_os = "macos") {
     &["Level Editor.app", "LDtk Rust.app"]
 } else {
-    &["ldtk-rs"]
+    &[PRODUCT, LEGACY_PRODUCT]
 };
 type Result<T> = std::result::Result<T, String>;
 
@@ -534,15 +536,19 @@ fn unique_work() -> Result<PathBuf> {
         .duration_since(UNIX_EPOCH)
         .map_err(|e| e.to_string())?
         .as_nanos();
-    let path = std::env::temp_dir().join(format!("ldtk-rs-update-{}-{stamp}", std::process::id()));
+    let path =
+        std::env::temp_dir().join(format!("{UPDATE_DIR_PREFIX}{}-{stamp}", std::process::id()));
     fs::create_dir(&path).map_err(|e| format!("Cannot create update staging directory: {e}"))?;
     Ok(path)
 }
+fn is_update_work_name(name: &std::ffi::OsStr) -> bool {
+    name.to_str().is_some_and(|name| {
+        name.starts_with(UPDATE_DIR_PREFIX) || name.starts_with("ldtk-rs-update-")
+    })
+}
 fn safe_work(work: &Path) -> bool {
     work.parent() == Some(std::env::temp_dir().as_path())
-        && work
-            .file_name()
-            .is_some_and(|name| name.to_string_lossy().starts_with("ldtk-rs-update-"))
+        && work.file_name().is_some_and(is_update_work_name)
         && work
             .symlink_metadata()
             .is_ok_and(|m| m.is_dir() && !m.file_type().is_symlink())
@@ -683,25 +689,24 @@ fn stage_release(
     }
     result
 }
-fn marker_path(root: &Path) -> PathBuf {
+fn marker_path(root: &Path, product: &str) -> PathBuf {
+    let marker = format!("{product}-install.json");
     if cfg!(target_os = "macos") {
-        root.join("Contents/Resources").join(MARKER)
+        root.join("Contents/Resources").join(marker)
     } else {
-        root.join(MARKER)
+        root.join(marker)
     }
 }
-fn executable(root: &Path) -> PathBuf {
+fn executable(root: &Path, product: &str) -> PathBuf {
     if cfg!(target_os = "macos") {
-        root.join("Contents/MacOS/ldtk-rs")
+        root.join("Contents/MacOS").join(product)
+    } else if cfg!(windows) {
+        root.join(format!("{product}.exe"))
     } else {
-        root.join(if cfg!(windows) {
-            "ldtk-rs.exe"
-        } else {
-            "ldtk-rs"
-        })
+        root.join(product)
     }
 }
-fn validate_root(root: &Path) -> Result<()> {
+fn validate_root(root: &Path) -> Result<&'static str> {
     if root
         .symlink_metadata()
         .map_err(|e| e.to_string())?
@@ -710,11 +715,21 @@ fn validate_root(root: &Path) -> Result<()> {
     {
         return Err("Update installation root cannot be a symbolic link".into());
     }
-    let value:Value=serde_json::from_slice(&fs::read(marker_path(root)).map_err(|_|"This is not a packaged LevelEditor installation. Download a release package first; cargo/development builds cannot replace their surrounding directory.".to_owned())?).map_err(|_|"Invalid LevelEditor installation marker".to_owned())?;
-    if value["product"] != "ldtk-rs" || value["layout"] != 1 || !executable(root).is_file() {
-        return Err("Invalid LevelEditor installation layout".into());
+    let (bytes, product) = match fs::read(marker_path(root, PRODUCT)) {
+        Ok(bytes) => (bytes, PRODUCT),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            let bytes = fs::read(marker_path(root, LEGACY_PRODUCT))
+                .map_err(|_| "Install a Level Editor release package before using automatic updates. Download it from the Releases page.".to_owned())?;
+            (bytes, LEGACY_PRODUCT)
+        }
+        Err(error) => return Err(error.to_string()),
+    };
+    let value: Value = serde_json::from_slice(&bytes)
+        .map_err(|_| "Invalid Level Editor installation marker".to_owned())?;
+    if value["product"] != product || value["layout"] != 1 || !executable(root, product).is_file() {
+        return Err("Invalid Level Editor installation layout".into());
     }
-    Ok(())
+    Ok(product)
 }
 fn extract(archive: &Path, work: &Path, cancel: &AtomicBool) -> Result<PathBuf> {
     let mut archive = zip::ZipArchive::new(File::open(archive).map_err(|e| e.to_string())?)
@@ -902,21 +917,21 @@ mod tests {
         }
     }
     fn archive() -> Vec<u8> {
-        archive_with_root(BUNDLE_NAMES[0])
+        archive_with_root(BUNDLE_NAMES[0], PRODUCT)
     }
-    fn archive_with_root(root: &str) -> Vec<u8> {
+    fn archive_with_root(root: &str, product: &str) -> Vec<u8> {
         let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
-        let marker = marker_path(Path::new(root))
+        let marker = marker_path(Path::new(root), product)
             .to_string_lossy()
             .replace('\\', "/");
-        let exe = executable(Path::new(root))
+        let exe = executable(Path::new(root), product)
             .to_string_lossy()
             .replace('\\', "/");
         writer
             .start_file(marker, zip::write::SimpleFileOptions::default())
             .unwrap();
         writer
-            .write_all(br#"{"product":"ldtk-rs","layout":1}"#)
+            .write_all(&serde_json::to_vec(&json!({"product": product, "layout": 1})).unwrap())
             .unwrap();
         writer
             .start_file(
@@ -931,10 +946,13 @@ mod tests {
     #[test]
     fn macos_updates_accept_both_bundle_names_in_separate_archives() {
         let cancel = AtomicBool::new(false);
-        for name in ["Level Editor.app", "LDtk Rust.app"] {
+        for (name, product) in [
+            ("Level Editor.app", PRODUCT),
+            ("LDtk Rust.app", LEGACY_PRODUCT),
+        ] {
             let directory = tempfile::tempdir().unwrap();
             let path = directory.path().join("update.zip");
-            fs::write(&path, archive_with_root(name)).unwrap();
+            fs::write(&path, archive_with_root(name, product)).unwrap();
             assert_eq!(
                 extract(&path, directory.path(), &cancel).unwrap(),
                 directory.path().join(name)
@@ -976,7 +994,7 @@ mod tests {
         );
         let prepared = stage_release(&server.feed(), &release, None, &cancel, |_, _| {}).unwrap();
         assert_eq!(
-            fs::read(executable(&prepared.root)).unwrap(),
+            fs::read(executable(&prepared.root, PRODUCT)).unwrap(),
             b"fixture-new-executable"
         );
         fs::remove_dir_all(prepared.work).unwrap();
@@ -984,7 +1002,7 @@ mod tests {
     #[test]
     fn private_release_check_download_sha_and_executable_staging_use_native_http() {
         let server = Server::new();
-        let bytes = archive();
+        let bytes = archive_with_root(BUNDLE_NAMES[1], LEGACY_PRODUCT);
         publish(&server, &bytes, "1.1.0");
         let cancel = AtomicBool::new(false);
         let release = check_release(
@@ -1006,7 +1024,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            fs::read(executable(&prepared.root)).unwrap(),
+            fs::read(executable(&prepared.root, LEGACY_PRODUCT)).unwrap(),
             b"fixture-new-executable"
         );
         assert_eq!(progress.first(), Some(&(0, bytes.len() as u64)));
@@ -1026,7 +1044,7 @@ mod tests {
         {
             use std::os::unix::fs::PermissionsExt;
             assert_ne!(
-                fs::metadata(executable(&prepared.root))
+                fs::metadata(executable(&prepared.root, LEGACY_PRODUCT))
                     .unwrap()
                     .permissions()
                     .mode()

@@ -31,11 +31,11 @@ class ReleasePackageTests(unittest.TestCase):
 
     def make_bundle(self):
         bundle = self.root / "dist/Level Editor.app"
-        executable = bundle / "Contents/MacOS/ldtk-rs"
+        executable = bundle / "Contents/MacOS/level-editor"
         executable.parent.mkdir(parents=True)
-        marker = bundle / "Contents/Resources/ldtk-rs-install.json"
+        marker = bundle / "Contents/Resources/level-editor-install.json"
         marker.parent.mkdir()
-        marker.write_bytes((ROOT / "scripts/ldtk-rs-install.json").read_bytes())
+        marker.write_bytes((ROOT / "scripts/level-editor-install.json").read_bytes())
         (bundle / "Contents/Info.plist").write_bytes((ROOT / "scripts/macos-info.plist").read_bytes())
         return executable
 
@@ -53,8 +53,12 @@ class ReleasePackageTests(unittest.TestCase):
                     info = plistlib.loads(archive.read("Level Editor.app/Contents/Info.plist"))
                     self.assertEqual(info["CFBundleName"], "Level Editor")
                     self.assertEqual(info["CFBundleDisplayName"], "Level Editor")
-                    self.assertEqual(archive.read("Level Editor.app/Contents/MacOS/ldtk-rs"), binary)
-                    self.assertTrue((archive.getinfo("Level Editor.app/Contents/MacOS/ldtk-rs").external_attr >> 16) & 0o111)
+                    self.assertEqual(info["CFBundleExecutable"], "level-editor")
+                    entry = "Level Editor.app/Contents/MacOS/level-editor"
+                    self.assertEqual(archive.read(entry), binary)
+                    self.assertTrue((archive.getinfo(entry).external_attr >> 16) & 0o111)
+                    marker = archive.read("Level Editor.app/Contents/Resources/level-editor-install.json")
+                    self.assertEqual(json.loads(marker), {"product": "level-editor", "layout": 1})
 
     def test_arm_bundle_cannot_be_archived_as_intel(self):
         self.make_bundle().write_bytes(macho(0x0100000C))
@@ -116,8 +120,10 @@ class ReleasePackageTests(unittest.TestCase):
         folder.mkdir(parents=True)
         for directory in ("assets", "examples/original", "scripts"):
             (self.root / directory).mkdir(parents=True)
-        for filename in ("LICENSE", "THIRD_PARTY_NOTICES.md", "scripts/ldtk-rs-install.json"):
+        for filename in ("LICENSE", "THIRD_PARTY_NOTICES.md"):
             (self.root / filename).write_text("test fixture")
+        marker = "scripts/level-editor-install.json"
+        (self.root / marker).write_bytes((ROOT / marker).read_bytes())
 
         # Minimal 64-bit executable headers. These probe target matching, not OS loading.
         elf = b"\x7fELF\x02\x01\x01" + bytes(9) + struct.pack("<2H", 3, 62) + bytes(44)
@@ -125,8 +131,8 @@ class ReleasePackageTests(unittest.TestCase):
         pe = (dos + struct.pack("<4sHHIIIHHH", b"PE\0\0", 0x8664, 1, 0, 0, 0, 240, 2, 0x20B)
               + bytes(66) + struct.pack("<H", 2) + bytes(170))
         for target, name, header in (
-            ("x86_64-unknown-linux-gnu", "ldtk-rs", elf),
-            ("x86_64-pc-windows-msvc", "ldtk-rs.exe", pe),
+            ("x86_64-unknown-linux-gnu", "level-editor", elf),
+            ("x86_64-pc-windows-msvc", "level-editor.exe", pe),
         ):
             with self.subTest(target=target):
                 executable = folder / name
@@ -134,13 +140,15 @@ class ReleasePackageTests(unittest.TestCase):
                 output = self.root / f"{target}.zip"
                 release.package(target, output)
                 with zipfile.ZipFile(output) as archive:
-                    self.assertEqual(archive.read(f"ldtk-rs/{name}"), header)
+                    self.assertEqual(archive.read(f"level-editor/{name}"), header)
+                    marker = archive.read("level-editor/level-editor-install.json")
+                    self.assertEqual(json.loads(marker), {"product": "level-editor", "layout": 1})
                 executable.write_bytes(pe if header == elf else elf)
                 with self.assertRaisesRegex(ValueError, target):
                     release.package(target, self.root / "bad.zip")
                 self.assertFalse((self.root / "bad.zip").exists())
 
-        windows = folder / "ldtk-rs.exe"
+        windows = folder / "level-editor.exe"
         console = bytearray(pe)
         struct.pack_into("<H", console, 64 + 24 + 68, 3)
         windows.write_bytes(console)

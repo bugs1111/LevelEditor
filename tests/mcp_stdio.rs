@@ -20,7 +20,7 @@ struct Client {
 
 impl Client {
     fn start(path: &Path) -> Self {
-        Self::start_with_binary(path, Path::new(env!("CARGO_BIN_EXE_ldtk-rs")))
+        Self::start_with_binary(path, Path::new(env!("CARGO_BIN_EXE_level-editor")))
     }
 
     fn start_with_binary(path: &Path, binary: &Path) -> Self {
@@ -266,7 +266,7 @@ fn benchmark_large_mcp_layer_response() {
     fs::write(&path, serde_json::to_vec(&project.json).unwrap()).unwrap();
     let binary = std::env::var_os("LEVEL_EDITOR_MCP_BENCH_BIN")
         .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_ldtk-rs")));
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_level-editor")));
     let mut client = Client::start_with_binary(&path, &binary);
     client.initialize(PROTOCOL);
     client.initialized();
@@ -340,7 +340,7 @@ fn benchmark_mcp_save(external: bool, other_levels: usize) {
 
     let binary = std::env::var_os("LEVEL_EDITOR_MCP_BENCH_BIN")
         .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_ldtk-rs")));
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_level-editor")));
     let mut client = Client::start_with_binary(&path, &binary);
     client.initialize(PROTOCOL);
     client.initialized();
@@ -456,7 +456,7 @@ fn benchmark_large_mcp_level_listing() {
     fs::write(&path, serde_json::to_vec(&project.json).unwrap()).unwrap();
     let binary = std::env::var_os("LEVEL_EDITOR_MCP_BENCH_BIN")
         .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_ldtk-rs")));
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_level-editor")));
     let mut client = Client::start_with_binary(&path, &binary);
     client.initialize(PROTOCOL);
     client.initialized();
@@ -509,7 +509,7 @@ fn negotiates_mcp_and_discover_tools_without_a_window() {
     );
     let initialize = client.initialize("2099-01-01");
     assert_eq!(initialize["protocolVersion"], PROTOCOL);
-    assert_eq!(initialize["serverInfo"]["name"], "LevelEditor");
+    assert_eq!(initialize["serverInfo"]["name"], "level-editor");
     assert!(initialize["capabilities"]["tools"].is_object());
     client.send(json!({"jsonrpc":"2.0","id":"ping-1","method":"ping"}));
     assert_eq!(client.receive()["id"], "ping-1");

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Version LevelEditor and trigger its release workflow with a Git tag."""
+"""Version Level Editor and trigger its release workflow with a Git tag."""
 import argparse
 from pathlib import Path
 import re
@@ -9,7 +9,7 @@ import subprocess
 ROOT = Path(__file__).resolve().parents[1]
 STABLE = re.compile(r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)")
 MANIFEST_VERSION = re.compile(r'(?m)^version = "([^"]+)"$')
-LOCK_VERSION = re.compile(r'(?m)^\[\[package\]\]\nname = "LevelEditor"\nversion = "([^"]+)"$')
+LOCK_VERSION = re.compile(r'(?m)^\[\[package\]\]\nname = "level-editor"\nversion = "([^"]+)"$')
 
 
 def parse_version(version):
@@ -63,7 +63,7 @@ def publish(requested):
     manifest_match = MANIFEST_VERSION.search(manifest_text.split("[workspace]", 1)[0])
     lock_match = LOCK_VERSION.search(lock_text)
     if not manifest_match or not lock_match or manifest_match[1] != lock_match[1]:
-        raise ValueError("Cargo.toml and Cargo.lock must contain the same LevelEditor version")
+        raise ValueError("Cargo.toml and Cargo.lock must contain the same Level Editor version")
     source = manifest_match[1]
 
     repo = github_repository(capture("git", "remote", "get-url", "origin"))

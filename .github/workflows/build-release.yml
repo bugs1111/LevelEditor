@@ -46,7 +46,7 @@ jobs:
           cargo clippy --workspace --all-targets --locked -- -D warnings
           cargo test --workspace --locked --no-fail-fast
           cargo test --example native_smoke capture_tests --locked
-          cargo build --release --bin ldtk-rs --locked
+          cargo build --release --bin level-editor --locked
       - name: macOS application
         if: runner.os == 'macOS'
         run: scripts/package-macos
@@ -79,4 +79,4 @@ jobs:
           python scripts/package-release.py --merge release-assets
           version=$(python -c 'import json; print(json.load(open("release-assets/level-editor-updates.json"))["version"])')
           if [[ "$GITHUB_REF_NAME" != "v$version" ]]; then exit 1; fi
-          gh release create "v$version" release-assets/level-editor-v*.zip release-assets/level-editor-updates.json --repo "$GITHUB_REPOSITORY" --verify-tag --title "LevelEditor v$version" --generate-notes
+          gh release create "v$version" release-assets/level-editor-v*.zip release-assets/level-editor-updates.json --repo "$GITHUB_REPOSITORY" --verify-tag --title "Level Editor v$version" --generate-notes

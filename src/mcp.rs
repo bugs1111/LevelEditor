@@ -164,7 +164,7 @@ fn request<'a>(
             json!({
                 "protocolVersion":negotiated,
                 "capabilities":{"tools":{}},
-                "serverInfo":{"name":"LevelEditor","version":env!("CARGO_PKG_VERSION")},
+                "serverInfo":{"name":env!("CARGO_PKG_NAME"),"version":env!("CARGO_PKG_VERSION")},
                 "instructions":"This session edits one local LDtk project. Discover stable IIDs before editing. Changes stay in memory until save_project."
             })
         }

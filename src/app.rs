@@ -154,7 +154,7 @@ fn window_title(
         }
         title.push_str("    --    ");
     }
-    title.push_str("LevelEditor");
+    title.push_str("Level Editor");
     title
 }
 
@@ -1750,25 +1750,25 @@ mod tests {
     fn preview_154_title_minibar_precedes_the_project_title() {
         assert_eq!(
             window_title(None, false, Some((1, 4))),
-            "▰▱▱▱▱  LevelEditor"
+            "▰▱▱▱▱  Level Editor"
         );
-        assert_eq!(window_title(None, false, None), "LevelEditor");
+        assert_eq!(window_title(None, false, None), "Level Editor");
         assert_eq!(
             window_title(None, false, Some((9, 4))),
-            "▰▰▰▰▰  LevelEditor"
+            "▰▰▰▰▰  Level Editor"
         );
         assert_eq!(
             window_title(None, false, Some((0, 0))),
-            "▰▰▰▰▰  LevelEditor"
+            "▰▰▰▰▰  Level Editor"
         );
         let project = Some((Path::new("maps/冒险.ldtk"), Some("Town")));
         assert_eq!(
             window_title(project, true, Some((2, 5))),
-            "▰▰▱▱▱  冒险 [UNSAVED]  @ Town    --    LevelEditor"
+            "▰▰▱▱▱  冒险 [UNSAVED]  @ Town    --    Level Editor"
         );
         assert_eq!(
             window_title(project, false, None),
-            "冒险  @ Town    --    LevelEditor"
+            "冒险  @ Town    --    Level Editor"
         );
     }
 
@@ -1793,16 +1793,16 @@ mod tests {
             .collect::<Vec<_>>()
         };
 
-        assert_eq!(titles(&mut app), ["LevelEditor"]);
+        assert_eq!(titles(&mut app), ["Level Editor"]);
         assert!(titles(&mut app).is_empty());
         app.exporting_progress = Some(Arc::new(Mutex::new(Some((2, 10)))));
-        assert_eq!(titles(&mut app), ["▰▱▱▱▱  LevelEditor"]);
+        assert_eq!(titles(&mut app), ["▰▱▱▱▱  Level Editor"]);
         *app.exporting_progress.as_ref().unwrap().lock().unwrap() = Some((3, 10));
         assert!(titles(&mut app).is_empty());
         *app.exporting_progress.as_ref().unwrap().lock().unwrap() = Some((4, 10));
-        assert_eq!(titles(&mut app), ["▰▰▱▱▱  LevelEditor"]);
+        assert_eq!(titles(&mut app), ["▰▰▱▱▱  Level Editor"]);
         app.exporting_progress = None;
-        assert_eq!(titles(&mut app), ["LevelEditor"]);
+        assert_eq!(titles(&mut app), ["Level Editor"]);
     }
 
     #[test]
@@ -1810,8 +1810,8 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let executable = directory
             .path()
-            .join("LDtk Rust.app/Contents/MacOS/ldtk-rs");
-        let resources = directory.path().join("LDtk Rust.app/Contents/Resources");
+            .join("Level Editor.app/Contents/MacOS/level-editor");
+        let resources = directory.path().join("Level Editor.app/Contents/Resources");
         let asset = resources.join("assets/CHANGELOG.md");
         let sample = resources.join("examples/original/Entities.ldtk");
         std::fs::create_dir_all(executable.parent().unwrap()).unwrap();
@@ -1832,7 +1832,7 @@ mod tests {
             .unwrap(),
             "bundled example"
         );
-        let portable_executable = directory.path().join("portable/ldtk-rs");
+        let portable_executable = directory.path().join("portable/level-editor");
         let portable_asset = directory
             .path()
             .join("portable/resources/assets/CHANGELOG.md");

@@ -22,7 +22,7 @@ fn main() -> eframe::Result {
     if first.as_deref() == Some(std::ffi::OsStr::new("--mcp")) {
         let result = match (args.next(), args.next()) {
             (Some(path), None) => mcp::run(PathBuf::from(path)),
-            _ => Err("Usage: ldtk-rs --mcp <project.ldtk>".into()),
+            _ => Err("Usage: level-editor --mcp <project.ldtk>".into()),
         };
         if let Err(error) = result {
             eprintln!("{error}");
@@ -46,9 +46,9 @@ fn main() -> eframe::Result {
             .with_maximized(true)
             .with_app_id("io.ldtk.rust-port")
             .with_icon(
-                eframe::icon_data::from_png_bytes(APP_ICON).expect("bundled LevelEditor icon"),
+                eframe::icon_data::from_png_bytes(APP_ICON).expect("bundled Level Editor icon"),
             )
-            .with_title("LevelEditor"),
+            .with_title("Level Editor"),
         renderer: eframe::Renderer::Wgpu,
         wgpu_options: app::native_gpu_config(),
         #[cfg(target_os = "macos")]
@@ -56,7 +56,7 @@ fn main() -> eframe::Result {
         ..Default::default()
     };
     eframe::run_native(
-        "LevelEditor",
+        "Level Editor",
         options,
         Box::new(move |cc| {
             theme::configure(&cc.egui_ctx);

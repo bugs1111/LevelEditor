@@ -71,8 +71,8 @@ fn installed_root(exe: &Path) -> Result<PathBuf> {
     }
     .ok_or("Cannot locate the installed application")?
     .to_owned();
-    validate_root(&root)?;
-    if fs::canonicalize(executable(&root)).map_err(|e| e.to_string())?
+    let product = validate_root(&root)?;
+    if fs::canonicalize(executable(&root, product)).map_err(|e| e.to_string())?
         != fs::canonicalize(exe).map_err(|e| e.to_string())?
     {
         return Err("Current executable is outside the packaged installation".into());
@@ -114,8 +114,8 @@ pub(super) fn launch(prepared: &Prepared, reopen: Option<PathBuf>) -> Result<()>
         "{:x}",
         Sha256::digest(prepared.work.as_os_str().to_string_lossy().as_bytes())
     );
-    let staged = parent.join(format!(".ldtk-rust-stage-{}", &nonce[..16]));
-    let backup = parent.join(format!(".ldtk-rust-backup-{}", &nonce[..16]));
+    let staged = parent.join(format!(".level-editor-stage-{}", &nonce[..16]));
+    let backup = parent.join(format!(".level-editor-backup-{}", &nonce[..16]));
     let listener = TcpListener::bind(("127.0.0.1", 0))
         .map_err(|e| format!("Cannot start the local update handshake: {e}"))?;
     listener.set_nonblocking(true).map_err(|e| e.to_string())?;
@@ -142,9 +142,9 @@ pub(super) fn launch(prepared: &Prepared, reopen: Option<PathBuf>) -> Result<()>
     let result = (|| {
         plan.write(&plan_path)?;
         let helper = prepared.work.join(if cfg!(windows) {
-            "ldtk-update-helper.exe"
+            "level-editor-update-helper.exe"
         } else {
-            "ldtk-update-helper"
+            "level-editor-update-helper"
         });
         fs::copy(&exe, &helper).map_err(|e| e.to_string())?;
         let mut command = Command::new(helper);
@@ -298,7 +298,7 @@ fn spawn_and_wait(exe: &Path, reopen: Option<&Path>, timeout: Duration) -> Resul
     }
 }
 fn replace(plan: &Plan, restart: impl Fn(&Path, Option<&Path>) -> Result<()>) -> Result<()> {
-    validate_root(&plan.staged)?;
+    let product = validate_root(&plan.staged)?;
     validate_root(&plan.target)?;
     let parent = plan
         .target
@@ -332,7 +332,7 @@ fn replace(plan: &Plan, restart: impl Fn(&Path, Option<&Path>) -> Result<()>) ->
             "Could not install update; previous installation restored: {error}"
         ));
     }
-    if let Err(error) = restart(&executable(&plan.target), plan.reopen.as_deref()) {
+    if let Err(error) = restart(&executable(&plan.target, product), plan.reopen.as_deref()) {
         fs::rename(&plan.target, &plan.staged)
             .map_err(|e| format!("New executable did not start ({error}); rollback failed: {e}"))?;
         fs::rename(&plan.backup, &plan.target).map_err(|e| {
@@ -389,7 +389,10 @@ fn run_plan(path: &Path) -> Result<()> {
     if let Err(error) = &result {
         let mut error = error.clone();
         let _ = fs::write(path.with_file_name("apply-error.txt"), &error);
-        if let Err(restart) = spawn_editor(&executable(&plan.target), plan.reopen.as_deref()) {
+        let restart = validate_root(&plan.target).and_then(|product| {
+            spawn_editor(&executable(&plan.target, product), plan.reopen.as_deref())
+        });
+        if let Err(restart) = restart {
             error.push_str(&format!(
                 " Previous editor also failed to restart: {restart}"
             ));
@@ -408,12 +411,7 @@ pub(super) fn prior_failure() -> Option<String> {
     let mut paths = fs::read_dir(std::env::temp_dir())
         .ok()?
         .filter_map(std::result::Result::ok)
-        .filter(|entry| {
-            entry
-                .file_name()
-                .to_string_lossy()
-                .starts_with("ldtk-rs-update-")
-        })
+        .filter(|entry| is_update_work_name(&entry.file_name()))
         .map(|entry| entry.path().join("apply-error.txt"))
         .filter(|path| path.is_file())
         .collect::<Vec<_>>();
@@ -428,10 +426,15 @@ pub(super) fn prior_failure() -> Option<String> {
 mod tests {
     use super::*;
     fn package(root: &Path, bytes: &[u8]) {
-        fs::create_dir_all(executable(root).parent().unwrap()).unwrap();
-        fs::create_dir_all(marker_path(root).parent().unwrap()).unwrap();
-        fs::write(executable(root), bytes).unwrap();
-        fs::write(marker_path(root), br#"{"product":"ldtk-rs","layout":1}"#).unwrap();
+        package_with_product(root, bytes, PRODUCT);
+    }
+    fn package_with_product(root: &Path, bytes: &[u8], product: &str) {
+        let binary = executable(root, product);
+        let marker = marker_path(root, product);
+        fs::create_dir_all(binary.parent().unwrap()).unwrap();
+        fs::create_dir_all(marker.parent().unwrap()).unwrap();
+        fs::write(binary, bytes).unwrap();
+        fs::write(marker, json!({"product": product, "layout": 1}).to_string()).unwrap();
     }
     #[test]
     fn replacement_restarts_the_new_executable_and_removes_only_its_backup() {
@@ -452,7 +455,7 @@ mod tests {
             Ok(())
         })
         .unwrap();
-        assert_eq!(fs::read(executable(&plan.target)).unwrap(), b"new");
+        assert_eq!(fs::read(executable(&plan.target, PRODUCT)).unwrap(), b"new");
         assert!(!plan.backup.exists());
     }
     #[test]
@@ -466,20 +469,23 @@ mod tests {
             socket: "127.0.0.1:1".into(),
             nonce: "0".repeat(64),
         };
-        package(&plan.target, b"old");
+        package_with_product(&plan.target, b"old", LEGACY_PRODUCT);
         package(&plan.staged, b"new");
         assert!(
             replace(&plan, |_, _| Err("fixture process could not start".into()))
                 .unwrap_err()
                 .contains("restored")
         );
-        assert_eq!(fs::read(executable(&plan.target)).unwrap(), b"old");
-        assert_eq!(fs::read(executable(&plan.staged)).unwrap(), b"new");
+        assert_eq!(
+            fs::read(executable(&plan.target, LEGACY_PRODUCT)).unwrap(),
+            b"old"
+        );
+        assert_eq!(fs::read(executable(&plan.staged, PRODUCT)).unwrap(), b"new");
     }
     #[test]
     fn development_binaries_cannot_replace_their_containing_directory() {
         let dir = tempfile::tempdir().unwrap();
-        let exe = dir.path().join("ldtk-rs");
+        let exe = dir.path().join(PRODUCT);
         fs::write(&exe, b"dev").unwrap();
         assert!(installed_root(&exe).is_err());
     }
@@ -493,17 +499,17 @@ mod tests {
         fs::write(source.join("assets/icon.png"), b"fixture icon").unwrap();
         copy_tree(&source, &target).unwrap();
         assert_eq!(
-            fs::read(executable(&target)).unwrap(),
+            fs::read(executable(&target, PRODUCT)).unwrap(),
             b"packaged executable"
         );
         assert_eq!(
             fs::read(target.join("assets/icon.png")).unwrap(),
             b"fixture icon"
         );
-        fs::write(executable(&target), b"existing application").unwrap();
+        fs::write(executable(&target, PRODUCT), b"existing application").unwrap();
         assert!(copy_tree(&source, &target).is_err());
         assert_eq!(
-            fs::read(executable(&target)).unwrap(),
+            fs::read(executable(&target, PRODUCT)).unwrap(),
             b"existing application"
         );
     }
@@ -587,14 +593,18 @@ mod tests {
         };
         package(&plan.target, b"old installation");
         package(&plan.staged, b"new");
-        fs::copy(std::env::current_exe().unwrap(), executable(&plan.staged)).unwrap();
+        fs::copy(
+            std::env::current_exe().unwrap(),
+            executable(&plan.staged, PRODUCT),
+        )
+        .unwrap();
         let error = replace(&plan, |exe, reopen| {
             spawn_and_wait(exe, reopen, Duration::from_secs(5))
         })
         .unwrap_err();
         assert!(error.contains("exited before its first successful frame"));
         assert_eq!(
-            fs::read(executable(&plan.target)).unwrap(),
+            fs::read(executable(&plan.target, PRODUCT)).unwrap(),
             b"old installation"
         );
         assert!(!plan.backup.exists());
@@ -616,7 +626,7 @@ mod tests {
         package(&plan.target, b"old installation");
         package(&plan.staged, b"new installation");
         let test_binary = std::env::current_exe().unwrap();
-        fs::copy(&test_binary, executable(&plan.staged)).unwrap();
+        fs::copy(&test_binary, executable(&plan.staged, PRODUCT)).unwrap();
         let helper = dir.path().join(if cfg!(windows) {
             "copied-helper.exe"
         } else {
@@ -655,7 +665,7 @@ mod tests {
         socket.read_exact(&mut nonce).unwrap();
         assert_eq!(nonce.as_slice(), plan.nonce.as_bytes());
         assert_eq!(
-            fs::read(executable(&plan.target)).unwrap(),
+            fs::read(executable(&plan.target, PRODUCT)).unwrap(),
             b"old installation"
         );
         assert!(

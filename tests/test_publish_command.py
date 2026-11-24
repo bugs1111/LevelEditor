@@ -32,9 +32,9 @@ class PublishTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
             manifest = root / "Cargo.toml"
-            manifest.write_text('[package]\nname = "LevelEditor"\nversion = "0.1.1"\n')
+            manifest.write_text('[package]\nname = "level-editor"\nversion = "0.1.1"\n')
             lock = root / "Cargo.lock"
-            lock.write_text('version = 4\n\n[[package]]\nname = "LevelEditor"\nversion = "0.1.1"\n\n[[package]]\nname = "other"\nversion = "0.1.1"\n')
+            lock.write_text('version = 4\n\n[[package]]\nname = "level-editor"\nversion = "0.1.1"\n\n[[package]]\nname = "other"\nversion = "0.1.1"\n')
 
             def capture(*command):
                 if command[:3] == ("git", "remote", "get-url"):
@@ -48,7 +48,7 @@ class PublishTests(unittest.TestCase):
             with patch.object(publish, "ROOT", root), patch.object(publish, "capture", side_effect=capture), patch.object(publish, "run") as run:
                 publish.publish(None)
             self.assertIn('version = "0.1.2"', manifest.read_text())
-            self.assertIn('name = "LevelEditor"\nversion = "0.1.2"', lock.read_text())
+            self.assertIn('name = "level-editor"\nversion = "0.1.2"', lock.read_text())
             self.assertIn('name = "other"\nversion = "0.1.1"', lock.read_text())
             pushes = [call.args for call in run.call_args_list if call.args[:2] == ("git", "push")]
             self.assertEqual(pushes, [("git", "push", "--atomic", "origin", "HEAD:refs/heads/main", "HEAD:refs/tags/v0.1.2")])

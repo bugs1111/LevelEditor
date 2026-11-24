@@ -11,7 +11,7 @@ import unittest
 
 
 ROOT = Path(__file__).resolve().parents[1]
-MAC_EXECUTABLE = "Level Editor.app/Contents/MacOS/ldtk-rs"
+MAC_EXECUTABLE = "Level Editor.app/Contents/MacOS/level-editor"
 
 
 class BuildCommandTests(unittest.TestCase):
@@ -23,7 +23,7 @@ class BuildCommandTests(unittest.TestCase):
         (self.root / "scripts").mkdir()
         if (ROOT / "scripts/build.py").exists():
             shutil.copy2(ROOT / "scripts/build.py", self.root / "scripts/build.py")
-        for name in ("package-macos", "macos-info.plist", "ldtk-rs-install.json"):
+        for name in ("package-macos", "macos-info.plist", "level-editor-install.json"):
             shutil.copy2(ROOT / "scripts" / name, self.root / "scripts" / name)
         (self.root / "Cargo.toml").write_text('[package]\nversion = "0.42.0"\n')
         self.tools = self.root / "shared-bin"
@@ -63,7 +63,7 @@ if target:
     folder /= target.removesuffix('.2.28')
 folder /= 'release' if '--release' in args else 'debug'
 folder.mkdir(parents=True, exist_ok=True)
-(folder / ('ldtk-rs.exe' if target and 'windows' in target else 'ldtk-rs')).write_bytes(b'compiled executable')
+(folder / ('level-editor.exe' if target and 'windows' in target else 'level-editor')).write_bytes(b'compiled executable')
 ''')
         cargo.chmod(0o755)
         rustup = self.tools / "rustup"
@@ -120,7 +120,7 @@ else:
         native = next(call for call in calls if "--target" not in call["args"])
         self.assertIsNone(native["linker"])
         self.assertNotIn("+crt-static", native["rustflags"] or "")
-        for platform, binary in [("mac", MAC_EXECUTABLE), ("win", "ldtk-rs.exe"), ("linux", "ldtk-rs")]:
+        for platform, binary in [("mac", MAC_EXECUTABLE), ("win", "level-editor.exe"), ("linux", "level-editor")]:
             self.assertTrue((self.root / "dist" / platform / "release" / binary).is_file())
 
     def test_explicit_mac_architectures_have_separate_outputs(self):
@@ -141,8 +141,8 @@ else:
         result = self.run_build("-t", "all", "-m", "debug", "-a", "x86_64")
         self.assertEqual(result.returncode, 0, result.stdout)
         self.assertTrue((self.root / "dist/mac/x86_64/debug" / MAC_EXECUTABLE).is_file())
-        self.assertTrue((self.root / "dist/win/debug/ldtk-rs.exe").is_file())
-        self.assertTrue((self.root / "dist/linux/debug/ldtk-rs").is_file())
+        self.assertTrue((self.root / "dist/win/debug/level-editor.exe").is_file())
+        self.assertTrue((self.root / "dist/linux/debug/level-editor").is_file())
 
     def test_native_mac_build_does_not_invoke_rustup(self):
         self.env["BUILD_TEST_NO_RUSTUP"] = "1"
@@ -166,7 +166,7 @@ else:
                     args = call["args"]
                     self.assertEqual(args[0], command)
                     self.assertIn("--locked", args)
-                    self.assertEqual(args[args.index("--bin") + 1], "ldtk-rs")
+                    self.assertEqual(args[args.index("--bin") + 1], "level-editor")
                     self.assertEqual("--release" in args, mode == "release")
                     if target:
                         self.assertEqual(args[args.index("--target") + 1], target)
@@ -193,7 +193,7 @@ else:
                         self.assertEqual((resources / "LevelEditor.icns").read_bytes(),
                                          (self.root / "assets/LevelEditor.icns").read_bytes())
                     else:
-                        binary = out / ("ldtk-rs.exe" if platform == "win" else "ldtk-rs")
+                        binary = out / ("level-editor.exe" if platform == "win" else "level-editor")
                         resources = out / "resources"
                         prefix = out
                     self.assertEqual(binary.read_bytes(), b"compiled executable")
