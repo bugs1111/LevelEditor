@@ -1656,6 +1656,21 @@ mod tests {
         app.world_depth = 1;
         let original = app.project.as_ref().unwrap().json.clone();
         frame(&mut app, &ctx, Panel::Level, vec![]);
+        let stripes = egui::Image::new(egui::include_image!("../../assets/img/stripesLight.png"))
+            .texture_options(egui::TextureOptions::NEAREST_REPEAT);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        let texture = loop {
+            if let egui::load::TexturePoll::Ready { texture } =
+                stripes.load_for_size(&ctx, Vec2::splat(8.)).unwrap()
+            {
+                break texture;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "source stripe texture should be ready"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        };
         let output = frame(&mut app, &ctx, Panel::Level, vec![]);
         assert_eq!(
             output
@@ -1669,14 +1684,6 @@ mod tests {
             2,
             "inactive depth retains both full-color section headers"
         );
-        let egui::load::TexturePoll::Ready { texture } =
-            egui::Image::new(egui::include_image!("../../assets/img/stripesLight.png"))
-                .texture_options(egui::TextureOptions::NEAREST_REPEAT)
-                .load_for_size(&ctx, Vec2::splat(8.))
-                .unwrap()
-        else {
-            panic!("source stripe texture should be ready");
-        };
         assert!(
             output.shapes.iter().any(|shape| {
                 matches!(&shape.shape, egui::Shape::Mesh(mesh)

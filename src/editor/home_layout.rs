@@ -1357,13 +1357,12 @@ mod tests {
         app.settings.value["recentDirs"] = serde_json::json!([directory.path()]);
         app.settings.set_ui_state_int("HideSamplesOnHome", None, 1);
         let output = home_frame(&mut app, &ctx, vec![]);
+        let displayed_path = directory.path().to_string_lossy().replace('\\', "/");
         let folder = output
             .shapes
             .iter()
             .filter_map(|shape| match &shape.shape {
-                egui::Shape::Text(text)
-                    if text.galley.job.text == directory.path().to_str().unwrap() =>
-                {
+                egui::Shape::Text(text) if text.galley.job.text == displayed_path => {
                     Some(Rect::from_min_size(text.pos, text.galley.size()))
                 }
                 _ => None,
@@ -1391,7 +1390,7 @@ mod tests {
         assert!(!filtered.shapes.iter().any(|shape| {
             matches!(&shape.shape, egui::Shape::Text(text)
                 if matches!(text.galley.job.text.as_str(), "Needle" | "No recent project file" | "No recent folder")
-                    || text.galley.job.text == directory.path().to_str().unwrap())
+                    || text.galley.job.text == displayed_path)
         }));
     }
 
@@ -1458,11 +1457,12 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         app.settings.value["recentDirs"] = serde_json::json!([dir.path()]);
         let output = home_frame(&mut app, &ctx, vec![]);
+        let displayed_path = dir.path().to_string_lossy().replace('\\', "/");
         let path = output
             .shapes
             .iter()
             .find_map(|shape| match &shape.shape {
-                egui::Shape::Text(t) if t.galley.text() == dir.path().to_str().unwrap() => Some(t),
+                egui::Shape::Text(t) if t.galley.text() == displayed_path => Some(t),
                 _ => None,
             })
             .expect("recent folder path");
@@ -1488,11 +1488,12 @@ mod tests {
         let mut app = EditorApp::empty();
         app.settings.value["recentDirs"] = serde_json::json!([missing]);
         let output = home_frame(&mut app, &ctx, vec![]);
+        let displayed_path = missing.to_string_lossy().replace('\\', "/");
         let path = output
             .shapes
             .iter()
             .find_map(|shape| match &shape.shape {
-                egui::Shape::Text(t) if t.galley.text() == missing.to_str().unwrap() => Some(t),
+                egui::Shape::Text(t) if t.galley.text() == displayed_path => Some(t),
                 _ => None,
             })
             .expect("missing folder path");

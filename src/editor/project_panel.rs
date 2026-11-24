@@ -1341,7 +1341,7 @@ mod tests {
         assert!(app.status_error);
         assert!(
             app.status
-                .contains(&*dir.path().join("Map.v1/png").to_string_lossy())
+                .contains(&*dir.path().join("Map.v1").join("png").to_string_lossy())
         );
         assert!(matches!(
             app.canvas_notices.last().map(|entry| &entry.notice),
