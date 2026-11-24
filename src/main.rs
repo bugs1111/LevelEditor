@@ -11,6 +11,11 @@ mod viewport;
 
 use std::path::PathBuf;
 
+#[cfg(target_os = "macos")]
+const APP_ICON: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/macos-app-icon.png"));
+#[cfg(not(target_os = "macos"))]
+const APP_ICON: &[u8] = include_bytes!("../assets/LevelEditor.png");
+
 fn main() -> eframe::Result {
     let mut args = std::env::args_os().skip(1);
     let first = args.next();
@@ -41,8 +46,7 @@ fn main() -> eframe::Result {
             .with_maximized(true)
             .with_app_id("io.ldtk.rust-port")
             .with_icon(
-                eframe::icon_data::from_png_bytes(include_bytes!("../assets/LevelEditor.png"))
-                    .expect("bundled LevelEditor icon"),
+                eframe::icon_data::from_png_bytes(APP_ICON).expect("bundled LevelEditor icon"),
             )
             .with_title("LevelEditor"),
         renderer: eframe::Renderer::Wgpu,
