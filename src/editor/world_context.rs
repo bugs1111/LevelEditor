@@ -1171,6 +1171,7 @@ mod tests {
         app.viewport.zoom = 0.75;
         let ctx = egui::Context::default();
         theme::configure(&ctx);
+        theme::use_reference_layout_fonts(&ctx);
         app.start_level_spot_picker();
         let _ = frame(&mut app, &ctx, vec![], egui::Modifiers::NONE);
         for (pos, color) in [
