@@ -1851,11 +1851,7 @@ mod tests {
         app.set_project(Project::new());
         app.search = "previous".into();
         let ctx = egui::Context::default();
-        let modifiers = egui::Modifiers {
-            ctrl: true,
-            command: true,
-            ..Default::default()
-        };
+        let modifiers = egui::Modifiers::COMMAND;
         let input = egui::RawInput {
             events: vec![egui::Event::Key {
                 key: Key::P,

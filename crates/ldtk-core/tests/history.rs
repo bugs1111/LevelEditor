@@ -505,6 +505,91 @@ fn selective_entity_undo_does_not_overwrite_newer_reference_edits_in_other_level
 }
 
 #[test]
+#[ignore = "release history latency for a large entity reorder"]
+fn benchmark_large_entity_reorder_history() {
+    use std::time::{Duration, Instant};
+
+    let mut project = Project::new();
+    let entities = (0..8_000)
+        .map(|index| json!({"iid":format!("entity-{index}"),"px":[index,0],"defUid":1}))
+        .collect::<Vec<_>>();
+    project.level_mut(K).unwrap()["layerInstances"] =
+        json!([{"iid":"actors","layerDefUid":1,"entityInstances":entities}]);
+    let before = project.json.clone();
+    let mut commit_times = [Duration::ZERO; 7];
+    let mut undo_times = commit_times;
+    let mut redo_times = commit_times;
+    for sample in 0..commit_times.len() {
+        let mut history = History::default();
+        history.begin(&project, K);
+        project.layer_mut(K, 0).unwrap()["entityInstances"]
+            .as_array_mut()
+            .unwrap()
+            .reverse();
+        let after = project.json.clone();
+        let start = Instant::now();
+        assert!(history.commit(&project));
+        commit_times[sample] = start.elapsed();
+        let start = Instant::now();
+        assert!(history.undo(&mut project));
+        undo_times[sample] = start.elapsed();
+        assert_eq!(project.json, before);
+        let start = Instant::now();
+        assert!(history.redo(&mut project));
+        redo_times[sample] = start.elapsed();
+        assert_eq!(project.json, after);
+        assert!(history.undo(&mut project));
+    }
+    for (name, times) in [
+        ("commit", &mut commit_times),
+        ("undo", &mut undo_times),
+        ("redo", &mut redo_times),
+    ] {
+        times.sort_unstable();
+        eprintln!("Large entity reorder {name}: median {:?}; samples {times:?}", times[3]);
+    }
+}
+
+#[test]
+#[ignore = "manual history comparison for editing a dense tile layer"]
+fn benchmark_dense_tile_stroke_history() {
+    use std::time::{Duration, Instant};
+
+    let mut project = Project::new();
+    project.add_layer("Tiles", "Tiles", 16).unwrap();
+    let (width, height) = (128, 96);
+    project.resize_level(K, width * 16, height * 16, 0, 0).unwrap();
+    let tiles = (0..height)
+        .flat_map(|y| (0..width).map(move |x| {
+            json!({"px":[x*16,y*16],"src":[0,0],"t":0,"f":0,"a":1,"d":[y*width+x]})
+        }))
+        .collect::<Vec<_>>();
+    let original = serde_json::Value::Array(tiles);
+    project.layer_mut(K, 0).unwrap()["gridTiles"] = original.clone();
+    let cells: Vec<_> = (16..112).map(|x| [x, 48]).collect();
+    let mut commit_times = [Duration::ZERO; 5];
+    for time in &mut commit_times {
+        let mut history = History::default();
+        history.begin_layer(&project, K, 0);
+        assert_eq!(
+            project.erase_tile_cells_with_deferred(K, 0, &cells, None).unwrap(),
+            cells
+        );
+        let edited = project.layer(K, 0).unwrap()["gridTiles"].clone();
+        let start = Instant::now();
+        assert!(history.commit(&project));
+        *time = start.elapsed();
+        assert!(history.undo_level(&mut project, K));
+        assert_eq!(project.layer(K, 0).unwrap()["gridTiles"], original);
+        assert!(history.redo_level(&mut project, K));
+        assert_eq!(project.layer(K, 0).unwrap()["gridTiles"], edited);
+        assert!(history.undo_level(&mut project, K));
+    }
+    commit_times.sort_unstable();
+    eprintln!("Dense tile stroke history commit: median {:?}; samples {commit_times:?}", commit_times[2]);
+}
+
+#[test]
 #[ignore = "release history latency measurement on pinned original large-level fixture"]
 fn scoped_history_large_level_release_latency() {
     use std::time::{Duration, Instant};

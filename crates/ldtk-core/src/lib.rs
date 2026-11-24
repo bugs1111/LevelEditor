@@ -18,7 +18,7 @@ pub use autotile::{
     DeferredAutoLayers, auto_rule_pattern_is_symmetric, auto_rule_perlin_value, trim_auto_rule_pattern,
 };
 pub use definitions::{BakeMode, TilesetRemap};
-pub use edit::EntityPlacement;
+pub use edit::{EntityPlacement, TilePaint};
 pub use field_edit::FieldArrayEdit;
 pub use history::History;
 pub use project::{

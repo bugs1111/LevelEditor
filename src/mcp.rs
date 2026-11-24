@@ -1,12 +1,75 @@
 mod project_tools;
 mod tools;
 
-use project_tools::Session;
+use project_tools::{Session, ToolPayload};
+use serde::Serialize;
+use serde_json::ser::{CompactFormatter, Formatter};
 use serde_json::{Map, Value, json};
 use std::io::{self, BufRead, BufWriter, Write};
 use std::path::PathBuf;
+use std::sync::LazyLock;
 
 const VERSIONS: &[&str] = &["2025-11-25", "2025-06-18", "2024-11-05"];
+const RESPONSE_BUFFER_LIMIT: usize = 1024 * 1024;
+static SMALL_INTEGERS: LazyLock<[String; 256]> =
+    LazyLock::new(|| std::array::from_fn(|value| value.to_string()));
+
+enum Response<'a> {
+    Json(Value),
+    Tool {
+        id: &'a Value,
+        data: ToolPayload<'a>,
+        structured: bool,
+    },
+}
+
+struct SmallIntegerFormatter<'a>(&'a [String; 256]);
+
+impl Formatter for SmallIntegerFormatter<'_> {
+    fn write_u64<W: Write + ?Sized>(&mut self, writer: &mut W, value: u64) -> io::Result<()> {
+        if value < self.0.len() as u64 {
+            writer.write_all(self.0[value as usize].as_bytes())
+        } else {
+            CompactFormatter.write_u64(writer, value)
+        }
+    }
+}
+
+impl Response<'_> {
+    fn write(self, mut writer: impl Write, buffer: &mut Vec<u8>) -> io::Result<()> {
+        match self {
+            Self::Json(value) => Ok(serde_json::to_writer(writer, &value)?),
+            Self::Tool {
+                id,
+                data,
+                structured,
+            } => {
+                buffer.clear();
+                data.serialize(&mut serde_json::Serializer::with_formatter(
+                    &mut *buffer,
+                    SmallIntegerFormatter(&SMALL_INTEGERS),
+                ))?;
+                let text = std::str::from_utf8(buffer).expect("JSON encoder writes UTF-8");
+                writer.write_all(br#"{"jsonrpc":"2.0","id":"#)?;
+                serde_json::to_writer(&mut writer, id)?;
+                writer.write_all(
+                    br#","result":{"isError":false,"content":[{"type":"text","text":"#,
+                )?;
+                serde_json::to_writer(&mut writer, text)?;
+                writer.write_all(b"}]")?;
+                if structured {
+                    writer.write_all(br#","structuredContent":"#)?;
+                    writer.write_all(buffer)?;
+                }
+                writer.write_all(b"}}")?;
+                if buffer.capacity() > RESPONSE_BUFFER_LIMIT {
+                    *buffer = Vec::new();
+                }
+                Ok(())
+            }
+        }
+    }
+}
 
 pub fn run(path: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
     let path = path.canonicalize()?;
@@ -17,8 +80,10 @@ pub fn run(path: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
     let mut version = None;
     let mut initialized = false;
     let mut stdout = BufWriter::new(io::stdout().lock());
+    let mut response_buffer = Vec::new();
     for line in io::stdin().lock().split(b'\n') {
-        let response = match serde_json::from_slice::<Value>(&line?) {
+        let message = serde_json::from_slice::<Value>(&line?);
+        let response = match &message {
             Ok(message) => {
                 let id = message.get("id");
                 let valid_id = id.filter(|id| id.is_string() || id.is_i64() || id.is_u64());
@@ -48,21 +113,21 @@ pub fn run(path: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
             }
             Err(_) => error(&Value::Null, -32700, "Parse error"),
         };
-        serde_json::to_writer(&mut stdout, &response)?;
+        response.write(&mut stdout, &mut response_buffer)?;
         stdout.write_all(b"\n")?;
         stdout.flush()?;
     }
     Ok(())
 }
 
-fn request(
-    id: &Value,
+fn request<'a>(
+    id: &'a Value,
     method: &str,
     params: Option<&Value>,
     version: &mut Option<&'static str>,
     initialized: bool,
-    session: &mut Session,
-) -> Value {
+    session: &'a mut Session,
+) -> Response<'a> {
     let empty = Map::new();
     let params = match params {
         Some(value) => match value.as_object() {
@@ -127,18 +192,19 @@ fn request(
             let Some(tool) = tools::Tool::named(name) else {
                 return error(id, -32602, &format!("Unknown tool: {name}"));
             };
-            match tool.validate(args).and_then(|()| session.execute(name, args)) {
+            match tool
+                .validate(args)
+                .and_then(|()| session.execute(name, args))
+            {
                 Err(message) => json!({
                     "isError":true,"content":[{"type":"text","text":message}]
                 }),
                 Ok(data) => {
-                    let mut result = json!({
-                        "isError":false,"content":[{"type":"text","text":data.to_string()}]
-                    });
-                    if matches!(*version, Some("2025-11-25" | "2025-06-18")) {
-                        result["structuredContent"] = data;
-                    }
-                    result
+                    return Response::Tool {
+                        id,
+                        data,
+                        structured: matches!(*version, Some("2025-11-25" | "2025-06-18")),
+                    };
                 }
             }
         }
@@ -146,13 +212,13 @@ fn request(
     };
     let mut response = json!({"jsonrpc":"2.0","id":id});
     response["result"] = result;
-    response
+    Response::Json(response)
 }
 
-fn error(id: &Value, code: i32, message: &str) -> Value {
+fn error<'a>(id: &Value, code: i32, message: &str) -> Response<'a> {
     let mut response = json!({"jsonrpc":"2.0","error":{"code":code,"message":message}});
     if !id.is_null() {
         response["id"] = id.clone();
     }
-    response
+    Response::Json(response)
 }

@@ -1,4 +1,5 @@
 use super::*;
+use std::{cell::OnceCell, collections::HashMap};
 
 #[derive(Clone)]
 pub(super) enum Destination {
@@ -111,7 +112,33 @@ fn values(value: &Value) -> &[Value] {
     value.as_array().map(Vec::as_slice).unwrap_or_default()
 }
 
-fn field_display(project: &Project, kind: &str, value: &Value, def: &Value) -> String {
+type EntityNames<'a> = HashMap<&'a str, (&'a str, &'a str)>;
+
+fn entity_names(project: &Project) -> EntityNames<'_> {
+    let mut names = HashMap::new();
+    for level in project.iter_level_keys().filter_map(|key| project.level(key)) {
+        let level_name = text(level, "identifier", "Level");
+        for entity in values(&level["layerInstances"])
+            .iter()
+            .flat_map(|layer| values(&layer["entityInstances"]))
+        {
+            if let Some(iid) = entity["iid"].as_str() {
+                names
+                    .entry(iid)
+                    .or_insert_with(|| (text(entity, "__identifier", "Entity"), level_name));
+            }
+        }
+    }
+    names
+}
+
+fn field_display<'a>(
+    project: &'a Project,
+    references: &OnceCell<EntityNames<'a>>,
+    kind: &str,
+    value: &Value,
+    def: &Value,
+) -> String {
     match kind {
         "String" | "Text" | "Multilines" | "FilePath" => {
             let decoded = value
@@ -143,13 +170,10 @@ fn field_display(project: &Project, kind: &str, value: &Value, def: &Value) -> S
             value["x"], value["y"], value["w"], value["h"]
         ),
         "EntityRef" => {
-            let found = ui_fields::reference_target(project, value).map(|(_, level, entity)| {
-                format!(
-                    "@({} in {})",
-                    text(entity, "__identifier", "Entity"),
-                    text(level, "identifier", "Level")
-                )
-            });
+            let found = value["entityIid"]
+                .as_str()
+                .and_then(|iid| references.get_or_init(|| entity_names(project)).get(iid))
+                .map(|(entity, level)| format!("@({entity} in {level})"));
             found.unwrap_or_else(|| "@(Lost reference!)".into())
         }
         _ => value
@@ -161,6 +185,7 @@ fn field_display(project: &Project, kind: &str, value: &Value, def: &Value) -> S
 
 fn searchable_values<'a>(
     project: &'a Project,
+    references: &'a OnceCell<EntityNames<'a>>,
     fields: &'a Value,
     definitions: &'a Value,
 ) -> impl Iterator<Item = String> + 'a {
@@ -184,7 +209,7 @@ fn searchable_values<'a>(
                 items
                     .iter()
                     .filter(|item| !item.is_null())
-                    .map(move |item| field_display(project, kind, item, def)),
+                    .map(move |item| field_display(project, references, kind, item, def)),
             )
         })
         .flatten()
@@ -192,6 +217,7 @@ fn searchable_values<'a>(
 
 fn search_index(project: &Project) -> Vec<Entry> {
     let mut entries = Vec::new();
+    let references = OnceCell::new();
     let mut add =
         |category: Category, title: String, context: &str, terms: &[&str], destination| {
             let terms = format!("{} {}", terms.join(" "), category.keywords());
@@ -241,7 +267,6 @@ fn search_index(project: &Project) -> Vec<Entry> {
             })
             .collect()
     };
-    let keys = project.level_keys();
     for (world, name, world_iid) in worlds {
         add(
             Category::World,
@@ -250,7 +275,7 @@ fn search_index(project: &Project) -> Vec<Entry> {
             &[name, world_iid],
             Destination::World(world),
         );
-        for &key in keys.iter().filter(|key| key.world == world) {
+        for key in project.level_keys_in_world(world) {
             let Some(level) = project.level(key) else {
                 continue;
             };
@@ -262,9 +287,12 @@ fn search_index(project: &Project) -> Vec<Entry> {
                 &[level_name, name, text(level, "iid", "")],
                 Destination::Level(key),
             );
-            for display in
-                searchable_values(project, &level["fieldInstances"], &defs["levelFields"])
-            {
+            for display in searchable_values(
+                project,
+                &references,
+                &level["fieldInstances"],
+                &defs["levelFields"],
+            ) {
                 add(
                     Category::LevelField,
                     format!("{level_name}.{display}"),
@@ -297,8 +325,13 @@ fn search_index(project: &Project) -> Vec<Entry> {
                     .find(|def| def["uid"] == entity["defUid"]);
                 let display_values = def
                     .map(|def| {
-                        searchable_values(project, &entity["fieldInstances"], &def["fieldDefs"])
-                            .collect::<Vec<_>>()
+                        searchable_values(
+                            project,
+                            &references,
+                            &entity["fieldInstances"],
+                            &def["fieldDefs"],
+                        )
+                        .collect::<Vec<_>>()
                     })
                     .unwrap_or_default();
                 let mut title = name.to_owned();
@@ -741,6 +774,40 @@ impl EditorApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[ignore = "controlled large entity-reference search benchmark"]
+    fn benchmark_search_entity_references() {
+        let mut project = Project::new();
+        project.json["defs"]["entities"] = json!([{
+            "uid": 42, "fieldDefs": [{"uid": 43, "searchable": true}]
+        }]);
+        let count = 8_000;
+        let entities: Vec<_> = (0..count)
+            .map(|index| json!({
+                "iid": format!("entity-{index}"),
+                "__identifier": format!("Actor{index}"),
+                "defUid": 42,
+                "fieldInstances": [{
+                    "defUid": 43,
+                    "__type": "EntityRef",
+                    "__value": {"entityIid": format!("entity-{}", count - 1 - index)}
+                }]
+            }))
+            .collect();
+        project.json["levels"][0]["layerInstances"] =
+            json!([{"entityInstances": entities}]);
+        let mut times = [std::time::Duration::ZERO; 5];
+        for elapsed in &mut times {
+            let start = std::time::Instant::now();
+            let results = search_index(&project);
+            *elapsed = start.elapsed();
+            assert_eq!(results.len(), count * 2 + 3);
+            assert!(results[3].title.contains("@(Actor7999 in Level_0)"));
+        }
+        times.sort_unstable();
+        eprintln!("Search entity references: median {:?}; samples {times:?}", times[2]);
+    }
     use serde_json::json;
 
     #[test]
@@ -1274,11 +1341,7 @@ mod tests {
         assert!(!app.command_palette);
         assert_eq!(app.definition_uid, Some(349));
 
-        let modifiers = egui::Modifiers {
-            ctrl: true,
-            command: true,
-            ..Default::default()
-        };
+        let modifiers = egui::Modifiers::COMMAND;
         let _ = ctx.run(
             egui::RawInput {
                 screen_rect: Some(rect),

@@ -1,6 +1,6 @@
 //! The signed text envelope used by the original editor's system clipboard.
 use crate::autotile::{tidy_auto_rule_group, tidy_layer_auto_rules, tidy_rule};
-use crate::workflow::alloc_uid;
+use crate::workflow::{alloc_uid, alloc_uids, assign_rule_uids};
 use crate::{Error, Project, Result};
 use serde_json::{Value, json};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -301,21 +301,17 @@ impl Project {
             copy["uid"] = json!(uid);
             copy["identifier"] = json!(name);
             if kind == "entities" {
-                for field in copy["fieldDefs"]
+                let fields = copy["fieldDefs"]
                     .as_array_mut()
-                    .ok_or_else(|| invalid("clipboard entity fields missing"))?
-                {
-                    field["uid"] = json!(alloc_uid(p)?);
+                    .ok_or_else(|| invalid("clipboard entity fields missing"))?;
+                let uids = alloc_uids(p, fields.len())?;
+                for (field, uid) in fields.iter_mut().zip(uids) {
+                    field["uid"] = json!(uid);
                     p.make_field_instance(field)?;
                 }
             }
             if kind == "layers" {
-                for group in copy["autoRuleGroups"].as_array_mut().into_iter().flatten() {
-                    group["uid"] = json!(alloc_uid(p)?);
-                    for rule in group["rules"].as_array_mut().into_iter().flatten() {
-                        rule["uid"] = json!(alloc_uid(p)?);
-                    }
-                }
+                assign_rule_uids(p, &mut copy)?;
             }
             let defs = p.json["defs"][kind].as_array_mut().expect("validated list");
             if kind == "layers" {
@@ -567,14 +563,15 @@ impl Project {
                 .as_str()
                 .filter(|s| !s.trim().is_empty())
                 .ok_or_else(|| invalid("clipboard group name missing"))?;
-            let uid = alloc_uid(p)?;
-            let mut generated = Vec::new();
-            for rule in data.value["rules"]
+            let rules = data.value["rules"]
                 .as_array()
-                .ok_or_else(|| invalid("clipboard group rules missing"))?
-            {
-                generated.push(clipboard_rule(alloc_uid(p)?, rule)?);
-            }
+                .ok_or_else(|| invalid("clipboard group rules missing"))?;
+            let mut uids = alloc_uids(p, 1 + rules.len())?;
+            let uid = uids.next().expect("reserved group UID");
+            let generated = uids
+                .zip(rules)
+                .map(|(uid, rule)| clipboard_rule(uid, rule))
+                .collect::<Result<Vec<_>>>()?;
             let mut copy = json!({
                 "uid": uid, "name": name, "color": null, "icon": null, "active": true,
                 "isOptional": false, "usesWizard": false, "requiredBiomeValues": [],

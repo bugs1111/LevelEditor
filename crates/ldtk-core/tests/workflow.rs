@@ -12,6 +12,92 @@ fn sample() -> Project {
     p
 }
 #[test]
+#[ignore = "manual project derived data performance comparison"]
+fn benchmark_many_entity_definitions_refresh() {
+    exercise_entity_refresh(false);
+}
+
+#[test]
+#[ignore = "manual reference-heavy project refresh comparison"]
+fn benchmark_many_entity_references_refresh() {
+    exercise_entity_refresh(true);
+}
+
+fn exercise_entity_refresh(with_references: bool) {
+    use std::time::{Duration, Instant};
+
+    let mut project = Project::new();
+    project.add_layer("Actors", "Entities", 16).unwrap();
+    let base = project.add_entity_def("Actor", 16, 16).unwrap();
+    if with_references {
+        project
+            .add_field_definition(None, "Links", "EntityRef", true)
+            .unwrap();
+        project.level_mut(K).unwrap()["fieldInstances"][0]["realEditorValues"] = (0..8192)
+            .map(|i| json!({"id":"V_String","params":[format!("actor-{i}")]}))
+            .collect::<Vec<_>>()
+            .into();
+    }
+    let template = project.json["defs"]["entities"][0].clone();
+    let definitions = 512;
+    project.json["defs"]["entities"] = (0..definitions).map(|i| {
+        let mut def = template.clone();
+        def["uid"] = json!(base + i);
+        def["identifier"] = json!(format!("Actor_{i}"));
+        def["pivotX"] = json!(1.);
+        def["tags"] = json!([format!("Tag_{i}")]);
+        def
+    }).collect::<Vec<_>>().into();
+    project.level_mut(K).unwrap()["worldX"] = json!(128);
+    project.layer_mut(K, 0).unwrap()["entityInstances"] = (0..8192).map(|i| {
+        json!({"iid":format!("actor-{i}"),"defUid":base+i%definitions,"px":[16,32],"fieldInstances":[]})
+    }).collect::<Vec<_>>().into();
+    let mut times = [Duration::ZERO; 5];
+    for time in &mut times {
+        let mut refreshed = project.clone();
+        let start = Instant::now();
+        refreshed.refresh_derived_data().unwrap();
+        *time = start.elapsed();
+        let entities = refreshed.layer(K, 0).unwrap()["entityInstances"].as_array().unwrap();
+        assert_eq!(entities.len(), 8192);
+        for (i, entity) in entities.iter().enumerate() {
+            let def = i as i64 % definitions;
+            assert_eq!(entity["__identifier"], format!("Actor_{def}"));
+            assert_eq!(entity["__tags"][0], format!("Tag_{def}"));
+            assert_eq!(entity["__grid"], json!([0, 2]));
+            assert_eq!(entity["__worldX"], 144);
+        }
+        if with_references {
+            let level = refreshed.level(K).unwrap();
+            let layer = refreshed.layer(K, 0).unwrap();
+            let links = level["fieldInstances"][0]["__value"].as_array().unwrap();
+            assert_eq!(links.len(), entities.len());
+            for (link, entity) in links.iter().zip(entities) {
+                assert_eq!(link["entityIid"], entity["iid"]);
+                assert_eq!(link["layerIid"], layer["iid"]);
+                assert_eq!(link["levelIid"], level["iid"]);
+                assert_eq!(link["worldIid"], refreshed.json["dummyWorldIid"]);
+            }
+        }
+    }
+    times.sort_unstable();
+    let workload = if with_references { "reference" } else { "definition" };
+    eprintln!("Large entity {workload} refresh: median {:?}; samples {times:?}", times[2]);
+}
+
+#[test]
+fn entity_refresh_rejects_duplicate_iids_without_any_reference_fields() {
+    let mut project = sample();
+    let other = project.add_level(None, "Other", 256, 256).unwrap();
+    let entity = project.layer(K, 0).unwrap()["entityInstances"][0].clone();
+    project.layer_mut(other, 0).unwrap()["entityInstances"] = json!([entity]);
+    let original = project.json.clone();
+    let error = project.move_entity(K, 0, 0, 48, 32).unwrap_err();
+    assert!(error.to_string().contains("duplicate entity IID"));
+    assert_eq!(project.json, original);
+}
+
+#[test]
 fn duplicate_remaps_ids_and_internal_refs_and_preserves_unknowns() {
     let mut p = sample();
     p.json["levels"][0]["unknown"] = json!({"x":7});

@@ -4,22 +4,27 @@ mod png;
 mod tiled;
 
 use png::PngRenderer;
+pub use tiled::TiledFormat;
 pub use png::{
     PngExportMode, PngExportOptions, background_image_layout, classic_tile_cell,
     unavailable_classic_tile_red,
 };
 
-use crate::project::StagedSave;
+use crate::project::{StagedSave, StagingWriter};
 use crate::{Error, Project, Result};
 use image::{GenericImage, Rgba, RgbaImage};
-use serde_json::{Value, json};
+use indexmap::{IndexMap, IndexSet};
+use serde::Serialize;
+use serde_json::Value;
 use std::{
-    collections::HashSet,
-    fmt::Write as _,
     fs,
-    io::{BufReader, Cursor, Read},
+    io::{self, BufReader, BufWriter, Cursor, Read, Write},
     path::{Path, PathBuf},
+    sync::LazyLock,
 };
+
+static CSV_BYTE_TEXT: LazyLock<[String; 256]> =
+    LazyLock::new(|| std::array::from_fn(|byte| format!("{byte},")));
 #[derive(Clone, Debug, Default)]
 pub struct ExportReport {
     pub outputs: Vec<PathBuf>,
@@ -47,13 +52,31 @@ fn safe_name(name: &str) -> Result<&str> {
 }
 #[derive(Default)]
 struct ExportBatch {
-    seen: HashSet<PathBuf>,
+    seen: IndexSet<PathBuf>,
     staged: StagedSave,
 }
 
 impl ExportBatch {
     fn add(&mut self, path: PathBuf, bytes: &[u8]) -> Result<()> {
-        if !self.seen.insert(path.clone()) {
+        self.add_parts(path, &[bytes])
+    }
+
+    fn add_parts(&mut self, path: PathBuf, parts: &[&[u8]]) -> Result<()> {
+        self.prepare_target(&path)?;
+        self.staged.add_parts(path, parts, true)
+    }
+
+    fn add_writer(
+        &mut self,
+        path: PathBuf,
+        write: impl FnOnce(&mut BufWriter<StagingWriter<'_>>) -> io::Result<()>,
+    ) -> Result<()> {
+        self.prepare_target(&path)?;
+        self.staged.add_writer(path, write)
+    }
+
+    fn prepare_target(&mut self, path: &Path) -> Result<()> {
+        if !self.seen.insert(path.to_owned()) {
             return Err(Error::Invalid(format!(
                 "duplicate export output {}",
                 path.display()
@@ -65,25 +88,54 @@ impl ExportBatch {
                 source,
             })?;
         }
-        self.staged.add(path, bytes, false)
+        Ok(())
     }
 
     fn publish(self) -> Result<Vec<PathBuf>> {
-        let paths = self.staged.targets().cloned().collect();
         self.staged.publish()?;
-        Ok(paths)
+        Ok(self.seen.into_iter().collect())
     }
 }
 
 fn bytes(v: &Value) -> Result<Vec<u8>> {
     serde_json::to_vec_pretty(v).map_err(|e| Error::Invalid(e.to_string()))
 }
-fn fields(v: &Value) -> Value {
-    let mut o = serde_json::Map::new();
-    for f in arr(&v["fieldInstances"]) {
-        o.insert(s(f, "__identifier").to_owned(), f["__value"].clone());
-    }
-    Value::Object(o)
+fn fields(v: &Value) -> IndexMap<&str, &Value> {
+    arr(&v["fieldInstances"])
+        .iter()
+        .map(|f| (s(f, "__identifier"), &f["__value"]))
+        .collect()
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SimplifiedLevel<'a> {
+    identifier: &'a Value,
+    #[serde(rename = "uniqueIdentifer")]
+    unique_identifier: &'a Value,
+    x: &'a Value,
+    y: &'a Value,
+    width: &'a Value,
+    height: &'a Value,
+    bg_color: &'a Value,
+    neighbour_levels: &'a Value,
+    custom_fields: IndexMap<&'a str, &'a Value>,
+    layers: Vec<String>,
+    entities: IndexMap<&'a str, Vec<SimplifiedEntity<'a>>>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SimplifiedEntity<'a> {
+    id: &'a Value,
+    iid: &'a Value,
+    layer: &'a Value,
+    x: &'a Value,
+    y: &'a Value,
+    width: &'a Value,
+    height: &'a Value,
+    color: u32,
+    custom_fields: IndexMap<&'a str, &'a Value>,
 }
 fn color(v: &str) -> Rgba<u8> {
     let raw = v.trim_start_matches('#');
@@ -125,6 +177,7 @@ impl Project {
         if total > 0 {
             progress(0, total);
         }
+        let byte_text = &*CSV_BYTE_TEXT;
         for (index, key) in keys.into_iter().enumerate() {
             let l = self
                 .level(key)
@@ -136,26 +189,30 @@ impl Project {
                 }
                 let w = n(li, "__cWid").max(0) as usize;
                 let h = n(li, "__cHei").max(0) as usize;
-                let mut text = String::new();
-                let values = arr(&li["intGridCsv"]);
-                for y in 0..h {
-                    for x in 0..w {
-                        if x > 0 {
-                            text.push(',');
-                        }
-                        let value =
-                            values.get(x + y * w).and_then(Value::as_i64).unwrap_or(0) as u8;
-                        write!(text, "{value}").expect("writing to a String is infallible");
-                    }
-                    if y + 1 < h {
-                        text.push(',');
-                    }
-                    text.push('\n');
-                }
-                batch.add(
+                batch.add_writer(
                     dir.join(name)
                         .join(format!("{}.csv", safe_name(s(li, "__identifier"))?)),
-                    text.as_bytes(),
+                    |writer| {
+                        let mut row = String::new();
+                        let mut values = arr(&li["intGridCsv"])
+                            .iter()
+                            .map(|value| value.as_i64().unwrap_or(0) as u8)
+                            .chain(std::iter::repeat(0));
+                        for y in 0..h {
+                            row.clear();
+                            for value in values.by_ref().take(w) {
+                                row.push_str(&byte_text[usize::from(value)]);
+                            }
+                            if y + 1 == h {
+                                row.pop();
+                            } else if w == 0 {
+                                row.push(',');
+                            }
+                            row.push('\n');
+                            writer.write_all(row.as_bytes())?;
+                        }
+                        Ok(())
+                    },
                 )?;
             }
             progress(index + 1, total);
@@ -193,7 +250,7 @@ impl Project {
             let l = self
                 .level(key)
                 .ok_or_else(|| Error::Invalid("missing external level".into()))?;
-            let mut entities = serde_json::Map::new();
+            let mut entities = IndexMap::<_, Vec<_>>::new();
             let mut layers = Vec::new();
             for li in arr(&l["layerInstances"]).iter().rev() {
                 let typ = s(li, "__type");
@@ -201,34 +258,43 @@ impl Project {
                     || typ == "AutoLayer"
                     || (typ == "IntGrid" && !li["__tilesetDefUid"].is_null())
                 {
-                    layers.push(Value::String(format!("{}.png", s(li, "__identifier"))));
+                    layers.push(format!("{}.png", s(li, "__identifier")));
                 }
             }
             for li in arr(&l["layerInstances"]) {
                 for e in arr(&li["entityInstances"]) {
-                    let entry = entities
-                        .entry(s(e, "__identifier").to_owned())
-                        .or_insert_with(|| json!([]));
-                    let mut entity = json!({
-                        "id": e["__identifier"], "iid": e["iid"], "layer": li["__identifier"],
-                        "x": e["px"][0], "y": e["px"][1], "width": e["width"], "height": e["height"],
-                        "color": u32::from_str_radix(s(e, "__smartColor").trim_start_matches('#'), 16).unwrap_or(0)
+                    let color =
+                        u32::from_str_radix(s(e, "__smartColor").trim_start_matches('#'), 16)
+                            .unwrap_or(0);
+                    entities.entry(s(e, "__identifier")).or_default().push(SimplifiedEntity {
+                        id: &e["__identifier"],
+                        iid: &e["iid"],
+                        layer: &li["__identifier"],
+                        x: &e["px"][0],
+                        y: &e["px"][1],
+                        width: &e["width"],
+                        height: &e["height"],
+                        color,
+                        custom_fields: fields(e),
                     });
-                    entity["customFields"] = fields(e);
-                    entry.as_array_mut().unwrap().push(entity);
                 }
             }
-            let mut simple = json!({
-                "identifier": l["identifier"], "uniqueIdentifer": l["iid"],
-                "x": l["worldX"], "y": l["worldY"], "width": l["pxWid"], "height": l["pxHei"],
-                "bgColor": l["__bgColor"], "neighbourLevels": l["__neighbours"]
-            });
-            simple["customFields"] = fields(l);
-            simple["layers"] = Value::Array(layers);
-            simple["entities"] = Value::Object(entities);
-            batch.add(
+            let simple = SimplifiedLevel {
+                identifier: &l["identifier"],
+                unique_identifier: &l["iid"],
+                x: &l["worldX"],
+                y: &l["worldY"],
+                width: &l["pxWid"],
+                height: &l["pxHei"],
+                bg_color: &l["__bgColor"],
+                neighbour_levels: &l["__neighbours"],
+                custom_fields: fields(l),
+                layers,
+                entities,
+            };
+            batch.add_writer(
                 dir.join(safe_name(s(l, "identifier"))?).join("data.json"),
-                &bytes(&simple)?,
+                |writer| serde_json::to_writer_pretty(writer, &simple).map_err(io::Error::from),
             )?;
             progress(index + 1, total);
         }
@@ -271,7 +337,7 @@ pub fn load_image_rgba(path: &Path) -> Result<RgbaImage> {
         load_aseprite_atlas(path)
     } else {
         image::open(path)
-            .map(|i| i.to_rgba8())
+            .map(image::DynamicImage::into_rgba8)
             .map_err(|e| Error::Invalid(format!("{}: {e}", path.display())))
     }
 }

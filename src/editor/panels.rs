@@ -2781,6 +2781,7 @@ impl EditorApp {
             ("Layer and level PNGs", "png"),
             ("IntGrid CSV files", "csv"),
             ("Tiled TMX", "tmx"),
+            ("Tiled JSON (.tmj)", "tmj"),
             ("GameMaker Studio 2 rooms", "gms"),
         ] {
             if source_controls::add_enabled_button(

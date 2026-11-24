@@ -1,30 +1,208 @@
-use super::{ExportBatch, ExportReport, arr, bytes, color, n, num, encode_png, s, safe_name};
+use super::{
+    CSV_BYTE_TEXT, ExportBatch, ExportReport, arr, bytes, color, encode_png, n, num, s, safe_name,
+};
 use crate::project::relative_to;
 use crate::{Error, Project, Result};
 use image::RgbaImage;
 use serde_json::{Value, json};
+use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap};
-use std::fmt::Write;
+use std::fmt::{self, Write};
 use std::path::{Path, PathBuf};
+use std::sync::LazyLock;
 
-fn xml(v: impl std::fmt::Display) -> String {
-    v.to_string()
-        .replace('&', "&amp;")
-        .replace('"', "&quot;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
+mod tmj;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TiledFormat {
+    Tmx,
+    Tmj,
 }
-fn property(name: &str, typ: Option<&str>, value: &Value) -> String {
-    format!(
-        "<property name=\"{}\"{} value=\"{}\"/>",
-        xml(name),
-        typ.map(|t| format!(" type=\"{t}\"")).unwrap_or_default(),
-        xml(match value {
-            Value::String(s) => s.clone(),
-            Value::Null => "null".into(),
-            v => v.to_string(),
-        })
-    )
+
+impl TiledFormat {
+    fn extension(self) -> &'static str {
+        match self {
+            Self::Tmx => "tmx",
+            Self::Tmj => "tmj",
+        }
+    }
+}
+
+enum TiledTilesets {
+    Xml(String),
+    Json(Vec<Value>),
+}
+
+struct Tileset<'a> {
+    gid: u32,
+    name: &'a str,
+    size: i64,
+    columns: i64,
+    count: i64,
+    image: &'a str,
+    width: i64,
+    height: i64,
+    spacing: Option<i64>,
+}
+
+impl TiledTilesets {
+    fn add(&mut self, set: Tileset<'_>, custom_data: &[Value]) -> Result<()> {
+        let Tileset {
+            gid,
+            name,
+            size,
+            columns,
+            count,
+            image,
+            width,
+            height,
+            spacing,
+        } = set;
+        match self {
+            Self::Xml(out) => {
+                write!(out, "<tileset firstgid=\"{gid}\" name=\"{}\" tilewidth=\"{size}\" tileheight=\"{size}\" tilecount=\"{count}\" columns=\"{columns}\" objectalignment=\"topleft\"", xml(name)).unwrap();
+                if let Some(spacing) = spacing {
+                    write!(out, " margin=\"0\" spacing=\"{spacing}\"").unwrap();
+                }
+                write!(
+                    out,
+                    "><image source=\"{}\" width=\"{width}\" height=\"{height}\"/>",
+                    xml(image)
+                )
+                .unwrap();
+                for_each_tile_property_set(custom_data, |id, values| {
+                    write!(out, "<tile id=\"{id}\"><properties>").unwrap();
+                    for (name, value) in values {
+                        write_property(
+                            out,
+                            &name,
+                            None,
+                            scalar_kind(&value),
+                            &property_text(&value),
+                        );
+                    }
+                    out.push_str("</properties></tile>");
+                })?;
+                out.push_str("</tileset>");
+            }
+            Self::Json(out) => {
+                let mut tiles = Vec::new();
+                for_each_tile_property_set(custom_data, |id, values| {
+                    let properties: Vec<_> = values
+                        .iter()
+                        .map(|(name, value)| {
+                            tmj::property(Cow::Borrowed(name), scalar_kind(value), value, || {
+                                property_text(value)
+                            })
+                        })
+                        .collect();
+                    tiles.push(json!({"id":id,"properties":properties}));
+                })?;
+                let mut set = json!({
+                    "firstgid":gid,"name":name,"tilewidth":size,"tileheight":size,
+                    "columns":columns,"tilecount":count,"objectalignment":"topleft",
+                    "image":image,"imagewidth":width,"imageheight":height,
+                    "margin":0,"spacing":spacing.unwrap_or(0)
+                });
+                if !tiles.is_empty() {
+                    set["tiles"] = tiles.into();
+                }
+                out.push(set);
+            }
+        }
+        Ok(())
+    }
+}
+
+fn scalar_kind(value: &Value) -> Option<&'static str> {
+    if value.is_boolean() {
+        Some("bool")
+    } else if value.is_i64() {
+        Some("int")
+    } else if value.is_number() {
+        Some("float")
+    } else {
+        None
+    }
+}
+
+fn for_each_tile_property_set(
+    custom_data: &[Value],
+    mut emit: impl FnMut(i64, serde_json::Map<String, Value>),
+) -> Result<()> {
+    for data in custom_data {
+        let id = n(data, "tileId");
+        let raw = s(data, "data").replace("\\\\", "\\").replace("\\n", "\n");
+        let value = serde_json::from_str::<Value>(&raw)
+            .map_err(|e| Error::Invalid(format!("invalid Tiled custom data for tile {id}: {e}")))?;
+        if let Value::Object(mut values) = value {
+            values.retain(|_, value| !value.is_array() && !value.is_object());
+            if !values.is_empty() {
+                emit(id, values);
+            }
+        }
+    }
+    Ok(())
+}
+
+struct XmlAttribute<'a>(&'a str);
+
+impl fmt::Display for XmlAttribute<'_> {
+    fn fmt(&self, out: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write_xml(out, self.0)
+    }
+}
+
+fn xml(value: &str) -> XmlAttribute<'_> {
+    XmlAttribute(value)
+}
+
+fn property_text(value: &Value) -> Cow<'_, str> {
+    match value {
+        Value::String(s) => Cow::Borrowed(s),
+        Value::Null => Cow::Borrowed("null"),
+        _ => Cow::Owned(value.to_string()),
+    }
+}
+
+fn write_xml(out: &mut impl fmt::Write, text: &str) -> fmt::Result {
+    let mut start = 0;
+    for (index, byte) in text.bytes().enumerate() {
+        let entity = match byte {
+            b'&' => "&amp;",
+            b'"' => "&quot;",
+            b'<' => "&lt;",
+            b'>' => "&gt;",
+            _ => continue,
+        };
+        out.write_str(&text[start..index])?;
+        out.write_str(entity)?;
+        start = index + 1;
+    }
+    out.write_str(&text[start..])
+}
+
+fn write_property(
+    out: &mut String,
+    name: &str,
+    index: Option<usize>,
+    kind: Option<&str>,
+    value: &str,
+) {
+    out.push_str("<property name=\"");
+    write_xml(out, name).expect("writing to a String is infallible");
+    if let Some(index) = index {
+        write!(out, "_{index}").expect("writing to a String is infallible");
+    }
+    out.push('"');
+    if let Some(kind) = kind {
+        out.push_str(" type=\"");
+        out.push_str(kind);
+        out.push('"');
+    }
+    out.push_str(" value=\"");
+    write_xml(out, value).expect("writing to a String is infallible");
+    out.push_str("\"/>");
 }
 impl Project {
     fn tiled_world_index(&self) -> Option<usize> {
@@ -42,6 +220,15 @@ impl Project {
     pub fn export_tiled_with_report_progress(
         &self,
         dir: impl AsRef<Path>,
+        progress: impl FnMut(usize, usize),
+    ) -> Result<ExportReport> {
+        self.export_tiled_format_with_report_progress(dir, TiledFormat::Tmx, progress)
+    }
+
+    pub fn export_tiled_format_with_report_progress(
+        &self,
+        dir: impl AsRef<Path>,
+        format: TiledFormat,
         mut progress: impl FnMut(usize, usize),
     ) -> Result<ExportReport> {
         let mut warnings = Vec::new();
@@ -94,7 +281,7 @@ impl Project {
             }
         }
         Ok(ExportReport {
-            outputs: self.export_tiled_with_progress(dir, &mut progress)?,
+            outputs: self.export_tiled_with_progress(dir, format, &mut progress)?,
             warnings,
         })
     }
@@ -102,13 +289,17 @@ impl Project {
         &self,
         dir: &Path,
         batch: &mut ExportBatch,
-    ) -> Result<(String, BTreeMap<i64, u32>)> {
+        format: TiledFormat,
+    ) -> Result<(TiledTilesets, BTreeMap<i64, u32>)> {
         let base = self
             .path
             .as_ref()
             .and_then(|p| p.parent())
             .unwrap_or(Path::new("."));
-        let mut tilesets = String::new();
+        let mut tilesets = match format {
+            TiledFormat::Tmx => TiledTilesets::Xml(String::new()),
+            TiledFormat::Tmj => TiledTilesets::Json(Vec::new()),
+        };
         let mut gids = BTreeMap::new();
         let mut gid = 1u32;
         for td in arr(&self.json["defs"]["tilesets"]) {
@@ -120,44 +311,20 @@ impl Project {
             let count = cols * ((n(td, "pxHei") + size - 1) / size);
             let source = relative_to(&base.join(rel), dir)?;
             gids.insert(n(td, "uid"), gid);
-            tilesets.push_str(&format!("<tileset firstgid=\"{gid}\" name=\"{}\" tilewidth=\"{size}\" tileheight=\"{size}\" tilecount=\"{count}\" columns=\"{cols}\" objectalignment=\"topleft\" margin=\"0\" spacing=\"{}\"><image source=\"{}\" width=\"{}\" height=\"{}\"/>",xml(s(td,"identifier")),n(td,"spacing"),xml(source),n(td,"pxWid"),n(td,"pxHei")));
-            for data in arr(&td["customData"]) {
-                let raw = s(data, "data").replace("\\\\", "\\").replace("\\n", "\n");
-                let value = serde_json::from_str::<Value>(&raw).map_err(|e| {
-                    Error::Invalid(format!(
-                        "invalid Tiled custom data for tile {}: {e}",
-                        n(data, "tileId")
-                    ))
-                })?;
-                if let Value::Object(values) = value {
-                    let props: String = values
-                        .into_iter()
-                        .filter(|(_, v)| !v.is_array() && !v.is_object())
-                        .map(|(k, v)| {
-                            property(
-                                &k,
-                                if v.is_boolean() {
-                                    Some("bool")
-                                } else if v.is_i64() {
-                                    Some("int")
-                                } else if v.is_number() {
-                                    Some("float")
-                                } else {
-                                    None
-                                },
-                                &v,
-                            )
-                        })
-                        .collect();
-                    if !props.is_empty() {
-                        tilesets.push_str(&format!(
-                            "<tile id=\"{}\"><properties>{props}</properties></tile>",
-                            n(data, "tileId")
-                        ));
-                    }
-                }
-            }
-            tilesets.push_str("</tileset>");
+            tilesets.add(
+                Tileset {
+                    gid,
+                    name: s(td, "identifier"),
+                    size,
+                    columns: cols,
+                    count,
+                    image: &source,
+                    width: n(td, "pxWid"),
+                    height: n(td, "pxHei"),
+                    spacing: Some(n(td, "spacing")),
+                },
+                arr(&td["customData"]),
+            )?;
             gid = gid.saturating_add(count as u32);
         }
         for d in arr(&self.json["defs"]["layers"])
@@ -182,7 +349,20 @@ impl Project {
                 batch.add(path, &encode_png(&image)?)?;
             }
             gids.insert(n(d, "uid"), gid);
-            tilesets.push_str(&format!("<tileset firstgid=\"{gid}\" name=\"{}\" tilewidth=\"{size}\" tileheight=\"{size}\" tilecount=\"{}\" columns=\"{}\" objectalignment=\"topleft\"><image source=\"{}\" width=\"{}\" height=\"{size}\"/></tileset>",xml(s(d,"identifier")),values.len(),values.len(),xml(filename),width));
+            tilesets.add(
+                Tileset {
+                    gid,
+                    name: s(d, "identifier"),
+                    size: i64::from(size),
+                    columns: values.len() as i64,
+                    count: values.len() as i64,
+                    image: &filename,
+                    width: i64::from(width),
+                    height: i64::from(size),
+                    spacing: None,
+                },
+                &[],
+            )?;
             gid += values.len() as u32;
         }
         Ok((tilesets, gids))
@@ -190,11 +370,12 @@ impl Project {
 
     /// TMX deliberately exports the first world only, matching upstream's limitation.
     pub fn export_tiled(&self, dir: impl AsRef<Path>) -> Result<Vec<PathBuf>> {
-        self.export_tiled_with_progress(dir, &mut |_, _| {})
+        self.export_tiled_with_progress(dir, TiledFormat::Tmx, &mut |_, _| {})
     }
     fn export_tiled_with_progress(
         &self,
         dir: impl AsRef<Path>,
+        format: TiledFormat,
         progress: &mut impl FnMut(usize, usize),
     ) -> Result<Vec<PathBuf>> {
         let dir = dir.as_ref();
@@ -224,18 +405,37 @@ impl Project {
         let total = levels.len();
         if total > 0 {
             progress(0, total);
-            let (tilesets, gids) = self.tiled_tilesets(dir, &mut batch)?;
+            let (tilesets, gids) = self.tiled_tilesets(dir, &mut batch, format)?;
+            let extension = format.extension();
             for (index, level) in levels.enumerate() {
                 let (l, [x, y]) =
                     level.ok_or_else(|| Error::Invalid("missing external level".into()))?;
-                let xml = self.tiled_map_xml(l, grid, &tilesets, &gids);
+                let name = safe_name(s(l, "identifier"))?;
                 let filename = if total > 1 {
-                    format!("{:04}_{}.tmx", index + 1, safe_name(s(l, "identifier"))?)
+                    format!("{:04}_{name}.{extension}", index + 1)
                 } else {
-                    format!("{}.tmx", safe_name(s(l, "identifier"))?)
+                    format!("{name}.{extension}")
                 };
-                batch.add(dir.join(&filename), xml.as_bytes())?;
-                maps.push(json!({"fileName":filename,"x":x,"y":y}));
+                let path = dir.join(&filename);
+                let mut map = json!({"fileName":filename,"x":x,"y":y});
+                match &tilesets {
+                    TiledTilesets::Xml(tilesets) => {
+                        let (header, layers) = self.tiled_map_xml(l, grid, &gids);
+                        let mut parts = Vec::with_capacity(layers.len() + 3);
+                        parts.extend([header.as_bytes(), tilesets.as_bytes()]);
+                        parts.extend(layers.iter().map(String::as_bytes));
+                        parts.push(b"</map>");
+                        batch.add_parts(path, &parts)?;
+                    }
+                    TiledTilesets::Json(tilesets) => {
+                        batch.add_writer(path, |writer| {
+                            self.write_tiled_map_json(writer, l, grid, &gids, tilesets)
+                        })?;
+                        map["width"] = n(l, "pxWid").into();
+                        map["height"] = n(l, "pxHei").into();
+                    }
+                }
+                maps.push(map);
                 progress(index + 1, total);
             }
             progress(0, 0);
@@ -256,10 +456,9 @@ impl Project {
         &self,
         l: &Value,
         grid: i64,
-        tilesets: &str,
         gids: &BTreeMap<i64, u32>,
-    ) -> String {
-        let mut layers = String::new();
+    ) -> (String, Vec<String>) {
+        let mut layers = Vec::new();
         let mut layer_id = 1;
         let object_id = 1;
         for li in arr(&l["layerInstances"]).iter().rev() {
@@ -270,171 +469,345 @@ impl Project {
             let cw = n(li, "__cWid").max(0) as usize;
             let ch = n(li, "__cHei").max(0) as usize;
             let typ = s(li, "__type");
-            let name = s(li, "__identifier");
             let opacity = num(def, "displayOpacity", 1.);
             if typ == "Entities" {
-                layers.push_str(&format!(
+                let mut layer = format!(
                     "<objectgroup id=\"{layer_id}\" name=\"{}\">",
-                    xml(name)
-                ));
+                    xml(s(li, "__identifier"))
+                );
                 layer_id += 1;
                 for e in arr(&li["entityInstances"]) {
                     let ed = self.definition("entities", n(e, "defUid")).unwrap_or(e);
-                    let x = e["px"][0].as_i64().unwrap_or(0);
-                    let y = e["px"][1].as_i64().unwrap_or(0);
-                    let width = n(ed, "width");
-                    let height = n(ed, "height");
-                    let ex = x - (num(ed, "pivotX", 0.) * width as f64).round() as i64;
-                    let ey = y - (num(ed, "pivotY", 0.) * height as f64).round() as i64;
-                    layers.push_str(&format!("<object name=\"{}\" type=\"{}\" x=\"{ex}\" y=\"{ey}\" width=\"{width}\" height=\"{height}\"><properties>",xml(s(e,"__identifier")),xml(s(e,"__identifier"))));
-                    for (k, v) in [
-                        ("__anchorX", x),
-                        ("__anchorY", y),
-                        ("__cx", (x - i64::from(num(ed, "pivotX", 0.) == 1.)) / grid),
-                        ("__cy", (y - i64::from(num(ed, "pivotY", 0.) == 1.)) / grid),
-                    ] {
-                        layers.push_str(&property(k, Some("int"), &json!(v)));
+                    let rect = EntityRect::new(e, ed);
+                    let [ex, ey, width, height] = rect.bounds;
+                    layer.push_str(&format!("<object name=\"{}\" type=\"{}\" x=\"{ex}\" y=\"{ey}\" width=\"{width}\" height=\"{height}\"><properties>",xml(s(e,"__identifier")),xml(s(e,"__identifier"))));
+                    for (name, value) in rect.anchor_properties(grid) {
+                        write_property(&mut layer, name, None, Some("int"), &value.to_string());
                     }
-                    for f in arr(&e["fieldInstances"]) {
-                        let raw_type = s(f, "__type")
-                            .trim_start_matches("Array<")
-                            .trim_end_matches('>');
-                        let kind = match raw_type {
-                            "Int" => Some("int"),
-                            "Float" => Some("float"),
-                            "Bool" => Some("bool"),
-                            "Color" => Some("color"),
-                            "FilePath" => Some("file"),
-                            "Tile" => Some("tile"),
-                            _ => None,
-                        };
-                        let values = if let Some(a) = f["__value"].as_array() {
-                            a.clone()
-                        } else {
-                            vec![f["__value"].clone()]
-                        };
-                        for (i, v) in values.iter().enumerate() {
-                            let name = if values.len() > 1 {
-                                format!("{}_{i}", s(f, "__identifier"))
-                            } else {
-                                s(f, "__identifier").to_owned()
-                            };
-                            let v = match raw_type {
-                                "Color" => json!(format!(
-                                    "#ff{}",
-                                    v.as_str().unwrap_or("#000000").trim_start_matches('#')
-                                )),
-                                "EntityRef" => v["entityIid"].clone(),
-                                "Point" if !v.is_null() => {
-                                    json!(format!("{},{}", n(v, "cx"), n(v, "cy")))
-                                }
-                                "Tile" if !v.is_null() => json!(format!(
-                                    "{},{},{},{}",
-                                    n(v, "x"),
-                                    n(v, "y"),
-                                    n(v, "w"),
-                                    n(v, "h")
-                                )),
-                                "String" | "Multilines" | "FilePath" => v
-                                    .as_str()
-                                    .map(|v| json!(v.replace("\\\\", "\\").replace("\\n", "\n")))
-                                    .unwrap_or(Value::Null),
-                                _ => v.clone(),
-                            };
-                            layers.push_str(&property(&name, kind, &v));
-                        }
-                    }
-                    layers.push_str("</properties></object>");
+                    for_each_entity_field(e, |name, index, kind, raw_type, value| {
+                        write_property(&mut layer, name, index, kind, &field_text(raw_type, value));
+                    });
+                    layer.push_str("</properties></object>");
                 }
-                layers.push_str("</objectgroup>");
+                layer.push_str("</objectgroup>");
+                layers.push(layer);
                 continue;
             }
             if typ == "IntGrid" {
                 let base = *gids.get(&n(li, "layerDefUid")).unwrap_or(&1);
                 let cells = arr(&li["intGridCsv"]);
-                let values = (0..cw * ch).map(|i| {
-                    let v = cells.get(i).and_then(Value::as_i64).unwrap_or(0);
-                    if v > 0 { base + v as u32 - 1 } else { 0 }
-                });
-                let name = if li["__tilesetDefUid"].is_number() {
-                    format!("{name}_values")
-                } else {
-                    name.to_owned()
-                };
-                write_tmx_layer(&mut layers, layer_id, &name, [cw, ch], opacity, values);
+                let values = intgrid_gids(cells, cw * ch, base);
+                let name = intgrid_name(li);
+                let mut layer = String::new();
+                write_tmx_layer(&mut layer, layer_id, &name, [cw, ch], opacity, values);
+                layers.push(layer);
                 layer_id += 1;
             }
-            let tiles = if typ == "Tiles" {
-                arr(&li["gridTiles"])
-            } else {
-                arr(&li["autoLayerTiles"])
-            };
-            let td_uid = li["__tilesetDefUid"]
-                .as_i64()
-                .or_else(|| def["tilesetDefUid"].as_i64());
-            if let Some(base) = td_uid.and_then(|uid| gids.get(&uid)) {
-                let mut stacks: Vec<Vec<u32>> = Vec::new();
-                for t in tiles {
-                    let x = t["px"][0].as_i64().unwrap_or(0) / grid;
-                    let y = t["px"][1].as_i64().unwrap_or(0) / grid;
-                    if x < 0 || y < 0 || x >= cw as i64 || y >= ch as i64 {
-                        continue;
-                    }
-                    let coord = x as usize + y as usize * cw;
-                    let mut index = 0;
-                    while index < stacks.len() && stacks[index][coord] != 0 {
-                        index += 1;
-                    }
-                    if index == stacks.len() {
-                        stacks.push(vec![0; cw * ch]);
-                    }
-                    let f = n(t, "f");
-                    stacks[index][coord] = (*base + n(t, "t") as u32)
-                        | if f & 1 != 0 { 0x80000000 } else { 0 }
-                        | if f & 2 != 0 { 0x40000000 } else { 0 };
-                }
-                for (i, data) in stacks.iter().enumerate() {
-                    let name = if stacks.len() > 1 {
-                        format!("{name}_{}", i + 1)
-                    } else {
-                        name.to_owned()
-                    };
-                    write_tmx_layer(
-                        &mut layers,
+            let area = cw * ch;
+            for (name, data) in tiled_tile_layers(li, def, [cw, ch], grid, gids) {
+                let mut layer = String::new();
+                match data {
+                    TileStack::Dense(data) => write_tmx_layer(
+                        &mut layer,
                         layer_id,
                         &name,
                         [cw, ch],
                         opacity,
-                        data.iter().copied(),
-                    );
-                    layer_id += 1;
+                        data.into_iter(),
+                    ),
+                    TileStack::Sparse(mut data) => {
+                        write_tmx_layer_start(&mut layer, layer_id, &name, [cw, ch], opacity);
+                        let extra_digits: usize =
+                            data.iter().map(|&(_, gid)| gid.ilog10() as usize).sum();
+                        // Every cell contributes a digit and a separator before trimming.
+                        layer.reserve_exact(area * 2 + extra_digits + "</data></layer>".len());
+                        write_sparse_stack(&mut layer, &mut data, area);
+                        layer.push_str("</data></layer>");
+                    }
                 }
+                layers.push(layer);
+                layer_id += 1;
             }
         }
-        format!(
-            "<map version=\"1.4\" tiledversion=\"1.4.2\" orientation=\"orthogonal\" renderorder=\"right-down\" compressionlevel=\"0\" width=\"{}\" height=\"{}\" tilewidth=\"{grid}\" tileheight=\"{grid}\" infinite=\"0\" backgroundcolor=\"{}\" nextlayerid=\"{layer_id}\" nextobjectid=\"{object_id}\">{tilesets}{layers}</map>",
+        let header = format!(
+            "<map version=\"1.4\" tiledversion=\"1.4.2\" orientation=\"orthogonal\" renderorder=\"right-down\" compressionlevel=\"0\" width=\"{}\" height=\"{}\" tilewidth=\"{grid}\" tileheight=\"{grid}\" infinite=\"0\" backgroundcolor=\"{}\" nextlayerid=\"{layer_id}\" nextobjectid=\"{object_id}\">",
             (n(l, "pxWid") + grid - 1) / grid,
             (n(l, "pxHei") + grid - 1) / grid,
             xml(s(l, "__bgColor"))
-        )
+        );
+        (header, layers)
     }
+}
+
+struct EntityRect {
+    bounds: [i64; 4],
+    anchor: [i64; 2],
+    pivot: [f64; 2],
+}
+
+impl EntityRect {
+    fn new(entity: &Value, def: &Value) -> Self {
+        let x = entity["px"][0].as_i64().unwrap_or(0);
+        let y = entity["px"][1].as_i64().unwrap_or(0);
+        let width = n(def, "width");
+        let height = n(def, "height");
+        let pivot = [num(def, "pivotX", 0.), num(def, "pivotY", 0.)];
+        let left = x - (pivot[0] * width as f64).round() as i64;
+        let top = y - (pivot[1] * height as f64).round() as i64;
+        Self {
+            bounds: [left, top, width, height],
+            anchor: [x, y],
+            pivot,
+        }
+    }
+
+    fn anchor_properties(&self, grid: i64) -> [(&'static str, i64); 4] {
+        let [x, y] = self.anchor;
+        [
+            ("__anchorX", x),
+            ("__anchorY", y),
+            ("__cx", (x - i64::from(self.pivot[0] == 1.)) / grid),
+            ("__cy", (y - i64::from(self.pivot[1] == 1.)) / grid),
+        ]
+    }
+}
+
+fn for_each_entity_field<'a>(
+    entity: &'a Value,
+    mut emit: impl FnMut(&'a str, Option<usize>, Option<&'static str>, &'a str, &'a Value),
+) {
+    for f in arr(&entity["fieldInstances"]) {
+        let raw_type = s(f, "__type")
+            .trim_start_matches("Array<")
+            .trim_end_matches('>');
+        let kind = match raw_type {
+            "Int" => Some("int"),
+            "Float" => Some("float"),
+            "Bool" => Some("bool"),
+            "Color" => Some("color"),
+            "FilePath" => Some("file"),
+            "Tile" => Some("tile"),
+            _ => None,
+        };
+        let value = &f["__value"];
+        let values = value
+            .as_array()
+            .map_or_else(|| std::slice::from_ref(value), Vec::as_slice);
+        let field_name = s(f, "__identifier");
+        for (i, v) in values.iter().enumerate() {
+            emit(
+                field_name,
+                (values.len() > 1).then_some(i),
+                kind,
+                raw_type,
+                v,
+            );
+        }
+    }
+}
+
+fn field_text<'a>(raw_type: &str, v: &'a Value) -> Cow<'a, str> {
+    match raw_type {
+        "Color" => Cow::Owned(format!(
+            "#ff{}",
+            v.as_str().unwrap_or("#000000").trim_start_matches('#')
+        )),
+        "EntityRef" => property_text(&v["entityIid"]),
+        "Point" if !v.is_null() => Cow::Owned(format!("{},{}", n(v, "cx"), n(v, "cy"))),
+        "Tile" if !v.is_null() => Cow::Owned(format!(
+            "{},{},{},{}",
+            n(v, "x"),
+            n(v, "y"),
+            n(v, "w"),
+            n(v, "h")
+        )),
+        "String" | "Multilines" | "FilePath" => match v.as_str() {
+            Some(text) if text.contains('\\') => {
+                Cow::Owned(text.replace("\\\\", "\\").replace("\\n", "\n"))
+            }
+            Some(text) => Cow::Borrowed(text),
+            None => Cow::Borrowed("null"),
+        },
+        _ => property_text(v),
+    }
+}
+
+fn intgrid_name(li: &Value) -> Cow<'_, str> {
+    let name = s(li, "__identifier");
+    if li["__tilesetDefUid"].is_number() {
+        Cow::Owned(format!("{name}_values"))
+    } else {
+        Cow::Borrowed(name)
+    }
+}
+
+fn intgrid_gids(cells: &[Value], area: usize, base: u32) -> impl Iterator<Item = u32> + '_ {
+    (0..area).map(move |i| {
+        let v = cells.get(i).and_then(Value::as_i64).unwrap_or(0);
+        if v > 0 { base + v as u32 - 1 } else { 0 }
+    })
+}
+
+fn tiled_tile_layers<'a>(
+    li: &'a Value,
+    def: &Value,
+    [cw, ch]: [usize; 2],
+    grid: i64,
+    gids: &BTreeMap<i64, u32>,
+) -> impl Iterator<Item = (Cow<'a, str>, TileStack)> + use<'a> {
+    let typ = s(li, "__type");
+    let name = s(li, "__identifier");
+    let tiles = if typ == "Tiles" {
+        arr(&li["gridTiles"])
+    } else {
+        arr(&li["autoLayerTiles"])
+    };
+    let td_uid = li["__tilesetDefUid"]
+        .as_i64()
+        .or_else(|| def["tilesetDefUid"].as_i64());
+    let mut ground = Vec::new();
+    let mut stacks = Vec::<TileStack>::new();
+    if let Some(base) = td_uid.and_then(|uid| gids.get(&uid)) {
+        let area = cw * ch;
+        let mut next_stack = HashMap::new();
+        for t in tiles {
+            let x = t["px"][0].as_i64().unwrap_or(0) / grid;
+            let y = t["px"][1].as_i64().unwrap_or(0) / grid;
+            if x < 0 || y < 0 || x >= cw as i64 || y >= ch as i64 {
+                continue;
+            }
+            let coord = x as usize + y as usize * cw;
+            let f = n(t, "f");
+            let gid = (*base + n(t, "t") as u32)
+                | if f & 1 != 0 { 0x80000000 } else { 0 }
+                | if f & 2 != 0 { 0x40000000 } else { 0 };
+            if ground.is_empty() {
+                ground.resize(area, 0);
+            }
+            if ground[coord] == 0 {
+                ground[coord] = gid;
+                continue;
+            }
+            let next = next_stack.entry(coord).or_insert(0);
+            let index = *next;
+            *next += usize::from(gid != 0);
+            if index == stacks.len() {
+                stacks.push(TileStack::new(area));
+            }
+            stacks[index].insert(coord, gid, area);
+        }
+    }
+    let single = stacks.is_empty();
+    (!ground.is_empty())
+        .then_some(TileStack::Dense(ground))
+        .into_iter()
+        .chain(stacks)
+        .enumerate()
+        .map(move |(index, data)| {
+            let name = if single {
+                Cow::Borrowed(name)
+            } else {
+                Cow::Owned(format!("{name}_{}", index + 1))
+            };
+            (name, data)
+        })
 }
 
 fn write_tmx_layer(
     out: &mut String,
     id: i32,
     name: &str,
-    [w, h]: [usize; 2],
+    size: [usize; 2],
     opacity: f64,
     data: impl Iterator<Item = u32>,
 ) {
-    write!(out, "<layer id=\"{id}\" name=\"{}\" width=\"{w}\" height=\"{h}\" opacity=\"{opacity}\"><data encoding=\"csv\">", xml(name))
-        .expect("writing to a String is infallible");
-    for (index, value) in data.enumerate() {
-        if index > 0 {
-            out.push(',');
+    write_tmx_layer_start(out, id, name, size, opacity);
+    let start = out.len();
+    out.reserve_exact(size[0] * size[1] * 2 + "</data></layer>".len());
+    let numbers = &*CSV_BYTE_TEXT;
+    let mut empty = 0;
+    for value in data {
+        if value == 0 {
+            empty += 1;
+            continue;
         }
-        write!(out, "{value}").expect("writing to a String is infallible");
+        if empty > 0 {
+            write_empty_tiles(out, std::mem::take(&mut empty));
+        }
+        if let Some(text) = numbers.get(value as usize) {
+            out.push_str(text);
+        } else {
+            write!(out, "{value},").expect("writing to a String is infallible");
+        }
+    }
+    if empty > 0 {
+        write_empty_tiles(out, empty);
+    }
+    if out.len() > start {
+        out.pop();
     }
     out.push_str("</data></layer>");
+}
+
+fn write_tmx_layer_start(out: &mut String, id: i32, name: &str, [w, h]: [usize; 2], opacity: f64) {
+    write!(out, "<layer id=\"{id}\" name=\"{}\" width=\"{w}\" height=\"{h}\" opacity=\"{opacity}\"><data encoding=\"csv\">", xml(name))
+        .expect("writing to a String is infallible");
+}
+
+enum TileStack {
+    Dense(Vec<u32>),
+    Sparse(Vec<(usize, u32)>),
+}
+
+impl TileStack {
+    fn new(area: usize) -> Self {
+        if area <= 256 {
+            Self::Dense(vec![0; area])
+        } else {
+            Self::Sparse(Vec::new())
+        }
+    }
+
+    fn insert(&mut self, coord: usize, gid: u32, area: usize) {
+        match self {
+            Self::Dense(cells) => cells[coord] = gid,
+            Self::Sparse(cells) => {
+                if gid == 0 {
+                    return;
+                }
+                cells.push((coord, gid));
+                if cells.len() >= area.div_ceil(size_of::<(usize, u32)>() / size_of::<u32>()) {
+                    let mut dense = vec![0; area];
+                    for &(coord, gid) in cells.iter() {
+                        dense[coord] = gid;
+                    }
+                    *self = Self::Dense(dense);
+                }
+            }
+        }
+    }
+}
+
+fn write_sparse_stack(out: &mut String, cells: &mut [(usize, u32)], area: usize) {
+    cells.sort_unstable_by_key(|&(coord, _)| coord);
+    let mut cursor = 0;
+    for &(coord, gid) in cells.iter() {
+        write_empty_tiles(out, coord - cursor);
+        write!(out, "{gid},").expect("writing to a String is infallible");
+        cursor = coord + 1;
+    }
+    write_empty_tiles(out, area - cursor);
+    if area != 0 {
+        out.pop();
+    }
+}
+
+fn write_empty_tiles(out: &mut String, mut count: usize) {
+    const CHUNK: usize = 4096;
+    static EMPTY: LazyLock<String> = LazyLock::new(|| "0,".repeat(CHUNK));
+    while count >= CHUNK {
+        out.push_str(&EMPTY);
+        count -= CHUNK;
+    }
+    out.push_str(&EMPTY[..count * 2]);
 }

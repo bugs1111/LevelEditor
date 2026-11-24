@@ -37,14 +37,32 @@ impl Project {
         &self,
         world: Option<usize>,
     ) -> impl ExactSizeIterator<Item = LevelKey> + DoubleEndedIterator + use<> {
+        let count = self.level_stubs_in_world(world).len();
+        (0..count).map(move |level| LevelKey { world, level })
+    }
+
+    fn level_stubs_in_world(&self, world: Option<usize>) -> &[Value] {
         let container = match world {
             Some(index) => self.json["worlds"].get(index),
             None => Some(&self.json),
         };
-        let count = container
+        container
             .and_then(|c| c["levels"].as_array())
-            .map_or(0, Vec::len);
-        (0..count).map(move |level| LevelKey { world, level })
+            .map_or(&[], Vec::as_slice)
+    }
+
+    /// Visit available levels in document order, retaining the keys of external levels.
+    pub fn levels_in_world(
+        &self,
+        world: Option<usize>,
+    ) -> impl Iterator<Item = (LevelKey, &Value)> {
+        self.level_stubs_in_world(world)
+            .iter()
+            .enumerate()
+            .filter_map(move |(level, stub)| {
+                self.resolve_level_stub(stub)
+                    .map(|data| (LevelKey { world, level }, data))
+            })
     }
 
     /// Missing external documents retain their slot so each caller can report the load error.
@@ -119,7 +137,10 @@ impl Project {
     }
 
     pub fn level(&self, key: LevelKey) -> Option<&Value> {
-        let stub = self.level_stub(key)?;
+        self.resolve_level_stub(self.level_stub(key)?)
+    }
+
+    fn resolve_level_stub<'a>(&'a self, stub: &'a Value) -> Option<&'a Value> {
         match stub.get("externalRelPath").and_then(Value::as_str) {
             Some(rel) => self.external_levels.get(rel),
             None => Some(stub),

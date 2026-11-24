@@ -1,7 +1,62 @@
 use super::{ExportBatch, arr, bytes, n, s, safe_name};
 use crate::{Error, Project, Result};
+use serde::{Serialize, Serializer, ser::SerializeMap};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
+
+struct GameMakerRoom<'a> {
+    properties: serde_json::Map<String, Value>,
+    layers: Vec<GameMakerLayer<'a>>,
+}
+
+impl Serialize for GameMakerRoom<'_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
+        let mut room = serializer.serialize_map(Some(self.properties.len()))?;
+        for (key, value) in &self.properties {
+            if key == "layers" {
+                room.serialize_entry(key, &self.layers)?;
+            } else {
+                room.serialize_entry(key, value)?;
+            }
+        }
+        room.end()
+    }
+}
+
+#[derive(Serialize)]
+struct GameMakerLayer<'a> {
+    #[serde(flatten)]
+    properties: Value,
+    #[serde(flatten)]
+    tile: Option<GameMakerTileLayer<'a>>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GameMakerTileLayer<'a> {
+    tiles: GameMakerTiles<'a>,
+    x: i64,
+    y: i64,
+    tileset_id: Value,
+}
+
+struct GameMakerTiles<'a>(&'a Value);
+
+impl Serialize for GameMakerTiles<'_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
+        gamemaker_tiles(self.0).serialize(serializer)
+    }
+}
+
+#[derive(Serialize)]
+struct GameMakerTileData {
+    #[serde(rename = "SerialiseWidth")]
+    width: usize,
+    #[serde(rename = "SerialiseHeight")]
+    height: usize,
+    #[serde(rename = "TileSerialiseData")]
+    tiles: Vec<u32>,
+}
 
 impl Project {
     /// Preserves upstream's experimental GMS2 schema, including empty entity layers.
@@ -35,7 +90,10 @@ impl Project {
                 .ok_or_else(|| Error::Invalid("missing external level".into()))?;
             let room = self.gamemaker_room(level)?;
             let name = safe_name(s(level, "identifier"))?;
-            batch.add(dir.join(format!("{name}.yy")), &bytes(&room)?)?;
+            batch.add_writer(dir.join(format!("{name}.yy")), |writer| {
+                // Rooms contain a number for every cell, including empty cells.
+                serde_json::to_writer(writer, &room).map_err(std::io::Error::from)
+            })?;
             progress(index + 1, total);
         }
         if total > 0 {
@@ -44,7 +102,7 @@ impl Project {
         batch.publish()
     }
 
-    fn gamemaker_room(&self, level: &Value) -> Result<Value> {
+    fn gamemaker_room<'a>(&self, level: &'a Value) -> Result<GameMakerRoom<'a>> {
         let mut layers = Vec::new();
         for (index, instance) in arr(&level["layerInstances"]).iter().enumerate() {
             let kind = s(instance, "__type");
@@ -63,21 +121,28 @@ impl Project {
             if kind == "Entities" {
                 layer["instances"] = json!([]);
             }
-            if kind == "Tiles" {
+            let tile = if kind == "Tiles" {
                 let tileset = instance["__tilesetDefUid"]
                     .as_i64()
                     .and_then(|uid| self.tileset(uid))
                     .ok_or_else(|| Error::Invalid("GMS tile layer has no tileset".into()))?;
-                layer["tiles"] = gamemaker_tiles(instance);
-                layer["x"] = json!(n(instance, "__pxTotalOffsetX"));
-                layer["y"] = json!(n(instance, "__pxTotalOffsetY"));
-                layer["tilesetId"] = json!({
-                    "name":tileset["identifier"], "path":format!("{}.yy",s(tileset,"identifier"))
-                });
-            }
-            layers.push(layer);
+                Some(GameMakerTileLayer {
+                    tiles: GameMakerTiles(instance),
+                    x: n(instance, "__pxTotalOffsetX"),
+                    y: n(instance, "__pxTotalOffsetY"),
+                    tileset_id: json!({
+                        "name":tileset["identifier"], "path":format!("{}.yy",s(tileset,"identifier"))
+                    }),
+                })
+            } else {
+                None
+            };
+            layers.push(GameMakerLayer {
+                properties: layer,
+                tile,
+            });
         }
-        let mut room = json!({
+        let room = json!({
             "name":level["identifier"], "resourceType":"GMRoom", "resourceVersion":"1.0",
             "tags":[], "parent":{"name":"","path":""}, "isDnd":false,
             "inheritCode":false, "inheritLayers":false, "inheritCreationOrder":false,
@@ -88,13 +153,14 @@ impl Project {
             "roomSettings":{"Width":level["pxWid"],"Height":level["pxHei"],"persistent":false,"inheritRoomSettings":false},
             "viewSettings":{"enableViews":false,"inheritViewSettings":false,"clearDisplayBuffer":true,"clearViewBackground":false}
         });
-        // Move the tile arrays into their original field position without cloning them.
-        room["layers"] = Value::Array(layers);
-        Ok(room)
+        let Value::Object(properties) = room else {
+            unreachable!("room is a JSON object");
+        };
+        Ok(GameMakerRoom { properties, layers })
     }
 }
 
-fn gamemaker_tiles(instance: &Value) -> Value {
+fn gamemaker_tiles(instance: &Value) -> GameMakerTileData {
     const EMPTY: u32 = 1 << 31;
     let width = n(instance, "__cWid").max(0) as usize;
     let height = n(instance, "__cHei").max(0) as usize;
@@ -110,5 +176,9 @@ fn gamemaker_tiles(instance: &Value) -> Value {
             }
         }
     }
-    json!({"SerialiseWidth":width,"SerialiseHeight":height,"TileSerialiseData":tiles})
+    GameMakerTileData {
+        width,
+        height,
+        tiles,
+    }
 }

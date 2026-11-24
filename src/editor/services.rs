@@ -437,8 +437,14 @@ impl EditorApp {
                     ctx.request_repaint();
                 }
             };
-            let result = if format == "tmx" {
-                project.export_tiled_with_report_progress(&dir, &mut report_progress)
+            let result = if matches!(format.as_str(), "tmx" | "tmj") {
+                use ldtk_core::exports::TiledFormat;
+                let format = if format == "tmj" {
+                    TiledFormat::Tmj
+                } else {
+                    TiledFormat::Tmx
+                };
+                project.export_tiled_format_with_report_progress(&dir, format, &mut report_progress)
             } else {
                 match format.as_str() {
                     "simple" => project.export_simplified_with_progress(&dir, &mut report_progress),

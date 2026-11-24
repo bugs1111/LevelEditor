@@ -300,6 +300,9 @@ mod repeat_tests {
         let q = aligned_repeat(b, s, [0.5, 0.5], b);
         assert_eq!(q[0].dst.min, Pos2::new(-2., -2.));
         assert_eq!(q.last().unwrap().dst.max, b.max);
+        let anchor_region = Rect::from_min_size(b.min, s.size());
+        let anchor = aligned_repeat(b, s, [0.5, 0.5], anchor_region);
+        assert_eq!(anchor.first(), q.first());
     }
     use eframe::egui::Pos2;
 }

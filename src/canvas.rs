@@ -53,11 +53,10 @@ pub(crate) fn entity_display_order(layer: &Value, def: &Value) -> Vec<usize> {
 
 fn entity_order(entities: &[Value], def: &Value) -> Vec<usize> {
     let mut order: Vec<usize> = (0..entities.len()).collect();
+    let y = |&i: &usize| entities[i]["px"][1].as_i64().unwrap_or(0);
     match def["entityDepthSorting"].as_str() {
-        Some("YAscending") => order.sort_by_key(|&i| entities[i]["px"][1].as_i64().unwrap_or(0)),
-        Some("YDescending") => {
-            order.sort_by_key(|&i| std::cmp::Reverse(entities[i]["px"][1].as_i64().unwrap_or(0)))
-        }
+        Some("YAscending") => order.sort_by_cached_key(y),
+        Some("YDescending") => order.sort_by_cached_key(|i| std::cmp::Reverse(y(i))),
         _ => {}
     }
     order
@@ -85,41 +84,60 @@ pub(crate) fn layer_visible_in_tiles_only(kind: &str, def: &Value) -> bool {
 }
 
 pub fn placements(project: &Project, selected: LevelKey) -> Vec<(LevelKey, [f32; 4])> {
+    iter_placements(project, selected)
+        .map(|(key, _, bounds)| (key, bounds))
+        .collect()
+}
+
+pub(crate) fn world_layout(project: &Project, selected: LevelKey) -> &str {
     let settings = selected
         .world
         .and_then(|i| project.json["worlds"].get(i))
         .unwrap_or(&project.json);
-    let layout = text(settings, "worldLayout", "Free");
+    text(settings, "worldLayout", "Free")
+}
+
+fn placement_bounds(origin: [f32; 2], size: [f32; 2]) -> [f32; 4] {
+    [origin[0], origin[1], origin[0] + size[0], origin[1] + size[1]]
+}
+
+pub(crate) fn free_level_bounds(level: &Value) -> [f32; 4] {
+    placement_bounds(
+        [number(level, "worldX", 0.), number(level, "worldY", 0.)],
+        [number(level, "pxWid", 256.), number(level, "pxHei", 256.)],
+    )
+}
+
+pub(crate) fn iter_placements(
+    project: &Project,
+    selected: LevelKey,
+) -> impl Iterator<Item = (LevelKey, &Value, [f32; 4])> {
+    let layout = world_layout(project, selected);
     let mut cursor = [0.0_f32; 2];
     project
-        .level_keys_in_world(selected.world)
-        .filter_map(|key| {
-            let level = project.level(key)?;
-            let size = [number(level, "pxWid", 256.0), number(level, "pxHei", 256.0)];
-            let origin = match layout {
-                "LinearHorizontal" => {
-                    let pos = cursor;
-                    cursor[0] += size[0] + 48.0;
-                    pos
-                }
-                "LinearVertical" => {
-                    let pos = cursor;
-                    cursor[1] += size[1] + 48.0;
-                    pos
-                }
-                _ => [number(level, "worldX", 0.0), number(level, "worldY", 0.0)],
+        .levels_in_world(selected.world)
+        .map(move |(key, level)| {
+            let axis = match layout {
+                "LinearHorizontal" => 0,
+                "LinearVertical" => 1,
+                _ => return (key, level, free_level_bounds(level)),
             };
-            Some((
-                key,
-                [
-                    origin[0],
-                    origin[1],
-                    origin[0] + size[0],
-                    origin[1] + size[1],
-                ],
-            ))
+            let size = [number(level, "pxWid", 256.), number(level, "pxHei", 256.)];
+            let bounds = placement_bounds(cursor, size);
+            cursor[axis] += size[axis] + 48.0;
+            (key, level, bounds)
         })
-        .collect()
+}
+
+const EMPTY_BOUNDS: [f32; 4] = [
+    f32::INFINITY,
+    f32::INFINITY,
+    f32::NEG_INFINITY,
+    f32::NEG_INFINITY,
+];
+
+fn union_bounds(a: [f32; 4], b: [f32; 4]) -> [f32; 4] {
+    [a[0].min(b[0]), a[1].min(b[1]), a[2].max(b[2]), a[3].max(b[3])]
 }
 
 pub fn bounds(project: &Project, selected: LevelKey, world: bool) -> [f32; 4] {
@@ -136,22 +154,7 @@ pub fn bounds(project: &Project, selected: LevelKey, world: bool) -> [f32; 4] {
             })
             .unwrap_or([0.0, 0.0, 256.0, 256.0]);
     }
-    placements(project, selected).iter().fold(
-        [
-            f32::INFINITY,
-            f32::INFINITY,
-            f32::NEG_INFINITY,
-            f32::NEG_INFINITY,
-        ],
-        |a, (_, b)| {
-            [
-                a[0].min(b[0]),
-                a[1].min(b[1]),
-                a[2].max(b[2]),
-                a[3].max(b[3]),
-            ]
-        },
-    )
+    iter_placements(project, selected).fold(EMPTY_BOUNDS, |a, (_, _, b)| union_bounds(a, b))
 }
 
 pub fn asset_path(project: &Project, relative: &str) -> PathBuf {
@@ -253,26 +256,48 @@ impl Transform {
 pub(super) fn values(value: &Value) -> &[Value] {
     value.as_array().map_or(&[], Vec::as_slice)
 }
+
+pub(super) fn tile_anchor(tile: &Value) -> &Value {
+    // LDtk writes the anchor first in both manual and generated tile records.
+    if let Some((key, anchor)) = tile.as_object().and_then(|fields| fields.iter().next())
+        && key == "px"
+    {
+        return anchor;
+    }
+    &tile["px"]
+}
+
 // A brush preview may touch only one color even on a layer with a large palette.
 fn intgrid_cell_colors(def: &Value, alpha: f32) -> impl FnMut(i64) -> Color32 + '_ {
     let palette = values(&def["intGridValues"]);
-    let mut colors = std::collections::HashMap::new();
+    let resolve = move |value| {
+        palette
+            .iter()
+            .find(|entry| entry["value"].as_i64() == Some(value))
+            .map(|entry| theme::color(text(entry, "color", "#ffcc00")))
+            .unwrap_or(theme::ACCENT)
+            .gamma_multiply(alpha)
+    };
+    let mut common = [None; 256];
+    let mut other = std::collections::HashMap::new();
     move |value| {
-        *colors.entry(value).or_insert_with(|| {
-            palette
-                .iter()
-                .find(|entry| entry["value"].as_i64() == Some(value))
-                .map(|entry| theme::color(text(entry, "color", "#ffcc00")))
-                .unwrap_or(theme::ACCENT)
-                .gamma_multiply(alpha)
-        })
+        if (0..common.len() as i64).contains(&value) {
+            *common[value as usize].get_or_insert_with(|| resolve(value))
+        } else {
+            *other.entry(value).or_insert_with(|| resolve(value))
+        }
     }
 }
 
 pub(super) fn pair(value: &Value, fallback: [f32; 2]) -> [f32; 2] {
+    let pair = values(value);
     [
-        value[0].as_f64().map_or(fallback[0], |v| v as f32),
-        value[1].as_f64().map_or(fallback[1], |v| v as f32),
+        pair.first()
+            .and_then(Value::as_f64)
+            .map_or(fallback[0], |v| v as f32),
+        pair.get(1)
+            .and_then(Value::as_f64)
+            .map_or(fallback[1], |v| v as f32),
     ]
 }
 pub(super) fn lighten(c: Color32, ratio: f32) -> Color32 {
@@ -462,11 +487,10 @@ impl Scene<'_> {
             painter.add(egui::Shape::mesh(mesh));
         }
     }
-    fn world_title(&mut self, painter: &Painter) {
+    fn world_title(&mut self, painter: &Painter, b: [f32; 4]) {
         if !self.options.details {
             return;
         }
-        let b = bounds(self.project, self.options.selected, true);
         if !b.iter().all(|v| v.is_finite()) {
             return;
         }
@@ -756,7 +780,7 @@ impl Scene<'_> {
                 }
         }
     }
-    fn tile_tint(&self, alpha: f32, inactive: bool) -> Color32 {
+    fn tile_base_tint(&self, inactive: bool) -> Color32 {
         let mut color = if self.options.tile_tags {
             Color32::from_rgb(204, 204, 204)
         } else {
@@ -770,7 +794,7 @@ impl Scene<'_> {
                 (color.b() as f32 * (1. - k) + 193. * k) as u8,
             );
         }
-        color.gamma_multiply(alpha * if self.options.tile_tags { 0.5 } else { 1. })
+        color
     }
     fn background(
         &mut self,
@@ -799,13 +823,36 @@ impl Scene<'_> {
             "Repeat" => "Repeat",
             _ => "FullSizeCropped",
         };
+        let alpha = if self.options.single_layer && !self.options.world {
+            0.8 - 0.75 * self.options.single_layer_intensity.clamp(0., 1.)
+        } else {
+            1.
+        };
+        let filtered = alpha < 1. && blur::available();
+        let mut repeat_anchor = None;
         let quads = if mode == "Repeat" {
             let cropped = size.min(bounds.size());
             let source = Rect::from_min_size(
                 ((size - cropped) * egui::vec2(pivot[0], pivot[1])).to_pos2(),
                 cropped,
             );
-            geometry::aligned_repeat(bounds, source, pivot, bounds)
+            let world = |point: Pos2| {
+                self.view
+                    .to_world(point.into(), self.projection_origin, self.canvas.size().into())
+                    .into()
+            };
+            let clip = painter.clip_rect();
+            // Keep an extra period at the edges for inverse projection rounding.
+            let visible = Rect::from_min_max(world(clip.min), world(clip.max)).expand2(cropped);
+            let quads = geometry::aligned_repeat(bounds, source, pivot, visible);
+            if filtered && !quads.is_empty() {
+                // Keep the blur raster aligned to the first tile in the full background.
+                let first_region = Rect::from_min_size(bounds.min, cropped);
+                repeat_anchor = geometry::aligned_repeat(bounds, source, pivot, first_region)
+                    .into_iter()
+                    .next();
+            }
+            quads
         } else {
             let mut quads = geometry::entity_tiles(bounds, src, pivot, mode, [0.; 4]);
             for q in &mut quads {
@@ -815,19 +862,15 @@ impl Scene<'_> {
             }
             quads
         };
-        let alpha = if self.options.single_layer && !self.options.world {
-            0.8 - 0.75 * self.options.single_layer_intensity.clamp(0., 1.)
-        } else {
-            1.
-        };
-        let raster = quads.first()
-            .filter(|quad| alpha < 1. && blur::available() && quad.src.is_positive() && quad.dst.is_positive())
+        let raster = repeat_anchor.as_ref().or_else(|| quads.first())
+            .filter(|quad| filtered && quad.src.is_positive() && quad.dst.is_positive())
             .map(|quad| blur::LayerRaster {
                 origin: self.point(quad.dst.min.into()),
                 points_per_pixel: (quad.dst.size() / quad.src.size()) * self.view.zoom,
                 opacity: alpha,
             });
         let draw_alpha = if raster.is_some() { 1. } else { alpha };
+        let tint = Color32::WHITE.gamma_multiply(draw_alpha);
         let mut mesh = Mesh::with_texture(texture.id());
         for q in quads {
             mesh.add_rect_with_uv(
@@ -836,7 +879,7 @@ impl Scene<'_> {
                     (q.src.min.to_vec2() / size).to_pos2(),
                     (q.src.max.to_vec2() / size).to_pos2(),
                 ),
-                Color32::WHITE.gamma_multiply(draw_alpha),
+                tint,
             );
         }
         painter.add(egui::Shape::mesh(mesh));
@@ -890,28 +933,60 @@ impl Scene<'_> {
         let cells = pending
             .and_then(|p| p.old_intgrid_cells.as_deref())
             .unwrap_or(cells);
+        let mut overrides: Vec<_> = pending
+            .into_iter()
+            .flat_map(|preview| &preview.old_intgrid)
+            .filter_map(|(&[x, y], &value)| {
+                let (x, y) = (x as usize, y as usize);
+                ((x0..x1).contains(&x) && (y0..y1).contains(&y)).then(|| (y * width + x, value))
+            })
+            .collect();
+        // Brush updates are keyed by column and row. The painter walks rows first.
+        overrides.sort_unstable_by_key(|&(index, _)| index);
+        let mut overrides = overrides.into_iter().peekable();
+        let screen_size = self.canvas.size();
+        let screen_center = [
+            self.projection_origin[0] + screen_size.x * 0.5,
+            self.projection_origin[1] + screen_size.y * 0.5,
+        ];
+        let screen_edges = |axis: usize, index: usize| {
+            let pixel = index as f32 * grid;
+            [pixel, pixel + grid].map(|edge| {
+                let world = transform.origin[axis] + edge * transform.scale;
+                screen_center[axis] + (world - self.view.center[axis]) * self.view.zoom
+            })
+        };
+        let columns: Vec<_> = (x0..x1).map(|x| screen_edges(0, x)).collect();
         let mut cell_color = intgrid_cell_colors(def, alpha);
         let mut count = 0;
-        for y in y0..y1 {
-            for x in x0..x1 {
-                let value = pending
-                    .and_then(|preview| preview.old_intgrid.get(&[x as i32, y as i32]))
-                    .copied()
-                    .or_else(|| cells.get(x + y * width).and_then(Value::as_i64))
-                    .unwrap_or(0);
+        let shapes = (y0..y1)
+            .flat_map(|y| {
+                let [top, bottom] = screen_edges(1, y);
+                let row = y * width;
+                (x0..x1)
+                    .zip(columns.iter().copied())
+                    .map(move |(x, [left, right])| (row + x, [left, top, right, bottom]))
+            })
+            .filter_map(|(index, [left, top, right, bottom])| {
+                let value = if overrides.peek().is_some_and(|&(cell, _)| cell == index) {
+                    overrides.next().unwrap().1
+                } else {
+                    cells.get(index).and_then(Value::as_i64).unwrap_or(0)
+                };
                 if value == 0 {
-                    continue;
+                    return None;
                 }
-                painter.rect_filled(
-                    self.screen(transform.rect(Rect::from_min_size(
-                        [x as f32 * grid, y as f32 * grid].into(),
-                        egui::vec2(grid, grid),
-                    ))),
-                    0.,
-                    cell_color(value),
-                );
                 count += 1;
+                let rect = Rect::from_min_max(egui::pos2(left, top), egui::pos2(right, bottom));
+                Some(egui::Shape::rect_filled(rect, 0., cell_color(value)))
+            });
+        if painter.opacity() == 0. || !painter.is_visible() {
+            // The batched API skips hidden painters without consuming the iterator.
+            for shape in shapes {
+                painter.add(shape);
             }
+        } else {
+            painter.extend(shapes);
         }
         count
     }
@@ -1020,36 +1095,87 @@ impl Scene<'_> {
         let mut mesh = Mesh::with_texture(texture.id());
         let mut count = 0;
         let tile_groups = [values(&layer["autoLayerTiles"]), grid_tiles];
+        let base_tint = self.tile_base_tint(!active);
+        let tag_opacity = if self.options.tile_tags { 0.5 } else { 1. };
+        let mut opaque_tint = None;
+        let unshifted = region.is_none() && tile_size.is_finite()
+            && tile_size == grid && pivot == [0.; 2];
+        let screen_center = self.projection_origin;
+        let screen_size = self.canvas.size();
+        let screen_center = [
+            screen_center[0] + screen_size.x * 0.5,
+            screen_center[1] + screen_size.y * 0.5,
+        ];
+        let screen_axis = |axis: usize, px: f32| {
+            let world = transform.origin[axis] + px * transform.scale;
+            screen_center[axis] + (world - self.view.center[axis]) * self.view.zoom
+        };
         for (index, group) in tile_groups.into_iter().enumerate() {
             let auto = index == 0;
             if auto && !self.options.render_auto {
                 continue;
             }
             for tile in group {
-                let px = pair(&tile["px"], [0.; 2]);
-                if region.is_some_and(|r| {
-                    px[0] < r.left() || px[0] >= r.right() || px[1] < r.top() || px[1] >= r.bottom()
-                }) {
-                    continue;
+                let anchor = tile_anchor(tile);
+                let dst = if unshifted {
+                    // A zero pivot and matching grids make the destination independent of flips.
+                    let anchor = values(anchor);
+                    let x = anchor.first().and_then(Value::as_f64).unwrap_or(0.) as f32;
+                    let left = screen_axis(0, x);
+                    if left > clip.right() {
+                        continue;
+                    }
+                    let right = screen_axis(0, x + tile_size);
+                    if right < clip.left() {
+                        continue;
+                    }
+                    let y = anchor.get(1).and_then(Value::as_f64).unwrap_or(0.) as f32;
+                    let dst = Rect::from_min_max(
+                        egui::pos2(left, screen_axis(1, y)),
+                        egui::pos2(right, screen_axis(1, y + tile_size)),
+                    );
+                    if !dst.intersects(clip) {
+                        continue;
+                    }
+                    dst
+                } else {
+                    let px = pair(anchor, [0.; 2]);
+                    if region.is_some_and(|r| {
+                        px[0] < r.left()
+                            || px[0] >= r.right()
+                            || px[1] < r.top()
+                            || px[1] >= r.bottom()
+                    }) {
+                        continue;
+                    }
+                    let flips = tile["f"].as_i64().unwrap_or(0);
+                    let dst = self.screen(transform.rect(geometry::layer_tile_rect(
+                        px, grid, tile_size, pivot, flips, auto,
+                    )));
+                    if !dst.intersects(clip) {
+                        continue;
+                    }
+                    dst
+                };
+                let mut source = [0.; 2];
+                let mut flips = 0;
+                let mut opacity = 1.;
+                // Read the small tile record once after culling.
+                for (key, value) in tile.as_object().into_iter().flatten() {
+                    match key.as_str() {
+                        "src" => source = pair(value, [0.; 2]),
+                        "f" => flips = value.as_i64().unwrap_or(0),
+                        "a" => opacity = value.as_f64().unwrap_or(1.) as f32,
+                        _ => (),
+                    }
                 }
-                let flips = tile["f"].as_i64().unwrap_or(0);
-                let dst = self.screen(
-                    transform.rect(geometry::layer_tile_rect(px, grid, tile_size, pivot, flips, auto)),
-                );
-                if !dst.intersects(clip) {
-                    continue;
-                }
-                let uv = tile_uv(
-                    pair(&tile["src"], [0.; 2]),
-                    [tile_size; 2],
-                    atlas,
-                    flips,
-                );
-                mesh.add_rect_with_uv(
-                    dst,
-                    Rect::from_min_max(uv[0].into(), uv[1].into()),
-                    self.tile_tint(alpha * number(tile, "a", 1.), !active),
-                );
+                let [min, max] = tile_uv(source, [tile_size; 2], atlas, flips);
+                let tint = if opacity == 1. {
+                    *opaque_tint.get_or_insert_with(|| base_tint.gamma_multiply(alpha * tag_opacity))
+                } else {
+                    base_tint.gamma_multiply(alpha * opacity * tag_opacity)
+                };
+                mesh.add_rect_with_uv(dst, Rect::from_min_max(min.into(), max.into()), tint);
                 count += 1;
             }
         }
@@ -1078,33 +1204,73 @@ impl Scene<'_> {
         else {
             return;
         };
+        let mut colors_by_tile = std::collections::HashMap::new();
+        let tags = values(&tileset["enumTags"]);
+        let offset = [
+            number(def, "tilePivotX", 0.) * grid,
+            number(def, "tilePivotY", 0.) * grid,
+        ];
+        let clip = painter.clip_rect();
+        let cull = self.ctx.tessellation_options(|options| options.coarse_tessellation_culling);
+        let screen_center: [f32; 2] =
+            (Pos2::from(self.projection_origin) + self.canvas.size() * 0.5).into();
+        let project = |axis: usize, point: f32| {
+            let world = transform.origin[axis] + point * transform.scale;
+            screen_center[axis] + (world - self.view.center[axis]) * self.view.zoom
+        };
+        let rect = |min: [f32; 2], max: [f32; 2]| {
+            Rect::from_min_max(
+                egui::pos2(project(0, min[0]), project(1, min[1])),
+                egui::pos2(project(0, max[0]), project(1, max[1])),
+            )
+        };
+        let box_size = grid - 1.;
+        let stroke_width = transform.scale * self.view.zoom;
         for tile in tile_groups.into_iter().flatten() {
-            let mut n = 0.;
-            for value in values(&en["values"]) {
-                if values(&tileset["enumTags"]).iter().any(|tag| {
-                    tag["enumValueId"] == value["id"]
-                        && values(&tag["tileIds"]).contains(&tile["t"])
-                }) {
-                    let px = pair(&tile["px"], [0.; 2]);
-                    let min = [
-                        px[0] + number(def, "tilePivotX", 0.) * grid + n + 0.5,
-                        px[1] + number(def, "tilePivotY", 0.) * grid + n + 0.5,
-                    ];
-                    let r = self.screen(transform.rect(Rect::from_min_size(
-                        min.into(),
-                        egui::vec2(grid - 1. - n * 2., grid - 1. - n * 2.),
-                    )));
-                    painter.rect_stroke(
-                        r,
-                        0.,
-                        Stroke::new(
-                            transform.scale * self.view.zoom,
-                            theme::color(text(value, "color", "#ffcc00")),
-                        ),
-                        StrokeKind::Inside,
-                    );
-                    n += 1.;
+            let id = &tile["t"];
+            let colors = colors_by_tile.entry(id).or_insert_with(|| {
+                values(&en["values"])
+                    .iter()
+                    .filter(|value| {
+                        tags.iter().any(|tag| {
+                            tag["enumValueId"] == value["id"]
+                                && values(&tag["tileIds"]).contains(id)
+                        })
+                    })
+                    .map(|value| theme::color(text(value, "color", "#ffcc00")))
+                    .collect::<Vec<_>>()
+            });
+            if colors.is_empty() {
+                continue;
+            }
+            let [x, y] = pair(&tile["px"], [0.; 2]);
+            let [x, y] = [x + offset[0], y + offset[1]];
+            if cull {
+                // Use the innermost box's start and the outermost box's width as
+                // a conservative bound, including cells clipped at fractional zoom.
+                let inset = (colors.len() - 1) as f32;
+                let bounds = rect(
+                    [x + 0.5, y + 0.5],
+                    [x + inset + 0.5 + box_size, y + inset + 0.5 + box_size],
+                );
+                if !bounds.intersects(clip) {
+                    continue;
                 }
+            }
+            for (n, &color) in colors.iter().enumerate() {
+                let n = n as f32;
+                let min = [x + n + 0.5, y + n + 0.5];
+                let side = box_size - n * 2.;
+                let r = rect(min, [min[0] + side, min[1] + side]);
+                if cull && !r.intersects(clip) {
+                    continue;
+                }
+                painter.rect_stroke(
+                    r,
+                    0.,
+                    Stroke::new(stroke_width, color),
+                    StrokeKind::Inside,
+                );
             }
         }
     }
@@ -1297,64 +1463,62 @@ pub fn draw(
         .map(|l| [number(l, "worldX", 0.), number(l, "worldY", 0.)])
         .unwrap_or([0.; 2]);
     let selected_bounds = bounds(project, options.selected, false);
-    let mut levels = if options.world {
-        placements(project, options.selected)
-    } else {
-        let mut near = Vec::new();
-        for (key, mut b) in placements(project, options.selected) {
-            if key == options.selected {
-                continue;
+    let active_depth = options
+        .world_depth
+        .or_else(|| selected_level.and_then(|l| l["worldDepth"].as_i64()))
+        .unwrap_or(0);
+    let mut world_bounds = EMPTY_BOUNDS;
+    let mut levels: Vec<_> = iter_placements(project, options.selected)
+        .filter_map(|(key, level, mut bounds)| {
+            if options.world {
+                if options.details {
+                    world_bounds = union_bounds(world_bounds, bounds);
+                }
+                if let Some((dragged, position)) = linear_drag
+                    && dragged == key
+                {
+                    let [x, y] = position.map(|value| value as f32);
+                    bounds = [x, y, x + bounds[2] - bounds[0], y + bounds[3] - bounds[1]];
+                }
+            } else {
+                if key == options.selected {
+                    return None;
+                }
+                for axis in 0..2 {
+                    bounds[axis] -= selected_origin[axis];
+                    bounds[axis + 2] -= selected_origin[axis];
+                }
             }
-            for axis in 0..2 {
-                b[axis] -= selected_origin[axis];
-                b[axis + 2] -= selected_origin[axis];
+            let rect = scene.screen(bounds);
+            if !rect.expand(64.).intersects(canvas) {
+                return None;
             }
-            near.push((key, b));
-        }
-        near.sort_by_key(|(key, _)| {
-            std::cmp::Reverse(
-                project
-                    .level(*key)
-                    .and_then(|l| l["worldDepth"].as_i64())
-                    .unwrap_or(0),
-            )
-        });
-        near.push((options.selected, selected_bounds));
-        near
-    };
-    if options.world {
-        levels.sort_by_key(|(key, _)| {
-            std::cmp::Reverse(
-                project
-                    .level(*key)
-                    .and_then(|l| l["worldDepth"].as_i64())
-                    .unwrap_or(0),
-            )
-        });
+            let depth = level["worldDepth"].as_i64().unwrap_or(0);
+            Some((key, level, bounds, rect, depth))
+        })
+        .collect();
+    levels.sort_by_key(|(_, _, _, _, depth)| std::cmp::Reverse(*depth));
+    let selected_rect = scene.screen(selected_bounds);
+    if !options.world
+        && let Some(level) = selected_level
+        && selected_rect.expand(64.).intersects(canvas)
+    {
+        levels.push((
+            options.selected,
+            level,
+            selected_bounds,
+            selected_rect,
+            level["worldDepth"].as_i64().unwrap_or(0),
+        ));
     }
     let mut count = 0;
     let mut current_highlight = None;
     let mut hover_rect = None;
     let mut world_level_fields = Vec::new();
-    for (key, mut bounds) in levels {
+    for (key, level, bounds, rect, depth) in levels {
         if !options.world && key == options.selected && let Some(rect) = hover_rect.take() {
             paint_level_hover(ctx, painter, rect);
         }
-        let Some(level) = project.level(key) else {
-            continue;
-        };
-        if options.world
-            && let Some((dragged, position)) = linear_drag
-            && dragged == key
-        {
-            let [x, y] = position.map(|value| value as f32);
-            bounds = [x, y, x + bounds[2] - bounds[0], y + bounds[3] - bounds[1]];
-        }
-        let depth = level["worldDepth"].as_i64().unwrap_or(0);
-        let active_depth = options
-            .world_depth
-            .or_else(|| selected_level.and_then(|l| l["worldDepth"].as_i64()))
-            .unwrap_or(0);
         let depth_delta = depth - active_depth;
         let bg_alpha = if options.world && depth_delta < 0 {
             0.
@@ -1378,10 +1542,6 @@ pub fn draw(
             1.
         };
         let nearby = !options.world && key != options.selected;
-        let rect = scene.screen(bounds);
-        if !rect.expand(64.).intersects(canvas) {
-            continue;
-        }
         let origin = [bounds[0], bounds[1]];
         if nearby {
             let distance = level_bounds_distance(bounds, selected_bounds);
@@ -1703,10 +1863,10 @@ pub fn draw(
             }
         }
     }
+    if let Some(rect) = hover_rect {
+        paint_level_hover(ctx, painter, rect);
+    }
     if options.world {
-        if let Some(rect) = hover_rect {
-            paint_level_hover(ctx, painter, rect);
-        }
         for (level, origin) in world_level_fields {
             scene.level_fields(painter, level, origin, 0.);
         }
@@ -1720,7 +1880,7 @@ pub fn draw(
                 StrokeKind::Middle,
             );
         }
-        scene.world_title(painter);
+        scene.world_title(painter, world_bounds);
     }
     count
 }

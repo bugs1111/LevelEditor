@@ -3,6 +3,98 @@ use ldtk_core::{
     clipboard::{ClipboardData, ClipboardKind},
 };
 use serde_json::json;
+
+#[test]
+#[ignore = "manual auto-rule group paste performance comparison"]
+fn benchmark_large_auto_rule_group_paste() {
+    use std::time::{Duration, Instant};
+
+    let mut project = Project::new();
+    let key = project.level_keys()[0];
+    let (width, height) = (128, 96);
+    project
+        .resize_level(key, width * 16, height * 16, 0, 0)
+        .unwrap();
+    let source = project.add_layer("Rules", "IntGrid", 16).unwrap();
+    project.add_layer("Art", "Tiles", 16).unwrap();
+    let group = project.add_auto_rule_group(source, "Template").unwrap();
+    project.add_auto_rule(source, group, 1).unwrap();
+    let mut data = project.copy_auto_rule(source, group, None).unwrap();
+    data.value["active"] = json!(false);
+    let mut rule = data.value["rules"][0].clone();
+    rule["extension"] = json!({"preserve":true});
+    let rule_count = 64;
+    data.value["rules"] = json!(vec![rule; rule_count]);
+    let tiles = (0..width * height)
+        .map(|index| {
+            json!({"px":[index % width * 16,index / width * 16],"t":0,"src":[0,0],"f":0})
+        })
+        .collect::<Vec<_>>();
+    project.layer_mut(key, 0).unwrap()["gridTiles"] = json!(tiles);
+    project.json["extension"]["lastUid"] = json!({"uid":1024});
+    project.json["nextUid"] = json!(1);
+
+    let mut times = [Duration::ZERO; 5];
+    for time in &mut times {
+        let mut edited = project.clone();
+        let start = Instant::now();
+        assert_eq!(
+            edited
+                .paste_auto_rule_group(source, &data, Some(group))
+                .unwrap(),
+            1025
+        );
+        *time = start.elapsed();
+        let pasted = &edited.layer_def(source).unwrap()["autoRuleGroups"][1];
+        let rules = pasted["rules"].as_array().unwrap();
+        assert_eq!(pasted["uid"], 1025);
+        assert_eq!(rules.len(), rule_count);
+        for (index, rule) in rules.iter().enumerate() {
+            assert_eq!(rule["uid"], 1026 + index);
+            assert_eq!(rule["extension"], json!({"preserve":true}));
+        }
+        assert_eq!(edited.json["nextUid"], 1026 + rule_count);
+        assert_eq!(
+            edited.layer(key, 0).unwrap()["gridTiles"],
+            project.layer(key, 0).unwrap()["gridTiles"]
+        );
+    }
+    times.sort_unstable();
+    eprintln!(
+        "Large auto-rule group paste: median {:?}; samples {times:?}",
+        times[2]
+    );
+}
+
+#[test]
+fn rule_group_paste_allocates_uids_at_the_limit_and_rolls_back_overflow() {
+    let mut project = Project::new();
+    let layer = project.add_layer("Rules", "IntGrid", 16).unwrap();
+    let group = project.add_auto_rule_group(layer, "Template").unwrap();
+    project.add_auto_rule(layer, group, 1).unwrap();
+    project.add_auto_rule(layer, group, 1).unwrap();
+    let data = project.copy_auto_rule(layer, group, None).unwrap();
+    let limit = i64::from(i32::MAX);
+
+    project.json["nextUid"] = json!(limit - 2);
+    let original = project.json.clone();
+    let error = project
+        .paste_auto_rule_group(layer, &data, Some(group))
+        .unwrap_err();
+    assert!(error.to_string().contains("UID overflow"));
+    assert_eq!(project.json, original);
+
+    project.json["nextUid"] = json!(limit - 3);
+    let uid = project
+        .paste_auto_rule_group(layer, &data, Some(group))
+        .unwrap();
+    let pasted = &project.layer_def(layer).unwrap()["autoRuleGroups"][1];
+    assert_eq!(uid, limit - 3);
+    assert_eq!(pasted["rules"][0]["uid"], limit - 2);
+    assert_eq!(pasted["rules"][1]["uid"], limit - 1);
+    assert_eq!(project.json["nextUid"], limit);
+}
+
 #[test]
 fn exact_upstream_envelope_is_readable_with_crlf_and_rejects_foreign_text() {
     let d = ClipboardData {

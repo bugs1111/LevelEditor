@@ -1050,7 +1050,7 @@ fn remap_rule_ids(
 impl Project {
     /// Duplicate a definition after its source; new layers have fresh empty instances.
     pub fn duplicate_definition(&mut self, kind: &str, uid: i64, name: &str) -> Result<i64> {
-        use crate::workflow::{alloc_uid, valid_identifier};
+        use crate::workflow::{alloc_uid, alloc_uids, assign_rule_uids, valid_identifier};
         if !matches!(kind, "layers" | "entities" | "enums" | "tilesets") {
             return Err(invalid("definition kind cannot be duplicated"));
         }
@@ -1084,18 +1084,16 @@ impl Project {
             };
             copy["uid"] = json!(new_uid);
             copy["identifier"] = json!(name);
-            if kind == "entities" {
-                for field in copy["fieldDefs"].as_array_mut().into_iter().flatten() {
-                    field["uid"] = json!(alloc_uid(p)?);
+            if kind == "entities"
+                && let Some(fields) = copy["fieldDefs"].as_array_mut()
+            {
+                let uids = alloc_uids(p, fields.len())?;
+                for (field, uid) in fields.iter_mut().zip(uids) {
+                    field["uid"] = json!(uid);
                 }
             }
             if kind == "layers" {
-                for group in copy["autoRuleGroups"].as_array_mut().into_iter().flatten() {
-                    group["uid"] = json!(alloc_uid(p)?);
-                    for rule in group["rules"].as_array_mut().into_iter().flatten() {
-                        rule["uid"] = json!(alloc_uid(p)?);
-                    }
-                }
+                assign_rule_uids(p, &mut copy)?;
             }
             let defs = p.json["defs"][kind]
                 .as_array_mut()

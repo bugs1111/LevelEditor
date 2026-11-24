@@ -13,10 +13,14 @@ use std::{
 #[derive(Clone, Debug)]
 pub struct FilesystemSnapshot {
     pub(super) files: BTreeMap<PathBuf, Option<u64>>,
+    pub(super) loaded_external_paths: Option<(PathBuf, Vec<String>)>,
 }
 impl FilesystemSnapshot {
     pub fn refresh_file(&mut self, path: &Path) -> Result<()> {
         self.files.insert(path.to_owned(), file_fingerprint(path)?);
+        if self.loaded_external_paths.as_ref().is_some_and(|(root, _)| root == path) {
+            self.loaded_external_paths = None;
+        }
         Ok(())
     }
 
@@ -39,6 +43,7 @@ impl Project {
     pub fn filesystem_snapshot(&self) -> Result<FilesystemSnapshot> {
         let mut snapshot = FilesystemSnapshot {
             files: BTreeMap::new(),
+            loaded_external_paths: None,
         };
         self.snapshot_resources(&mut snapshot)?;
         Ok(snapshot)
@@ -49,9 +54,14 @@ impl Project {
         if let Some(path) = &self.path {
             paths.insert(path.clone());
             let base = path.parent().expect("absolute project path");
-            collect_resource_paths(&self.json, base, &mut paths)?;
+            // Many layers and fields refer to the same asset.
+            let mut references = BTreeSet::new();
+            collect_resource_paths(&self.json, &mut references);
             for level in self.external_levels.values() {
-                collect_resource_paths(level, base, &mut paths)?;
+                collect_resource_paths(level, &mut references);
+            }
+            for reference in references {
+                paths.insert(absolute(&base.join(reference))?);
             }
         }
         for path in paths {
@@ -102,73 +112,105 @@ fn file_fingerprint(path: &Path) -> Result<Option<u64>> {
     }
 }
 
-fn collect_resource_paths(value: &Value, base: &Path, paths: &mut BTreeSet<PathBuf>) -> Result<()> {
+fn collect_resource_paths<'a>(value: &'a Value, paths: &mut BTreeSet<&'a str>) {
     match value {
         Value::Object(object) => {
-            let file = object
-                .get("__type")
-                .and_then(Value::as_str)
-                .is_some_and(|t| t.contains("FilePath"))
-                || object
-                    .get("type")
-                    .and_then(Value::as_str)
-                    .is_some_and(|t| t == "F_Path" || t == "F_File");
+            let mut file_field = None;
             for (key, value) in object {
-                if key != "backupRelPath"
-                    && matches!(
-                        key.as_str(),
-                        "relPath" | "externalRelPath" | "bgRelPath" | "__tilesetRelPath"
-                    )
-                    && value.as_str().is_some_and(|s| !s.is_empty())
-                {
-                    paths.insert(absolute(&base.join(value.as_str().unwrap()))?);
+                match key.as_str() {
+                    "relPath" | "externalRelPath" | "bgRelPath" | "__tilesetRelPath" => {
+                        if let Some(path) = value.as_str().filter(|path| !path.is_empty()) {
+                            paths.insert(path);
+                        }
+                    }
+                    "__value" | "realEditorValues" | "realEditorValue" | "defaultOverride" => {
+                        let is_file = file_field.get_or_insert_with(|| {
+                            object
+                                .get("__type")
+                                .and_then(Value::as_str)
+                                .is_some_and(|t| t.contains("FilePath"))
+                                || object
+                                    .get("type")
+                                    .and_then(Value::as_str)
+                                    .is_some_and(|t| t == "F_Path" || t == "F_File")
+                        });
+                        if *is_file {
+                            collect_field_paths(value, paths);
+                        }
+                    }
+                    _ => (),
                 }
-                if file
-                    && [
-                        "__value",
-                        "realEditorValues",
-                        "realEditorValue",
-                        "defaultOverride",
-                    ]
-                    .contains(&key.as_str())
-                {
-                    collect_field_paths(value, base, paths)?;
+                if matches!(value, Value::Object(_) | Value::Array(_)) {
+                    collect_resource_paths(value, paths);
                 }
-                collect_resource_paths(value, base, paths)?;
             }
         }
         Value::Array(values) => {
             for value in values {
-                collect_resource_paths(value, base, paths)?;
+                if matches!(value, Value::Object(_) | Value::Array(_)) {
+                    collect_resource_paths(value, paths);
+                }
             }
         }
         _ => (),
     }
-    Ok(())
 }
-fn collect_field_paths(value: &Value, base: &Path, paths: &mut BTreeSet<PathBuf>) -> Result<()> {
+fn collect_field_paths<'a>(value: &'a Value, paths: &mut BTreeSet<&'a str>) {
     match value {
         Value::String(s) if !s.is_empty() => {
-            paths.insert(absolute(&base.join(s))?);
+            paths.insert(s);
         }
         Value::Array(v) => {
             for v in v {
-                collect_field_paths(v, base, paths)?;
+                collect_field_paths(v, paths);
             }
         }
         Value::Object(o) => {
             if let Some(v) = o.get("params") {
-                collect_field_paths(v, base, paths)?;
+                collect_field_paths(v, paths);
             }
         }
         _ => (),
     }
-    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn watches_shared_paths_and_legacy_fields_across_project_and_external_levels() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("game.ldtk");
+        let atlas = dir.path().join("atlas.png");
+        let missing = dir.path().join("missing.png");
+        let absolute = dir.path().join("absolute.png");
+        std::fs::write(&atlas, b"atlas").unwrap();
+        let mut project = Project::new();
+        project.path = Some(root.clone());
+        project.json["extension"] = json!([
+            {"relPath":"atlas.png"},
+            {"type":"F_File","defaultOverride":{"params":[absolute]}},
+            {"__type":"String","__value":"not-a-resource.png"}
+        ]);
+        project.external_levels.insert(
+            "level.ldtkl".into(),
+            json!({
+                "__tilesetRelPath":"./atlas.png",
+                "fields":[{"__type":"Array<FilePath>","__value":["sub/../atlas.png","missing.png",""]}]
+            }),
+        );
+
+        let snapshot = project.filesystem_snapshot().unwrap();
+        assert_eq!(
+            snapshot.files.keys().cloned().collect::<BTreeSet<_>>(),
+            BTreeSet::from([root, atlas.clone(), missing.clone(), absolute])
+        );
+        std::fs::write(&atlas, b"other").unwrap();
+        std::fs::write(&missing, b"created").unwrap();
+        assert_eq!(snapshot.changed_files().unwrap(), [atlas, missing]);
+    }
 
     #[test]
     fn disk_and_memory_hashes_match_at_chunk_boundaries() {

@@ -273,6 +273,31 @@ fn invalid_rule_failure_is_atomic() {
     assert!(p.rebuild_auto_layers(k).is_err());
     assert_eq!(p.json, before);
 }
+
+#[test]
+fn late_auto_layer_failure_keeps_earlier_cache_and_source_cells() {
+    let (mut p, key) = fixture();
+    p.layer_mut(key, 0).unwrap()["__type"] = json!("IntGrid");
+    p.rebuild_auto_layers(key).unwrap();
+    let mut definition = p.json["defs"]["layers"][0].clone();
+    definition["uid"] = json!(7);
+    definition["type"] = json!("AutoLayer");
+    definition["autoSourceLayerDefUid"] = json!(1);
+    definition["autoRuleGroups"][0]["rules"][0]["xModulo"] = json!(0);
+    p.json["defs"]["layers"].as_array_mut().unwrap().push(definition);
+    let mut derived = p.layer(key, 0).unwrap().clone();
+    derived["layerDefUid"] = json!(7);
+    derived["__type"] = json!("AutoLayer");
+    p.level_mut(key).unwrap()["layerInstances"]
+        .as_array_mut()
+        .unwrap()
+        .push(derived);
+
+    let before = p.json.clone();
+    assert!(p.paint_int_grid(key, 0, 1, 0, 1).is_err());
+    assert_eq!(p.json, before);
+}
+
 #[test]
 fn incremental_rebuild_matches_full_after_source_edits() {
     let (mut p, k) = fixture();
@@ -542,6 +567,48 @@ fn official_examples_incremental_matches_full_rebuild() {
         }
     }
     eprintln!("Verified {checked} incremental source edits across official examples");
+}
+
+#[test]
+#[ignore = "release paint benchmark for the pinned upstream large world fixture"]
+fn benchmark_large_world_intgrid_paint() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../.reference/ldtk/tests/largeLevels/world1.ldtk");
+    let mut project = Project::load(path).unwrap();
+    let key = project.level_keys()[3];
+    project.rebuild_auto_layers(key).unwrap();
+    let index = project.level(key).unwrap()["layerInstances"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .position(|layer| layer["__identifier"] == "Walls")
+        .unwrap();
+    let layer = project.layer(key, index).unwrap();
+    assert!(layer["autoLayerTiles"].as_array().unwrap().len() > 30_000);
+    let width = layer["__cWid"].as_i64().unwrap() as i32;
+    let height = layer["__cHei"].as_i64().unwrap() as i32;
+    let [x, y] = [width / 2, height / 2];
+    let cell = (x + y * width) as usize;
+    let initial = layer["intGridCsv"][cell].as_i64().unwrap() as i32;
+    let replacement = i32::from(initial == 0);
+    let mut full = project.clone();
+    let mut paint_times = [std::time::Duration::ZERO; 7];
+    let mut full_times = paint_times;
+    for (step, (paint_time, full_time)) in paint_times.iter_mut().zip(&mut full_times).enumerate() {
+        let value = if step % 2 == 0 { replacement } else { initial };
+        let start = std::time::Instant::now();
+        assert!(project.paint_int_grid(key, index, x, y, value).unwrap());
+        *paint_time = start.elapsed();
+        full.layer_mut(key, index).unwrap()["intGridCsv"][cell] = json!(value);
+        let start = std::time::Instant::now();
+        full.rebuild_auto_layers(key).unwrap();
+        *full_time = start.elapsed();
+        assert_eq!(project.level(key), full.level(key));
+    }
+    paint_times.sort_unstable();
+    full_times.sort_unstable();
+    eprintln!("Large world IntGrid paint: median {:?}; samples {paint_times:?}", paint_times[3]);
+    eprintln!("Large world full auto rebuild: median {:?}; samples {full_times:?}", full_times[3]);
 }
 
 #[test]
@@ -933,6 +1000,43 @@ fn preview_154_multiple_tile_and_intgrid_blockers_update_incrementally() {
     let mut full = p.clone();
     full.rebuild_auto_layers(k).unwrap();
     assert_eq!(tiles(&p, k), tiles(&full, k));
+}
+
+#[test]
+fn tile_bucket_erase_updates_blocked_auto_tiles_and_rolls_back_on_error() {
+    let (mut project, key) = fixture();
+    let rules = &mut project.json["defs"]["layers"];
+    rules[0]["layerUidsPreventingAutoTilingHere"] = json!([9]);
+    rules.as_array_mut().unwrap().push(json!({"uid":9,"type":"Tiles","gridSize":16}));
+    project.level_mut(key).unwrap()["layerInstances"].as_array_mut().unwrap().push(json!({
+        "layerDefUid":9, "__type":"Tiles", "__gridSize":16, "__cWid":3, "__cHei":2,
+        "gridTiles":[{"px":[0,0],"t":1},{"px":[32,0],"t":1}]
+    }));
+    project.rebuild_auto_layers(key).unwrap();
+    assert_eq!(tiles(&project, key).as_array().unwrap().len(), 1);
+    let cells = [[2, 0], [0, 0], [2, 0], [1, 0], [-1, 0]];
+
+    let mut immediate = project.clone();
+    assert_eq!(
+        immediate.erase_tile_cells_with_deferred(key, 1, &cells, None).unwrap(),
+        [[2, 0], [0, 0]]
+    );
+    assert_eq!(immediate.layer(key, 1).unwrap()["gridTiles"], json!([]));
+    assert_eq!(tiles(&immediate, key).as_array().unwrap().len(), 3);
+
+    let mut invalid = project.clone();
+    invalid.json["defs"]["layers"][0]["tilesetDefUid"] = json!(999);
+    let before = invalid.json.clone();
+    assert!(invalid.erase_tile_cells_with_deferred(key, 1, &cells, None).is_err());
+    assert_eq!(invalid.json, before);
+
+    project.json["defs"]["layers"][0]["useAsyncRender"] = json!(true);
+    let mut pending = DeferredAutoLayers::default();
+    project.erase_tile_cells_with_deferred(key, 1, &cells, Some(&mut pending)).unwrap();
+    assert!(!pending.is_empty());
+    assert_eq!(tiles(&project, key).as_array().unwrap().len(), 1);
+    project.settle_auto_layers(key, &mut pending).unwrap();
+    assert_eq!(tiles(&project, key), tiles(&immediate, key));
 }
 
 #[test]

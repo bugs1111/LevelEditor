@@ -746,10 +746,9 @@ impl EditorApp {
         } else {
             Vec::new()
         };
-        for (key, bounds) in canvas::placements(project, selected) {
-            let Some(level) = project.level(key) else {
-                continue;
-            };
+        let mut seen: HashSet<_> = selection.iter().map(String::as_str).collect();
+        let mut additions = Vec::new();
+        for (_, level, bounds) in canvas::iter_placements(project, selected) {
             if level["worldDepth"].as_i64().unwrap_or(0) != self.world_depth {
                 continue;
             }
@@ -758,11 +757,12 @@ impl EditorApp {
                 && bounds[1] < rect[3]
                 && bounds[3] > rect[1]
                 && let Some(iid) = level["iid"].as_str()
-                && !selection.iter().any(|item| item == iid)
+                && seen.insert(iid)
             {
-                selection.push(iid.to_owned());
+                additions.push(iid.to_owned());
             }
         }
+        selection.extend(additions);
         self.world_selection = selection;
     }
 
@@ -783,20 +783,28 @@ impl EditorApp {
 
     pub(super) fn level_at_world(&self, position: [f32; 2]) -> Option<LevelKey> {
         let project = self.project.as_ref()?;
+        let selected = self.selected?;
         let position = position.map(|value| (value + 0.5).floor());
-        canvas::placements(project, self.selected?)
-            .into_iter()
+        let contains = |bounds: [f32; 4]| {
+            position[0] >= bounds[0]
+                && position[0] < bounds[2]
+                && position[1] >= bounds[1]
+                && position[1] < bounds[3]
+        };
+        let active = |level: &Value| number(level, "worldDepth", 0.) as i64 == self.world_depth;
+        if matches!(canvas::world_layout(project, selected), "LinearHorizontal" | "LinearVertical") {
+            return canvas::iter_placements(project, selected)
+                .filter(|(_, level, bounds)| contains(*bounds) && active(level))
+                .map(|(key, _, _)| key)
+                .last();
+        }
+        project.level_keys_in_world(selected.world)
             .rev()
-            .find(|(key, bounds)| {
-                project
-                    .level(*key)
-                    .is_some_and(|level| number(level, "worldDepth", 0.) as i64 == self.world_depth)
-                    && position[0] >= bounds[0]
-                    && position[0] < bounds[2]
-                    && position[1] >= bounds[1]
-                    && position[1] < bounds[3]
+            .find(|&key| {
+                project.level(key).is_some_and(|level| {
+                    contains(canvas::free_level_bounds(level)) && active(level)
+                })
             })
-            .map(|(key, _)| key)
     }
 
     pub(super) fn world_drag_position(
@@ -889,6 +897,51 @@ mod tests {
         app.world = true;
         app.viewport.zoom = 1.;
         app
+    }
+
+    #[test]
+    #[ignore = "manual large world selection performance comparison"]
+    fn benchmark_large_world_marquee_and_pointer_hit() {
+        let mut app = editor();
+        let project = app.project.as_mut().unwrap();
+        let size = 8_192;
+        project.json["worldLayout"] = json!("Free");
+        project.json["levels"] = (0..size).map(|i| json!({
+            "iid":format!("level-{i}"),"worldX":i*20,"worldY":0,"pxWid":16,"pxHei":16,
+            "worldDepth":usize::from(i % 5 == 2)
+        })).collect::<Vec<_>>().into();
+        let expected: Vec<_> = std::iter::once(size - 1)
+            .chain((0..size - 1).filter(|i| i % 5 != 2))
+            .map(|i| format!("level-{i}"))
+            .collect();
+        let mut marquee = [std::time::Duration::ZERO; 5];
+        let mut hit = marquee;
+        for (marquee_time, hit_time) in marquee.iter_mut().zip(&mut hit) {
+            app.world_selection = vec![format!("level-{}", size - 1)];
+            let start = Instant::now();
+            app.world_select_rectangle([-1., -1.], [size as f32 * 20., 20.], true);
+            *marquee_time = start.elapsed();
+            assert_eq!(app.world_selection, expected);
+            let start = Instant::now();
+            for i in 0..64 {
+                if i % 8 == 0 {
+                    assert_eq!(app.level_at_world([-20., 4.]), None);
+                    continue;
+                }
+                let level = if i % 2 == 0 {
+                    size - 1 - i % 8 * 5
+                } else {
+                    1 + i * 125
+                };
+                let position = [level as f32 * 20. + 3., 4.];
+                assert_eq!(app.level_at_world(position), Some(LevelKey { world: None, level }));
+            }
+            *hit_time = start.elapsed();
+        }
+        marquee.sort_unstable();
+        hit.sort_unstable();
+        eprintln!("Large world marquee: median {:?}; samples {marquee:?}", marquee[2]);
+        eprintln!("Large world pointer hit: median {:?}; samples {hit:?}", hit[2]);
     }
 
     fn marquee_frame(
@@ -3224,6 +3277,25 @@ mod tests {
         app.panel = Some(Panel::World);
         app.show_panel(None);
         assert!(app.world_selection.is_empty());
+    }
+
+    #[test]
+    fn linear_world_pointer_hit_uses_computed_positions_gaps_and_depth() {
+        let mut app = editor();
+        let first = app.selected.unwrap();
+        let world = app.project.as_mut().unwrap();
+        let second = world.add_level(None, "Second", 128, 128).unwrap();
+        world.move_level(second, 9_000, 9_000, 1).unwrap();
+        world.json["worldLayout"] = json!("LinearHorizontal");
+        assert_eq!(app.level_at_world([255.49, 10.]), Some(first));
+        assert_eq!(app.level_at_world([255.5, 10.]), None);
+        assert_eq!(app.level_at_world([304., 10.]), None);
+        app.world_depth = 1;
+        assert_eq!(app.level_at_world([303.5, 10.]), Some(second));
+        assert_eq!(app.level_at_world([432., 10.]), None);
+        app.project.as_mut().unwrap().json["worldLayout"] = json!("LinearVertical");
+        assert_eq!(app.level_at_world([10., 303.5]), Some(second));
+        assert_eq!(app.level_at_world([10., 432.]), None);
     }
 
     #[test]

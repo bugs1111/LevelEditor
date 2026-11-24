@@ -5,7 +5,7 @@ use crate::{Error, LevelKey, Project, Result};
 use image::{Rgba, RgbaImage};
 use serde_json::Value;
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     path::{Path, PathBuf},
 };
 
@@ -52,8 +52,18 @@ fn blend_pixel(target: &mut RgbaImage, x: i64, y: i64, c: Rgba<u8>, alpha: f64) 
     if x < 0 || y < 0 || x >= target.width() as i64 || y >= target.height() as i64 {
         return;
     }
-    let d = target.get_pixel_mut(x as u32, y as u32);
+    blend_rgba(target.get_pixel_mut(x as u32, y as u32), c, alpha);
+}
+
+fn blend_rgba(d: &mut Rgba<u8>, c: Rgba<u8>, alpha: f64) {
     let a = c[3] as f64 / 255.0 * alpha.clamp(0., 1.);
+    if a == 0. {
+        return;
+    }
+    if a == 1. {
+        *d = c;
+        return;
+    }
     let da = d[3] as f64 / 255.;
     let out = a + da * (1. - a);
     if out > 0. {
@@ -86,8 +96,55 @@ fn composite(target: &mut RgbaImage, source: &RgbaImage, alpha: f64, premultipli
             dst[3] = (source_alpha + u16::from(dst[3]) * dest_weight / 255) as u8;
         }
     } else {
-        for (x, y, p) in source.enumerate_pixels() {
-            blend_pixel(target, x as i64, y as i64, *p, alpha);
+        debug_assert_eq!(target.dimensions(), source.dimensions());
+        for (dst, src) in target.pixels_mut().zip(source.pixels()) {
+            blend_rgba(dst, *src, alpha);
+        }
+    }
+}
+
+fn tile_fits(image: &RgbaImage, [x, y]: [i64; 2], size: i64) -> bool {
+    x >= 0 && y >= 0 && x <= i64::from(image.width()) - size
+        && y <= i64::from(image.height()) - size
+}
+
+fn opaque_atlas_tile(atlas: &RgbaImage, [x, y]: [i64; 2], size: i64) -> bool {
+    let width = atlas.width() as usize * 4;
+    let offset = x as usize * 4;
+    let bytes = size as usize * 4;
+    (y..y + size).all(|row| {
+        let start = row as usize * width + offset;
+        atlas.as_raw()[start..start + bytes]
+            .chunks_exact(4)
+            .all(|pixel| pixel[3] == 255)
+    })
+}
+
+fn copy_opaque_tile(
+    target: &mut RgbaImage,
+    atlas: &RgbaImage,
+    [tx, ty]: [i64; 2],
+    [sx, sy]: [i64; 2],
+    size: i64,
+    flips: i64,
+) {
+    let width = target.width() as usize * 4;
+    let atlas_width = atlas.width() as usize * 4;
+    let pixels = target.as_flat_samples_mut().samples;
+    let source = atlas.as_raw();
+    let bytes = size as usize * 4;
+    for row in 0..size {
+        let source_y = sy + if flips & 2 == 0 { row } else { size - 1 - row };
+        let src = source_y as usize * atlas_width + sx as usize * 4;
+        let dst = (ty + row) as usize * width + tx as usize * 4;
+        let src = &source[src..src + bytes];
+        let dst = &mut pixels[dst..dst + bytes];
+        if flips & 1 == 0 {
+            dst.copy_from_slice(src);
+        } else {
+            for (to, from) in dst.chunks_exact_mut(4).zip(src.chunks_exact(4).rev()) {
+                to.copy_from_slice(from);
+            }
         }
     }
 }
@@ -272,18 +329,30 @@ impl Project {
     }
     fn render_background(&self, l: &Value, diagnostics: &mut Vec<String>) -> Result<RgbaImage> {
         let (w, h) = dimensions(l)?;
-        let mut image = RgbaImage::from_pixel(w, h, self.level_background_color(l));
+        let background_color = self.level_background_color(l);
         if let Some(rel) = l["bgRelPath"].as_str() {
-            let bg = match self.resource_image(rel) {
+            let mut bg = match self.resource_image(rel) {
                 Ok(bg) => bg,
                 Err(error) => {
                     diagnostics.push(format!(
                         "Failed to load background {rel} for level {}: {error}",
                         s(l, "identifier")
                     ));
-                    return Ok(image);
+                    return Ok(RgbaImage::from_pixel(w, h, background_color));
                 }
             };
+            if bg.dimensions() == (w, h) {
+                // All positioning modes sample the same pixel when the dimensions match.
+                for pixel in bg.pixels_mut() {
+                    if pixel[3] != 255 {
+                        let mut blended = background_color;
+                        blend_rgba(&mut blended, *pixel, 1.);
+                        *pixel = blended;
+                    }
+                }
+                return Ok(bg);
+            }
+            let mut image = RgbaImage::from_pixel(w, h, background_color);
             let bw = bg.width() as f64;
             let bh = bg.height() as f64;
             let mode = s(l, "bgPos");
@@ -293,47 +362,56 @@ impl Project {
             let pivot_y = num(l, "bgPivotY", 0.5);
             let cx = pivot_x * (bw - cw);
             let cy = pivot_y * (bh - ch);
-            let x = (pivot_x * (w as f64 - cw * sx)).trunc();
-            let y = (pivot_y * (h as f64 - ch * sy)).trunc();
-            for dy in 0..h {
-                for dx in 0..w {
-                    let bx = if mode == "Repeat" {
-                        (dx as f64 - (w as f64 - bw) * pivot_x).rem_euclid(bw)
-                    } else {
-                        (dx as f64 - x) / sx + cx
+            let repeat = mode == "Repeat";
+            let (x, y) = if repeat {
+                ((w as f64 - bw) * pivot_x, (h as f64 - bh) * pivot_y)
+            } else {
+                (
+                    (pivot_x * (w as f64 - cw * sx)).trunc(),
+                    (pivot_y * (h as f64 - ch * sy)).trunc(),
+                )
+            };
+            let sample = |pixel: u32, offset: f64, scale: f64, crop: f64, span: f64, extent: f64| {
+                let relative = f64::from(pixel) - offset;
+                let coordinate = if repeat {
+                    relative.rem_euclid(extent)
+                } else {
+                    relative / scale + crop
+                };
+                (coordinate >= crop && coordinate < crop + span && coordinate >= 0.
+                    && coordinate < extent)
+                    .then_some(coordinate as u32)
+            };
+            // Reuse each horizontal mapping across rows without allocating for the full width.
+            const SAMPLE_COLUMNS: u32 = 4096;
+            let mut columns = Vec::with_capacity(w.min(SAMPLE_COLUMNS) as usize);
+            for start in (0..w).step_by(SAMPLE_COLUMNS as usize) {
+                columns.clear();
+                columns.extend((start..w.min(start + SAMPLE_COLUMNS)).filter_map(|dx| {
+                    sample(dx, x, sx, cx, cw, bw).map(|bx| (dx, bx))
+                }));
+                if columns.is_empty() {
+                    continue;
+                }
+                for dy in 0..h {
+                    let Some(by) = sample(dy, y, sy, cy, ch, bh) else {
+                        continue;
                     };
-                    let by = if mode == "Repeat" {
-                        (dy as f64 - (h as f64 - bh) * pivot_y).rem_euclid(bh)
-                    } else {
-                        (dy as f64 - y) / sy + cy
-                    };
-                    if bx >= cx
-                        && by >= cy
-                        && bx < cx + cw
-                        && by < cy + ch
-                        && bx >= 0.
-                        && by >= 0.
-                        && bx < bw
-                        && by < bh
-                    {
-                        blend_pixel(
-                            &mut image,
-                            dx as i64,
-                            dy as i64,
-                            *bg.get_pixel(bx as u32, by as u32),
-                            1.,
-                        );
+                    for &(dx, bx) in &columns {
+                        blend_rgba(image.get_pixel_mut(dx, dy), *bg.get_pixel(bx, by), 1.);
                     }
                 }
             }
+            return Ok(image);
         }
-        Ok(image)
+        Ok(RgbaImage::from_pixel(w, h, background_color))
     }
 }
-/// Reuse a decoded tileset across adjacent layers and levels without retaining every atlas.
+/// Keep the two most recent atlases when both fit in the decoded pixel budget.
 pub(super) struct PngRenderer<'a> {
     project: &'a Project,
     last_atlas: Option<(i64, RgbaImage)>,
+    previous_atlas: Option<(i64, RgbaImage)>,
 }
 
 impl<'a> PngRenderer<'a> {
@@ -341,6 +419,7 @@ impl<'a> PngRenderer<'a> {
         Self {
             project,
             last_atlas: None,
+            previous_atlas: None,
         }
     }
 
@@ -352,14 +431,24 @@ impl<'a> PngRenderer<'a> {
             return Ok(None);
         };
         if self.last_atlas.as_ref().map(|(id, _)| *id) != Some(uid) {
-            let image = if let Some(rel) = def["relPath"].as_str() {
-                self.project.resource_image(rel)?
-            } else if !def["embedAtlas"].is_null() {
-                embedded_atlas()?
+            if self.previous_atlas.as_ref().is_some_and(|(id, _)| *id == uid) {
+                std::mem::swap(&mut self.last_atlas, &mut self.previous_atlas);
             } else {
-                return Err(Error::Invalid("missing atlas path".into()));
-            };
-            self.last_atlas = Some((uid, image));
+                // Keep peak residency at most the last atlas and the newly decoded image.
+                self.previous_atlas = None;
+                let image = if let Some(rel) = def["relPath"].as_str() {
+                    self.project.resource_image(rel)?
+                } else if !def["embedAtlas"].is_null() {
+                    embedded_atlas()?
+                } else {
+                    return Err(Error::Invalid("missing atlas path".into()));
+                };
+                const DECODED_ATLAS_BUDGET: usize = 16 * 1024 * 1024;
+                self.previous_atlas = self.last_atlas.take().filter(|(_, previous)| {
+                    previous.as_raw().len().saturating_add(image.as_raw().len()) <= DECODED_ATLAS_BUDGET
+                });
+                self.last_atlas = Some((uid, image));
+            }
         }
         let (_, image) = self.last_atlas.as_ref().expect("loaded tileset");
         Ok(Some((def, image)))
@@ -496,6 +585,7 @@ impl<'a> PngRenderer<'a> {
         let grid = n(li, "__gridSize").max(1) as f64;
         let pivot_x = num(def, "tilePivotX", 0.);
         let pivot_y = num(def, "tilePivotY", 0.);
+        let mut opaque = HashMap::new();
         for t in values {
             let f = n(t, "f");
             let (tx, ty) = if classic {
@@ -536,6 +626,15 @@ impl<'a> PngRenderer<'a> {
             let sx = t["src"][0].as_i64().unwrap_or(0);
             let sy = t["src"][1].as_i64().unwrap_or(0);
             let tile_alpha = alpha * num(t, "a", 1.);
+            if tile_alpha >= 1.
+                && tile_fits(&img, [tx, ty], size)
+                && *opaque.entry([sx, sy]).or_insert_with(|| {
+                    tile_fits(atlas, [sx, sy], size) && opaque_atlas_tile(atlas, [sx, sy], size)
+                })
+            {
+                copy_opaque_tile(&mut img, atlas, [tx, ty], [sx, sy], size, f);
+                continue;
+            }
             for y in 0..size {
                 for x in 0..size {
                     let ax = sx + if f & 1 != 0 { size - 1 - x } else { x };

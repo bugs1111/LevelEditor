@@ -1,13 +1,58 @@
 use ldtk_core::{FilesystemSnapshot, LevelKey, Project};
 use serde_json::{Map, Value, json};
-use std::{collections::HashSet, fs, path::PathBuf};
+use std::{
+    cell::OnceCell,
+    collections::{HashMap, HashSet},
+    fs,
+    path::PathBuf,
+};
 
 type Arguments = Map<String, Value>;
 type ToolResult = Result<Value, String>;
 
+#[derive(serde::Serialize)]
+#[serde(untagged)]
+pub(super) enum ToolPayload<'a> {
+    Owned(Value),
+    Borrowed(&'a Value),
+    Layer { layer: Option<&'a Value> },
+    Levels { levels: Vec<LevelSummary<'a>> },
+    Level {
+        #[serde(flatten)]
+        summary: LevelSummary<'a>,
+        layers: Vec<LayerSummary<'a>>,
+        field_instances: &'a Value,
+    },
+}
+
+#[derive(serde::Serialize)]
+pub(super) struct LevelSummary<'a> {
+    iid: &'a Value,
+    identifier: &'a Value,
+    world_iid: Option<&'a str>,
+    world_x: &'a Value,
+    world_y: &'a Value,
+    px_width: &'a Value,
+    px_height: &'a Value,
+}
+
+#[derive(serde::Serialize)]
+pub(super) struct LayerSummary<'a> {
+    iid: &'a Value,
+    identifier: &'a Value,
+    #[serde(rename = "type")]
+    kind: &'a Value,
+    definition_uid: &'a Value,
+    columns: &'a Value,
+    rows: &'a Value,
+    grid_size: &'a Value,
+    tileset_uid: &'a Value,
+}
+
 pub(super) struct Session {
     path: PathBuf,
     project: Project,
+    level_keys: OnceCell<HashMap<String, LevelKey>>,
     snapshot: Option<FilesystemSnapshot>,
     dirty: bool,
 }
@@ -18,24 +63,32 @@ impl Session {
         Ok(Self {
             path,
             project,
+            level_keys: OnceCell::new(),
             snapshot: Some(snapshot),
             dirty: false,
         })
     }
 
-    pub(super) fn execute(&mut self, name: &str, args: &Arguments) -> ToolResult {
-        match name {
+    pub(super) fn execute(&mut self, name: &str, args: &Arguments) -> Result<ToolPayload<'_>, String> {
+        let value = match name {
             "project_info" => Ok(self.info()),
-            "get_definitions" => Ok(self.project.json["defs"]
-                .as_object()
-                .cloned()
-                .map_or_else(|| json!({}), Value::Object)),
+            "get_definitions" => {
+                let defs = &self.project.json["defs"];
+                if defs.is_object() {
+                    return Ok(ToolPayload::Borrowed(defs));
+                }
+                Ok(json!({}))
+            }
             "list_worlds" => Ok(self.list_worlds()),
-            "list_levels" => self.list_levels(args.get("world_iid").and_then(Value::as_str)),
-            "get_level" => self.get_level(args["level_iid"].as_str().unwrap()),
+            "list_levels" => {
+                return self.list_levels(args.get("world_iid").and_then(Value::as_str));
+            }
+            "get_level" => return self.get_level(args["level_iid"].as_str().unwrap()),
             "get_layer" => {
                 let (key, layer) = self.layer_key(args)?;
-                Ok(json!({"layer":self.project.layer(key, layer)}))
+                return Ok(ToolPayload::Layer {
+                    layer: self.project.layer(key, layer),
+                });
             }
             "save_project" => self.save(),
             "reload_project" => {
@@ -46,7 +99,8 @@ impl Session {
                 Ok(self.info())
             }
             _ => self.edit(name, args),
-        }
+        }?;
+        Ok(ToolPayload::Owned(value))
     }
 
     fn info(&self) -> Value {
@@ -98,7 +152,7 @@ impl Session {
         Value::from_iter([("worlds", Value::Array(worlds))])
     }
 
-    fn list_levels(&self, world_iid: Option<&str>) -> ToolResult {
+    fn list_levels(&self, world_iid: Option<&str>) -> Result<ToolPayload<'_>, String> {
         let mut worlds = self
             .worlds()
             .filter(|(index, _)| world_iid.is_none_or(|iid| self.world_iid(*index) == Some(iid)))
@@ -108,54 +162,60 @@ impl Session {
         {
             return Err(format!("World IID not found: {iid}"));
         }
-        let levels: Vec<_> = worlds
-            .flat_map(|(index, _)| self.project.level_keys_in_world(index))
-            .filter_map(|key| {
-                self.project
-                    .level(key)
-                    .map(|level| self.level_summary(key, level))
-            })
+        let levels = worlds
+            .flat_map(|(index, _)| self.project.levels_in_world(index))
+            .map(|(key, level)| self.level_summary(key, level))
             .collect();
-        Ok(Value::from_iter([("levels", Value::Array(levels))]))
+        Ok(ToolPayload::Levels { levels })
     }
 
-    fn level_summary(&self, key: LevelKey, level: &Value) -> Value {
-        json!({
-            "iid":level["iid"],
-            "identifier":level["identifier"],
-            "world_iid":self.world_iid(key.world),
-            "world_x":level["worldX"],
-            "world_y":level["worldY"],
-            "px_width":level["pxWid"],
-            "px_height":level["pxHei"]
+    fn level_summary<'a>(&'a self, key: LevelKey, level: &'a Value) -> LevelSummary<'a> {
+        LevelSummary {
+            iid: &level["iid"],
+            identifier: &level["identifier"],
+            world_iid: self.world_iid(key.world),
+            world_x: &level["worldX"],
+            world_y: &level["worldY"],
+            px_width: &level["pxWid"],
+            px_height: &level["pxHei"],
+        }
+    }
+
+    fn get_level(&self, iid: &str) -> Result<ToolPayload<'_>, String> {
+        let (key, level) = self.level(iid)?;
+        let layers = items(&level["layerInstances"])
+            .map(|layer| LayerSummary {
+                iid: &layer["iid"],
+                identifier: &layer["__identifier"],
+                kind: &layer["__type"],
+                definition_uid: &layer["layerDefUid"],
+                columns: &layer["__cWid"],
+                rows: &layer["__cHei"],
+                grid_size: &layer["__gridSize"],
+                tileset_uid: &layer["__tilesetDefUid"],
+            })
+            .collect();
+        Ok(ToolPayload::Level {
+            summary: self.level_summary(key, level),
+            layers,
+            field_instances: &level["fieldInstances"],
         })
     }
 
-    fn get_level(&self, iid: &str) -> ToolResult {
-        let (key, level) = self.level(iid)?;
-        let mut summary = self.level_summary(key, level);
-        let layers: Vec<_> = items(&level["layerInstances"])
-            .map(|layer| {
-                json!({
-                    "iid":layer["iid"],
-                    "identifier":layer["__identifier"],
-                    "type":layer["__type"],
-                    "definition_uid":layer["layerDefUid"],
-                    "columns":layer["__cWid"],
-                    "rows":layer["__cHei"],
-                    "grid_size":layer["__gridSize"],
-                    "tileset_uid":layer["__tilesetDefUid"]
-                })
-            })
-            .collect();
-        summary["layers"] = Value::Array(layers);
-        summary["field_instances"] = level["fieldInstances"].clone();
-        Ok(summary)
-    }
-
     fn level(&self, iid: &str) -> Result<(LevelKey, &Value), String> {
-        self.project
-            .level_by_iid(iid)
+        // The edit tools leave level IIDs and positions intact. Opening/reloading
+        // a session replaces the project and its index together.
+        let keys = self.level_keys.get_or_init(|| {
+            let mut keys = HashMap::new();
+            for key in self.project.iter_level_keys() {
+                if let Some(iid) = self.project.level(key).and_then(|level| level["iid"].as_str()) {
+                    keys.entry(iid.to_owned()).or_insert(key);
+                }
+            }
+            keys
+        });
+        keys.get(iid)
+            .and_then(|&key| self.project.level(key).map(|level| (key, level)))
             .ok_or_else(|| format!("Level IID not found: {iid}"))
     }
 
@@ -252,13 +312,14 @@ impl Session {
             .as_ref()
             .ok_or("Reload the project before saving again.")?;
         self.check_external_save_targets()?;
-        self.project
-            .save_if_unchanged(&self.path, snapshot)
+        let reload = self.project
+            .save_and_reload_if_unchanged(&self.path, snapshot)
             .map_err(|error| error.to_string())?;
         self.dirty = false;
-        match Self::open(self.path.clone()) {
-            Ok(session) => {
-                *self = session;
+        match reload {
+            Ok(snapshot) => {
+                self.snapshot = Some(snapshot);
+                self.level_keys = OnceCell::new();
                 Ok(json!({"saved":true,"dirty":false}))
             }
             Err(error) => {

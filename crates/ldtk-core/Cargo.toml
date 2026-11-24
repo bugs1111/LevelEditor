@@ -13,6 +13,7 @@ asefile = "0.3.8"
 regex = "1"
 regress = { version = "0.12", features = ["utf16"] }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif"] }
+indexmap = { version = "2", features = ["serde"] }
 uuid = { version = "1", features = ["v4"] }
 
 [dev-dependencies]

@@ -1,9 +1,109 @@
-use super::{RenderOptions, Scene, Transform, geometry, lighten, number, pair, text, values};
+use super::{
+    RenderOptions, Scene, Transform, geometry, lighten, number, pair, text, tile_anchor,
+    values,
+};
 use crate::{assets::Assets, theme, viewport::Viewport};
 use eframe::egui::{self, Color32, Mesh, Painter, Pos2, Rect, Stroke, StrokeKind, vec2};
 use ldtk_core::{LevelKey, Project};
 use serde_json::{Value, json};
-use std::collections::HashSet;
+use std::{collections::HashSet, ops::Range};
+
+fn visible_cell_range(
+    cells: Range<i64>,
+    grid: f32,
+    project: impl Fn(f32) -> f32,
+    min: f32,
+    max: f32,
+) -> Range<i64> {
+    let cell_start = |index: i64| index as f32 * grid;
+    let first = |predicate: &dyn Fn(i64) -> bool| {
+        let (mut lo, mut hi) = (cells.start, cells.end);
+        while lo < hi {
+            let mid = lo + (hi - lo) / 2;
+            if predicate(mid) {
+                hi = mid;
+            } else {
+                lo = mid + 1;
+            }
+        }
+        lo
+    };
+    // Rect::intersects includes cells that touch the viewport boundary.
+    first(&|i| project(cell_start(i) + grid) >= min)..first(&|i| project(cell_start(i)) > max)
+}
+
+#[derive(Default)]
+struct WorldCells {
+    visible: Option<VisibleWorldCells>,
+    other: HashSet<(i32, i32, i32)>,
+}
+
+struct VisibleWorldCells {
+    grid: i32,
+    columns: Range<i64>,
+    rows: Range<i64>,
+    bits: Vec<u64>,
+}
+
+impl VisibleWorldCells {
+    fn slot(&self, (grid, x, y): (i32, i32, i32)) -> Option<(usize, u64)> {
+        let (x, y) = (i64::from(x), i64::from(y));
+        if grid != self.grid || !self.columns.contains(&x) || !self.rows.contains(&y) {
+            return None;
+        }
+        let width = self.columns.end - self.columns.start;
+        let index = ((y - self.rows.start) * width + (x - self.columns.start)) as usize;
+        Some((index / 64, 1 << (index % 64)))
+    }
+}
+
+impl WorldCells {
+    fn track_visible(&mut self, grid: i32, columns: Range<i64>, rows: Range<i64>) {
+        if self.visible.is_some() || columns.is_empty() || rows.is_empty() {
+            return;
+        }
+        let area = (columns.end - columns.start).saturating_mul(rows.end - rows.start);
+        if !(1..=1_048_576).contains(&area) {
+            return;
+        }
+        let mut visible = VisibleWorldCells {
+            grid,
+            columns,
+            rows,
+            bits: vec![0; (area as usize).div_ceil(64)],
+        };
+        // Textured layers or neighbor edges may already cover cells inside this region.
+        self.other.retain(|&cell| {
+            let Some((word, bit)) = visible.slot(cell) else {
+                return true;
+            };
+            visible.bits[word] |= bit;
+            false
+        });
+        self.visible = Some(visible);
+    }
+
+    fn contains(&self, cell: (i32, i32, i32)) -> bool {
+        if let Some(visible) = &self.visible
+            && let Some((word, bit)) = visible.slot(cell)
+        {
+            return visible.bits[word] & bit != 0;
+        }
+        self.other.contains(&cell)
+    }
+
+    fn insert(&mut self, cell: (i32, i32, i32)) -> bool {
+        if let Some(visible) = &mut self.visible
+            && let Some((word, bit)) = visible.slot(cell)
+        {
+            let bits = &mut visible.bits[word];
+            let added = *bits & bit == 0;
+            *bits |= bit;
+            return added;
+        }
+        self.other.insert(cell)
+    }
+}
 
 pub(super) fn entity_bounds(entity: &Value, def: &Value) -> Rect {
     let size = vec2(
@@ -294,7 +394,11 @@ impl Scene<'_> {
         edge_region: Option<Rect>,
     ) -> usize {
         let clip = painter.clip_rect();
-        let mut done = HashSet::new();
+        let mut done = WorldCells::default();
+        let screen_center: [f32; 2] =
+            (Pos2::from(self.projection_origin) + self.canvas.size() * 0.5).into();
+        let center = self.view.center;
+        let zoom = self.view.zoom;
         if let Some(region) = edge_region {
             for layer in values(&level["layerInstances"]) {
                 let Some(atlas) = layer["__tilesetDefUid"]
@@ -321,7 +425,7 @@ impl Scene<'_> {
                     }
                 }
                 for tile in values(&layer["autoLayerTiles"]) {
-                    let px = pair(&tile["px"], [0.; 2]);
+                    let px = pair(tile_anchor(tile), [0.; 2]);
                     if px[0] >= region.left()
                         && px[0] < region.right()
                         && px[1] >= region.top()
@@ -344,35 +448,59 @@ impl Scene<'_> {
                 number(layer, "__pxTotalOffsetX", 0.),
                 number(layer, "__pxTotalOffsetY", 0.),
             ]);
+            let project_axis = |axis: usize, point: f32| {
+                let world = transform.origin[axis] + point * transform.scale;
+                screen_center[axis] + (world - center[axis]) * zoom
+            };
             if layer["__type"] == "IntGrid" && layer["__tilesetDefUid"].is_null() {
                 let width = number(layer, "__cWid", 0.) as usize;
                 if width == 0 {
                     continue;
                 }
-                for (index, value) in values(&layer["intGridCsv"]).iter().enumerate() {
-                    let value = value.as_i64().unwrap_or(0);
-                    if value == 0 {
-                        continue;
+                let cells = values(&layer["intGridCsv"]);
+                let columns = visible_cell_range(
+                    0..width.min(cells.len()) as i64,
+                    grid,
+                    |x| project_axis(0, x),
+                    clip.left(),
+                    clip.right(),
+                );
+                let rows = visible_cell_range(
+                    0..cells.len().div_ceil(width) as i64,
+                    grid,
+                    |y| project_axis(1, y),
+                    clip.top(),
+                    clip.bottom(),
+                );
+                done.track_visible(grid as i32, columns.clone(), rows.clone());
+                let visible_cells = rows.flat_map(|y| {
+                    let start = y as usize * width;
+                    let row = &cells[start..(start + width).min(cells.len())];
+                    let py = y as f32 * grid;
+                    let top = project_axis(1, py);
+                    let bottom = project_axis(1, py + grid);
+                    (columns.start..columns.end.min(row.len() as i64))
+                        .map(move |x| (x, y, top, bottom, row[x as usize].as_i64().unwrap_or(0)))
+                });
+                let mut color = super::intgrid_cell_colors(def, 1.);
+                let shapes = visible_cells.filter_map(|(x, y, top, bottom, value)| {
+                    if value == 0 || !done.insert((grid as i32, x as i32, y as i32)) {
+                        return None;
                     }
-                    let cell = [(index % width) as i32, (index / width) as i32];
-                    let key = (grid as i32, cell[0], cell[1]);
-                    if done.contains(&key) {
-                        continue;
+                    let px = x as f32 * grid;
+                    let dst = Rect::from_min_max(
+                        egui::pos2(project_axis(0, px), top),
+                        egui::pos2(project_axis(0, px + grid), bottom),
+                    );
+                    count += 1;
+                    Some(egui::Shape::rect_filled(dst, 0., color(value)))
+                });
+                if painter.opacity() == 0. || !painter.is_visible() {
+                    for shape in shapes {
+                        painter.add(shape);
                     }
-                    let dst = self.screen(transform.rect(Rect::from_min_size(
-                        [cell[0] as f32 * grid, cell[1] as f32 * grid].into(),
-                        vec2(grid, grid),
-                    )));
-                    if dst.intersects(clip) {
-                        let color = values(&def["intGridValues"])
-                            .iter()
-                            .find(|d| d["value"].as_i64() == Some(value))
-                            .map(|d| theme::color(text(d, "color", "#ffcc00")))
-                            .unwrap_or(theme::ACCENT);
-                        done.insert(key);
-                        painter.rect_filled(dst, 0., color);
-                        count += 1;
-                    }
+                } else {
+                    painter.extend(shapes);
                 }
                 continue;
             }
@@ -397,20 +525,67 @@ impl Scene<'_> {
             } else {
                 values(&layer["autoLayerTiles"])
             };
-            let tile_cell = |tile: &Value| {
-                let px = pair(&tile["px"], [0.; 2]);
-                [(px[0] / grid) as i32, (px[1] / grid) as i32]
+            // Four bounds over the signed cell domain take up to 128 projections.
+            let visible = (tiles.len() >= 128).then(|| {
+                // Tile anchors can be negative or outside the nominal layer dimensions.
+                let cell_domain = i64::from(i32::MIN)..i64::from(i32::MAX) + 1;
+                let columns = visible_cell_range(
+                    cell_domain.clone(),
+                    grid,
+                    |x| project_axis(0, x),
+                    clip.left(),
+                    clip.right(),
+                );
+                let rows = visible_cell_range(
+                    cell_domain,
+                    grid,
+                    |y| project_axis(1, y),
+                    clip.top(),
+                    clip.bottom(),
+                );
+                (columns, rows)
+            });
+            let cell_at = |px: &[Value], axis: usize| {
+                (px.get(axis).and_then(Value::as_f64).unwrap_or(0.) as f32 / grid) as i32
             };
-            let mut emit = |tile: &Value, cell: [i32; 2]| {
-                let key = (grid as i32, cell[0], cell[1]);
-                if done.contains(&key) {
+            let mut seen = WorldCells::default();
+            if let Some((columns, rows)) = &visible {
+                done.track_visible(grid as i32, columns.clone(), rows.clone());
+                if manual_tiles {
+                    seen.track_visible(grid as i32, columns.clone(), rows.clone());
+                }
+            }
+            let mut averages = [None; 256];
+            let mut emit = |tile: &Value| {
+                let px = values(tile_anchor(tile));
+                let x = cell_at(px, 0);
+                if visible
+                    .as_ref()
+                    .is_some_and(|(columns, _)| !columns.contains(&i64::from(x)))
+                {
                     return;
                 }
-                let dst = self.screen(transform.rect(Rect::from_min_size(
-                    [cell[0] as f32 * grid, cell[1] as f32 * grid].into(),
-                    vec2(grid, grid),
-                )));
-                if !dst.intersects(clip) {
+                let y = cell_at(px, 1);
+                if visible
+                    .as_ref()
+                    .is_some_and(|(_, rows)| !rows.contains(&i64::from(y)))
+                {
+                    return;
+                }
+                let key = (grid as i32, x, y);
+                if manual_tiles && !seen.insert(key) {
+                    return;
+                }
+                if done.contains(key) {
+                    return;
+                }
+                let x = x as f32 * grid;
+                let y = y as f32 * grid;
+                let dst = Rect::from_min_max(
+                    egui::pos2(project_axis(0, x), project_axis(1, y)),
+                    egui::pos2(project_axis(0, x + grid), project_axis(1, y + grid)),
+                );
+                if visible.is_none() && !dst.intersects(clip) {
                     return;
                 }
                 let color = if colors.is_empty() {
@@ -422,7 +597,12 @@ impl Scene<'_> {
                     )
                 } else {
                     let id = tile["t"].as_u64().unwrap_or(u64::MAX) as usize;
-                    super::decode_tile_average(colors, id)
+                    let decode = || super::decode_tile_average(colors, id);
+                    if let Some(slot) = averages.get_mut(id) {
+                        *slot.get_or_insert_with(decode)
+                    } else {
+                        decode()
+                    }
                 };
                 let Some(color) = color else {
                     return;
@@ -435,17 +615,9 @@ impl Scene<'_> {
                 count += 1;
             };
             if manual_tiles {
-                let mut seen = HashSet::new();
-                for tile in tiles.iter().rev() {
-                    let cell = tile_cell(tile);
-                    if seen.insert(cell) {
-                        emit(tile, cell);
-                    }
-                }
+                tiles.iter().rev().for_each(&mut emit);
             } else {
-                for tile in tiles {
-                    emit(tile, tile_cell(tile));
-                }
+                tiles.iter().for_each(&mut emit);
             }
         }
         for fd in values(&self.project.json["defs"]["levelFields"]) {
@@ -568,6 +740,27 @@ pub(super) fn preview(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn world_cell_mask_preserves_previous_coverage_and_keeps_other_keys_distinct() {
+        let mut cells = WorldCells::default();
+        let marked = [(16, 4, 2), (16, 68, 2), (16, -2, 2), (8, 4, 2)];
+        for cell in marked {
+            assert!(cells.insert(cell));
+        }
+        cells.track_visible(16, 4..69, 2..4);
+        assert!(cells.visible.is_some());
+        for cell in marked {
+            assert!(cells.contains(cell));
+            assert!(!cells.insert(cell));
+        }
+        assert!(!cells.contains((16, 4, 3)));
+        assert!(cells.insert((16, 4, 3)));
+        assert!(!cells.insert((16, 4, 3)));
+        assert!(!cells.contains((8, 4, 3)));
+        assert!(cells.insert((16, 69, 2)));
+        assert!(cells.contains((16, 69, 2)));
+    }
+
     #[test]
     fn pivot_bounds_preserve_instance_dimensions() {
         let entity = json!({"width":40,"height":20,"px":[80,70],"__pivot":[0.5,1]});

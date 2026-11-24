@@ -2,7 +2,30 @@
 use crate::grid_presence::{GridPresence, update_presence};
 use crate::{Error, LevelKey, Project, Result};
 use serde_json::{Value, json};
-use std::collections::BTreeMap;
+use std::cell::OnceCell;
+use std::collections::{BTreeMap, HashMap};
+use std::ops::Range;
+
+#[derive(Default)]
+pub(crate) struct EntityReferences {
+    // Entities in a layer share its layer, level, and world IIDs.
+    locations: Vec<[Value; 3]>,
+    by_iid: HashMap<String, (usize, OnceCell<Value>)>,
+}
+
+impl EntityReferences {
+    pub(crate) fn get(&self, iid: &str) -> Option<&Value> {
+        let (location, reference) = self.by_iid.get(iid)?;
+        Some(reference.get_or_init(|| {
+            let [layer, level, world] = &self.locations[*location];
+            json!({"entityIid":iid, "layerIid":layer, "levelIid":level, "worldIid":world})
+        }))
+    }
+
+    fn contains_key(&self, iid: &str) -> bool {
+        self.by_iid.contains_key(iid)
+    }
+}
 
 pub(crate) fn invalid(message: &str) -> Error {
     Error::Invalid(message.into())
@@ -21,6 +44,13 @@ pub(crate) fn valid_identifier(s: &str) -> bool {
             .all(|(i, c)| c == '_' || c.is_ascii_alphabetic() || (i > 0 && c.is_ascii_digit()))
 }
 pub(crate) fn alloc_uid(p: &mut Project) -> Result<i64> {
+    Ok(alloc_uids(p, 1)?.start)
+}
+
+pub(crate) fn alloc_uids(p: &mut Project, count: usize) -> Result<Range<i64>> {
+    if count == 0 {
+        return Ok(0..0);
+    }
     fn max(v: &Value) -> i64 {
         match v {
             Value::Object(m) => m
@@ -33,15 +63,39 @@ pub(crate) fn alloc_uid(p: &mut Project) -> Result<i64> {
             _ => -1,
         }
     }
-    let n = p.json["nextUid"]
+    let first = p.json["nextUid"]
         .as_i64()
         .unwrap_or(0)
-        .max(max(&p.json) + 1);
-    if !(0..i64::from(i32::MAX)).contains(&n) {
-        return Err(invalid("UID overflow"));
+        .max(
+            max(&p.json)
+                .checked_add(1)
+                .ok_or_else(|| invalid("UID overflow"))?,
+        );
+    let end = i64::try_from(count)
+        .ok()
+        .and_then(|count| first.checked_add(count))
+        .filter(|&end| end <= i64::from(i32::MAX))
+        .ok_or_else(|| invalid("UID overflow"))?;
+    p.json["nextUid"] = json!(end);
+    Ok(first..end)
+}
+
+pub(crate) fn assign_rule_uids(p: &mut Project, layer: &mut Value) -> Result<()> {
+    let Some(groups) = layer["autoRuleGroups"].as_array_mut() else {
+        return Ok(());
+    };
+    let count = groups
+        .iter()
+        .map(|group| 1 + group["rules"].as_array().map_or(0, Vec::len))
+        .sum();
+    let mut uids = alloc_uids(p, count)?;
+    for group in groups {
+        group["uid"] = json!(uids.next().expect("reserved group UID"));
+        for rule in group["rules"].as_array_mut().into_iter().flatten() {
+            rule["uid"] = json!(uids.next().expect("reserved rule UID"));
+        }
     }
-    p.json["nextUid"] = json!(n + 1);
-    Ok(n)
+    Ok(())
 }
 fn container(p: &Project, world: Option<usize>) -> Result<&Value> {
     match world {
@@ -839,8 +893,8 @@ impl Project {
             p.refresh_auto_and_derived()
         })
     }
-    fn entity_reference_index(&self, keys: &[LevelKey]) -> Result<BTreeMap<String, Value>> {
-        let mut refs = BTreeMap::new();
+    fn entity_reference_index(&self, keys: &[LevelKey]) -> Result<EntityReferences> {
+        let mut refs = EntityReferences::default();
         for &key in keys {
             let level = self
                 .level(key)
@@ -850,15 +904,27 @@ impl Project {
                 None => &self.json["dummyWorldIid"],
             };
             for layer in level["layerInstances"].as_array().into_iter().flatten() {
-                for entity in layer["entityInstances"].as_array().into_iter().flatten() {
+                let Some(entities) = layer["entityInstances"]
+                    .as_array()
+                    .filter(|entities| !entities.is_empty())
+                else {
+                    continue;
+                };
+                let location = refs.locations.len();
+                refs.locations.push([
+                    layer["iid"].clone(),
+                    level["iid"].clone(),
+                    world_iid.clone(),
+                ]);
+                for entity in entities {
                     let Some(iid) = entity["iid"].as_str() else {
                         continue;
                     };
-                    let reference = json!({
-                        "entityIid": iid, "layerIid": layer["iid"],
-                        "levelIid": level["iid"], "worldIid": world_iid
-                    });
-                    if refs.insert(iid.to_owned(), reference).is_some() {
+                    if refs
+                        .by_iid
+                        .insert(iid.to_owned(), (location, OnceCell::new()))
+                        .is_some()
+                    {
                         return Err(invalid("duplicate entity IID"));
                     }
                 }
@@ -873,18 +939,24 @@ impl Project {
         let keys = self.level_keys();
         let refs = self.entity_reference_index(&keys)?;
         crate::field_edit::refresh_field_values(self, &refs)?;
-        let layer_defs = self.json["defs"]["layers"]
-            .as_array()
-            .cloned()
-            .unwrap_or_default();
-        let entity_defs = self.json["defs"]["entities"]
-            .as_array()
-            .cloned()
-            .unwrap_or_default();
-        let tilesets = self.json["defs"]["tilesets"]
-            .as_array()
-            .cloned()
-            .unwrap_or_default();
+        let defs = &self.json["defs"];
+        let index_definitions = |kind| {
+            let mut index = HashMap::new();
+            for definition in defs[kind].as_array().into_iter().flatten() {
+                index
+                    .entry(definition["uid"].clone())
+                    .or_insert_with(|| definition.clone());
+            }
+            index
+        };
+        let layer_defs = index_definitions("layers");
+        let entity_defs = index_definitions("entities");
+        let mut tileset_paths = HashMap::new();
+        for tileset in defs["tilesets"].as_array().into_iter().flatten() {
+            tileset_paths
+                .entry(tileset["uid"].as_i64())
+                .or_insert_with(|| tileset["relPath"].clone());
+        }
         let enum_defs = [
             self.json["defs"]["enums"]
                 .as_array()
@@ -918,7 +990,7 @@ impl Project {
             let wy = level["worldY"].as_i64().unwrap_or(0);
             if let Some(layers) = level["layerInstances"].as_array_mut() {
                 for layer in layers {
-                    let d = layer_defs.iter().find(|d| d["uid"] == layer["layerDefUid"]);
+                    let d = layer_defs.get(&layer["layerDefUid"]);
                     if let Some(d) = d {
                         layer["__identifier"] = d["identifier"].clone();
                         layer["__opacity"] = d.get("displayOpacity").cloned().unwrap_or(json!(1));
@@ -934,10 +1006,9 @@ impl Project {
                             .as_i64()
                             .or_else(|| d["tilesetDefUid"].as_i64());
                         layer["__tilesetDefUid"] = json!(ts_uid);
-                        layer["__tilesetRelPath"] = tilesets
-                            .iter()
-                            .find(|ts| ts["uid"].as_i64() == ts_uid)
-                            .map(|ts| ts["relPath"].clone())
+                        layer["__tilesetRelPath"] = tileset_paths
+                            .get(&ts_uid)
+                            .cloned()
                             .unwrap_or(Value::Null);
                     }
                     layer["levelId"] = uid.clone();
@@ -946,7 +1017,7 @@ impl Project {
                         for e in entities {
                             let x = e["px"][0].as_i64().unwrap_or(0);
                             let y = e["px"][1].as_i64().unwrap_or(0);
-                            if let Some(d) = entity_defs.iter().find(|d| d["uid"] == e["defUid"]) {
+                            if let Some(d) = entity_defs.get(&e["defUid"]) {
                                 e["__identifier"] = d["identifier"].clone();
                                 e["__smartColor"] = smart_color(
                                     d["fieldDefs"].as_array(),
@@ -1023,7 +1094,7 @@ fn clear_tileset_references(v: &mut Value, uid: i64) {
         _ => {}
     }
 }
-fn refresh_refs(field: &mut Value, refs: &BTreeMap<String, Value>) {
+fn refresh_refs(field: &mut Value, refs: &EntityReferences) {
     if !field["__type"]
         .as_str()
         .is_some_and(|s| s.contains("EntityRef"))

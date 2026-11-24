@@ -399,7 +399,7 @@ impl Project {
                 .iter()
                 .find(|l| l["layerDefUid"].as_i64() == source_uid);
             let Some(source) = source.filter(|_| tileset_uid.is_some()) else {
-                updates.push((index, json!([])));
+                updates.push((index, Vec::new()));
                 continue;
             };
             let source_def = find_uid(&self.json["defs"]["layers"], source_uid.unwrap())
@@ -412,19 +412,39 @@ impl Project {
                 && atlas["pxWid"] == 0
                 && atlas["pxHei"] == 0
             {
-                updates.push((index, json!([])));
+                updates.push((index, Vec::new()));
                 continue;
             }
             let mut engine = Engine::new(level, layers, li, ld, source, source_def, atlas)?;
             updates.push((index, engine.render(rect)?));
         }
         let level = self.level_mut(key).expect("validated level");
-        for (index, tiles) in updates {
-            level["layerInstances"][index]["autoLayerTiles"] = tiles;
+        // All evaluations succeeded. Move existing tiles only at commit time.
+        for (index, rules) in updates {
+            let cache = &mut level["layerInstances"][index]["autoLayerTiles"];
+            let previous = cache.as_array_mut().map(Vec::as_mut_slice).unwrap_or_default();
+            *cache = Value::Array(
+                rules
+                    .into_iter()
+                    .rev()
+                    .flat_map(|cells| cells.into_values().flatten())
+                    .map(|tile| match tile {
+                        AutoTile::Retained(index) => std::mem::take(&mut previous[index]),
+                        AutoTile::Generated(tile) => tile,
+                    })
+                    .collect(),
+            );
         }
         Ok(())
     }
 }
+
+enum AutoTile {
+    Retained(usize),
+    Generated(Value),
+}
+
+type AutoTilesByCell = BTreeMap<i32, Vec<AutoTile>>;
 
 struct Rule<'a> {
     json: &'a Value,
@@ -589,7 +609,7 @@ impl Project {
                             .and_then(|uid| self.layer_def(uid))
                             .is_none()
                     {
-                        return Some((index, json!([])));
+                        return Some((index, Vec::new()));
                     }
                     let order: BTreeMap<_, _> = active_rules(level, layer, definition)
                         .rev()
@@ -615,17 +635,23 @@ impl Project {
                     }
                     let mut sorted: Vec<_> = tiles
                         .iter()
-                        .filter_map(|tile| Some((sort_key(tile)?, tile)))
+                        .enumerate()
+                        .filter_map(|(index, tile)| Some((sort_key(tile)?, index)))
                         .collect();
                     sorted.sort_by_key(|(key, _)| *key);
-                    Some((
-                        index,
-                        Value::Array(sorted.into_iter().map(|(_, tile)| tile.clone()).collect()),
-                    ))
+                    Some((index, sorted))
                 })
                 .collect::<Vec<_>>();
-            for (index, tiles) in updates {
-                self.layer_mut(key, index).expect("enumerated layer")["autoLayerTiles"] = tiles;
+            for (index, sorted) in updates {
+                let cache =
+                    &mut self.layer_mut(key, index).expect("enumerated layer")["autoLayerTiles"];
+                let tiles = cache.as_array_mut().expect("enumerated tile cache");
+                *cache = Value::Array(
+                    sorted
+                        .into_iter()
+                        .map(|(_, index)| std::mem::take(&mut tiles[index]))
+                        .collect(),
+                );
             }
         }
     }
@@ -794,7 +820,7 @@ impl<'a> Engine<'a> {
         }
         true
     }
-    fn render(&mut self, area: Option<[i32; 4]>) -> Result<Value> {
+    fn render(&mut self, area: Option<[i32; 4]>) -> Result<Vec<AutoTilesByCell>> {
         let area = area.filter(|_| self.li["autoLayerTiles"].is_array());
         // LDtk expands incremental updates by its maximum supported pattern radius.
         let padding = MAX_PATTERN_SIZE / 2;
@@ -826,30 +852,38 @@ impl<'a> Engine<'a> {
                 }
             }
         }
-        let mut preserved: BTreeMap<i32, BTreeMap<i32, Vec<Value>>> = BTreeMap::new();
+        let mut preserved: BTreeMap<i32, AutoTilesByCell> = BTreeMap::new();
         if area.is_some() {
-            for tile in arr(&self.li["autoLayerTiles"]) {
-                let uid = tile["d"][0].as_i64().unwrap_or(-1) as i32;
-                let id = tile["d"][1].as_i64().unwrap_or(-1) as i32;
-                let x = id % self.width.max(1);
-                let y = id / self.width.max(1);
+            let width = self.width.max(1);
+            for (index, tile) in arr(&self.li["autoLayerTiles"]).iter().enumerate() {
+                let data = &tile["d"];
+                let uid = data[0].as_i64().unwrap_or(-1) as i32;
+                let id = data[1].as_i64().unwrap_or(-1) as i32;
+                let x = id % width;
+                let y = id / width;
                 if x < left || x >= right || y < top || y >= bottom {
                     preserved
                         .entry(uid)
                         .or_default()
                         .entry(id)
                         .or_default()
-                        .push(tile.clone());
+                        .push(AutoTile::Retained(index));
                 }
             }
         }
         let mut output = Vec::with_capacity(self.rules.len());
         let mut locked = BTreeSet::new();
+        let opaque = self.atlas["cachedPixelData"]["opaqueTiles"]
+            .as_str()
+            .unwrap_or("")
+            .as_bytes();
         for r in &self.rules {
             let mut cells = preserved.remove(&r.uid).unwrap_or_default();
             let j = r.json;
             let xm = int(j, "xModulo", 1);
             let ym = int(j, "yModulo", 1);
+            let x_offset = int(j, "xOffset", 0);
+            let y_offset = int(j, "yOffset", 0);
             let checker = match j["checker"].as_str().unwrap_or("None") {
                 _ if xm == 1 && ym == 1 => "None",
                 "Horizontal" if xm == 1 => "Vertical",
@@ -857,6 +891,15 @@ impl<'a> Engine<'a> {
                 mode => mode,
             };
             let chance = float(j, "chance", 1.);
+            let perlin_active = flag(j, "perlinActive", false);
+            let break_on_match = flag(j, "breakOnMatch", false);
+            let lock_on_opaque = float(j, "alpha", 1.) >= 1.
+                && [
+                    "tileXOffset", "tileYOffset", "tileRandomXMin", "tileRandomXMax",
+                    "tileRandomYMin", "tileRandomYMax",
+                ]
+                .iter()
+                .all(|k| int(j, k, 0) == 0);
             for y in top..bottom {
                 for x in left..right {
                     let id = x + y * self.width;
@@ -867,9 +910,9 @@ impl<'a> Engine<'a> {
                     {
                         continue;
                     }
-                    if (checker != "Vertical" && (y - int(j, "yOffset", 0)) % ym != 0)
+                    if (checker != "Vertical" && (y - y_offset) % ym != 0)
                         || (checker == "Vertical" && (y + (x / xm) % 2) % ym != 0)
-                        || (checker != "Horizontal" && (x - int(j, "xOffset", 0)) % xm != 0)
+                        || (checker != "Horizontal" && (x - x_offset) % xm != 0)
                         || (checker == "Horizontal" && (x + (y / ym) % 2) % xm != 0)
                     {
                         continue;
@@ -881,9 +924,7 @@ impl<'a> Engine<'a> {
                     {
                         continue;
                     }
-                    if flag(j, "perlinActive", false)
-                        && auto_rule_perlin_value(self.seed, [x, y], j) < 0.
-                    {
+                    if perlin_active && auto_rule_perlin_value(self.seed, [x, y], j) < 0. {
                         continue;
                     }
                     let mut tiles = Vec::new();
@@ -895,48 +936,27 @@ impl<'a> Engine<'a> {
                             continue;
                         }
                         self.add_tiles(r, x, y, flips, &mut tiles)?;
-                        if flag(j, "breakOnMatch", false) {
+                        if break_on_match {
                             break;
                         }
                     }
                     if !tiles.is_empty() {
-                        let no_offset = [
-                            "tileXOffset",
-                            "tileYOffset",
-                            "tileRandomXMin",
-                            "tileRandomXMax",
-                            "tileRandomYMin",
-                            "tileRandomYMax",
-                        ]
-                        .iter()
-                        .all(|k| int(j, k, 0) == 0);
-                        let opaque = self.atlas["cachedPixelData"]["opaqueTiles"]
-                            .as_str()
-                            .unwrap_or("")
-                            .as_bytes();
-                        if flag(j, "breakOnMatch", false)
-                            || (no_offset
-                                && float(j, "alpha", 1.) >= 1.
-                                && tiles.iter().any(|t| {
-                                    opaque.get(t["t"].as_u64().unwrap_or(u64::MAX) as usize)
+                        if break_on_match
+                            || (lock_on_opaque
+                                && tiles.iter().any(|tile| {
+                                    opaque.get(tile["t"].as_u64().unwrap_or(u64::MAX) as usize)
                                         == Some(&b'1')
                                 }))
                         {
                             locked.insert(id);
                         }
-                        cells.insert(id, tiles);
+                        cells.insert(id, tiles.into_iter().map(AutoTile::Generated).collect());
                     }
                 }
             }
             output.push(cells);
         }
-        Ok(Value::Array(
-            output
-                .into_iter()
-                .rev()
-                .flat_map(|cells| cells.into_values().flatten())
-                .collect(),
-        ))
+        Ok(output)
     }
     fn add_tiles(&self, r: &Rule, x: i32, y: i32, flips: i32, out: &mut Vec<Value>) -> Result<()> {
         let j = r.json;

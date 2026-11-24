@@ -1,11 +1,19 @@
 use crate::{DeferredAutoLayers, Error, LevelKey, Project, Result};
 use serde_json::{Value, json};
+use std::collections::HashMap;
 
 /// Distinguishes a rejected placement from a click where the brush cannot place an entity.
 pub enum EntityPlacement {
     Placed,
     Ignored,
     LimitReached { maximum: i64, identifier: String },
+}
+
+pub struct TilePaint {
+    pub cell: [i32; 2],
+    pub id: i32,
+    pub src: [i32; 2],
+    pub stack: bool,
 }
 
 fn invalid(message: &str) -> Error {
@@ -39,6 +47,40 @@ fn dimensions(layer: &Value) -> Result<(i32, i32, i32)> {
 }
 fn inside(x: i32, y: i32, width: i32, height: i32) -> bool {
     x >= 0 && y >= 0 && x < width && y < height
+}
+
+fn tile_pixel(tile: &Value) -> Result<[i64; 2]> {
+    tile["px"]
+        .as_array()
+        .and_then(|coords| match coords.as_slice() {
+            [x, y] => Some([x.as_i64()?, y.as_i64()?]),
+            _ => None,
+        })
+        .ok_or_else(|| invalid("tile pixel coordinates must be integer pairs"))
+}
+
+fn validate_tile_source(
+    [padding, stride, cols, count]: [i64; 4],
+    id: i32,
+    src: [i32; 2],
+) -> Result<()> {
+    let id = i64::from(id);
+    if id >= count
+        || i64::from(src[0]) != padding + (id % cols) * stride
+        || i64::from(src[1]) != padding + (id / cols) * stride
+    {
+        return Err(invalid(
+            "tile ID and source coordinates do not match the assigned atlas",
+        ));
+    }
+    Ok(())
+}
+
+fn write_tile(tile: &mut Value, px: [i32; 2], id: i32, src: [i32; 2], flips: i32) {
+    tile["px"] = json!(px);
+    tile["src"] = json!(src);
+    tile["t"] = json!(id);
+    tile["f"] = json!(flips);
 }
 
 impl Project {
@@ -265,11 +307,7 @@ impl Project {
             .layer(key, layer_index)
             .ok_or_else(|| invalid("layer not found"))?;
         let uid = layer["layerDefUid"].as_i64();
-        let killer = uid.is_some()
-            && self.json["defs"]["layers"].as_array().is_some_and(|ds| {
-                ds.iter()
-                    .any(|d| uid.is_some_and(|u| crate::autotile::blocks_auto_layer(d, u)))
-            });
+        let killer = uid.is_some_and(|uid| self.tile_layer_blocks_auto(uid));
         let old = killer.then(|| layer["gridTiles"].clone());
         let changed =
             self.paint_tile_inner(key, layer_index, x, y, tile_id, src, flips, erase, stack)?;
@@ -285,6 +323,288 @@ impl Project {
         }
         Ok(changed)
     }
+
+    fn tile_layer_blocks_auto(&self, uid: i64) -> bool {
+        self.json["defs"]["layers"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .any(|def| crate::autotile::blocks_auto_layer(def, uid))
+    }
+
+    /// Remove every tile in the requested cells and return changed cells in input order.
+    pub fn erase_tile_cells_with_deferred(
+        &mut self,
+        key: LevelKey,
+        layer_index: usize,
+        cells: &[[i32; 2]],
+        deferred: Option<&mut DeferredAutoLayers>,
+    ) -> Result<Vec<[i32; 2]>> {
+        self.erase_tile_cells_stacked_with_deferred(key, layer_index, cells, false, deferred)
+    }
+
+    /// Erase either the top tile or the entire stack in each cell.
+    pub fn erase_tile_cells_stacked_with_deferred(
+        &mut self,
+        key: LevelKey,
+        layer_index: usize,
+        cells: &[[i32; 2]],
+        stack: bool,
+        deferred: Option<&mut DeferredAutoLayers>,
+    ) -> Result<Vec<[i32; 2]>> {
+        let layer = self.layer(key, layer_index).ok_or_else(|| invalid("layer not found"))?;
+        if layer["__type"] != "Tiles" {
+            return Err(invalid("manual tiles require a Tiles layer"));
+        }
+        let (width, height, grid) = dimensions(layer)?;
+        let pixel = |cell: [i32; 2]| cell.map(|axis| i64::from(axis) * i64::from(grid));
+        let mut targets: HashMap<_, _> = cells
+            .iter()
+            .copied()
+            .filter(|&[x, y]| inside(x, y, width, height))
+            .map(|cell| (pixel(cell), None))
+            .collect();
+        if targets.is_empty() {
+            return Ok(Vec::new());
+        }
+        let tiles = layer["gridTiles"]
+            .as_array()
+            .ok_or_else(|| invalid("gridTiles must be an array"))?;
+        let mut removals = Vec::new();
+        for (index, tile) in tiles.iter().enumerate() {
+            if let Some(top) = targets.get_mut(&tile_pixel(tile)?) {
+                *top = Some(index);
+                if !stack {
+                    removals.push(index);
+                }
+            }
+        }
+        if stack {
+            removals.extend(targets.values().copied().flatten());
+            removals.sort_unstable();
+        }
+        if removals.is_empty() {
+            return Ok(Vec::new());
+        }
+        let changed: Vec<_> = cells
+            .iter()
+            .copied()
+            .filter(|&cell| targets.remove(&pixel(cell)).flatten().is_some())
+            .collect();
+        let blocker = layer["layerDefUid"]
+            .as_i64()
+            .filter(|&uid| self.tile_layer_blocks_auto(uid))
+            .map(|uid| (uid, tiles.clone()));
+        remove_tile_indices(
+            self.layer_mut(key, layer_index).expect("validated layer")["gridTiles"]
+                .as_array_mut()
+                .expect("validated tiles"),
+            &removals,
+        );
+        self.update_auto_after_tile_batch(
+            key, layer_index, blocker, changed.iter().copied(), deferred,
+        )?;
+        Ok(changed)
+    }
+
+    /// Paint in input order, allowing repeated writes to cells in overwrite mode.
+    /// Returns the input indices that changed.
+    pub fn paint_tile_cells_with_deferred(
+        &mut self,
+        key: LevelKey,
+        layer_index: usize,
+        edits: &[TilePaint],
+        flips: i32,
+        deferred: Option<&mut DeferredAutoLayers>,
+    ) -> Result<Vec<usize>> {
+        let layer = self.layer(key, layer_index).ok_or_else(|| invalid("layer not found"))?;
+        if layer["__type"] != "Tiles" {
+            return Err(invalid("manual tiles require a Tiles layer"));
+        }
+        let (width, height, grid) = dimensions(layer)?;
+        let mut atlas = None;
+        let mut targets = HashMap::with_capacity(edits.len());
+        let mut groups = vec![None; edits.len()];
+        for (index, &TilePaint { cell: [x, y], id, src, stack }) in edits.iter().enumerate() {
+            if !inside(x, y, width, height) {
+                continue;
+            }
+            if id < 0 || src.iter().any(|v| *v < 0) || !(0..=3).contains(&flips) {
+                return Err(invalid("invalid tile ID, source coordinates or flip flags"));
+            }
+            let layout = match atlas {
+                Some(layout) => layout,
+                None => *atlas.insert(self.tile_atlas_layout(layer)?),
+            };
+            validate_tile_source(layout, id, src)?;
+            let pixel = [i64::from(x * grid), i64::from(y * grid)];
+            let group = *targets.entry(pixel).or_insert(index);
+            if group != index && (stack || edits[group].stack) {
+                return Err(invalid("stacked tile painting requires distinct cells"));
+            }
+            groups[index] = Some(group);
+        }
+        if targets.is_empty() {
+            return Ok(Vec::new());
+        }
+        let tiles = layer["gridTiles"]
+            .as_array()
+            .ok_or_else(|| invalid("gridTiles must be an array"))?;
+        let mut first = vec![None; edits.len()];
+        let mut stacked = vec![false; edits.len()];
+        let mut raise = vec![None; edits.len()];
+        let mut removals = Vec::new();
+        for (index, tile) in tiles.iter().enumerate() {
+            if let Some(&edit) = targets.get(&tile_pixel(tile)?) {
+                if first[edit].is_none() {
+                    first[edit] = Some(index);
+                } else {
+                    stacked[edit] = true;
+                    if !edits[edit].stack {
+                        removals.push(index);
+                    }
+                }
+                if edits[edit].stack && raise[edit].is_none()
+                    && tile["t"] == edits[edit].id && tile["f"] == flips
+                {
+                    raise[edit] = Some(index);
+                }
+            }
+        }
+        let mut changed = Vec::new();
+        let mut write_order = Vec::new();
+        let mut latest: Vec<Option<usize>> = vec![None; edits.len()];
+        for (index, (&TilePaint { id, src, .. }, group)) in edits.iter().zip(groups).enumerate() {
+            let Some(group) = group else { continue };
+            let unchanged = if let Some(previous) = latest[group] {
+                edits[previous].id == id && edits[previous].src == src
+            } else {
+                !stacked[group] && first[group].is_some_and(|first| {
+                    let tile = &tiles[first];
+                    tile["t"] == id && tile["src"] == json!(src) && tile["f"] == flips
+                })
+            };
+            if !unchanged {
+                changed.push(index);
+                if latest[group].replace(index).is_none() {
+                    write_order.push(group);
+                }
+            }
+        }
+        if changed.is_empty() {
+            return Ok(changed);
+        }
+        let blocker = layer["layerDefUid"]
+            .as_i64()
+            .filter(|&uid| self.tile_layer_blocks_auto(uid))
+            .map(|uid| (uid, tiles.clone()));
+        let tiles = self.layer_mut(key, layer_index).expect("validated layer")["gridTiles"]
+            .as_array_mut()
+            .expect("validated tiles");
+        // A new cell is appended on its first effective write. Later overwrites
+        // only change its contents, so the last write can reuse that position.
+        for group in write_order {
+            let TilePaint { cell: [x, y], id, src, stack } =
+                edits[latest[group].expect("changed tile group")];
+            let tile = if !stack && let Some(first) = first[group] {
+                &mut tiles[first]
+            } else {
+                let tile = if let Some(raise) = raise[group] {
+                    removals.push(raise);
+                    std::mem::take(&mut tiles[raise])
+                } else {
+                    json!({"a":1,"d":[y*width+x]})
+                };
+                tiles.push(tile);
+                tiles.last_mut().expect("just pushed")
+            };
+            write_tile(tile, [x * grid, y * grid], id, src, flips);
+        }
+        removals.sort_unstable();
+        remove_tile_indices(tiles, &removals);
+        self.update_auto_after_tile_batch(
+            key, layer_index, blocker, changed.iter().map(|&index| edits[index].cell), deferred,
+        )?;
+        Ok(changed)
+    }
+
+    fn update_auto_after_tile_batch(
+        &mut self,
+        key: LevelKey,
+        layer_index: usize,
+        blocker: Option<(i64, Vec<Value>)>,
+        mut cells: impl Iterator<Item = [i32; 2]>,
+        deferred: Option<&mut DeferredAutoLayers>,
+    ) -> Result<()> {
+        if let Some((uid, old)) = blocker {
+            let [x, y] = cells.next().expect("changed tiles");
+            let [left, top, right, bottom] = cells.fold(
+                [x, y, x, y],
+                |[left, top, right, bottom], [x, y]| {
+                    [left.min(x), top.min(y), right.max(x), bottom.max(y)]
+                },
+            );
+            if let Err(error) = self.update_auto_layers_after_paint(
+                key, uid, [left, top, right - left + 1, bottom - top + 1], deferred,
+            ) {
+                self.layer_mut(key, layer_index).expect("validated layer")["gridTiles"] =
+                    Value::Array(old);
+                return Err(error);
+            }
+        }
+        Ok(())
+    }
+
+    fn tile_atlas_layout(&self, layer: &Value) -> Result<[i64; 4]> {
+        let tileset_uid = layer
+            .get("overrideTilesetUid")
+            .and_then(Value::as_i64)
+            .or_else(|| layer.get("__tilesetDefUid").and_then(Value::as_i64))
+            .or_else(|| {
+                layer
+                    .get("layerDefUid")
+                    .and_then(Value::as_i64)
+                    .and_then(|uid| self.layer_def(uid))
+                    .and_then(|d| d.get("tilesetDefUid"))
+                    .and_then(Value::as_i64)
+            })
+            .ok_or_else(|| invalid("Tiles layer has no assigned tileset"))?;
+        let tileset = self
+            .tileset(tileset_uid)
+            .ok_or_else(|| invalid("tileset definition not found"))?;
+        let tile_grid = integer(tileset, "tileGridSize")?;
+        let atlas_width = integer(tileset, "pxWid")?;
+        let atlas_height = integer(tileset, "pxHei")?;
+        let padding = tileset.get("padding").and_then(Value::as_i64).unwrap_or(0);
+        let spacing = tileset.get("spacing").and_then(Value::as_i64).unwrap_or(0);
+        if tile_grid <= 0
+            || padding < 0
+            || spacing < 0
+            || atlas_width < tile_grid
+            || atlas_height < tile_grid
+        {
+            return Err(invalid("invalid atlas dimensions, padding or spacing"));
+        }
+        let stride = tile_grid
+            .checked_add(spacing)
+            .ok_or_else(|| invalid("atlas stride overflow"))?;
+        let cells = |size: i64| {
+            size.checked_sub(padding.checked_mul(2)?)
+                .and_then(|n| n.checked_add(stride - 1))
+                .map(|n| n / stride)
+        };
+        let cols = cells(atlas_width)
+            .filter(|n| *n > 0)
+            .ok_or_else(|| invalid("invalid atlas width"))?;
+        let rows = cells(atlas_height)
+            .filter(|n| *n > 0)
+            .ok_or_else(|| invalid("invalid atlas height"))?;
+        let count = cols
+            .checked_mul(rows)
+            .ok_or_else(|| invalid("atlas tile count overflow"))?;
+        Ok([padding, stride, cols, count])
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn paint_tile_inner(
         &mut self,
@@ -312,61 +632,7 @@ impl Project {
             return Err(invalid("invalid tile ID, source coordinates or flip flags"));
         }
         if !erase {
-            let tileset_uid = layer
-                .get("overrideTilesetUid")
-                .and_then(Value::as_i64)
-                .or_else(|| layer.get("__tilesetDefUid").and_then(Value::as_i64))
-                .or_else(|| {
-                    layer
-                        .get("layerDefUid")
-                        .and_then(Value::as_i64)
-                        .and_then(|uid| self.layer_def(uid))
-                        .and_then(|d| d.get("tilesetDefUid"))
-                        .and_then(Value::as_i64)
-                })
-                .ok_or_else(|| invalid("Tiles layer has no assigned tileset"))?;
-            let tileset = self
-                .tileset(tileset_uid)
-                .ok_or_else(|| invalid("tileset definition not found"))?;
-            let tile_grid = integer(tileset, "tileGridSize")?;
-            let atlas_width = integer(tileset, "pxWid")?;
-            let atlas_height = integer(tileset, "pxHei")?;
-            let padding = tileset.get("padding").and_then(Value::as_i64).unwrap_or(0);
-            let spacing = tileset.get("spacing").and_then(Value::as_i64).unwrap_or(0);
-            if tile_grid <= 0
-                || padding < 0
-                || spacing < 0
-                || atlas_width < tile_grid
-                || atlas_height < tile_grid
-            {
-                return Err(invalid("invalid atlas dimensions, padding or spacing"));
-            }
-            let stride = tile_grid
-                .checked_add(spacing)
-                .ok_or_else(|| invalid("atlas stride overflow"))?;
-            let cells = |size: i64| {
-                size.checked_sub(padding.checked_mul(2)?)
-                    .and_then(|n| n.checked_add(stride - 1))
-                    .map(|n| n / stride)
-            };
-            let cols = cells(atlas_width)
-                .filter(|n| *n > 0)
-                .ok_or_else(|| invalid("invalid atlas width"))?;
-            let rows = cells(atlas_height)
-                .filter(|n| *n > 0)
-                .ok_or_else(|| invalid("invalid atlas height"))?;
-            let count = cols
-                .checked_mul(rows)
-                .ok_or_else(|| invalid("atlas tile count overflow"))?;
-            let id = i64::from(tile_id);
-            if id >= count
-                || i64::from(src[0]) != padding + (id % cols) * stride
-                || i64::from(src[1]) != padding + (id / cols) * stride
-            {
-                return Err(invalid(
-                    "tile ID and source coordinates do not match the assigned atlas",
-                ));
-            }
+            validate_tile_source(self.tile_atlas_layout(layer)?, tile_id, src)?;
         }
         let tiles = layer
             .get("gridTiles")
@@ -376,14 +642,7 @@ impl Project {
         let target = px.map(i64::from);
         let mut indices = Vec::new();
         for (index, tile) in tiles.iter().enumerate() {
-            let coords = tile["px"]
-                .as_array()
-                .and_then(|coords| match coords.as_slice() {
-                    [x, y] => Some([x.as_i64()?, y.as_i64()?]),
-                    _ => None,
-                })
-                .ok_or_else(|| invalid("tile pixel coordinates must be integer pairs"))?;
-            if coords == target {
+            if tile_pixel(tile)? == target {
                 indices.push(index);
             }
         }
@@ -426,10 +685,7 @@ impl Project {
             tiles.push(tile);
             tiles.last_mut().expect("just pushed")
         };
-        tile["px"] = json!(px);
-        tile["src"] = json!(src);
-        tile["t"] = json!(tile_id);
-        tile["f"] = json!(flips);
+        write_tile(tile, px, tile_id, src, flips);
         Ok(true)
     }
 

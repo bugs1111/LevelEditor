@@ -20,7 +20,11 @@ struct Client {
 
 impl Client {
     fn start(path: &Path) -> Self {
-        let mut child = Command::new(env!("CARGO_BIN_EXE_ldtk-rs"))
+        Self::start_with_binary(path, Path::new(env!("CARGO_BIN_EXE_ldtk-rs")))
+    }
+
+    fn start_with_binary(path: &Path, binary: &Path) -> Self {
+        let mut child = Command::new(binary)
             .args(["--mcp"])
             .arg(path)
             .env_remove("DISPLAY")
@@ -150,6 +154,277 @@ fn copy_external_project(directory: &Path) -> PathBuf {
         .unwrap();
     }
     path
+}
+
+#[test]
+fn mcp_level_lookup_tracks_reindexed_levels_after_reload() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("reload.ldtk");
+    let mut project = Project::new();
+    let old_iid = project.json["levels"][0]["iid"].as_str().unwrap().to_owned();
+    fs::write(&path, serde_json::to_vec(&project.json).unwrap()).unwrap();
+    let mut client = Client::start(&path);
+    client.initialize(PROTOCOL);
+    client.initialized();
+    assert_eq!(client.tool("get_level", json!({"level_iid":old_iid}))["iid"], old_iid);
+
+    let added = project.add_level(None, "Added", 64, 96).unwrap();
+    let added_iid = project.level(added).unwrap()["iid"].as_str().unwrap().to_owned();
+    project.json["levels"].as_array_mut().unwrap().reverse();
+    fs::write(&path, serde_json::to_vec(&project.json).unwrap()).unwrap();
+    assert!(client.tool("reload_project", json!({})).is_object());
+    assert_eq!(client.tool("get_level", json!({"level_iid":old_iid}))["iid"], old_iid);
+    assert_eq!(client.tool("get_level", json!({"level_iid":added_iid}))["px_height"], 96);
+    client.close();
+}
+
+#[test]
+fn layer_response_preserves_escaped_json_for_every_protocol() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("escaping.ldtk");
+    let mut project = Project::new();
+    let key = project.level_keys()[0];
+    project.add_layer("Terrain", "IntGrid", 16).unwrap();
+    let level_iid = project.level(key).unwrap()["iid"].as_str().unwrap().to_owned();
+    let layer = project.layer_mut(key, 0).unwrap();
+    layer["extension"] = json!({
+        "text":"关卡 \"quote\"\nline\\path\t\0",
+        "list":[-129,0,255,256,4294967296u64,u64::MAX,1.25,null]
+    });
+    let args = json!({"level_iid":level_iid,"layer_iid":layer["iid"]});
+    let expected = json!({"layer":layer});
+    fs::write(&path, serde_json::to_vec(&project.json).unwrap()).unwrap();
+
+    for version in ["2025-11-25", "2025-06-18", "2024-11-05"] {
+        let mut client = Client::start(&path);
+        assert_eq!(client.initialize(version)["protocolVersion"], version);
+        client.initialized();
+        let id = "图层 \"quote\"\nline\\path";
+        client.send(json!({
+            "jsonrpc":"2.0","id":id,"method":"tools/call",
+            "params":{"name":"get_layer","arguments":args}
+        }));
+        let output = client.receive();
+        assert_eq!(output["id"], id);
+        assert_eq!(output["jsonrpc"], "2.0");
+        let result = &output["result"];
+        assert_eq!(result["isError"], false);
+        assert_eq!(result["content"][0]["type"], "text");
+        assert_eq!(result["content"][0]["text"], expected.to_string());
+        if version == "2024-11-05" {
+            assert!(result.get("structuredContent").is_none());
+        } else {
+            assert_eq!(result["structuredContent"], expected);
+        }
+        client.close();
+    }
+}
+
+#[test]
+#[ignore = "manual large MCP response performance comparison"]
+fn benchmark_large_mcp_layer_response() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("large-layer.ldtk");
+    let mut project = Project::new();
+    let key = project.level_keys()[0];
+    project.resize_level(key, 512 * 16, 256 * 16, 0, 0).unwrap();
+    project.add_layer("Terrain", "IntGrid", 16).unwrap();
+    let level_iid = project.level(key).unwrap()["iid"].as_str().unwrap().to_owned();
+    let layer = project.layer_mut(key, 0).unwrap();
+    layer["opaque_extra"] = json!("关卡 \"quoted\"\ntext\\path");
+    for (i, value) in layer["intGridCsv"].as_array_mut().unwrap().iter_mut().enumerate() {
+        *value = (i % 256).into();
+    }
+    let args = json!({"level_iid":level_iid,"layer_iid":layer["iid"]});
+    let layer = project.layer(key, 0).unwrap();
+    fs::write(&path, serde_json::to_vec(&project.json).unwrap()).unwrap();
+    let binary = std::env::var_os("LEVEL_EDITOR_MCP_BENCH_BIN")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_ldtk-rs")));
+    let mut client = Client::start_with_binary(&path, &binary);
+    client.initialize(PROTOCOL);
+    client.initialized();
+    assert_eq!(&client.tool("get_layer", args.clone())["layer"], layer);
+    let mut times = [Duration::ZERO; 5];
+    for time in &mut times {
+        let message = json!({
+            "jsonrpc":"2.0","id":"large-layer","method":"tools/call",
+            "params":{"name":"get_layer","arguments":args}
+        });
+        let start = Instant::now();
+        let mut output = None;
+        for _ in 0..5 {
+            client.send(message.clone());
+            output = Some(client.output.recv_timeout(TIMEOUT).unwrap());
+        }
+        *time = start.elapsed();
+        let output: Value = serde_json::from_str(&output.unwrap()).unwrap();
+        assert_eq!(output["id"], "large-layer");
+        let result = &output["result"];
+        assert_eq!(&result["structuredContent"]["layer"], layer);
+        let text: Value = serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(text, result["structuredContent"]);
+    }
+    client.close();
+    times.sort_unstable();
+    eprintln!("Large MCP layer response: median {:?}; samples {times:?}", times[2]);
+}
+
+#[test]
+#[ignore = "manual large project MCP save performance comparison"]
+fn benchmark_large_mcp_save() {
+    benchmark_mcp_save(false, 0);
+    benchmark_mcp_save(true, 0);
+    benchmark_mcp_save(true, 7);
+}
+
+fn benchmark_mcp_save(external: bool, other_levels: usize) {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("large-save.ldtk");
+    let mut project = Project::new();
+    let key = project.level_keys()[0];
+    project.resize_level(key, 1024 * 16, 256 * 16, 0, 0).unwrap();
+    for i in 0..other_levels {
+        project.add_level(None, &format!("Unedited_{i}"), 1024 * 16, 256 * 16).unwrap();
+    }
+    project.add_layer("Terrain", "IntGrid", 16).unwrap();
+    project.json["jsonStyle"] = json!("Minified");
+    let level_iid = project.level(key).unwrap()["iid"].as_str().unwrap().to_owned();
+    let layer_iid = project.layer(key, 0).unwrap()["iid"].as_str().unwrap().to_owned();
+    if external {
+        project.set_external_levels(true).unwrap();
+        project.save(&path).unwrap();
+    } else {
+        fs::write(&path, serde_json::to_vec(&project.json).unwrap()).unwrap();
+    }
+
+    let binary = std::env::var_os("LEVEL_EDITOR_MCP_BENCH_BIN")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_ldtk-rs")));
+    let mut client = Client::start_with_binary(&path, &binary);
+    client.initialize(PROTOCOL);
+    client.initialized();
+    let mut times = [Duration::ZERO; 5];
+    for (run, time) in times.iter_mut().enumerate() {
+        let value = if run % 2 == 0 { 1 } else { 0 };
+        assert_eq!(client.tool("paint_int_grid", json!({
+            "level_iid":level_iid, "layer_iid":layer_iid, "x":0, "y":0, "value":value
+        }))["changed"], true);
+        let start = Instant::now();
+        let result = client.tool("save_project", json!({}));
+        *time = start.elapsed();
+        assert_eq!(result, json!({"saved":true,"dirty":false}));
+        let saved = Project::load(&path).unwrap();
+        let layer = saved.layer(key, 0).unwrap();
+        assert_eq!(layer["intGridCsv"][0], value);
+        assert_eq!(layer["intGridCsv"].as_array().unwrap().len(), 1024 * 256);
+        assert!(layer.get("intGrid").is_none());
+    }
+    let inspected = client.tool("get_layer", json!({"level_iid":level_iid,"layer_iid":layer_iid}));
+    assert_eq!(&inspected["layer"], Project::load(&path).unwrap().layer(key, 0).unwrap());
+    client.close();
+    times.sort_unstable();
+    let storage = match (external, other_levels) {
+        (false, _) => "inline",
+        (true, 0) => "external",
+        (true, _) => "multi-external",
+    };
+    eprintln!("Large MCP {storage} save: median {:?}; samples {times:?}", times[2]);
+}
+
+#[test]
+#[ignore = "manual MCP level lookup performance comparison"]
+fn benchmark_large_mcp_level_lookup() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("large.ldtk");
+    let mut project = Project::new();
+    let template = project.json["levels"][0].clone();
+    let count = 8_192;
+    project.json["levels"] = (0..count).map(|i| {
+        let mut level = template.clone();
+        level["uid"] = json!(i + 1);
+        level["iid"] = json!(format!("level-{i}"));
+        level["identifier"] = json!(format!("Level_{i}"));
+        level["worldX"] = json!(i * 256);
+        level
+    }).collect::<Vec<_>>().into();
+    fs::write(&path, serde_json::to_vec(&project.json).unwrap()).unwrap();
+    let mut client = Client::start(&path);
+    client.initialize(PROTOCOL);
+    client.initialized();
+    assert_eq!(
+        client.tool("get_level", json!({"level_iid":"level-0"}))["identifier"], "Level_0"
+    );
+    let mut times = [Duration::ZERO; 5];
+    for time in &mut times {
+        let start = Instant::now();
+        for i in 0..128 {
+            let index = i * 997 % count;
+            let iid = format!("level-{index}");
+            let level = client.tool("get_level", json!({"level_iid":iid}));
+            assert_eq!(level["iid"], iid);
+            assert_eq!(level["world_x"], index * 256);
+        }
+        *time = start.elapsed();
+    }
+    client.close();
+    times.sort_unstable();
+    eprintln!("Large MCP level lookup: median {:?}; samples {times:?}", times[2]);
+}
+
+#[test]
+#[ignore = "manual MCP level listing performance comparison"]
+fn benchmark_large_mcp_level_listing() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("large-list.ldtk");
+    let mut project = Project::new();
+    let template = project.json["levels"][0].clone();
+    let count = 8192;
+    project.json["levels"] = (0..count)
+        .map(|i| {
+            let mut level = template.clone();
+            level["uid"] = json!(i + 1);
+            level["iid"] = json!(format!("level-{i}"));
+            level["identifier"] = json!(format!("Level_{i}"));
+            level["worldX"] = json!(i * 256);
+            level
+        })
+        .collect::<Vec<_>>()
+        .into();
+    fs::write(&path, serde_json::to_vec(&project.json).unwrap()).unwrap();
+    let binary = std::env::var_os("LEVEL_EDITOR_MCP_BENCH_BIN")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_ldtk-rs")));
+    let mut client = Client::start_with_binary(&path, &binary);
+    client.initialize(PROTOCOL);
+    client.initialized();
+    let request = json!({
+        "jsonrpc":"2.0", "id":"list", "method":"tools/call",
+        "params":{"name":"list_levels","arguments":{}}
+    });
+    client.send(request.clone());
+    client.output.recv_timeout(TIMEOUT).unwrap();
+    let mut times = [Duration::ZERO; 5];
+    for time in &mut times {
+        let start = Instant::now();
+        client.send(request.clone());
+        let output = client.output.recv_timeout(TIMEOUT).unwrap();
+        *time = start.elapsed();
+        let output: Value = serde_json::from_str(&output).unwrap();
+        let result = &output["result"];
+        let text: Value =
+            serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(text, result["structuredContent"]);
+        let levels = text["levels"].as_array().unwrap();
+        assert_eq!(levels.len(), count);
+        for (index, level) in levels.iter().enumerate() {
+            assert_eq!(level["iid"], format!("level-{index}"));
+            assert_eq!(level["world_x"], index * 256);
+        }
+    }
+    client.close();
+    times.sort_unstable();
+    eprintln!("Large MCP level listing: median {:?}; samples {times:?}", times[2]);
 }
 
 #[test]

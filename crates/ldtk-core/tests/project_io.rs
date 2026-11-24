@@ -3,6 +3,32 @@ use serde_json::json;
 use std::fs;
 
 #[test]
+fn world_level_iteration_keeps_original_keys_when_an_external_level_is_unavailable() {
+    let mut project = Project::new();
+    project.json["worlds"] = json!([{
+        "levels": [
+            {"externalRelPath":"missing.ldtkl"},
+            {"externalRelPath":"available.ldtkl"},
+            {"identifier":"Inline"}
+        ]
+    }]);
+    project.external_levels.insert(
+        "available.ldtkl".into(),
+        json!({"identifier":"External"}),
+    );
+
+    let levels: Vec<_> = project.levels_in_world(Some(0)).collect();
+    assert_eq!(levels.len(), 2);
+    for ((key, level), (index, name)) in levels.into_iter().zip([(1, "External"), (2, "Inline")]) {
+        assert_eq!(key, LevelKey { world: Some(0), level: index });
+        assert_eq!(level["identifier"], name);
+        assert!(std::ptr::eq(level, project.level(key).unwrap()));
+    }
+    assert_eq!(project.level_keys_in_world(Some(0)).len(), 3);
+    assert_eq!(project.levels_in_world(Some(1)).count(), 0);
+}
+
+#[test]
 fn preview_154_save_filters_and_orders_cached_auto_tiles_without_changing_draw_opacity() {
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("CachedRules.ldtk");
@@ -904,8 +930,9 @@ fn disabling_external_storage_removes_only_retired_owned_level_documents() {
     assert!(ext.exists());
     let unrelated = t.path().join("game/unrelated.ldtkl");
     fs::write(&unrelated, "unrelated").unwrap();
+    let (mut p, snapshot) = Project::load_with_snapshot(&path).unwrap();
     p.set_external_levels(false).unwrap();
-    p.save(&path).unwrap();
+    p.save_if_unchanged(&path, &snapshot).unwrap();
     assert!(!ext.exists());
     assert!(unrelated.exists());
     assert!(Project::load(path).unwrap().json["levels"][0]["layerInstances"].is_array());
@@ -1744,6 +1771,31 @@ fn large_external_project_fixture() -> Project {
 }
 
 #[test]
+#[ignore = "controlled repeat-save benchmark for the pinned embedded world fixture"]
+fn benchmark_large_embedded_project_repeat_save() {
+    let source = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../.reference/ldtk/tests/largeLevels/world1.ldtk");
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("large.ldtk");
+    let mut project = Project::load(source).unwrap();
+    project.migrate_to_current().unwrap();
+    project.json["backupOnSave"] = json!(false);
+    project.json["jsonStyle"] = json!("Minified");
+    project.save(&path).unwrap();
+    let mut times = [std::time::Duration::ZERO; 7];
+    for elapsed in &mut times {
+        let start = std::time::Instant::now();
+        project.save(&path).unwrap();
+        *elapsed = start.elapsed();
+    }
+    times.sort_unstable();
+    eprintln!(
+        "Large embedded repeat save: median {:?}; samples {times:?}",
+        times[3]
+    );
+}
+
+#[test]
 #[ignore = "controlled large external level save benchmark"]
 fn benchmark_large_external_project_save() {
     let temp = tempfile::tempdir().unwrap();
@@ -1791,6 +1843,92 @@ fn benchmark_large_external_project_repeat_save() {
     times.sort_unstable();
     let median = times[3];
     eprintln!("large external repeat save: median {median:?}; samples {times:?}");
+}
+
+#[test]
+#[ignore = "release cache ordering benchmark for the pinned upstream large world fixture"]
+fn benchmark_large_world_cached_tile_order() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../.reference/ldtk/tests/largeLevels/world1.ldtk");
+    let mut expected = Project::load(&path).unwrap();
+    expected.migrate_to_current().unwrap();
+    expected.reconcile_cached_auto_tiles();
+    let mut times = [std::time::Duration::ZERO; 7];
+    for elapsed in &mut times {
+        let mut project = expected.clone();
+        let mut tiles = 0;
+        for key in project.level_keys() {
+            let level = project.level_mut(key).unwrap();
+            for layer in level["layerInstances"].as_array_mut().unwrap() {
+                if let Some(cache) = layer["autoLayerTiles"].as_array_mut() {
+                    tiles += cache.len();
+                    cache.reverse();
+                }
+            }
+        }
+        assert!(tiles > 100_000);
+        let start = std::time::Instant::now();
+        project.reconcile_cached_auto_tiles();
+        *elapsed = start.elapsed();
+        assert_eq!(project.json, expected.json);
+    }
+    times.sort_unstable();
+    eprintln!("Large world cached tile order: median {:?}; samples {times:?}", times[3]);
+}
+
+#[test]
+#[ignore = "release filesystem watcher benchmark for the pinned upstream large world fixture"]
+fn benchmark_large_world_filesystem_snapshot() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../.reference/ldtk/tests/largeLevels/world1.ldtk");
+    let project = Project::load(&path).unwrap();
+    let mut times = [std::time::Duration::ZERO; 7];
+    for elapsed in &mut times {
+        let start = std::time::Instant::now();
+        let snapshot = project.filesystem_snapshot().unwrap();
+        *elapsed = start.elapsed();
+        assert!(snapshot.changed_files().unwrap().is_empty());
+    }
+    times.sort_unstable();
+    eprintln!("Large world filesystem snapshot: median {:?}; samples {times:?}", times[3]);
+}
+
+#[test]
+#[ignore = "manual filesystem watcher benchmark with shared resource references"]
+fn benchmark_shared_resource_filesystem_snapshot() {
+    use std::time::{Duration, Instant};
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("shared.ldtk");
+    let sprite = dir.path().join("sprite.png");
+    fs::write(&path, b"{}").unwrap();
+    fs::write(&sprite, b"sprite").unwrap();
+    let field = json!({
+        "__type":"FilePath", "__value":"sprite.png",
+        "realEditorValues":[{"id":"V_String","params":["./sprite.png"]}]
+    });
+    let mut project = Project::new();
+    project.path = Some(path);
+    project.json["levels"][0]["layerInstances"] = json!([{
+        "__tilesetRelPath":"sprite.png",
+        "entityInstances":vec![json!({"fieldInstances":[field]}); 16384]
+    }]);
+
+    let mut times = [Duration::ZERO; 5];
+    for elapsed in &mut times {
+        let start = Instant::now();
+        let snapshot = project.filesystem_snapshot().unwrap();
+        *elapsed = start.elapsed();
+        assert!(snapshot.changed_files().unwrap().is_empty());
+        fs::write(&sprite, b"change").unwrap();
+        assert_eq!(snapshot.changed_files().unwrap(), [sprite.clone()]);
+        fs::write(&sprite, b"sprite").unwrap();
+    }
+    times.sort_unstable();
+    eprintln!(
+        "Shared resource filesystem snapshot: median {:?}; samples {times:?}",
+        times[2]
+    );
 }
 
 #[test]

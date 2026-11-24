@@ -50,6 +50,634 @@ fn frame(
 }
 
 #[test]
+#[ignore = "manual zoomed tile frame performance comparison"]
+fn benchmark_zoomed_dense_tile_frame() {
+    exercise_dense_tile_frames(false);
+}
+
+#[test]
+#[ignore = "manual tile frame control with varying atlas coordinates and opacity"]
+fn benchmark_varied_tile_styles_frame() {
+    exercise_dense_tile_frames(true);
+}
+
+fn exercise_dense_tile_frames(varied: bool) {
+    use serde_json::json;
+    use std::hash::{DefaultHasher, Hash, Hasher};
+
+    let mut project = Project::new();
+    let key = project.level_keys()[0];
+    project.resize_level(key, 160 * 16, 160 * 16, 0, 0).unwrap();
+    project.add_layer("Ground", "Tiles", 16).unwrap();
+    project.json["defs"]["layers"][0]["tilesetDefUid"] = json!(100);
+    project.json["defs"]["tilesets"] = json!([{
+        "uid":100,"relPath":null,"embedAtlas":"LdtkIcons","tileGridSize":16
+    }]);
+    project.layer_mut(key, 0).unwrap()["gridTiles"] = (0..160 * 160)
+        .map(|i| {
+            let mut tile = json!({"px":[i % 160 * 16,i / 160 * 16],"src":[0,0],"t":0,"f":i % 4});
+            if varied {
+                tile["src"] = json!([i % 16 * 16, (i / 16) % 4 * 16]);
+                tile["a"] = json!([0.25, 0.75, 1.0][i as usize % 3]);
+            }
+            tile
+        })
+        .collect::<Vec<_>>()
+        .into();
+    let ctx = egui::Context::default();
+    let mut assets = Assets::default();
+    let texture = assets.embedded(&ctx).unwrap().id();
+    let hidden = HashSet::new();
+    let mut options = options(&hidden, key);
+    options.grid = false;
+    options.details = false;
+    options.tile_tags = varied;
+    let view = Viewport { center: [1280., 1280.], zoom: 4. };
+    let (expected_count, expected) = frame(&ctx, &project, &view, &options, &mut assets);
+    assert_eq!(expected_count, 192);
+    let mesh = |output: &egui::FullOutput| {
+        output.shapes.iter().find_map(|shape| match &shape.shape {
+            egui::Shape::Mesh(mesh) if mesh.texture_id == texture => Some(mesh.clone()),
+            _ => None,
+        }).unwrap()
+    };
+    let expected = mesh(&expected);
+    assert_eq!(expected.vertices.len(), expected_count * 4);
+    for (index, quad) in expected.vertices.chunks_exact(4).enumerate() {
+        let min = egui::pos2(-12. + (index % 16) as f32 * 64., -34. + (index / 16) as f32 * 64.);
+        assert_eq!(quad[0].pos, min);
+        assert_eq!(quad[3].pos, min + egui::vec2(64., 64.));
+    }
+    let mut times = [Duration::ZERO; 5];
+    for time in &mut times {
+        let start = Instant::now();
+        let (count, output) = frame(&ctx, &project, &view, &options, &mut assets);
+        *time = start.elapsed();
+        assert_eq!(count, expected_count);
+        assert_eq!(mesh(&output), expected);
+    }
+    times.sort_unstable();
+    eprintln!("Zoomed dense tile frame: median {:?}; samples {times:?}", times[2]);
+
+    let view = Viewport { center: [1280., 1280.], zoom: 0.25 };
+    let (count, expected) = frame(&ctx, &project, &view, &options, &mut assets);
+    let expected = mesh(&expected);
+    assert_eq!(count, 160 * 160);
+    let mut hasher = DefaultHasher::new();
+    format!("{expected:?}").hash(&mut hasher);
+    for time in &mut times {
+        let start = Instant::now();
+        let (actual_count, output) = frame(&ctx, &project, &view, &options, &mut assets);
+        *time = start.elapsed();
+        assert_eq!(actual_count, count);
+        assert_eq!(mesh(&output), expected);
+    }
+    times.sort_unstable();
+    eprintln!(
+        "Full dense tile frame: median {:?}; mesh {:016x}; samples {times:?}",
+        times[2],
+        hasher.finish()
+    );
+}
+
+#[test]
+#[ignore = "manual cropped repeating background performance comparison"]
+fn benchmark_cropped_repeating_background() {
+    use serde_json::json;
+    use std::hash::{DefaultHasher, Hash, Hasher};
+
+    let mut project = Project::new();
+    let key = project.level_keys()[0];
+    project.resize_level(key, 4096, 4096, 0, 0).unwrap();
+    let level = project.level_mut(key).unwrap();
+    level["bgRelPath"] = json!("background.png");
+    level["bgPos"] = json!("Repeat");
+    level["bgPivotX"] = json!(0.31);
+    level["bgPivotY"] = json!(0.67);
+    let ctx = egui::Context::default();
+    let mut assets = Assets::default();
+    let path = asset_path(&project, "background.png");
+    assets.store_file_image(
+        &ctx, &path, image::RgbaImage::from_pixel(17, 13, image::Rgba([31, 61, 121, 255])),
+    ).unwrap();
+    let texture = assets.texture(&ctx, &path).unwrap().id();
+    let hidden = HashSet::new();
+    let mut options = options(&hidden, key);
+    options.grid = false;
+    options.details = false;
+
+    for (name, view) in [
+        ("center", Viewport { center: [1920., 2048.], zoom: 4. }),
+        ("edge", Viewport { center: [4000., 3980.], zoom: 1.375 }),
+    ] {
+        let checksum = |output: &egui::FullOutput| {
+            let (clip, mesh) = output.shapes.iter().find_map(|shape| match &shape.shape {
+                egui::Shape::Mesh(mesh) if mesh.texture_id == texture => Some((shape.clip_rect, mesh)),
+                _ => None,
+            }).unwrap();
+            let mut hasher = DefaultHasher::new();
+            let mut count = 0;
+            for quad in mesh.vertices.chunks_exact(4) {
+                let bounds = Rect::from_min_max(quad[0].pos, quad[3].pos).intersect(clip);
+                if bounds.is_positive() {
+                    format!("{quad:?}").hash(&mut hasher);
+                    count += 1;
+                }
+            }
+            assert!(count > 100);
+            (count, hasher.finish(), mesh.vertices.len() / 4)
+        };
+        let (_, first) = frame(&ctx, &project, &view, &options, &mut assets);
+        let (visible, hash, total) = checksum(&first);
+        drop(first);
+        let mut times = [Duration::ZERO; 5];
+        for time in &mut times {
+            let start = Instant::now();
+            let (_, output) = frame(&ctx, &project, &view, &options, &mut assets);
+            *time = start.elapsed();
+            assert_eq!(checksum(&output), (visible, hash, total));
+        }
+        times.sort_unstable();
+        eprintln!(
+            "Repeating background {name}: median {:?}; quads {visible}/{total} {hash:016x}; samples {times:?}",
+            times[2]
+        );
+    }
+}
+
+#[test]
+#[ignore = "manual large-world canvas performance comparison"]
+fn benchmark_many_level_canvas_frames() {
+    use serde_json::json;
+    use std::hash::{DefaultHasher, Hash, Hasher};
+
+    let mut project = Project::new();
+    let selected = project.level_keys()[0];
+    let template = project.level(selected).unwrap().clone();
+    project.json["worldLayout"] = json!("Free");
+    project.json["levels"] = (0..8192)
+        .map(|i| {
+            let mut level = template.clone();
+            level["uid"] = json!(i + 1);
+            level["iid"] = json!(format!("level-{i}"));
+            level["identifier"] = json!(format!("Level_{i}"));
+            level["worldX"] = json!(i % 128 * 256);
+            level["worldY"] = json!(i / 128 * 256);
+            level["worldDepth"] = json!(i * 7 % 9 - 4);
+            level["__bgColor"] = json!(format!("#{:06x}", i * 733));
+            level
+        })
+        .collect::<Vec<_>>()
+        .into();
+    let view = Viewport { center: [290., 210.], zoom: 1. };
+    let hidden = HashSet::new();
+    let ctx = egui::Context::default();
+    let mut assets = Assets::default();
+    let mut options = options(&hidden, selected);
+    options.world_depth = Some(-4);
+    options.world_hover = Some(LevelKey { world: None, level: 9 });
+
+    for world in [false, true] {
+        options.world = world;
+        let (_, expected) = frame(&ctx, &project, &view, &options, &mut assets);
+        assert!(expected.shapes.len() > 8);
+        let mut hasher = DefaultHasher::new();
+        format!("{:?}", expected.shapes).hash(&mut hasher);
+        let mut times = [Duration::ZERO; 10];
+        for time in &mut times {
+            let start = Instant::now();
+            let (_, output) = frame(&ctx, &project, &view, &options, &mut assets);
+            *time = start.elapsed();
+            assert_eq!(output.shapes, expected.shapes);
+        }
+        times.sort_unstable();
+        let scene = if world { "world" } else { "level" };
+        eprintln!(
+            "Many-level {scene} canvas: median {:?}; shapes {} {:016x}; samples {times:?}",
+            times[times.len() / 2],
+            expected.shapes.len(),
+            hasher.finish()
+        );
+    }
+}
+
+#[test]
+#[ignore = "manual entity depth sorting performance comparison"]
+fn benchmark_entity_depth_sort() {
+    use serde_json::json;
+
+    let depth = |i: usize| ((i * 5129) % 991) as i64 - 540;
+    let entities: Vec<_> = (0..8192).map(|i| json!({"px":[0,depth(i)]})).collect();
+    for direction in ["YAscending", "YDescending"] {
+        let def = json!({"entityDepthSorting":direction});
+        let descending = direction == "YDescending";
+        let mut expected: Vec<_> = (0..entities.len()).collect();
+        expected.sort_unstable_by_key(|&i| (if descending { -depth(i) } else { depth(i) }, i));
+        let mut times = [Duration::ZERO; 10];
+        for time in &mut times {
+            let start = Instant::now();
+            let order = entity_order(&entities, &def);
+            *time = start.elapsed();
+            assert_eq!(order, expected);
+        }
+        times.sort_unstable();
+        eprintln!(
+            "Entity sort {direction}: median {:?}; samples {times:?}",
+            times[times.len() / 2]
+        );
+    }
+}
+
+#[test]
+#[ignore = "manual cropped World IntGrid performance comparison"]
+fn benchmark_cropped_world_intgrid() {
+    use serde_json::json;
+    use std::hash::{DefaultHasher, Hash, Hasher};
+
+    let mut project = Project::new();
+    let key = project.level_keys()[0];
+    let side = 512;
+    project.resize_level(key, side * 16, side * 16, 0, 0).unwrap();
+    project.add_layer("Collision", "IntGrid", 16).unwrap();
+    project.add_layer("Decoration", "IntGrid", 16).unwrap();
+    for index in 0..2 {
+        project.json["defs"]["layers"][index]["intGridValues"] =
+            json!([{"value":1,"color":"#123456"},{"value":2,"color":"#AB4567"}]);
+        let layer = project.layer_mut(key, index).unwrap();
+        layer["__pxTotalOffsetX"] = json!(-9);
+        layer["__pxTotalOffsetY"] = json!(5);
+        layer["intGridCsv"] = (0..side * side - 5)
+            .map(|i| json!((i + index as i32) % 3))
+            .collect::<Vec<_>>()
+            .into();
+    }
+
+    let ctx = egui::Context::default();
+    let mut assets = Assets::default();
+    let hidden = HashSet::new();
+    let mut options = options(&hidden, key);
+    options.world = true;
+    options.details = false;
+    options.grid = false;
+    let views = [
+        Viewport { center: [4000., 4000.], zoom: 2. },
+        Viewport { center: [8070., 8050.], zoom: 1.25 },
+        Viewport { center: [4096., 4096.], zoom: 0.16 },
+    ];
+    for (index, view) in views.iter().enumerate() {
+        let (count, expected) = frame(&ctx, &project, view, &options, &mut assets);
+        let expected_range = if index < 2 { 500..2000 } else { 80_000..120_000 };
+        assert!(expected_range.contains(&count), "unexpected visible cell count {count}");
+        let mut hasher = DefaultHasher::new();
+        format!("{:?}", expected.shapes).hash(&mut hasher);
+        let mut times = [Duration::ZERO; 5];
+        for time in &mut times {
+            let start = Instant::now();
+            let (actual_count, output) = frame(&ctx, &project, view, &options, &mut assets);
+            *time = start.elapsed();
+            assert_eq!(actual_count, count);
+            assert_eq!(output.shapes, expected.shapes);
+        }
+        times.sort_unstable();
+        eprintln!(
+            "World IntGrid view {index}: median {:?}; cells {count} {:016x}; samples {times:?}",
+            times[2],
+            hasher.finish()
+        );
+    }
+}
+
+#[test]
+#[ignore = "manual editing IntGrid frame performance comparison"]
+fn benchmark_editing_intgrid_frames() {
+    use serde_json::json;
+    use std::hash::{DefaultHasher, Hash, Hasher};
+
+    let mut project = Project::new();
+    let key = project.level_keys()[0];
+    let side = 160;
+    project
+        .resize_level(key, side * 16, side * 16, 0, 0)
+        .unwrap();
+    let uid = project.add_layer("Terrain", "IntGrid", 16).unwrap();
+    let def = &mut project.json["defs"]["layers"][0];
+    def["intGridValues"] = json!([{"value":1,"color":"#123456"},{"value":2,"color":"#AB4567"}]);
+    def["displayOpacity"] = json!(0.75);
+    def["parallaxFactorX"] = json!(0.15);
+    def["parallaxFactorY"] = json!(0.07);
+    def["parallaxScaling"] = json!(true);
+    let layer = project.layer_mut(key, 0).unwrap();
+    layer["__pxTotalOffsetX"] = json!(-9);
+    layer["__pxTotalOffsetY"] = json!(5);
+    layer["intGridCsv"] = (0..side * side - 5)
+        .map(|i| json!(i % 3))
+        .collect::<Vec<_>>()
+        .into();
+
+    let ctx = egui::Context::default();
+    let mut assets = Assets::default();
+    let hidden = HashSet::new();
+    let mut options = options(&hidden, key);
+    options.details = true;
+    options.grid = false;
+    options.rulers = false;
+    let preview = AsyncPaintPreview {
+        level: key,
+        deadline: f64::INFINITY,
+        layers: [(
+            uid,
+            AsyncLayerPreview {
+                old_intgrid: [([47, 51], 2), ([50, 51], 0), ([85, 74], 2)].into(),
+                ..Default::default()
+            },
+        )]
+        .into(),
+        hint_grid: None,
+        hints: Default::default(),
+    };
+    for (case, zoom, pending) in [
+        ("full", 0.25, false),
+        ("zoomed", 2.5, false),
+        ("preview", 0.25, true),
+    ] {
+        options.async_paint = pending.then_some(&preview);
+        let view = Viewport {
+            center: [1280.25, 1280.5],
+            zoom,
+        };
+        let (count, expected) = frame(&ctx, &project, &view, &options, &mut assets);
+        assert!(count > if zoom > 1. { 300 } else { 16_000 });
+        let mut hasher = DefaultHasher::new();
+        format!("{:?}", expected.shapes).hash(&mut hasher);
+        let mut times = [Duration::ZERO; 7];
+        for time in &mut times {
+            let start = Instant::now();
+            let (actual_count, output) = frame(&ctx, &project, &view, &options, &mut assets);
+            *time = start.elapsed();
+            assert_eq!(actual_count, count);
+            assert_eq!(output.shapes, expected.shapes);
+        }
+        times.sort_unstable();
+        eprintln!(
+            "Editing IntGrid {case}: median {:?}; cells {count}; shapes {:016x}",
+            times[3],
+            hasher.finish()
+        );
+    }
+}
+
+#[test]
+fn editing_intgrid_preview_merges_overrides_in_paint_order() {
+    use serde_json::json;
+
+    let mut project = Project::new();
+    let key = project.level_keys()[0];
+    project.resize_level(key, 48, 32, 0, 0).unwrap();
+    let uid = project.add_layer("Terrain", "IntGrid", 16).unwrap();
+    project.json["defs"]["layers"][0]["intGridValues"] = json!([
+        {"value":1,"color":"#ff0000"},{"value":2,"color":"#00ff00"},
+        {"value":256,"color":"#0000ff"},{"value":-3,"color":"#ffff00"}
+    ]);
+    project.layer_mut(key, 0).unwrap()["intGridCsv"] = json!([1, 1, 1, 1, 1, 1]);
+    let preview = AsyncPaintPreview {
+        level: key,
+        deadline: f64::INFINITY,
+        hint_grid: None,
+        hints: Default::default(),
+        layers: [(
+            uid,
+            AsyncLayerPreview {
+                old_intgrid: [([1, 0], 2), ([2, 0], 256), ([0, 1], 0), ([1, 1], -3)].into(),
+                old_intgrid_cells: Some(vec![
+                    json!(256),
+                    json!(-3),
+                    json!(0),
+                    json!(1),
+                    json!(1),
+                    json!(2),
+                ]),
+                ..Default::default()
+            },
+        )]
+        .into(),
+    };
+    let hidden = HashSet::new();
+    let mut options = options(&hidden, key);
+    options.async_paint = Some(&preview);
+    options.grid = false;
+    options.rulers = false;
+    let view = Viewport {
+        center: [24., 16.],
+        zoom: 1.,
+    };
+    let (count, output) = frame(
+        &egui::Context::default(),
+        &project,
+        &view,
+        &options,
+        &mut Assets::default(),
+    );
+    assert_eq!(count, 5);
+    let colors = [Color32::BLUE, Color32::GREEN, Color32::YELLOW, Color32::RED];
+    let fills: Vec<_> = output
+        .shapes
+        .iter()
+        .filter_map(|shape| match &shape.shape {
+            egui::Shape::Rect(rect) if colors.contains(&rect.fill) => Some(rect.fill),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        fills,
+        [
+            Color32::BLUE,
+            Color32::GREEN,
+            Color32::BLUE,
+            Color32::YELLOW,
+            Color32::GREEN,
+        ]
+    );
+}
+
+#[test]
+fn world_intgrid_overlap_starts_at_the_inclusive_viewport_edge() {
+    use serde_json::json;
+
+    let mut project = Project::new();
+    let key = project.level_keys()[0];
+    project.resize_level(key, 16, 16, 0, 0).unwrap();
+    project.add_layer("Bottom", "IntGrid", 16).unwrap();
+    project.add_layer("Top", "IntGrid", 16).unwrap();
+    for (index, color) in ["#ff0000", "#00ff00"].into_iter().enumerate() {
+        project.json["defs"]["layers"][index]["intGridValues"] = json!([{"value":1,"color":color}]);
+        project.layer_mut(key, index).unwrap()["intGridCsv"] = json!([1]);
+    }
+    let ctx = egui::Context::default();
+    let mut assets = Assets::default();
+    let hidden = HashSet::new();
+    let mut options = options(&hidden, key);
+    options.world = true;
+    options.details = false;
+    options.grid = false;
+    let view = Viewport { center: [8., 8.], zoom: 1. };
+    for (offset, visible, hidden) in [
+        (-509, Color32::GREEN, Color32::RED),
+        (-508, Color32::RED, Color32::GREEN),
+    ] {
+        project.layer_mut(key, 0).unwrap()["__pxTotalOffsetX"] = json!(offset);
+        let (count, output) = frame(&ctx, &project, &view, &options, &mut assets);
+        assert_eq!(count, 1);
+        let has_fill = |fill| {
+            output.shapes.iter().any(|shape| {
+                matches!(&shape.shape, egui::Shape::Rect(rect) if rect.fill == fill)
+            })
+        };
+        assert!(has_fill(visible), "missing {visible:?} at offset {offset}");
+        assert!(!has_fill(hidden), "unexpected {hidden:?} at offset {offset}");
+    }
+}
+
+#[test]
+#[ignore = "manual world tileset preview performance comparison"]
+fn benchmark_world_tileset_layers() {
+    use serde_json::json;
+    use std::hash::{DefaultHasher, Hash, Hasher};
+
+    let mut project = Project::new();
+    let key = project.level_keys()[0];
+    let side = 256;
+    project.resize_level(key, side * 16, side * 16, 0, 0).unwrap();
+    project.add_layer("Generated", "AutoLayer", 16).unwrap();
+    project.add_layer("HandPainted", "Tiles", 16).unwrap();
+    project.json["defs"]["tilesets"] = json!([{
+        "uid":100,"tileGridSize":16,"embedAtlas":"LdtkIcons","relPath":null,
+        "cachedPixelData":{"averageColors":"fabc08abfb41"}
+    }]);
+    for (index, field) in ["gridTiles", "autoLayerTiles"].into_iter().enumerate() {
+        let layer = project.layer_mut(key, index).unwrap();
+        layer["__tilesetDefUid"] = json!(100);
+        layer["__pxTotalOffsetX"] = json!(index as i32 * 12 - 8);
+        let mut tiles = Vec::new();
+        for cell in 0..side * side {
+            let px = [cell % side * 16, cell / side * 16];
+            tiles.push(json!({"px":px,"src":[0,0],"f":0,"t":index * 2,"d":[cell],"a":1.0}));
+            if index == 0 && cell % 5 == 0 {
+                tiles.push(json!({"px":px,"src":[16,0],"f":0,"t":1,"d":[cell],"a":1.0}));
+            }
+        }
+        tiles.push(json!({"t":2,"px":[-16,-16]}));
+        layer[field] = tiles.into();
+    }
+
+    let ctx = egui::Context::default();
+    let mut assets = Assets::default();
+    let hidden = HashSet::new();
+    let mut options = options(&hidden, key);
+    options.world = true;
+    options.details = false;
+    options.grid = false;
+    let views = [
+        Viewport { center: [2040., 2300.], zoom: 2. },
+        Viewport { center: [2048., 2048.], zoom: 0.125 },
+    ];
+    for (index, view) in views.iter().enumerate() {
+        let (count, expected) = frame(&ctx, &project, view, &options, &mut assets);
+        assert!(count > 500);
+        let mut hasher = DefaultHasher::new();
+        format!("{:?}", expected.shapes).hash(&mut hasher);
+        let mut times = [Duration::ZERO; 5];
+        for time in &mut times {
+            let start = Instant::now();
+            let (actual_count, output) = frame(&ctx, &project, view, &options, &mut assets);
+            *time = start.elapsed();
+            assert_eq!(actual_count, count);
+            assert_eq!(output.shapes, expected.shapes);
+        }
+        times.sort_unstable();
+        eprintln!(
+            "World tileset view {index}: median {:?}; cells {count} {:016x}; samples {times:?}",
+            times[2],
+            hasher.finish()
+        );
+    }
+}
+
+#[test]
+#[ignore = "manual tile-tag frame performance comparison"]
+fn benchmark_large_tile_tag_frame() {
+    use serde_json::json;
+    use std::hash::{DefaultHasher, Hash, Hasher};
+
+    let mut project = Project::new();
+    let key = project.level_keys()[0];
+    project.resize_level(key, 64 * 16, 64 * 16, 0, 0).unwrap();
+    project.add_layer("Ground", "Tiles", 16).unwrap();
+    let layers = &mut project.json["defs"]["layers"];
+    layers[0]["tilesetDefUid"] = json!(100);
+    let values = (0..24).map(|i| json!({"id":format!("Tag{i}"),"color":"#AB00CD"})).collect::<Vec<_>>();
+    let tags = (0..24).map(|i| {
+        let tile_ids = (0..16).filter(|tile| (tile + i) % 6 == 0).collect::<Vec<_>>();
+        json!({"enumValueId":format!("Tag{i}"),"tileIds":tile_ids})
+    }).collect::<Vec<_>>();
+    project.json["defs"]["enums"] = json!([{"uid":101,"values":values}]);
+    project.json["defs"]["tilesets"] = json!([{
+        "uid":100,"relPath":null,"embedAtlas":"LdtkIcons","tileGridSize":16,
+        "tagsSourceEnumUid":101,"enumTags":tags
+    }]);
+    project.layer_mut(key, 0).unwrap()["gridTiles"] = (0..64 * 64).map(|i| {
+        json!({"px":[i % 64 * 16,i / 64 * 16],"src":[i % 16 * 16,0],"t":i % 16,"f":0})
+    }).collect::<Vec<_>>().into();
+    let ctx = egui::Context::default();
+    let mut assets = Assets::default();
+    let hidden = HashSet::new();
+    let mut options = options(&hidden, key);
+    options.grid = false;
+    options.details = false;
+    options.tile_tags = true;
+    let view = Viewport { center: [512., 512.], zoom: 0.5 };
+    let _ = frame(&ctx, &project, &view, &options, &mut assets);
+    let mut times = [Duration::ZERO; 5];
+    for time in &mut times {
+        let start = Instant::now();
+        let (count, output) = frame(&ctx, &project, &view, &options, &mut assets);
+        *time = start.elapsed();
+        assert_eq!(count, 4_096);
+        let tags = output.shapes.iter().filter(|shape| {
+            matches!(&shape.shape, egui::Shape::Rect(rect) if rect.stroke.color == Color32::from_rgb(171, 0, 205))
+        }).count();
+        assert_eq!(tags, 4_096 * 4);
+    }
+    times.sort_unstable();
+    eprintln!("Large tile tag frame: median {:?}; samples {times:?}", times[2]);
+
+    let view = Viewport { center: [512., 512.], zoom: 4. };
+    let (count, output) = frame(&ctx, &project, &view, &options, &mut assets);
+    let shapes = output.shapes.len();
+    assert_eq!(count, 192);
+    let painted = ctx.tessellate(output.shapes, output.pixels_per_point);
+    let mut hasher = DefaultHasher::new();
+    for primitive in &painted {
+        let egui::epaint::Primitive::Mesh(mesh) = &primitive.primitive else {
+            panic!("headless tile tag fixture should use only meshes");
+        };
+        format!("{:?} {mesh:?}", primitive.clip_rect).hash(&mut hasher);
+    }
+    for time in &mut times {
+        let start = Instant::now();
+        let (actual_count, output) = frame(&ctx, &project, &view, &options, &mut assets);
+        *time = start.elapsed();
+        assert_eq!(actual_count, count);
+        assert_eq!(output.shapes.len(), shapes);
+    }
+    times.sort_unstable();
+    eprintln!(
+        "Cropped tile tag frame: median {:?}; tessellation {:016x}, shapes {shapes}; samples {times:?}",
+        times[2],
+        hasher.finish()
+    );
+}
+
+#[test]
 fn classic_tiles_with_an_unavailable_atlas_mark_each_occupied_cell_in_level_view() {
     let mut project = Project::new();
     let key = project.level_keys()[0];
@@ -458,23 +1086,18 @@ fn world_simplification_does_not_reveal_tiles_under_transparent_stack_top() {
         center: [8., 8.],
         zoom: 4.,
     };
-    let (count, out) = frame(&ctx, &project, &view, &options, &mut assets);
-    assert_eq!(count, 1);
-    let fills = out
-        .shapes
-        .iter()
-        .filter_map(|s| {
-            if let egui::Shape::Rect(r) = &s.shape {
-                Some(r.fill)
-            } else {
-                None
-            }
-        })
-        .collect::<Vec<_>>();
-    assert!(
-        fills.contains(&Color32::GREEN),
-        "transparent topmost stack must expose next layer, not earlier tiles in same stack"
-    );
+    for offscreen in [0, 128] {
+        project.layer_mut(key, 0).unwrap()["gridTiles"].as_array_mut().unwrap()
+            .extend((0..offscreen).map(|i| serde_json::json!({"t":0,"px":[-2048-i*16,0]})));
+        let (count, out) = frame(&ctx, &project, &view, &options, &mut assets);
+        assert_eq!(count, 1);
+        assert!(
+            out.shapes.iter().any(|s| {
+                matches!(&s.shape, egui::Shape::Rect(r) if r.fill == Color32::GREEN)
+            }),
+            "transparent topmost stack must expose next layer, not earlier tiles in same stack"
+        );
+    }
 }
 
 #[test]

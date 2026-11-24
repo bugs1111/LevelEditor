@@ -1,5 +1,5 @@
 //! LDtk public field values and the original ValueWrapper editor representation.
-use crate::workflow::{alloc_uid, invalid, valid_identifier, visit_fields_mut};
+use crate::workflow::{EntityReferences, alloc_uid, invalid, valid_identifier, visit_fields_mut};
 use crate::{Error, LevelKey, Project, Result};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -408,7 +408,7 @@ impl Project {
 }
 fn refresh_field(
     enums: FieldEnums<'_>,
-    refs: &BTreeMap<String, Value>,
+    refs: &EntityReferences,
     d: &Value,
     f: &mut Value,
 ) -> Result<()> {
@@ -475,7 +475,7 @@ fn refresh_field(
     }
     Ok(())
 }
-pub(crate) fn refresh_field_values(p: &mut Project, refs: &BTreeMap<String, Value>) -> Result<()> {
+pub(crate) fn refresh_field_values(p: &mut Project, refs: &EntityReferences) -> Result<()> {
     for definition in field_defs(p) {
         if base(&definition).contains("Enum.")
             && !definition["defaultOverride"].is_null()
@@ -606,7 +606,12 @@ impl Project {
     }
     pub fn make_field_instance(&self, d: &Value) -> Result<Value> {
         let mut f = json!({"defUid":d["uid"],"__identifier":d["identifier"],"__type":d["__type"],"__value":null,"__tile":null,"realEditorValues":[]});
-        refresh_field(FieldEnums::from_project(self), &BTreeMap::new(), d, &mut f)?;
+        refresh_field(
+            FieldEnums::from_project(self),
+            &EntityReferences::default(),
+            d,
+            &mut f,
+        )?;
         Ok(f)
     }
     pub fn set_field_value(

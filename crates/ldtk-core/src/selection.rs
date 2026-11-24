@@ -2,7 +2,56 @@
 use crate::workflow::{iid, invalid, remap_refs};
 use crate::{LevelKey, Project, Result};
 use serde_json::{Value, json};
-use std::collections::{BTreeMap, BTreeSet};
+use std::cell::{Cell, LazyCell};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, hash_map::Entry};
+
+fn stacked_tile_key(tile: &Value) -> [&Value; 3] {
+    [&tile["px"], &tile["t"], &tile["f"]]
+}
+
+pub(crate) fn append_stacked_tiles(dst: &mut Vec<Value>, additions: Vec<Value>) {
+    if additions.len() <= 1 {
+        if let [tile] = additions.as_slice()
+            && let Some(index) = dst.iter().position(|old| stacked_tile_key(old) == stacked_tile_key(tile))
+        {
+            dst.remove(index);
+        }
+        dst.extend(additions);
+        return;
+    }
+
+    // Each incoming tile removes the oldest identical tile. Consume the
+    // removals against the existing tiles first, then the incoming tiles.
+    let mut removals = HashMap::<_, Cell<(usize, bool)>>::new();
+    for tile in &additions {
+        removals.entry(stacked_tile_key(tile)).or_default().get_mut().0 += 1;
+    }
+    dst.retain(|tile| {
+        let Some(count) = removals.get(&stacked_tile_key(tile)) else {
+            return true;
+        };
+        let (remaining, _) = count.get();
+        count.set((remaining.saturating_sub(1), true));
+        remaining == 0
+    });
+    let keep = additions
+        .iter()
+        .map(|tile| {
+            let count = removals
+                .get(&stacked_tile_key(tile))
+                .expect("indexed incoming tile");
+            let (remaining, had_existing) = count.get();
+            // A new stack has no tile for its first insertion to remove.
+            let keep = remaining <= usize::from(!had_existing);
+            if !keep {
+                count.set((remaining - 1, had_existing));
+            }
+            keep
+        })
+        .collect::<Vec<_>>();
+    dst.extend(additions.into_iter().zip(keep).filter_map(|(tile, keep)| keep.then_some(tile)));
+}
+
 fn dims(layer: &Value) -> Result<(i64, i64, i64)> {
     let w = layer["__cWid"]
         .as_i64()
@@ -205,17 +254,10 @@ fn paste(
                     ))
                 });
             }
-            for addition in additions {
-                if stack
-                    && let Some(index) = dst.iter().position(|old| {
-                        old["px"] == addition["px"]
-                            && old["t"] == addition["t"]
-                            && old["f"] == addition["f"]
-                    })
-                {
-                    dst.remove(index);
-                }
-                dst.push(addition);
+            if stack {
+                append_stacked_tiles(dst, additions);
+            } else {
+                dst.extend(additions);
             }
         }
         Some("Entities") => {
@@ -295,6 +337,16 @@ fn paste(
 }
 impl Project {
     pub fn copy_region(&self, key: LevelKey, index: usize, rect: [i32; 4]) -> Result<Value> {
+        self.copy_region_contents(key, index, rect, true)
+    }
+
+    pub(crate) fn copy_region_contents(
+        &self,
+        key: LevelKey,
+        index: usize,
+        rect: [i32; 4],
+        copy_entities: bool,
+    ) -> Result<Value> {
         rect_valid(rect)?;
         let layer = self
             .layer(key, index)
@@ -337,6 +389,9 @@ impl Project {
             let elems = layer[name]
                 .as_array()
                 .ok_or_else(|| invalid("layer elements missing"))?;
+            if name == "entityInstances" && !copy_entities {
+                return Ok(clip);
+            }
             let mut selected = vec![];
             for e in elems {
                 if within(&e["px"], rect, g) {
@@ -409,11 +464,22 @@ pub(crate) fn validate_entity_clipboard(
         .layer(key, layer_index)
         .ok_or_else(|| invalid("layer not found"))?;
     let ld = p.layer_def(layer["layerDefUid"].as_i64().unwrap_or(-1));
-    let mut checked = BTreeSet::new();
+    let mut checked = HashSet::new();
+    let mut existing_counts = HashMap::new();
+    let incoming_counts = LazyCell::new(|| {
+        let mut counts = HashMap::<_, usize>::new();
+        for uid in entities.iter().filter_map(|entity| entity["defUid"].as_i64()) {
+            *counts.entry(uid).or_default() += 1;
+        }
+        counts
+    });
     for e in entities {
         let uid = e["defUid"]
             .as_i64()
             .ok_or_else(|| invalid("clipboard entity definition UID missing"))?;
+        if !checked.insert(uid) {
+            continue;
+        }
         let d = p
             .definition("entities", uid)
             .ok_or_else(|| invalid("clipboard entity definition missing"))?;
@@ -436,12 +502,27 @@ pub(crate) fn validate_entity_clipboard(
             }
         }
         let max = d["maxCount"].as_i64().unwrap_or(0);
-        if max <= 0 || !checked.insert(uid) {
+        if max <= 0 {
             continue;
         }
-        let scope = d["limitScope"].as_str().unwrap_or("PerLevel");
-        let count = entities.iter().filter(|e| e["defUid"] == uid).count()
-            + entity_count_in_limit_scope(p, key, layer_index, uid, scope)?;
+        let scope = match d["limitScope"].as_str() {
+            Some("PerWorld") => "PerWorld",
+            Some("PerLayer") => "PerLayer",
+            _ => "PerLevel",
+        };
+        let counts = match existing_counts.entry(scope) {
+            Entry::Occupied(entry) => entry.into_mut(),
+            Entry::Vacant(entry) => {
+                let mut counts = HashMap::<_, usize>::new();
+                visit_entities_in_limit_scope(p, key, layer_index, scope, |entity| {
+                    if let Some(uid) = entity["defUid"].as_i64() {
+                        *counts.entry(uid).or_default() += 1;
+                    }
+                })?;
+                entry.insert(counts)
+            }
+        };
+        let count = incoming_counts[&uid] + counts.get(&uid).copied().unwrap_or(0);
         if count > max as usize {
             return Err(invalid("clipboard duplication exceeds entity count limit"));
         }
@@ -457,7 +538,20 @@ pub(crate) fn entity_count_in_limit_scope(
     scope: &str,
 ) -> Result<usize> {
     let mut count = 0;
-    for candidate in p.level_keys() {
+    visit_entities_in_limit_scope(p, key, layer_index, scope, |entity| {
+        count += usize::from(entity["defUid"] == uid);
+    })?;
+    Ok(count)
+}
+
+fn visit_entities_in_limit_scope(
+    p: &Project,
+    key: LevelKey,
+    layer_index: usize,
+    scope: &str,
+    mut visit: impl FnMut(&Value),
+) -> Result<()> {
+    for candidate in p.iter_level_keys() {
         if candidate.world != key.world || (scope != "PerWorld" && candidate != key) {
             continue;
         }
@@ -466,9 +560,8 @@ pub(crate) fn entity_count_in_limit_scope(
             if scope == "PerLayer" && index != layer_index {
                 continue;
             }
-            count += layer["entityInstances"].as_array().into_iter().flatten()
-                .filter(|entity| entity["defUid"] == uid).count();
+            layer["entityInstances"].as_array().into_iter().flatten().for_each(&mut visit);
         }
     }
-    Ok(count)
+    Ok(())
 }

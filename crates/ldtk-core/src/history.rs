@@ -2,7 +2,7 @@ use crate::grid_presence::{GridPresence, GridPresences};
 use crate::{LevelKey, Project};
 use serde_json::{Value, json};
 use std::borrow::Cow;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::PathBuf;
 const MAX_ACTIONS: usize = 30;
 const LEVEL_STATES: usize = 40;
@@ -81,7 +81,10 @@ impl Snapshot {
             })
             .collect();
         Self {
-            json: json!({"layerInstances":layers}),
+            json: Value::Object(serde_json::Map::from_iter([(
+                "layerInstances".into(),
+                Value::Array(layers),
+            )])),
             grid_presence,
             storage: BTreeMap::new(),
             base: p
@@ -134,6 +137,15 @@ fn identity(a: &[Value], b: &[Value]) -> Option<&'static str> {
         (!a.is_empty() || !b.is_empty()) && valid(a) && valid(b)
     })
 }
+
+fn index_items<'a>(items: &'a [Value], key: &str) -> HashMap<&'a Value, &'a Value> {
+    let mut index = HashMap::with_capacity(items.len());
+    for item in items {
+        index.entry(&item[key]).or_insert(item);
+    }
+    index
+}
+
 fn diff(
     before: Option<&Value>,
     after: Option<&Value>,
@@ -153,29 +165,29 @@ fn diff(
         }
         (Some(Value::Array(a)), Some(Value::Array(b))) => {
             if let Some(key) = identity(a, b) {
-                let ids: BTreeMap<String, Value> = a
+                let ids: BTreeMap<String, &Value> = a
                     .iter()
                     .chain(b)
-                    .map(|v| (v[key].to_string(), v[key].clone()))
+                    .map(|v| (v[key].to_string(), &v[key]))
                     .collect();
-                for id in ids.values() {
+                let before = index_items(a, key);
+                let after = index_items(b, key);
+                for id in ids.into_values() {
+                    let old = before.get(id).copied();
+                    let new = after.get(id).copied();
+                    if old == new {
+                        continue;
+                    }
                     path.push(Segment::Item(key.into(), id.clone()));
-                    diff(
-                        a.iter().find(|v| v[key] == *id),
-                        b.iter().find(|v| v[key] == *id),
-                        path,
-                        out,
-                    );
+                    diff(old, new, path, out);
                     path.pop();
                 }
-                let a_order: Vec<_> = a.iter().map(|v| v[key].clone()).collect();
-                let b_order: Vec<_> = b.iter().map(|v| v[key].clone()).collect();
-                if a_order != b_order {
+                if !a.iter().map(|v| &v[key]).eq(b.iter().map(|v| &v[key])) {
                     path.push(Segment::Order(key.into()));
                     out.push(Change {
                         path: path.clone(),
-                        before: Some(json!(a_order)),
-                        after: Some(json!(b_order)),
+                        before: Some(Value::Array(a.iter().map(|v| v[key].clone()).collect())),
+                        after: Some(Value::Array(b.iter().map(|v| v[key].clone()).collect())),
                     });
                     path.pop();
                 }
@@ -302,11 +314,12 @@ fn put(root: &mut Value, path: &[Segment], value: &Option<Value>) {
                 root.as_array_mut(),
                 value.as_ref().and_then(Value::as_array),
             ) {
-                a.sort_by_key(|v| {
-                    order
-                        .iter()
-                        .position(|id| *id == v[key.as_str()])
-                        .unwrap_or(usize::MAX)
+                let mut positions = HashMap::with_capacity(order.len());
+                for (index, id) in order.iter().enumerate() {
+                    positions.entry(id).or_insert(index);
+                }
+                a.sort_by_cached_key(|v| {
+                    positions.get(&v[key.as_str()]).copied().unwrap_or(usize::MAX)
                 });
             }
         }
@@ -349,14 +362,26 @@ impl Action {
             .collect::<Vec<_>>();
         let mut storage = snapshot.storage;
         storage.extend(current.storage);
-        let bytes = changes
+        Self {
+            changes,
+            grid_presence,
+            bytes: 0,
+            storage,
+            base: snapshot.base,
+            level_iid: snapshot.level_iid,
+            layer_uids: snapshot.layer_uids,
+            bounds: snapshot.bounds,
+        }
+    }
+    fn estimated_bytes(&self) -> usize {
+        self.changes
             .iter()
             .map(|c| {
                 c.before.as_ref().map_or(0, |v| v.to_string().len())
                     + c.after.as_ref().map_or(0, |v| v.to_string().len())
             })
             .sum::<usize>()
-            + grid_presence
+            + self.grid_presence
                 .iter()
                 .map(|change| {
                     change.iid.len()
@@ -364,20 +389,10 @@ impl Action {
                         + change.after.as_ref().map_or(0, GridPresence::bytes)
                 })
                 .sum::<usize>()
-            + storage
+            + self.storage
                 .iter()
                 .map(|(id, path)| id.len() + path.len())
-                .sum::<usize>();
-        Self {
-            changes,
-            grid_presence,
-            bytes,
-            storage,
-            base: snapshot.base,
-            level_iid: snapshot.level_iid,
-            layer_uids: snapshot.layer_uids,
-            bounds: snapshot.bounds,
-        }
+                .sum::<usize>()
     }
     fn restore_grid_presence(&self, p: &mut Project, undo: bool, selective: bool) {
         for change in &self.grid_presence {
@@ -537,7 +552,7 @@ impl Action {
         let enabled = p.json["externalLevels"] == true;
         p.external_levels.clear();
         for key in p.level_keys() {
-            let level = stub(p, key).clone();
+            let level = stub(p, key);
             let Some(id) = level["iid"].as_str() else {
                 continue;
             };
@@ -552,7 +567,7 @@ impl Action {
                 let mut stub = stubs.get(id).cloned().unwrap_or_else(|| level.clone());
                 stub["externalRelPath"] = json!(rel);
                 stub["layerInstances"] = Value::Null;
-                *stub_mut(&mut p.json, key) = stub;
+                let level = std::mem::replace(stub_mut(&mut p.json, key), stub);
                 crate::project::sync_summary(&mut p.json, key, &level);
                 p.external_levels.insert(rel.clone(), level);
             } else if current.storage.contains_key(id)
@@ -738,7 +753,7 @@ impl History {
         let Some(snapshot) = self.pending.take() else {
             return false;
         };
-        let action = Action::between(snapshot, p);
+        let mut action = Action::between(snapshot, p);
         if action.changes.is_empty() && action.grid_presence.is_empty() {
             return false;
         }
@@ -750,9 +765,12 @@ impl History {
             self.redo.clear();
         }
         let scope = action.level_iid.clone();
-        if scope.is_none() && action.bytes > MAX_BYTES {
-            self.undo.retain(|previous| previous.level_iid.is_some());
-            return true;
+        if scope.is_none() {
+            action.bytes = action.estimated_bytes();
+            if action.bytes > MAX_BYTES {
+                self.undo.retain(|previous| previous.level_iid.is_some());
+                return true;
+            }
         }
         self.undo.push(action);
         let count = self.undo.iter().filter(|a| a.level_iid == scope).count();

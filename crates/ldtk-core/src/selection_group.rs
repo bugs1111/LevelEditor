@@ -2,7 +2,8 @@
 use crate::workflow::{iid, invalid, remap_field_refs};
 use crate::{DeferredAutoLayers, Error, LevelKey, Project, Result};
 use serde_json::{Value, json};
-use std::collections::{BTreeMap, BTreeSet};
+use std::cell::LazyCell;
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 #[derive(Default)]
 pub struct SelectionDragReport {
@@ -68,13 +69,36 @@ fn fields_mut<'a>(
     key: LevelKey,
     index: usize,
     owner: &str,
+    owners: Option<&HashMap<String, usize>>,
 ) -> Result<&'a mut Vec<Value>> {
     p.layer_mut(key, index)
         .and_then(|l| l["entityInstances"].as_array_mut())
-        .and_then(|es| es.iter_mut().find(|e| e["iid"] == owner))
+        .and_then(|entities| match owners {
+            Some(owners) => entities.get_mut(*owners.get(owner)?),
+            None => entities.iter_mut().find(|entity| entity["iid"] == owner),
+        })
         .and_then(|e| e["fieldInstances"].as_array_mut())
         .ok_or_else(|| invalid("selected point owner no longer exists"))
 }
+
+fn point_edits<'a>(
+    entry: &'a Value,
+    layer: &Value,
+) -> (Vec<&'a Value>, Option<HashMap<String, usize>>) {
+    let mut points: Vec<_> = entry["points"].as_array().into_iter().flatten().collect();
+    points.sort_by_key(|point| std::cmp::Reverse(point["arrayIndex"].as_u64().unwrap_or(0)));
+    let owners = (points.len() > 1).then(|| {
+        let mut owners = HashMap::new();
+        for (index, entity) in layer["entityInstances"].as_array().into_iter().flatten().enumerate() {
+            if let Some(iid) = entity["iid"].as_str() {
+                owners.entry(iid.to_owned()).or_insert(index);
+            }
+        }
+        owners
+    });
+    (points, owners)
+}
+
 fn point_value(field: &Value, index: usize) -> Value {
     if field["__type"] == "Array<Point>" {
         field["__value"][index].clone()
@@ -122,12 +146,13 @@ fn points_in(layer: &Value, rect: [i64; 4], all: bool) -> Vec<Value> {
             if kind != "Point" && kind != "Array<Point>" {
                 continue;
             }
+            let value = &field["__value"];
             let values = if kind == "Array<Point>" {
-                field["__value"].as_array().cloned().unwrap_or_default()
+                value.as_array().map(Vec::as_slice).unwrap_or_default()
             } else {
-                vec![field["__value"].clone()]
+                std::slice::from_ref(value)
             };
-            for (index, value) in values.into_iter().enumerate() {
+            for (index, value) in values.iter().enumerate() {
                 let (Some(x), Some(y)) = (value["cx"].as_i64(), value["cy"].as_i64()) else {
                     continue;
                 };
@@ -175,7 +200,7 @@ fn capture_layer(
         i32::try_from(v).map_err(|_| invalid("selection rectangle exceeds integer range"))
     });
     let [a, b, c, d] = cell32;
-    let mut clipboard = p.copy_region(key, index, [a?, b?, c?, d?])?;
+    let mut clipboard = p.copy_region_contents(key, index, [a?, b?, c?, d?], false)?;
     if layer["__type"] == "Entities" {
         let mut selected = vec![];
         for entity in layer["entityInstances"].as_array().into_iter().flatten() {
@@ -334,9 +359,7 @@ fn delete(p: &mut Project, key: LevelKey, group: &Value, delete_objects: bool) -
                 entities.retain(|e| !e["iid"].as_str().is_some_and(|id| ids.contains(id)));
                 count += before - entities.len();
             }
-            let mut points = entry["points"].as_array().cloned().unwrap_or_default();
-            points
-                .sort_by_key(|point| std::cmp::Reverse(point["arrayIndex"].as_u64().unwrap_or(0)));
+            let (points, owners) = point_edits(entry, layer);
             for point in points {
                 let owner = point["entityIid"]
                     .as_str()
@@ -344,10 +367,10 @@ fn delete(p: &mut Project, key: LevelKey, group: &Value, delete_objects: bool) -
                 if ids.contains(owner) {
                     continue;
                 }
-                let uid = point["fieldDefUid"].clone();
-                let f = fields_mut(p, key, index, owner)?
+                let uid = &point["fieldDefUid"];
+                let f = fields_mut(p, key, index, owner, owners.as_ref())?
                     .iter_mut()
-                    .find(|f| f["defUid"] == uid)
+                    .find(|f| f["defUid"] == *uid)
                     .ok_or_else(|| invalid("selected point field missing"))?;
                 put_point(
                     f,
@@ -398,10 +421,10 @@ impl Project {
             let width = n(layer, "__cWid");
             let height = n(layer, "__cHei");
             let mut mask = vec![];
-            let mut csv = entry["clipboard"]["intGridCsv"]
-                .as_array()
-                .cloned()
-                .unwrap_or_default();
+            let mut csv = match entry["clipboard"].get_mut("intGridCsv").map(std::mem::take) {
+                Some(Value::Array(cells)) => cells,
+                _ => Vec::new(),
+            };
             for value in entry["cellMask"].as_array().into_iter().flatten() {
                 let i = value
                     .as_i64()
@@ -438,27 +461,35 @@ impl Project {
                     tiles.push(t);
                 }
             }
-            let mut entities = vec![];
-            for selected in entry["clipboard"]["entityInstances"]
+            let selected = entry["clipboard"]["entityInstances"]
                 .as_array()
-                .into_iter()
-                .flatten()
-            {
-                if let Some(current) = layer["entityInstances"]
-                    .as_array()
-                    .and_then(|es| es.iter().find(|e| e["iid"] == selected["iid"]))
-                {
+                .map(Vec::as_slice)
+                .unwrap_or_default();
+            let selected_points = entry["points"].as_array().map(Vec::as_slice).unwrap_or_default();
+            let live = layer["entityInstances"].as_array().map(Vec::as_slice).unwrap_or_default();
+            let indexed = (selected.len() + selected_points.len() > 1).then(|| {
+                let mut indexed = HashMap::with_capacity(live.len());
+                for entity in live {
+                    indexed.entry(&entity["iid"]).or_insert(entity);
+                }
+                indexed
+            });
+            let find = |iid: &Value| match &indexed {
+                Some(indexed) => indexed.get(iid).copied(),
+                None => live.iter().find(|entity| entity["iid"] == *iid),
+            };
+            let mut entities = Vec::with_capacity(selected.len());
+            for selected in selected {
+                if let Some(current) = find(&selected["iid"]) {
                     let mut e = current.clone();
                     let px = pair(&e["px"])?;
                     e["px"] = json!([px[0] - cell[0] * g, px[1] - cell[1] * g]);
                     entities.push(e);
                 }
             }
-            let mut points = vec![];
-            for point in entry["points"].as_array().into_iter().flatten() {
-                let current = layer["entityInstances"]
-                    .as_array()
-                    .and_then(|es| es.iter().find(|e| e["iid"] == point["entityIid"]))
+            let mut points = Vec::with_capacity(selected_points.len());
+            for point in selected_points {
+                let current = find(&point["entityIid"])
                     .and_then(|e| e["fieldInstances"].as_array())
                     .and_then(|fs| fs.iter().find(|f| f["defUid"] == point["fieldDefUid"]));
                 if let Some(f) = current {
@@ -470,11 +501,11 @@ impl Project {
                     }
                 }
             }
-            entry["cellMask"] = json!(mask);
-            entry["points"] = json!(points);
-            entry["clipboard"]["intGridCsv"] = json!(csv);
-            entry["clipboard"]["gridTiles"] = json!(tiles);
-            entry["clipboard"]["entityInstances"] = json!(entities);
+            entry["cellMask"] = Value::Array(mask);
+            entry["points"] = Value::Array(points);
+            entry["clipboard"]["intGridCsv"] = Value::Array(csv);
+            entry["clipboard"]["gridTiles"] = Value::Array(tiles);
+            entry["clipboard"]["entityInstances"] = Value::Array(entities);
         }
         update_group_stats(&mut group);
         Ok(group)
@@ -751,9 +782,12 @@ fn apply_deferred(
                     .layer_def(entry["layerDefUid"].as_i64().unwrap_or(-1))
                     .and_then(|d| d["intGridValues"].as_array())
                     .ok_or_else(|| invalid("IntGrid palette missing"))?;
+                let values = LazyCell::new(|| {
+                    palette.iter().map(|entry| &entry["value"]).collect::<HashSet<_>>()
+                });
                 if cells
                     .iter()
-                    .any(|(_, v)| *v != 0 && !palette.iter().any(|p| p["value"] == *v))
+                    .any(|(_, v)| *v != 0 && !values.contains(v))
                 {
                     return Err(invalid("clipboard contains undefined IntGrid values"));
                 }
@@ -824,15 +858,8 @@ fn apply_deferred(
                         ))
                     });
                 }
-                for tile in additions {
-                    if let Some(i) = dst.iter().position(|t| {
-                        t["px"] == tile["px"] && t["t"] == tile["t"] && t["f"] == tile["f"]
-                    }) {
-                        dst.remove(i);
-                    }
-                    dst.push(tile);
-                    count += 1;
-                }
+                count += additions.len();
+                crate::selection::append_stacked_tiles(dst, additions);
             }
             "Entities" => {
                 let mut additions = vec![];
@@ -932,8 +959,8 @@ fn apply_deferred(
             }
             _ => return Err(invalid("unsupported selection layer type")),
         }
-        let mut points = entry["points"].as_array().cloned().unwrap_or_default();
-        points.sort_by_key(|p| std::cmp::Reverse(p["arrayIndex"].as_u64().unwrap_or(0)));
+        // Entity moves may have removed slots, so index owners after applying those moves.
+        let (points, owners) = point_edits(entry, p.layer(key, index).expect("selected layer"));
         for point in points {
             let owner = point["entityIid"]
                 .as_str()
@@ -954,7 +981,7 @@ fn apply_deferred(
             );
             let pt = [(px[0] - offset[0]) / g, (px[1] - offset[1]) / g];
             let uid = &point["fieldDefUid"];
-            let fields = match fields_mut(p, key, index, owner) {
+            let fields = match fields_mut(p, key, index, owner, owners.as_ref()) {
                 Ok(fields) => fields,
                 Err(_) if old_ids.contains(owner) => continue,
                 Err(e) => return Err(e),
@@ -1101,9 +1128,24 @@ fn selection_result(
             (pt[0] >= 0 && pt[1] >= 0 && pt[0] < n(layer, "__cWid") && pt[1] < n(layer, "__cHei"))
                 .then_some(pt)
         };
-        let mut points = vec![];
-        let source_points = source["points"].as_array().cloned().unwrap_or_default();
-        for point in &source_points {
+        let source_points = source["points"].as_array().map(Vec::as_slice).unwrap_or_default();
+        let changed_indices = LazyCell::new(|| {
+            let mut changed = HashMap::<_, Vec<_>>::new();
+            for point in source_points {
+                if point_target(point).is_some() == duplicate {
+                    changed
+                        .entry((&point["entityIid"], &point["fieldDefUid"]))
+                        .or_default()
+                        .push(point["arrayIndex"].as_u64().unwrap_or(0));
+                }
+            }
+            for indices in changed.values_mut() {
+                indices.sort_unstable();
+            }
+            changed
+        });
+        let mut points = Vec::new();
+        for point in source_points {
             let Some(pt) = point_target(point) else {
                 continue;
             };
@@ -1135,11 +1177,6 @@ fn selection_result(
                     }
                 }
             } else {
-                let lower = source_points.iter().filter(|other| {
-                    other["entityIid"] == point["entityIid"]
-                        && other["fieldDefUid"] == *field_uid
-                        && other["arrayIndex"].as_u64().unwrap_or(0) < old_index as u64
-                });
                 let array = point["isArray"].as_bool().unwrap_or_else(|| {
                     layer["entityInstances"]
                         .as_array()
@@ -1149,9 +1186,9 @@ fn selection_result(
                         .is_some_and(|f| f["__type"] == "Array<Point>")
                 });
                 if array {
-                    let changes = lower
-                        .filter(|other| point_target(other).is_some() == duplicate)
-                        .count();
+                    let changes = changed_indices
+                        .get(&(&point["entityIid"], field_uid))
+                        .map_or(0, |indices| indices.partition_point(|&i| i < old_index as u64));
                     next_index = if duplicate {
                         old_index + changes
                     } else {

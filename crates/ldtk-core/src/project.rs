@@ -4,7 +4,7 @@ use serde_json::Value;
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
-    io::{Read, Write},
+    io::{self, BufRead, BufReader, BufWriter, Read, Seek, Write},
     ops::Index,
     path::{Component, Path, PathBuf},
     sync::{Arc, LazyLock, Weak},
@@ -104,8 +104,17 @@ struct ExternalLevelCache {
 struct ExternalLevelFingerprint {
     length: usize,
     bytes: u64,
+    // Only a value parsed from these bytes can be reused when reopening a save.
+    parsed: bool,
     // A write via Arc::make_mut detaches this reference. The cache never owns a level.
     level: Weak<Value>,
+}
+
+#[derive(Default)]
+struct PublishedDocuments {
+    root: Vec<u8>,
+    // These levels were parsed from the same bytes that the save left on disk.
+    reusable_levels: BTreeMap<PathBuf, (Arc<Value>, usize, u64)>,
 }
 
 fn external_level_save_settings(root: &Value) -> [&Value; 3] {
@@ -125,13 +134,14 @@ impl ExternalLevelCache {
         })
     }
 
-    fn verified_bytes(
+    fn verified_file(
         &self,
         path: &Path,
         level: &Value,
         revision: Option<&Arc<Value>>,
         same_path: bool,
-    ) -> Option<(Vec<u8>, u64)> {
+        checked_before_reload: Option<u64>,
+    ) -> Option<(Option<Vec<u8>>, &ExternalLevelFingerprint)> {
         let cached = self.fingerprints.get(path)?;
         let unchanged =
             revision.is_some_and(|revision| Arc::as_ptr(revision) == cached.level.as_ptr());
@@ -141,6 +151,10 @@ impl ExternalLevelCache {
         let metadata = fs::symlink_metadata(path).ok()?;
         if !metadata.is_file() || metadata.len() != cached.length as u64 {
             return None;
+        }
+        if same_path && cached.parsed && checked_before_reload == Some(cached.bytes) {
+            // Reload checks the disk against these bytes after publication.
+            return Some((None, cached));
         }
         let mut bytes = Vec::new();
         fs::File::open(path)
@@ -152,7 +166,7 @@ impl ExternalLevelCache {
             && bytes_fingerprint(&bytes) == cached.bytes
             && (unchanged || serde_json::from_slice::<Value>(&bytes).ok().as_ref() == Some(level))
         {
-            Some((bytes, cached.bytes))
+            Some(((!same_path).then_some(bytes), cached))
         } else {
             None
         }
@@ -209,15 +223,23 @@ impl Project {
         path: impl AsRef<Path>,
         progress: impl FnMut(usize, usize),
     ) -> Result<Self> {
-        Self::read_documents(path.as_ref(), progress, None)
+        Self::read_documents(path.as_ref(), progress, None, None)
     }
 
     /// Bind the watch baseline to the same document bytes that were parsed.
     pub fn load_with_snapshot(path: impl AsRef<Path>) -> Result<(Self, FilesystemSnapshot)> {
+        Self::load_snapshot_with_documents(path.as_ref(), None)
+    }
+
+    fn load_snapshot_with_documents(
+        path: &Path,
+        published: Option<PublishedDocuments>,
+    ) -> Result<(Self, FilesystemSnapshot)> {
         let mut snapshot = FilesystemSnapshot {
             files: BTreeMap::new(),
+            loaded_external_paths: None,
         };
-        let project = Self::read_documents(path.as_ref(), |_, _| {}, Some(&mut snapshot))?;
+        let project = Self::read_documents(path, |_, _| {}, Some(&mut snapshot), published)?;
         project.snapshot_resources(&mut snapshot)?;
         if !snapshot.changed_files()?.is_empty() {
             return Err(Error::Invalid(
@@ -231,9 +253,16 @@ impl Project {
         path: &Path,
         mut progress: impl FnMut(usize, usize),
         mut snapshot: Option<&mut FilesystemSnapshot>,
+        published: Option<PublishedDocuments>,
     ) -> Result<Self> {
         let path = absolute(path)?;
-        let (json, bytes) = read_json_with_bytes(&path)?;
+        let (json, bytes, mut reusable_levels) = match published {
+            Some(saved) => (parse_json_at(&path, &saved.root)?, saved.root, saved.reusable_levels),
+            None => {
+                let (json, bytes) = read_json_with_bytes(&path)?;
+                (json, bytes, BTreeMap::new())
+            }
+        };
         if let Some(snapshot) = &mut snapshot {
             snapshot
                 .files
@@ -241,13 +270,22 @@ impl Project {
         }
         drop(bytes);
         let mut project = Self::from_json(json)?;
+        let cache_level = project.json["jsonVersion"] == "1.5.4";
+        let fingerprint_levels = cache_level || snapshot.is_some();
         let mut fingerprints = BTreeMap::new();
         let keys = project.level_keys();
         let mut total = 0;
+        let mut loaded_paths = snapshot.as_ref().map(|_| Vec::new());
         for key in &keys {
-            if external_path(project.level_stub(*key).expect("enumerated level"))?.is_some() {
+            if let Some(rel) = external_path(project.level_stub(*key).expect("enumerated level"))? {
                 total += 1;
+                if let Some(paths) = &mut loaded_paths {
+                    paths.push(rel.to_owned());
+                }
             }
+        }
+        if let Some(snapshot) = &mut snapshot {
+            snapshot.loaded_external_paths = Some((path.clone(), loaded_paths.unwrap_or_default()));
         }
         if total > 0 {
             progress(0, total);
@@ -259,22 +297,30 @@ impl Project {
                 let mut rel = rel.to_owned();
                 let base = path.parent().expect("absolute path");
                 let mut external = base.join(&rel);
-                let (value, bytes) = match read_json_with_bytes(&external) {
-                    Ok(result) => result,
-                    Err(error) if project.json["externalLevels"] == true => {
-                        let (repaired, value, bytes) =
-                            recover_renamed_external_level(&path, &rel, stub, error)?;
-                        if let Some(snapshot) = &mut snapshot {
-                            snapshot.files.insert(absolute(&external)?, None);
+                let (value, length, fingerprint) = if let Some((value, length, fingerprint)) =
+                    reusable_levels.remove(&external)
+                {
+                    (value, length, Some(fingerprint))
+                } else {
+                    let (value, bytes) = match read_json_with_bytes(&external) {
+                        Ok(result) => result,
+                        Err(error) if project.json["externalLevels"] == true => {
+                            let (repaired, value, bytes) =
+                                recover_renamed_external_level(&path, &rel, stub, error)?;
+                            if let Some(snapshot) = &mut snapshot {
+                                snapshot.files.insert(absolute(&external)?, None);
+                            }
+                            project.level_stub_mut(key).expect("enumerated level")["externalRelPath"] =
+                                Value::String(repaired.clone());
+                            project.repaired_external_paths = true;
+                            rel = repaired;
+                            external = base.join(&rel);
+                            (value, bytes)
                         }
-                        project.level_stub_mut(key).expect("enumerated level")["externalRelPath"] =
-                            Value::String(repaired.clone());
-                        project.repaired_external_paths = true;
-                        rel = repaired;
-                        external = base.join(&rel);
-                        (value, bytes)
-                    }
-                    Err(error) => return Err(error),
+                        Err(error) => return Err(error),
+                    };
+                    let fingerprint = fingerprint_levels.then(|| bytes_fingerprint(&bytes));
+                    (Arc::new(value), bytes.len(), fingerprint)
                 };
                 if project.external_levels.0.contains_key(&rel) {
                     return Err(Error::Invalid(format!(
@@ -286,10 +332,7 @@ impl Project {
                         "external level {rel} must be an object"
                     )));
                 }
-                let value = Arc::new(value);
-                let cache_level = project.json["jsonVersion"] == "1.5.4";
-                if cache_level || snapshot.is_some() {
-                    let fingerprint = bytes_fingerprint(&bytes);
+                if let Some(fingerprint) = fingerprint {
                     if let Some(snapshot) = &mut snapshot {
                         snapshot
                             .files
@@ -299,8 +342,9 @@ impl Project {
                         fingerprints.insert(
                             external,
                             ExternalLevelFingerprint {
-                                length: bytes.len(),
+                                length,
                                 bytes: fingerprint,
+                                parsed: true,
                                 level: Arc::downgrade(&value),
                             },
                         );
@@ -344,12 +388,14 @@ impl Project {
         self.save_document(path, true)
     }
     fn save_document(&mut self, path: impl AsRef<Path>, make_backup: bool) -> Result<()> {
-        self.save_document_with_progress(path, make_backup, &mut |_, _, _, _| {})
+        self.save_document_with_progress(path, make_backup, None, None, &mut |_, _, _, _| {})
     }
     fn save_document_with_progress(
         &mut self,
         path: impl AsRef<Path>,
         make_backup: bool,
+        verified_snapshot: Option<&FilesystemSnapshot>,
+        mut published: Option<&mut PublishedDocuments>,
         progress: &mut impl FnMut(SaveStage, usize, usize, Option<&str>),
     ) -> Result<()> {
         validate_project(&self.json)?;
@@ -357,22 +403,10 @@ impl Project {
         let base = path
             .parent()
             .ok_or_else(|| Error::Invalid("project path has no parent".into()))?;
-        let retired = read_json(&path)
-            .ok()
-            .and_then(|json| Self::from_json(json).ok())
-            .map(|saved| {
-                saved
-                    .level_keys()
-                    .into_iter()
-                    .filter_map(|key| {
-                        saved
-                            .level_stub(key)
-                            .and_then(|level| level["externalRelPath"].as_str())
-                            .map(str::to_owned)
-                    })
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
+        let retired = verified_snapshot
+            .and_then(|snapshot| snapshot.loaded_external_paths.as_ref())
+            .filter(|(loaded, _)| loaded == &path)
+            .map_or_else(|| previous_external_paths(&path), |(_, paths)| paths.clone());
         if backup_file(&path, self.json["iid"].as_str().unwrap_or("")) {
             return Err(Error::Unsupported(
                 "backup files are read-only; restore the backup or save as a new project".into(),
@@ -544,16 +578,25 @@ impl Project {
             })?;
         }
         progress(SaveStage::WriteProject, 0, 1, None);
-        let mut root = candidate.json.clone();
-        if let Some(compatibility) = &compatibility {
-            compatibility.project_output(&mut root, &candidate.grid_presence);
+        let root_bytes = if let Some(compatibility) = &compatibility {
+            if published.is_some() {
+                // The caller reloads the saved dialect, so no second editable copy is needed.
+                compatibility.project_output(&mut candidate.json, &candidate.grid_presence);
+                encode_with_style(&candidate.json, minify, style)?
+            } else {
+                let mut root = candidate.json.clone();
+                compatibility.project_output(&mut root, &candidate.grid_presence);
+                encode_with_style(&root, minify, style)?
+            }
+        } else {
+            encode_with_style(&candidate.json, minify, style)?
+        };
+        let root = StagedFile::final_replacement(path.clone(), &root_bytes)?;
+        if let Some(saved) = published.as_deref_mut() {
+            saved.root = root_bytes;
+        } else {
+            drop(root_bytes);
         }
-        staged.add(
-            path.clone(),
-            &encode_with_style(&root, minify, style)?,
-            false,
-        )?;
-        drop(root);
         let total = external.len();
         for (done, (key, rel, target)) in external.into_iter().enumerate() {
             let document = &candidate.external_levels.0[&rel];
@@ -568,42 +611,64 @@ impl Project {
             });
             let level = projected.as_deref().unwrap_or(document);
             let revision = std::ptr::eq(level, document.as_ref()).then_some(document);
+            let checked_before_reload = if published.is_some() {
+                verified_snapshot
+                    .and_then(|snapshot| snapshot.files.get(&target).copied().flatten())
+            } else {
+                None
+            };
             let cached = source_cache.and_then(|(source, cache)| {
                 let rel = self.level_stub(key)?["externalRelPath"].as_str()?;
                 let source = source.join(rel);
-                let same_path = source == target;
-                let (bytes, fingerprint) =
-                    cache.verified_bytes(&source, level, revision, same_path)?;
-                Some((bytes, fingerprint, same_path))
+                cache.verified_file(
+                    &source,
+                    level,
+                    revision,
+                    source == target,
+                    checked_before_reload,
+                )
             });
-            let (bytes, cached_fingerprint, reuse_current_file) = match cached {
-                Some((bytes, fingerprint, same_path)) => (bytes, Some(fingerprint), same_path),
-                None => (encode_with_style(level, minify, style)?, None, false),
+            let (bytes, cached) = match cached {
+                Some((bytes, fingerprint)) => (bytes, Some(fingerprint)),
+                None => (Some(encode_with_style(level, minify, style)?), None),
             };
             if current_version {
+                let parsed = bytes.is_none() && cached.is_some_and(|file| file.parsed);
+                let (length, fingerprint) = if let Some(cached) = cached {
+                    (cached.length, cached.bytes)
+                } else {
+                    let bytes = bytes.as_deref().expect("serialized level");
+                    (bytes.len(), bytes_fingerprint(bytes))
+                };
                 fingerprints.insert(
                     target.clone(),
                     ExternalLevelFingerprint {
-                        length: bytes.len(),
-                        bytes: cached_fingerprint.unwrap_or_else(|| bytes_fingerprint(&bytes)),
+                        length,
+                        bytes: fingerprint,
+                        parsed,
                         level: revision.map_or_else(Weak::new, Arc::downgrade),
                     },
                 );
+                if parsed && let Some(saved) = published.as_deref_mut() {
+                    saved.reusable_levels.insert(
+                        target.clone(),
+                        (Arc::clone(document), length, fingerprint),
+                    );
+                }
             }
-            if reuse_current_file {
-                continue;
+            if let Some(bytes) = bytes {
+                if target.starts_with(&document_dir) {
+                    ensure_parent_directory(&target)?;
+                }
+                staged.add(target, &bytes, preserve_identical_levels)?;
             }
-            if target.starts_with(&document_dir) {
-                ensure_parent_directory(&target)?;
-            }
-            staged.add(target, &bytes, preserve_identical_levels)?;
         }
         if total > 0 {
             progress(SaveStage::PrepareLevels, total, total, None);
             progress(SaveStage::PrepareLevels, 0, 0, None);
         }
         // The main document is prepared first but published after all referenced files.
-        staged.files.rotate_left(1);
+        staged.files.push(root);
         staged.publish()?;
         self.external_levels = candidate.external_levels;
         self.json = candidate.json;
@@ -647,6 +712,54 @@ impl Project {
         progress(SaveStage::WriteProject, 1, 1, None);
         Ok(())
     }
+}
+
+fn previous_external_paths(path: &Path) -> Vec<String> {
+    #[derive(serde::Deserialize)]
+    struct Level {
+        #[serde(rename = "externalRelPath")]
+        external_path: Option<String>,
+    }
+    #[derive(serde::Deserialize)]
+    struct World {
+        levels: Vec<Level>,
+    }
+    #[derive(serde::Deserialize)]
+    struct Document {
+        #[serde(default)]
+        levels: Vec<Level>,
+        #[serde(default)]
+        worlds: Vec<World>,
+    }
+    let Ok(bytes) = fs::read(path) else {
+        return Vec::new();
+    };
+    // Embedded projects have nothing to remove. Skip their tile and entity
+    // payloads, but keep full validation whenever a file may be retired.
+    if serde_json::from_slice::<Document>(&bytes).is_ok_and(|doc| {
+        doc.levels
+            .iter()
+            .chain(doc.worlds.iter().flat_map(|world| &world.levels))
+            .all(|level| level.external_path.is_none())
+    }) {
+        return Vec::new();
+    }
+    let Some(saved) = serde_json::from_slice(&bytes)
+        .ok()
+        .and_then(|json| Project::from_json(json).ok())
+    else {
+        return Vec::new();
+    };
+    saved
+        .iter_level_keys()
+        .filter_map(|key| {
+            saved
+                .level_stub(key)?
+                .get("externalRelPath")?
+                .as_str()
+                .map(str::to_owned)
+        })
+        .collect()
 }
 
 fn validate_project(json: &Value) -> Result<()> {
@@ -779,11 +892,14 @@ fn read_json_with_bytes(path: &Path) -> Result<(Value, Vec<u8>)> {
         path: path.to_path_buf(),
         source,
     })?;
-    let value = serde_json::from_slice(&bytes).map_err(|source| Error::Json {
+    Ok((parse_json_at(path, &bytes)?, bytes))
+}
+
+fn parse_json_at(path: &Path, bytes: &[u8]) -> Result<Value> {
+    serde_json::from_slice(bytes).map_err(|source| Error::Json {
         path: path.to_path_buf(),
         source,
-    })?;
-    Ok((value, bytes))
+    })
 }
 
 struct OutputCompatibility {
@@ -1330,6 +1446,29 @@ struct StagedFile {
     original: Option<TemporaryFile>,
 }
 
+impl StagedFile {
+    /// The final rename can never need rollback after a later rename fails.
+    fn final_replacement(target: PathBuf, bytes: &[u8]) -> Result<Self> {
+        let io_error = |source| Error::Io { path: target.clone(), source };
+        let permissions = match fs::File::open(&target) {
+            Ok(file) => {
+                let metadata = file.metadata().map_err(io_error)?;
+                if !metadata.is_file() {
+                    return Err(io_error(std::io::Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        "project destination is not a regular file",
+                    )));
+                }
+                Some(metadata.permissions())
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => return Err(io_error(error)),
+        };
+        let staged = stage_file(&target, bytes, permissions)?;
+        Ok(Self { target, staged, original: None })
+    }
+}
+
 fn ensure_parent_directory(target: &Path) -> Result<()> {
     fs::create_dir_all(target.parent().expect("output path parent")).map_err(|source| Error::Io {
         path: target.to_owned(),
@@ -1337,9 +1476,9 @@ fn ensure_parent_directory(target: &Path) -> Result<()> {
     })
 }
 
-fn existing_file_bytes(target: &Path) -> Result<Option<Vec<u8>>> {
-    match fs::read(target) {
-        Ok(bytes) => Ok(Some(bytes)),
+fn open_existing_file(target: &Path) -> Result<Option<fs::File>> {
+    match fs::File::open(target) {
+        Ok(file) => Ok(Some(file)),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(source) => Err(Error::Io {
             path: target.to_owned(),
@@ -1353,28 +1492,78 @@ fn stage_file(
     bytes: &[u8],
     permissions: Option<fs::Permissions>,
 ) -> Result<TemporaryFile> {
-    let staged = target.with_file_name(format!(".ldtk-{}.tmp", uuid::Uuid::new_v4()));
-    let mut file = fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&staged)
-        .map_err(|source| Error::Io {
-            path: staged.clone(),
-            source,
-        })?;
-    let staged = TemporaryFile(staged);
-    let written = file.write_all(bytes).and_then(|()| {
-        if let Some(permissions) = permissions {
-            file.set_permissions(permissions)?;
-        }
-        file.sync_all()
-    });
+    stage_file_parts(target, &[bytes], permissions)
+}
+
+fn stage_file_parts(
+    target: &Path,
+    parts: &[&[u8]],
+    permissions: Option<fs::Permissions>,
+) -> Result<TemporaryFile> {
+    stage_file_with(target, permissions, |file| {
+        parts.iter().try_for_each(|part| file.write_all(part))
+    })
+}
+
+fn stage_file_with(
+    target: &Path,
+    permissions: Option<fs::Permissions>,
+    write: impl FnOnce(&mut fs::File) -> io::Result<()>,
+) -> Result<TemporaryFile> {
+    let (mut file, staged) = open_staging_file(target).map_err(|source| Error::Io {
+        path: target.to_owned(),
+        source,
+    })?;
+    let written = (|| {
+        write(&mut file)?;
+        sync_staged_file(&file, permissions)
+    })();
     drop(file);
     written.map_err(|source| Error::Io {
         path: staged.0.clone(),
         source,
     })?;
     Ok(staged)
+}
+
+fn open_staging_file(target: &Path) -> io::Result<(fs::File, TemporaryFile)> {
+    let staged = target.with_file_name(format!(".ldtk-{}.tmp", uuid::Uuid::new_v4()));
+    let file = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create_new(true)
+        .open(&staged)?;
+    Ok((file, TemporaryFile(staged)))
+}
+
+fn sync_staged_file(file: &fs::File, permissions: Option<fs::Permissions>) -> io::Result<()> {
+    if let Some(permissions) = permissions {
+        file.set_permissions(permissions)?;
+    }
+    file.sync_all()
+}
+
+const EXPORT_BUFFER_SIZE: usize = 64 * 1024;
+
+pub(crate) struct StagingWriter<'a> {
+    target: &'a Path,
+    spilled: Option<(fs::File, TemporaryFile)>,
+}
+
+impl Write for StagingWriter<'_> {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        if self.spilled.is_none() {
+            self.spilled = Some(open_staging_file(self.target)?);
+        }
+        self.spilled.as_mut().unwrap().0.write(bytes)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        if let Some((file, _)) = &mut self.spilled {
+            file.flush()?;
+        }
+        Ok(())
+    }
 }
 
 #[derive(Default)]
@@ -1389,22 +1578,36 @@ impl StagedSave {
         bytes: &[u8],
         preserve_identical: bool,
     ) -> Result<()> {
-        let original_bytes = existing_file_bytes(&target)?;
+        self.add_parts(target, &[bytes], preserve_identical)
+    }
+
+    pub(crate) fn add_parts(
+        &mut self,
+        target: PathBuf,
+        parts: &[&[u8]],
+        preserve_identical: bool,
+    ) -> Result<()> {
+        let mut existing = open_existing_file(&target)?;
         if preserve_identical
-            && original_bytes.as_deref() == Some(bytes)
+            && let Some(file) = existing.as_mut()
             && fs::symlink_metadata(&target).is_ok_and(|metadata| metadata.is_file())
         {
-            return Ok(());
+            let read_error = |source| Error::Io {
+                path: target.clone(),
+                source,
+            };
+            if file_matches_parts(file, parts).map_err(read_error)? {
+                return Ok(());
+            }
+            file.rewind().map_err(read_error)?;
         }
 
-        let permissions = fs::metadata(&target)
-            .ok()
+        let permissions = existing
+            .as_ref()
+            .and_then(|file| file.metadata().ok())
             .map(|metadata| metadata.permissions());
-        let original = original_bytes
-            .as_deref()
-            .map(|bytes| stage_file(&target, bytes, permissions.clone()))
-            .transpose()?;
-        let staged = stage_file(&target, bytes, permissions)?;
+        let original = stage_original(&target, existing, permissions.clone())?;
+        let staged = stage_file_parts(&target, parts, permissions)?;
         self.files.push(StagedFile {
             target,
             staged,
@@ -1413,8 +1616,66 @@ impl StagedSave {
         Ok(())
     }
 
-    pub(crate) fn targets(&self) -> impl Iterator<Item = &PathBuf> {
-        self.files.iter().map(|file| &file.target)
+    pub(crate) fn add_writer(
+        &mut self,
+        target: PathBuf,
+        write: impl FnOnce(&mut BufWriter<StagingWriter<'_>>) -> io::Result<()>,
+    ) -> Result<()> {
+        let mut buffer = BufWriter::with_capacity(
+            EXPORT_BUFFER_SIZE,
+            StagingWriter {
+                target: &target,
+                spilled: None,
+            },
+        );
+        let result = write(&mut buffer);
+        let (writer, pending) = buffer.into_parts();
+        result.map_err(|source| Error::Io {
+            path: target.clone(),
+            source,
+        })?;
+        let pending = pending.expect("export writer returned without panicking");
+        let Some((mut file, staged)) = writer.spilled else {
+            // Small outputs fit entirely in the buffer and can use the byte comparison path.
+            return self.add(target, &pending, true);
+        };
+        let prepared = (|| {
+            let write_error = |source| Error::Io {
+                path: staged.0.clone(),
+                source,
+            };
+            file.write_all(&pending).map_err(write_error)?;
+            let mut existing = open_existing_file(&target)?;
+            let permissions = existing
+                .as_ref()
+                .and_then(|file| file.metadata().ok())
+                .map(|metadata| metadata.permissions());
+            if let Some(original) = existing.as_mut()
+                && fs::symlink_metadata(&target).is_ok_and(|metadata| metadata.is_file())
+            {
+                let read_error = |source| Error::Io {
+                    path: target.clone(),
+                    source,
+                };
+                if equal_file_contents(original, &mut file).map_err(read_error)? {
+                    return Ok(None);
+                }
+                original.rewind().map_err(read_error)?;
+            }
+            sync_staged_file(&file, permissions.clone()).map_err(write_error)?;
+            Ok::<_, Error>(Some((existing, permissions)))
+        })();
+        drop(file);
+        let Some((existing, permissions)) = prepared? else {
+            return Ok(());
+        };
+        let original = stage_original(&target, existing, permissions)?;
+        self.files.push(StagedFile {
+            target,
+            staged,
+            original,
+        });
+        Ok(())
     }
 
     pub(crate) fn publish(self) -> Result<()> {
@@ -1462,6 +1723,62 @@ impl StagedSave {
     }
 }
 
+fn stage_original(
+    target: &Path,
+    original: Option<fs::File>,
+    permissions: Option<fs::Permissions>,
+) -> Result<Option<TemporaryFile>> {
+    original
+        .map(|mut file| {
+            stage_file_with(target, permissions, |copy| {
+                std::io::copy(&mut file, copy).map(|_| ())
+            })
+        })
+        .transpose()
+}
+
+fn file_matches_parts(file: &mut fs::File, parts: &[&[u8]]) -> std::io::Result<bool> {
+    let length: u64 = parts.iter().map(|part| part.len() as u64).sum();
+    if file.metadata()?.len() != length {
+        return Ok(false);
+    }
+    let mut file = BufReader::with_capacity(length.clamp(1, 64 * 1024) as usize, file);
+    for mut part in parts.iter().copied() {
+        while !part.is_empty() {
+            let chunk = file.fill_buf()?;
+            let count = chunk.len().min(part.len());
+            if count == 0 || chunk[..count] != part[..count] {
+                return Ok(false);
+            }
+            file.consume(count);
+            part = &part[count..];
+        }
+    }
+    Ok(file.fill_buf()?.is_empty())
+}
+
+fn equal_file_contents(original: &mut fs::File, staged: &mut fs::File) -> std::io::Result<bool> {
+    if original.metadata()?.len() != staged.metadata()?.len() {
+        return Ok(false);
+    }
+    staged.rewind()?;
+    let mut original = BufReader::with_capacity(EXPORT_BUFFER_SIZE, original);
+    let mut staged = BufReader::with_capacity(EXPORT_BUFFER_SIZE, staged);
+    loop {
+        let left = original.fill_buf()?;
+        let right = staged.fill_buf()?;
+        let count = left.len().min(right.len());
+        if count == 0 {
+            return Ok(left.is_empty() && right.is_empty());
+        }
+        if left[..count] != right[..count] {
+            return Ok(false);
+        }
+        original.consume(count);
+        staged.consume(count);
+    }
+}
+
 pub(crate) fn atomic_save(outputs: Vec<(PathBuf, Vec<u8>)>) -> Result<()> {
     let mut staged = StagedSave::default();
     for (target, bytes) in outputs {
@@ -1473,27 +1790,171 @@ pub(crate) fn atomic_save(outputs: Vec<(PathBuf, Vec<u8>)>) -> Result<()> {
 #[cfg(test)]
 mod save_transaction_tests {
     use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn reopening_a_save_checks_the_disk_bytes_of_reused_external_levels() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("world.ldtk");
+        let mut project = Project::new();
+        let edited = project.level_keys()[0];
+        let untouched = project.add_level(None, "Untouched", 256, 256).unwrap();
+        project.set_external_levels(true).unwrap();
+        project.save(&path).unwrap();
+        let (mut loaded, snapshot) = Project::load_with_snapshot(&path).unwrap();
+        let previous = loaded.clone();
+        loaded.level_mut(edited).unwrap()["bgColor"] = Value::String("#112233".into());
+
+        let mut published = PublishedDocuments::default();
+        loaded.save_if_unchanged_capturing_documents(&path, &snapshot, Some(&mut published)).unwrap();
+        assert_eq!(published.reusable_levels.len(), 1);
+        let (target, (level, _, _)) = published.reusable_levels.iter().next().unwrap();
+        assert!(std::ptr::eq(level.as_ref(), previous.level(untouched).unwrap()));
+        let mut bytes = fs::read(target).unwrap();
+        bytes.push(b'\n');
+        fs::write(target, bytes).unwrap();
+        let error = Project::load_snapshot_with_documents(&path, Some(published))
+            .err()
+            .expect("changed reused level must fail reload");
+        assert!(error.to_string().contains("Project files changed during reload"));
+    }
+
+    #[test]
+    fn save_and_reload_detects_same_size_changes_to_untouched_levels_during_save() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("world.ldtk");
+        let mut project = Project::new();
+        let edited = project.level_keys()[0];
+        let untouched = project.add_level(None, "Untouched", 256, 256).unwrap();
+        project.level_mut(untouched).unwrap()["note"] = json!("original");
+        project.set_external_levels(true).unwrap();
+        project.save(&path).unwrap();
+        let (mut project, snapshot) = Project::load_with_snapshot(&path).unwrap();
+        let target = dir.path().join(
+            project.level_stub(untouched).unwrap()["externalRelPath"]
+                .as_str()
+                .unwrap(),
+        );
+        let original = fs::read_to_string(&target).unwrap();
+        let changed = original.replace("\"original\"", "\"modified\"");
+        assert_ne!(changed, original);
+        assert_eq!(changed.len(), original.len());
+        assert!(snapshot.changed_files().unwrap().is_empty());
+        project.level_mut(edited).unwrap()["bgColor"] = json!("#112233");
+
+        let mut published = PublishedDocuments::default();
+        project
+            .save_document_with_progress(
+                &path,
+                false,
+                Some(&snapshot),
+                Some(&mut published),
+                &mut |stage, done, _, _| {
+                    if stage == SaveStage::WriteProject && done == 0 {
+                        fs::write(&target, &changed).unwrap();
+                    }
+                },
+            )
+            .unwrap();
+        assert_eq!(fs::read_to_string(&target).unwrap(), changed);
+        let error = Project::load_snapshot_with_documents(&path, Some(published))
+            .err()
+            .expect("changed untouched level must fail reload");
+        assert!(error.to_string().contains("Project files changed during reload"));
+        assert_eq!(
+            Project::load(&path).unwrap().level(edited).unwrap()["bgColor"],
+            "#112233"
+        );
+    }
+
+    #[test]
+    fn streamed_exports_preserve_identical_files_and_publish_changes_after_spilling() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("map.json");
+        for len in [32, 2 * EXPORT_BUFFER_SIZE + 1] {
+            let mut bytes = vec![b'a'; len];
+            fs::write(&target, &bytes).unwrap();
+            let mut staged = StagedSave::default();
+            staged
+                .add_writer(target.clone(), |writer| {
+                    for chunk in bytes.chunks(4097) {
+                        writer.write_all(chunk)?;
+                    }
+                    if len < EXPORT_BUFFER_SIZE {
+                        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1);
+                    }
+                    Ok(())
+                })
+                .unwrap();
+            assert!(staged.files.is_empty());
+            assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1);
+
+            bytes[len - 1] = b'z';
+            staged
+                .add_writer(target.clone(), |writer| writer.write_all(&bytes))
+                .unwrap();
+            assert_eq!(staged.files.len(), 1);
+            assert_eq!(fs::read(&target).unwrap()[len - 1], b'a');
+            staged.publish().unwrap();
+            assert_eq!(fs::read(&target).unwrap(), bytes);
+            assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1);
+        }
+    }
+
+    #[test]
+    fn writer_failure_cleans_up_both_temporary_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("existing.json");
+        fs::write(&target, b"original").unwrap();
+
+        for len in [32, EXPORT_BUFFER_SIZE + 1] {
+            let mut staged = StagedSave::default();
+            let result = staged.add_writer(target.clone(), |file| {
+                file.write_all(&vec![b'p'; len])?;
+                Err(io::Error::other("injected write failure"))
+            });
+            assert!(result.is_err());
+            assert!(staged.files.is_empty());
+            assert_eq!(fs::read(&target).unwrap(), b"original");
+            assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1);
+        }
+    }
 
     #[test]
     fn a_late_rename_failure_restores_existing_files_and_removes_new_ones() {
         let dir = tempfile::tempdir().unwrap();
         let first = dir.path().join("existing.ldtkl");
+        let map = dir.path().join("map.tmx");
         let created = dir.path().join("created.ldtkl");
         let last = dir.path().join("project.ldtk");
         fs::write(&first, b"old level").unwrap();
         fs::write(&last, b"old project").unwrap();
+        let prefix = vec![b'0'; 64 * 1024 + 1];
+        let original_map = [prefix.as_slice(), b"old"].concat();
+        fs::write(&map, &original_map).unwrap();
 
         let mut staged = StagedSave::default();
-        staged.add(first.clone(), b"new level", false).unwrap();
+        staged
+            .add_parts(map.clone(), &[&prefix[..3], b"", &prefix[3..], b"old"], true)
+            .unwrap();
+        assert!(staged.files.is_empty());
+        staged
+            .add_parts(map.clone(), &[&prefix[..3], b"", &prefix[3..], b"new"], true)
+            .unwrap();
+        assert_eq!(staged.files.len(), 1);
+        staged
+            .add_writer(first.clone(), |file| file.write_all(b"new level"))
+            .unwrap();
         staged.add(created.clone(), b"new level", false).unwrap();
-        staged.add(last.clone(), b"new project", false).unwrap();
-        fs::remove_file(&staged.files[2].staged.0).unwrap();
+        staged.files.push(StagedFile::final_replacement(last.clone(), b"new project").unwrap());
+        fs::remove_file(&staged.files.last().unwrap().staged.0).unwrap();
 
         assert!(staged.publish().is_err());
+        assert_eq!(fs::read(map).unwrap(), original_map);
         assert_eq!(fs::read(first).unwrap(), b"old level");
         assert_eq!(fs::read(last).unwrap(), b"old project");
         assert!(!created.exists());
-        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 2);
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 3);
     }
 }
 
@@ -1913,7 +2374,7 @@ impl Project {
         path: impl AsRef<Path>,
         mut progress: impl FnMut(SaveStage, usize, usize, Option<&str>),
     ) -> Result<SaveReport> {
-        self.save_document_with_progress(path, true, &mut progress)?;
+        self.save_document_with_progress(path, true, None, None, &mut progress)?;
         Ok(
             self.configured_exports_report_progress(&mut |stage, done, total| {
                 progress(stage, done, total, None);
@@ -2012,6 +2473,31 @@ impl Project {
         path: impl AsRef<Path>,
         snapshot: &FilesystemSnapshot,
     ) -> Result<()> {
+        self.save_if_unchanged_capturing_documents(path, snapshot, None)
+    }
+
+    /// Save and reopen the published document against a new watch baseline.
+    /// The outer result describes the save and the inner result describes reloading.
+    pub fn save_and_reload_if_unchanged(
+        &mut self,
+        path: impl AsRef<Path>,
+        snapshot: &FilesystemSnapshot,
+    ) -> Result<Result<FilesystemSnapshot>> {
+        let mut published = PublishedDocuments::default();
+        self.save_if_unchanged_capturing_documents(path, snapshot, Some(&mut published))?;
+        let path = self.path.as_deref().expect("published document path");
+        Ok(Self::load_snapshot_with_documents(path, Some(published)).map(|(project, snapshot)| {
+            *self = project;
+            snapshot
+        }))
+    }
+
+    fn save_if_unchanged_capturing_documents(
+        &mut self,
+        path: impl AsRef<Path>,
+        snapshot: &FilesystemSnapshot,
+        published: Option<&mut PublishedDocuments>,
+    ) -> Result<()> {
         let changed = snapshot.changed_files()?;
         if !changed.is_empty() {
             return Err(Error::Invalid(format!(
@@ -2023,7 +2509,7 @@ impl Project {
                     .join(", ")
             )));
         }
-        self.save(path)
+        self.save_document_with_progress(path, true, Some(snapshot), published, &mut |_, _, _, _| {})
     }
 }
 
