@@ -640,14 +640,21 @@ pub(super) fn log_editor(ui: &mut egui::Ui, path: &Path) {
                         .fit_to_exact_size(Vec2::splat(16.)),
                 ),
             )
-            .on_hover_text("View logs")
+            .on_hover_text(locale::tr(ui, "View logs"))
             .clicked()
         })
         .inner;
     if clicked {
         app_log::flush();
         let contents = std::fs::read_to_string(path).unwrap_or_default();
-        open(ui.ctx(), owner, &contents, "LDtk logs", "LangLog", true);
+        open(
+            ui.ctx(),
+            owner,
+            &contents,
+            locale::tr(ui, "LDtk logs"),
+            "LangLog",
+            true,
+        );
     }
     let _ = show(ui, owner);
 }

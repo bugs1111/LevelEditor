@@ -1994,8 +1994,10 @@ mod tests {
             app.project.as_ref().unwrap().json["levelNamePattern"],
             "%xLevel_%idx"
         );
+        locale::set(&ctx, locale::Language::SimplifiedChinese);
         let output = frame(&mut app, &ctx, vec![]);
-        click(&mut app, &ctx, label(&output, "[reset]").unwrap().center());
+        assert!(label(&output, "[reset]").is_none());
+        click(&mut app, &ctx, label(&output, "[重置]").unwrap().center());
         assert_eq!(
             app.project.as_ref().unwrap().json["levelNamePattern"],
             "Level_%idx"

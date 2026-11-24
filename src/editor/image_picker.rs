@@ -96,7 +96,7 @@ fn icon_button(
         [30., IMAGE_BUTTON_HEIGHT],
         egui::Button::image(egui::Image::new(icon).fit_to_exact_size(Vec2::splat(16.))).fill(fill),
     )
-    .on_hover_text(label)
+    .on_hover_text(locale::tr(ui, label))
 }
 
 impl EditorApp {
@@ -183,11 +183,10 @@ impl EditorApp {
                 })
                 .inner;
             if pick
-                .on_hover_text(
-                    current
-                        .as_ref()
-                        .map_or_else(|| "Pick an image".into(), |path| path.display().to_string()),
-                )
+                .on_hover_text(current.as_ref().map_or_else(
+                    || locale::tr(ui, "Pick an image").into(),
+                    |path| path.display().to_string(),
+                ))
                 .clicked()
             {
                 let project_path = self.project.as_ref().and_then(|p| p.path.clone());
@@ -287,13 +286,13 @@ impl EditorApp {
                         let confirm = source_controls::add_sized_button(
                             ui,
                             [82., 34.],
-                            egui::Button::new("CONFIRM").fill(orange),
+                            egui::Button::new(locale::tr(ui, "CONFIRM")).fill(orange),
                         )
                         .clicked();
                         let cancel = source_controls::add_sized_button(
                             ui,
                             [82., 34.],
-                            egui::Button::new("CANCEL").fill(theme::LIGHT),
+                            egui::Button::new(locale::tr(ui, "CANCEL")).fill(theme::LIGHT),
                         )
                         .clicked();
                         (confirm, cancel)

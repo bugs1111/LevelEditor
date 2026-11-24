@@ -228,7 +228,8 @@ pub(super) fn show(
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 2.;
         let add_width = 44.;
-        let reset_label = egui::WidgetText::from(RichText::new("[reset]").size(12.));
+        let reset_label =
+            egui::WidgetText::from(RichText::new(locale::tr(ui, "[reset]")).size(12.));
         let reset_width = reset_label
             .clone()
             .into_galley(ui, None, f32::INFINITY, egui::TextStyle::Body)

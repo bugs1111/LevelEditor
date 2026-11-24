@@ -54,7 +54,7 @@ fn source_icon(
         )
     })
     .inner
-    .on_hover_text(caption)
+    .on_hover_text(locale::tr(ui, caption))
     .clicked()
 }
 

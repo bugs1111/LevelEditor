@@ -1644,6 +1644,25 @@ mod tests {
     use super::*;
 
     #[test]
+    fn bundled_form_help_has_simplified_chinese_translations() {
+        let ctx = egui::Context::default();
+        locale::set(&ctx, locale::Language::SimplifiedChinese);
+        let messages = HELP
+            .as_object()
+            .unwrap()
+            .values()
+            .chain(HELP["__info__"].as_object().unwrap().values())
+            .filter_map(Value::as_str)
+            .filter(|message| !message.is_empty());
+        let mut missing = messages
+            .filter(|message| locale::tr_ctx(&ctx, message) == *message)
+            .collect::<Vec<_>>();
+        missing.sort_unstable();
+        missing.dedup();
+        assert!(missing.is_empty(), "untranslated form help: {missing:#?}");
+    }
+
+    #[test]
     fn form_select_replays_navigation_keys_in_input_order() {
         let ctx = egui::Context::default();
         let draw = |events| {
@@ -1700,7 +1719,7 @@ mod tests {
     }
 
     #[test]
-    fn form_help_follows_preview_anchor_and_uses_png_export_description() {
+    fn form_help_follows_preview_anchor_and_uses_localized_export_descriptions() {
         fn popup_rect(shape: &egui::Shape) -> Option<Rect> {
             match shape {
                 egui::Shape::Rect(rect) if rect.fill == Color32::from_rgb(60, 97, 72) => {
@@ -1722,9 +1741,13 @@ mod tests {
             ),
             ("jsonStyle", "JSON indent style", 525., 285., true, true),
             ("jsonStyle", "JSON indent style", 40., 8., false, false),
+            ("tiled", "Export Tiled TMX", 40., 280., true, false),
         ] {
             let ctx = egui::Context::default();
             theme::configure(&ctx);
+            if key == "tiled" {
+                locale::set(&ctx, locale::Language::SimplifiedChinese);
+            }
             ctx.style_mut(|style| style.interaction.tooltip_delay = 0.);
             let cell = Rect::from_min_size(egui::pos2(left, top), egui::vec2(250., 30.));
             let screen = Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(900., 700.));
@@ -1776,6 +1799,12 @@ mod tests {
                 assert!(output.shapes.iter().any(|shape| matches!(
                     &shape.shape,
                     egui::Shape::Text(text) if text.galley.job.text.contains("flattened")
+                )));
+            }
+            if key == "tiled" {
+                assert!(output.shapes.iter().any(|shape| matches!(
+                    &shape.shape,
+                    egui::Shape::Text(text) if text.galley.job.text.contains("子文件夹中生成 Tiled TMX 文件")
                 )));
             }
         }
