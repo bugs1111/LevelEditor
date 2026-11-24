@@ -44,7 +44,7 @@ fn project_help_link(ui: &mut egui::Ui, label: &str, url: &str) -> egui::Respons
         egui::WidgetInfo::labeled(egui::WidgetType::Link, ui.is_enabled(), galley.text())
     });
     if ui.is_rect_visible(response.rect) {
-        let underline = Stroke::new(1., theme::ACCENT);
+        let underline = Stroke::new(1_f32, theme::ACCENT);
         if ui.style().interaction.selectable_labels {
             egui::text_selection::LabelSelectionState::label_text_selection(
                 ui,
@@ -1140,7 +1140,7 @@ impl EditorApp {
             );
             section.show_body_unindented(ui, |ui| {
                 egui::Frame::new()
-                    .stroke(Stroke::new(1., theme::LIGHT))
+                    .stroke(Stroke::new(1_f32, theme::LIGHT))
                     .inner_margin(8)
                     .show(ui, |ui| {
                         source_controls::centered_help_card(
@@ -1338,7 +1338,7 @@ mod tests {
                 })
                 .expect("Tiled help link");
             assert!(text.galley.rows.len() > 1, "narrow link must wrap");
-            assert_eq!(text.underline, Stroke::new(1., theme::ACCENT));
+            assert_eq!(text.underline, Stroke::new(1_f32, theme::ACCENT));
             assert!(
                 text.galley
                     .job
@@ -1354,7 +1354,7 @@ mod tests {
             );
             assert!(hover.shapes.iter().any(|shape| {
                 matches!(&shape.shape, egui::Shape::Text(text) if text.galley.text() == locale::tr_ctx(&ctx, LABEL)
-                    && text.underline == Stroke::new(1., theme::ACCENT))
+                    && text.underline == Stroke::new(1_f32, theme::ACCENT))
             }));
 
             let opened = |out: egui::FullOutput, new_tab| {
