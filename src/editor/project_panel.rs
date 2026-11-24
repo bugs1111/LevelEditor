@@ -1106,9 +1106,10 @@ impl EditorApp {
                     .stroke(Stroke::new(1., theme::LIGHT))
                     .inner_margin(8)
                     .show(ui, |ui| {
-                        source_controls::help_card(ui, ui.available_width(), 56., |ui| {
-                            source_controls::help_paragraph(ui, "Advanced options are not recommended for most users as they might break compatibility with older game APIs. Please make sure you know what you're doing before using any of them!");
-                        });
+                        source_controls::centered_help_card(
+                            ui, ui.available_width(), 56.,
+                            "Advanced options are not recommended for most users as they might break compatibility with older game APIs. Please make sure you know what you're doing before using any of them!",
+                        );
                         ui.add_space(12.);
                         for (flag, label, description) in options {
                             let mut enabled = flags.iter().any(|value| value == flag);

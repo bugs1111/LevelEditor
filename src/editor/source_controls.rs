@@ -414,14 +414,22 @@ pub(super) fn pivot_grid_sized(ui: &mut egui::Ui, pivot: [f64; 2], cell: f32) ->
 
 pub(in crate::app) const HELP_GREEN: Color32 = Color32::from_rgb(121, 221, 138);
 
+const HELP_CARD_MARGIN: egui::Margin = egui::Margin {
+    left: 61,
+    right: 11,
+    top: 11,
+    bottom: 11,
+};
+
+fn help_paragraph_font() -> FontId {
+    FontId::new(16., egui::FontFamily::Name("panel-title".into()))
+}
+
 pub(in crate::app) fn help_paragraph(ui: &mut egui::Ui, message: &str) {
     ui.add(
         egui::Label::new(
             RichText::new(locale::tr(ui, message))
-                .font(FontId::new(
-                    16.,
-                    egui::FontFamily::Name("panel-title".into()),
-                ))
+                .font(help_paragraph_font())
                 .color(HELP_GREEN),
         )
         .wrap(),
@@ -435,12 +443,7 @@ pub(in crate::app) fn help_card(
     content: impl FnOnce(&mut egui::Ui),
 ) -> Rect {
     let rect = egui::Frame::new()
-        .inner_margin(egui::Margin {
-            left: 61,
-            right: 11,
-            top: 11,
-            bottom: 11,
-        })
+        .inner_margin(HELP_CARD_MARGIN)
         .show(ui, |ui| {
             ui.set_width(width - 72.);
             ui.set_min_height((height - 22.).max(0.));
@@ -448,6 +451,34 @@ pub(in crate::app) fn help_card(
         })
         .response
         .rect;
+    paint_help_card(ui, rect, rect.top() + 30.);
+    rect
+}
+
+pub(in crate::app) fn centered_help_card(
+    ui: &mut egui::Ui,
+    width: f32,
+    height: f32,
+    message: &str,
+) {
+    let margin = HELP_CARD_MARGIN;
+    let paragraph = ui.painter().layout(
+        locale::tr(ui, message).into(),
+        help_paragraph_font(),
+        HELP_GREEN,
+        (width - margin.sum().x).max(1.),
+    );
+    let height = height.max(paragraph.size().y + margin.sum().y);
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(width, height), Sense::hover());
+    paint_help_card(ui, rect, rect.center().y);
+    ui.painter().galley(
+        rect.left_center() + egui::vec2(f32::from(margin.left), -paragraph.size().y * 0.5),
+        paragraph,
+        HELP_GREEN,
+    );
+}
+
+fn paint_help_card(ui: &egui::Ui, rect: Rect, icon_center_y: f32) {
     let points = [
         rect.left_top(),
         rect.right_top(),
@@ -463,9 +494,11 @@ pub(in crate::app) fn help_card(
     ));
     egui::Image::new(egui::include_image!("../../assets/icons/helpBg.svg")).paint_at(
         ui,
-        Rect::from_min_size(rect.left_top() + Vec2::splat(6.), Vec2::splat(48.)),
+        Rect::from_center_size(
+            egui::pos2(rect.left() + 30., icon_center_y),
+            Vec2::splat(48.),
+        ),
     );
-    rect
 }
 
 pub(in crate::app) fn scroll_style() -> egui::style::ScrollStyle {
@@ -1658,6 +1691,38 @@ pub(in crate::app) fn checkbox(ui: &mut egui::Ui, value: &mut bool, label: &str)
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn centered_help_card_keeps_wrapped_text_centered_as_the_card_grows() {
+        let ctx = egui::Context::default();
+        theme::configure(&ctx);
+        let message = "Project settings may affect compatibility with older game APIs.";
+        for (width, wraps) in [(720., false), (215., true)] {
+            let mut card = Rect::NOTHING;
+            let output = ctx.run(egui::RawInput::default(), |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    card = ui
+                        .scope(|ui| centered_help_card(ui, width, 56., message))
+                        .response
+                        .rect;
+                });
+            });
+            let paragraph = output
+                .shapes
+                .iter()
+                .find_map(|shape| match &shape.shape {
+                    egui::Shape::Text(text) if text.galley.text() == message => Some(text),
+                    _ => None,
+                })
+                .unwrap();
+            let rect = Rect::from_min_size(paragraph.pos, paragraph.galley.size());
+            assert_eq!(paragraph.galley.rows.len() > 1, wraps);
+            assert_eq!(card.height() > 56., wraps);
+            assert!((rect.center().y - card.center().y).abs() < 0.5);
+            assert!((rect.top() - card.top()) >= 11.);
+            assert!((card.bottom() - rect.bottom()) >= 11.);
+        }
+    }
 
     #[test]
     fn bundled_form_help_has_simplified_chinese_translations() {
