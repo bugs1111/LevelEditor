@@ -1171,7 +1171,6 @@ mod tests {
         app.viewport.zoom = 0.75;
         let ctx = egui::Context::default();
         theme::configure(&ctx);
-        theme::use_reference_layout_fonts(&ctx);
         app.start_level_spot_picker();
         let _ = frame(&mut app, &ctx, vec![], egui::Modifiers::NONE);
         for (pos, color) in [
@@ -1202,10 +1201,22 @@ mod tests {
             assert_eq!(cross.count(), 2);
             let text = label_center(&output, "Pick a spot for a new level");
             assert!(text.y > 600. * 0.85);
-            assert!(output.shapes.iter().any(|shape| {
-                matches!(&shape.shape, egui::Shape::Text(t) if
-                    t.galley.job.text == "Pick a spot for a new level" && t.galley.rows.len() == 2)
-            }));
+            let instructions = output
+                .shapes
+                .iter()
+                .find_map(|shape| match &shape.shape {
+                    egui::Shape::Text(text)
+                        if text.galley.text() == "Pick a spot for a new level" =>
+                    {
+                        Some(&text.galley)
+                    }
+                    _ => None,
+                })
+                .expect("picker instruction banner");
+            assert_eq!(instructions.job.wrap.max_width, 174.);
+            assert_eq!(instructions.job.halign, egui::Align::Center);
+            assert!(!instructions.elided);
+            assert!(instructions.size().x <= 174.);
         }
     }
 
