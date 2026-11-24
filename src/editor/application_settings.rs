@@ -515,8 +515,13 @@ mod tests {
         }
     }
     fn setup() -> (EditorApp, egui::Context) {
+        setup_with_fonts(|_| {})
+    }
+
+    fn setup_with_fonts(configure: impl FnOnce(&egui::Context)) -> (EditorApp, egui::Context) {
         let ctx = egui::Context::default();
         theme::configure(&ctx);
+        configure(&ctx);
         let mut app = EditorApp::empty();
         app.repaint = Some(ctx.clone());
         app.set_project(Project::new());
@@ -678,7 +683,7 @@ mod tests {
 
     #[test]
     fn source_app_settings_restores_friendly_choices_and_percentage_selectors() {
-        let (mut app, ctx) = setup();
+        let (mut app, ctx) = setup_with_fonts(theme::use_reference_layout_fonts);
         let output = frame(&mut app, &ctx, vec![]);
         for name in [
             "Outlined texts (default)",
@@ -945,7 +950,7 @@ mod tests {
 
     #[test]
     fn source_app_settings_centers_fixed_columns_and_scrolls_the_entire_short_dialog() {
-        let (mut app, ctx) = setup();
+        let (mut app, ctx) = setup_with_fonts(theme::use_reference_layout_fonts);
         let rect = || {
             egui::AreaState::load(&ctx, egui::Id::new("app-settings-dialog"))
                 .unwrap()

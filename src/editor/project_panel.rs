@@ -1479,6 +1479,7 @@ mod tests {
     #[test]
     fn project_form_aligns_labels_and_spaces_sections_like_the_preview() {
         let (mut app, ctx) = editor();
+        theme::use_reference_layout_fonts(&ctx);
         let values = &mut app.project.as_mut().unwrap().json;
         values["backupOnSave"] = json!(false);
         values["jsonStyle"] = json!("Full");

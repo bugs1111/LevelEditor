@@ -1411,6 +1411,7 @@ mod tests {
     #[test]
     fn world_and_level_forms_top_align_wrapped_labels_and_controls() {
         let (mut app, ctx) = editor();
+        theme::use_reference_layout_fonts(&ctx);
         ctx.style_mut(|style| style.spacing.item_spacing.y = 0.);
         let key = app.selected.unwrap();
         let project = app.project.as_mut().unwrap();

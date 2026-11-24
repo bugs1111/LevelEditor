@@ -68,6 +68,46 @@ pub(crate) fn set_font_language(ctx: &egui::Context, chinese: bool) {
     ctx.set_fonts(FONT_DEFINITIONS[usize::from(chinese)].clone());
 }
 
+#[cfg(test)]
+pub(crate) fn use_reference_layout_fonts(ctx: &egui::Context) {
+    // These tests compare exact coordinates measured with the original UI typography.
+    // Keep the reference font metrics local to those tests.
+    static REFERENCE: LazyLock<FontDefinitions> = LazyLock::new(|| {
+        let mut fonts = FONT_DEFINITIONS[0].clone();
+        let arial = if cfg!(target_os = "macos") {
+            PathBuf::from("/System/Library/Fonts/Supplemental")
+        } else {
+            windows_font_directory()
+        };
+        for (weight, file) in [(REGULAR, "Arial.ttf"), (BOLD, "Arial Bold.ttf")] {
+            let file = if cfg!(target_os = "windows") && weight == BOLD {
+                "arialbd.ttf"
+            } else {
+                file
+            };
+            if let Ok(bytes) = std::fs::read(arial.join(file)) {
+                fonts
+                    .font_data
+                    .insert(LATIN[weight].into(), Arc::new(FontData::from_owned(bytes)));
+            }
+        }
+        for (name, weight) in [
+            ("heading", BOLD),
+            ("panel-title", LIGHT),
+            ("panel-header", REGULAR),
+        ] {
+            let sequence = fonts
+                .families
+                .get_mut(&FontFamily::Name(name.into()))
+                .unwrap();
+            sequence.retain(|entry| entry != BUNDLED_LATIN[weight]);
+            sequence.insert(0, BUNDLED_LATIN[weight].into());
+        }
+        fonts
+    });
+    ctx.set_fonts(REFERENCE.clone());
+}
+
 fn with_priorities(mut fonts: FontDefinitions, chinese: bool) -> FontDefinitions {
     let defaults = fonts.families[&FontFamily::Proportional].clone();
     for (family, weight) in [

@@ -592,6 +592,7 @@ mod tests {
     #[test]
     fn collapsed_inspector_matches_the_source_header_and_field_spacing() {
         let mut f = Fixture::new();
+        theme::use_reference_layout_fonts(&f.ctx);
         let project = f.app.project.as_mut().unwrap();
         let uid = project.json["defs"]["entities"][0]["uid"].as_i64().unwrap();
         project

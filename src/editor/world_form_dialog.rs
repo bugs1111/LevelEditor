@@ -375,6 +375,7 @@ mod tests {
         app.set_project(project);
         let ctx = egui::Context::default();
         theme::configure(&ctx);
+        theme::use_reference_layout_fonts(&ctx);
         let before = app.project.as_ref().unwrap().json.clone();
         for (action, fill) in [
             (WorldFormAction::DuplicateLevel(key), theme::MEDIUM),

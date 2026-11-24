@@ -3,6 +3,8 @@ use eframe::egui::{self, Color32, FontFamily, FontId, TextStyle};
 #[path = "theme/fonts.rs"]
 mod fonts;
 pub(crate) use fonts::set_font_language;
+#[cfg(test)]
+pub(crate) use fonts::use_reference_layout_fonts;
 
 pub const DARK: Color32 = Color32::from_rgb(0x1e, 0x22, 0x29);
 pub const MEDIUM: Color32 = Color32::from_rgb(0x2e, 0x33, 0x3f);

@@ -148,6 +148,7 @@ fn header_controls_do_not_change_the_panel_body_position() {
 fn tileset_sidebar_uses_compact_rows_and_orders_untagged_before_named_groups() {
     let ctx = egui::Context::default();
     theme::configure(&ctx);
+    theme::use_reference_layout_fonts(&ctx);
     ctx.style_mut(|style| style.animation_time = 0.);
     let mut app = EditorApp::empty();
     app.set_project(Project::new());
@@ -437,6 +438,7 @@ fn source_layer_form_keeps_the_outer_scrollbar_out_of_the_column_grid() {
 fn source_layer_sidebar_keeps_full_width_compact_rows_and_selects_by_icon() {
     let ctx = egui::Context::default();
     theme::configure(&ctx);
+    theme::use_reference_layout_fonts(&ctx);
     ctx.style_mut(|style| style.animation_time = 0.);
     let mut project = Project::new();
     let lower = project.add_layer("Road", "Tiles", 16).unwrap();
@@ -1275,6 +1277,7 @@ fn field_display_controls_follow_the_owner_and_mode_in_one_row() {
     for (owner, panel) in [(None, Panel::Fields), (Some(entity), Panel::Entities)] {
         let ctx = egui::Context::default();
         theme::configure(&ctx);
+        theme::use_reference_layout_fonts(&ctx);
         let mut app = EditorApp::empty();
         app.set_project(project.clone());
         app.field_owner = owner;
