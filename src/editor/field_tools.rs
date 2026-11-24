@@ -2,7 +2,11 @@ use super::*;
 use serde_json::json;
 
 fn point_coordinates(value: &Value) -> Option<String> {
-    Some(format!("{},{}", value["cx"].as_i64()?, value["cy"].as_i64()?))
+    Some(format!(
+        "{},{}",
+        value["cx"].as_i64()?,
+        value["cy"].as_i64()?
+    ))
 }
 
 pub(super) fn point_array_is_compact(definition: &Value) -> bool {
@@ -192,8 +196,8 @@ pub(super) fn sortable_array_field_rows(
                 .as_ref()
                 .filter(|drag| preview && drag.from == index)
                 .map(|drag| drag.grab);
-            let first_paint = (preview && drag.is_some())
-                .then(|| ui.painter().add(egui::Shape::Noop));
+            let first_paint =
+                (preview && drag.is_some()).then(|| ui.painter().add(egui::Shape::Noop));
             let row = ui.horizontal(|ui| {
                 if active.is_some() {
                     ui.multiply_opacity(0.7);
@@ -237,11 +241,16 @@ pub(super) fn sortable_array_field_rows(
                     .as_ref()
                     .and_then(|drag| drag.rows.get(index))
                     .map_or_else(
-                        || ArrayRowSlide { top, ..Default::default() },
+                        || ArrayRowSlide {
+                            top,
+                            ..Default::default()
+                        },
                         |before| before.place(top, now),
                     );
                 let offset = row.offset(now);
-                if offset != 0. && let Some(first) = first_paint {
+                if offset != 0.
+                    && let Some(first) = first_paint
+                {
                     slide_array_row_shapes(ui, first, offset);
                     animating = true;
                 }
@@ -350,9 +359,21 @@ fn paint_array_field_drag(
     ));
 }
 
-pub(super) fn picker_outline(painter: &egui::Painter, rect: Rect, stroke: Stroke, dash: f32, gap: f32) {
+pub(super) fn picker_outline(
+    painter: &egui::Painter,
+    rect: Rect,
+    stroke: Stroke,
+    dash: f32,
+    gap: f32,
+) {
     painter.extend(egui::Shape::dashed_line(
-        &[rect.left_top(), rect.right_top(), rect.right_bottom(), rect.left_bottom(), rect.left_top()],
+        &[
+            rect.left_top(),
+            rect.right_top(),
+            rect.right_bottom(),
+            rect.left_bottom(),
+            rect.left_top(),
+        ],
         stroke,
         dash,
         gap,
@@ -369,7 +390,10 @@ pub(super) fn picker_banner(
     let screen = ctx.content_rect();
     let error_fill = Color32::from_rgb(227, 77, 0);
     egui::Area::new(egui::Id::new(id))
-        .fixed_pos(egui::pos2(screen.center().x - 200., screen.top() + screen.height() * 0.85))
+        .fixed_pos(egui::pos2(
+            screen.center().x - 200.,
+            screen.top() + screen.height() * 0.85,
+        ))
         .default_size(egui::vec2(434., 82.))
         .order(egui::Order::Foreground)
         .constrain(false)
@@ -391,7 +415,8 @@ pub(super) fn picker_banner(
                 } else {
                     FontId::new(14.667, egui::FontFamily::Name("body-bold".into()))
                 };
-                let mut job = egui::text::LayoutJob::simple(message.into(), font, color, wrap_width);
+                let mut job =
+                    egui::text::LayoutJob::simple(message.into(), font, color, wrap_width);
                 if !error {
                     job.halign = egui::Align::Center;
                 }
@@ -415,7 +440,9 @@ pub(super) fn picker_banner(
                         egui::vec2(100., 35.),
                     ),
                     egui::Button::new(
-                        RichText::new(locale::tr(ui, "CANCEL")).size(13.333).color(Color32::WHITE),
+                        RichText::new(locale::tr(ui, "CANCEL"))
+                            .size(13.333)
+                            .color(Color32::WHITE),
                     )
                     .fill(theme::LIGHT)
                     .corner_radius(0.),
@@ -611,12 +638,19 @@ impl FieldPick {
             Some("OnlyTags") => locale::tr(ui, "any entity with tag TODO").into(),
             _ => locale::tr(ui, "any entity").into(),
         };
-        let location = locale::tr(ui, if definition.is_some_and(|d| d["allowOutOfLevelRef"] == false) {
-            "in this level"
-        } else {
-            "in any level"
-        });
-        locale::format(ui, "Pick {target} {location}", &[("target", &target), ("location", location)])
+        let location = locale::tr(
+            ui,
+            if definition.is_some_and(|d| d["allowOutOfLevelRef"] == false) {
+                "in this level"
+            } else {
+                "in any level"
+            },
+        );
+        locale::format(
+            ui,
+            "Pick {target} {location}",
+            &[("target", &target), ("location", location)],
+        )
     }
 }
 
@@ -777,9 +811,10 @@ impl EditorApp {
     pub(super) fn picking_point_in_level_panel(&self) -> bool {
         !self.world
             && self.panel == Some(Panel::Level)
-            && self.point_pick.as_ref().is_some_and(|pick| {
-                pick.owner.is_none() && pick.panel == self.panel
-            })
+            && self
+                .point_pick
+                .as_ref()
+                .is_some_and(|pick| pick.owner.is_none() && pick.panel == self.panel)
     }
 
     pub(super) fn point_selection_has_priority(&self, world: [f32; 2], alt: bool) -> bool {
@@ -859,7 +894,14 @@ impl EditorApp {
         ui.painter().rect_stroke(
             rect,
             4.,
-            Stroke::new(1_f32, if highlighted { theme::ACCENT } else { theme::LIGHT }),
+            Stroke::new(
+                1_f32,
+                if highlighted {
+                    theme::ACCENT
+                } else {
+                    theme::LIGHT
+                },
+            ),
             egui::StrokeKind::Inside,
         );
         let painter = ui.painter().with_clip_rect(rect.shrink(1.));
@@ -891,14 +933,22 @@ impl EditorApp {
             egui::Align2::LEFT_TOP,
             name,
             FontId::proportional(12.),
-            if highlighted { Color32::WHITE } else { theme::ACCENT },
+            if highlighted {
+                Color32::WHITE
+            } else {
+                theme::ACCENT
+            },
         );
         painter.text(
             egui::pos2(text_x, rect.top() + 17.),
             egui::Align2::LEFT_TOP,
             location,
             FontId::proportional(10.667),
-            if highlighted { Color32::WHITE } else { Color32::from_rgb(115, 127, 157) },
+            if highlighted {
+                Color32::WHITE
+            } else {
+                Color32::from_rgb(115, 127, 157)
+            },
         );
         Some(response.on_hover_cursor(egui::CursorIcon::PointingHand))
     }
@@ -935,75 +985,86 @@ impl EditorApp {
         let can_add = array
             && (values.len() as u64) < definition["arrayMaxLength"].as_u64().unwrap_or(u64::MAX);
         if array && inner == "Point" {
-            let group = array_field_frame(values.is_empty())
-                .show(ui, |ui| {
-                    ui.spacing_mut().item_spacing.y = 0.;
-                    if point_array_is_compact(definition) && !values.is_empty() {
-                        let summary = values
-                            .iter()
-                            .map(|value| {
-                                point_coordinates(value)
-                                    .map(|point| format!("<{point}>"))
-                                    .unwrap_or_default()
-                            })
-                            .collect::<Vec<_>>()
-                            .join(", ");
-                        let (row, _) = ui.allocate_exact_size(
-                            egui::vec2(ui.available_width(), 37.),
-                            Sense::hover(),
-                        );
-                        let color = Color32::from_rgb(115, 127, 157);
-                        let text = ui.painter().layout(
-                            summary,
-                            FontId::proportional(12.),
-                            color,
-                            row.width(),
-                        );
-                        ui.painter().with_clip_rect(row).galley(row.min, text, color);
-                    } else {
-                        for (index, value) in values.iter().enumerate() {
-                            ui.push_id(index, |ui| {
-                                ui.horizontal(|ui| {
-                                    ui.spacing_mut().item_spacing.x = 0.;
-                                    let required = value.is_null() && definition["canBeNull"] != true;
-                                    ui.set_height(if required { 39. } else { 28. });
-                                    if required {
-                                        let show_cancel = self.point_pick.as_ref().is_some_and(|pick| {
+            let group = array_field_frame(values.is_empty()).show(ui, |ui| {
+                ui.spacing_mut().item_spacing.y = 0.;
+                if point_array_is_compact(definition) && !values.is_empty() {
+                    let summary = values
+                        .iter()
+                        .map(|value| {
+                            point_coordinates(value)
+                                .map(|point| format!("<{point}>"))
+                                .unwrap_or_default()
+                        })
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    let (row, _) = ui
+                        .allocate_exact_size(egui::vec2(ui.available_width(), 37.), Sense::hover());
+                    let color = Color32::from_rgb(115, 127, 157);
+                    let text =
+                        ui.painter()
+                            .layout(summary, FontId::proportional(12.), color, row.width());
+                    ui.painter()
+                        .with_clip_rect(row)
+                        .galley(row.min, text, color);
+                } else {
+                    for (index, value) in values.iter().enumerate() {
+                        ui.push_id(index, |ui| {
+                            ui.horizontal(|ui| {
+                                ui.spacing_mut().item_spacing.x = 0.;
+                                let required = value.is_null() && definition["canBeNull"] != true;
+                                ui.set_height(if required { 39. } else { 28. });
+                                if required {
+                                    let show_cancel =
+                                        self.point_pick.as_ref().is_some_and(|pick| {
                                             pick.show_point_cancel
                                                 && pick.key == key
                                                 && pick.owner.as_deref() == owner
                                                 && definition["uid"] == pick.uid
                                                 && pick.index == Some(index)
                                         });
-                                        let label = locale::tr(
-                                            ui,
-                                            if show_cancel { "Cancel" } else { "Point required!" },
-                                        )
-                                        .to_uppercase();
-                                        ui.add_space(1.);
-                                        let response = ui.scope(|ui| {
+                                    let label = locale::tr(
+                                        ui,
+                                        if show_cancel {
+                                            "Cancel"
+                                        } else {
+                                            "Point required!"
+                                        },
+                                    )
+                                    .to_uppercase();
+                                    ui.add_space(1.);
+                                    let response = ui
+                                        .scope(|ui| {
                                             let error = Color32::from_rgb(227, 77, 0);
                                             let widgets = &mut ui.visuals_mut().widgets;
                                             widgets.inactive.weak_bg_fill = error;
-                                            for style in [&mut widgets.hovered, &mut widgets.active] {
+                                            for style in [&mut widgets.hovered, &mut widgets.active]
+                                            {
                                                 style.weak_bg_fill = Color32::from_rgb(255, 93, 74);
                                                 style.expansion = 0.;
                                             }
                                             ui.spacing_mut().button_padding = egui::vec2(1., 4.);
                                             let glow = ui.painter().add(egui::Shape::Noop);
-                                            let response = panels::source_controls::add_sized_button(
-                                                ui,
-                                                [77., 38.],
-                                                egui::Button::new(
-                                                    RichText::new(label).size(13.333).color(Color32::WHITE),
-                                                ).wrap(),
+                                            let response =
+                                                panels::source_controls::add_sized_button(
+                                                    ui,
+                                                    [77., 38.],
+                                                    egui::Button::new(
+                                                        RichText::new(label)
+                                                            .size(13.333)
+                                                            .color(Color32::WHITE),
+                                                    )
+                                                    .wrap(),
+                                                );
+                                            ui.painter().set(
+                                                glow,
+                                                egui::epaint::Shadow {
+                                                    offset: [0, 0],
+                                                    blur: 32,
+                                                    spread: 0,
+                                                    color: error,
+                                                }
+                                                .as_shape(response.rect, 0.),
                                             );
-                                            ui.painter().set(glow, egui::epaint::Shadow {
-                                                offset: [0, 0],
-                                                blur: 32,
-                                                spread: 0,
-                                                color: error,
-                                            }.as_shape(response.rect, 0.));
                                             ui.painter().rect_stroke(
                                                 response.rect,
                                                 0.,
@@ -1011,50 +1072,54 @@ impl EditorApp {
                                                 StrokeKind::Outside,
                                             );
                                             response
-                                        }).inner;
-                                        pick_rect = Some(response.rect);
-                                        if response.clicked() {
-                                            if self.picking_point() {
-                                                self.cancel_point_pick();
-                                            } else {
-                                                requested = Some(Some(index));
-                                            }
+                                        })
+                                        .inner;
+                                    pick_rect = Some(response.rect);
+                                    if response.clicked() {
+                                        if self.picking_point() {
+                                            self.cancel_point_pick();
+                                        } else {
+                                            requested = Some(Some(index));
                                         }
-                                    } else {
-                                        egui::Frame::new()
-                                            .fill(theme::MEDIUM)
-                                            .corner_radius(6.)
-                                            .inner_margin(4)
-                                            .show(ui, |ui| {
-                                                if let Some(label) = point_coordinates(value) {
-                                                    ui.add(
-                                                        egui::Label::new(
-                                                            RichText::new(label).monospace().size(13.333),
-                                                        ).selectable(false),
-                                                    );
-                                                }
-                                            });
                                     }
-                                    if array_field_remove(ui).clicked() {
-                                        edit = Some(ui_fields::FieldEdit::Array(
-                                            ldtk_core::FieldArrayEdit::Remove { index },
-                                        ));
-                                    }
-                                });
+                                } else {
+                                    egui::Frame::new()
+                                        .fill(theme::MEDIUM)
+                                        .corner_radius(6.)
+                                        .inner_margin(4)
+                                        .show(ui, |ui| {
+                                            if let Some(label) = point_coordinates(value) {
+                                                ui.add(
+                                                    egui::Label::new(
+                                                        RichText::new(label)
+                                                            .monospace()
+                                                            .size(13.333),
+                                                    )
+                                                    .selectable(false),
+                                                );
+                                            }
+                                        });
+                                }
+                                if array_field_remove(ui).clicked() {
+                                    edit = Some(ui_fields::FieldEdit::Array(
+                                        ldtk_core::FieldArrayEdit::Remove { index },
+                                    ));
+                                }
                             });
-                        }
+                        });
                     }
-                    if can_add {
-                        if !values.is_empty() {
-                            ui.add_space(2.);
-                        }
-                        let response = array_field_add(ui, "Add from canvas");
-                        pick_rect = Some(response.rect);
-                        if response.clicked() {
-                            requested = Some(None);
-                        }
+                }
+                if can_add {
+                    if !values.is_empty() {
+                        ui.add_space(2.);
                     }
-                });
+                    let response = array_field_add(ui, "Add from canvas");
+                    pick_rect = Some(response.rect);
+                    if response.clicked() {
+                        requested = Some(None);
+                    }
+                }
+            });
             if !values.is_empty() {
                 array_field_border(ui, group.response.rect);
             }
@@ -1082,7 +1147,11 @@ impl EditorApp {
                     ui.set_opacity(0.35);
                 }
                 let clear_width = (width * 0.23).max(18.);
-                let pick_width = if clear { width - clear_width - 2. } else { width };
+                let pick_width = if clear {
+                    width - clear_width - 2.
+                } else {
+                    width
+                };
                 let label = if show_cancel {
                     locale::tr(ui, "Cancel").to_uppercase()
                 } else if required {
@@ -1092,7 +1161,10 @@ impl EditorApp {
                         .unwrap_or_else(|| locale::tr(ui, "<No point>").to_uppercase())
                 };
                 let (fill, hover) = if required {
-                    (Color32::from_rgb(227, 77, 0), Color32::from_rgb(255, 93, 74))
+                    (
+                        Color32::from_rgb(227, 77, 0),
+                        Color32::from_rgb(255, 93, 74),
+                    )
                 } else {
                     (Color32::from_rgb(49, 55, 66), theme::LIGHT)
                 };
@@ -1123,8 +1195,10 @@ impl EditorApp {
                     let response = ui
                         .add_sized(
                             [clear_width, height],
-                            egui::Button::new(RichText::new("X").size(13.333).color(Color32::WHITE))
-                                .frame_when_inactive(false),
+                            egui::Button::new(
+                                RichText::new("X").size(13.333).color(Color32::WHITE),
+                            )
+                            .frame_when_inactive(false),
                         )
                         .on_hover_text(locale::tr(ui, "Clear field value"));
                     if response.clicked() {
@@ -1151,9 +1225,8 @@ impl EditorApp {
                     let width = (ui.available_width() - reserved).max(24.);
                     let request = Some(array.then_some(index));
                     if let Some(iid) = iid
-                        && let Some(response) = self.reference_card(
-                            ui, key, value, width, array && owner.is_some(),
-                        )
+                        && let Some(response) =
+                            self.reference_card(ui, key, value, width, array && owner.is_some())
                     {
                         self.hover_entity_reference(&response, iid);
                         if response.clicked() {
@@ -1273,17 +1346,20 @@ impl EditorApp {
                 ui_fields::FieldEdit::Array(ldtk_core::FieldArrayEdit::Remove { .. }) => true,
                 ui_fields::FieldEdit::Value(Value::Null)
                 | ui_fields::FieldEdit::Array(
-                    ldtk_core::FieldArrayEdit::Reset { .. } | ldtk_core::FieldArrayEdit::Insert { .. },
+                    ldtk_core::FieldArrayEdit::Reset { .. }
+                    | ldtk_core::FieldArrayEdit::Insert { .. },
                 ) => inner == "EntityRef",
                 _ => false,
             };
             let uid = definition["uid"].as_i64().unwrap_or(-1);
-            let status = if inner == "EntityRef" { "" } else { "Field changed" };
+            let status = if inner == "EntityRef" {
+                ""
+            } else {
+                "Field changed"
+            };
             let applied = if owner.is_some() {
-                self.edit_level(status, key, |project| {
-                    value.apply(project, key, owner, uid)
-                })
-                .is_some()
+                self.edit_level(status, key, |project| value.apply(project, key, owner, uid))
+                    .is_some()
             } else {
                 let applied = self
                     .edit(status, |project| value.apply(project, key, owner, uid))
@@ -1343,7 +1419,8 @@ impl EditorApp {
                 self.panel = None;
                 if inner == "Point" {
                     self.status =
-                        "Click the canvas to pick a field value · Right click / Escape: finish".into();
+                        "Click the canvas to pick a field value · Right click / Escape: finish"
+                            .into();
                 }
             }
             self.stamp = None;
@@ -1369,7 +1446,11 @@ impl EditorApp {
         let Some(pick) = self.reference_pick.take() else {
             return;
         };
-        let Some(project) = self.project.as_ref().filter(|project| project.level(pick.key).is_some()) else {
+        let Some(project) = self
+            .project
+            .as_ref()
+            .filter(|project| project.level(pick.key).is_some())
+        else {
             return;
         };
         if self.selected != Some(pick.key) {
@@ -1379,15 +1460,15 @@ impl EditorApp {
                 .selected
                 .map(|key| reference_level_bounds(project, key))
                 .unwrap_or(source);
-            let owner_position = pick
-                .owner(project)
-                .filter(|_| pick.owner.is_some())
-                .map(|entity| {
-                    [
-                        entity["px"][0].as_f64().unwrap_or(0.) as f32,
-                        entity["px"][1].as_f64().unwrap_or(0.) as f32,
-                    ]
-                });
+            let owner_position =
+                pick.owner(project)
+                    .filter(|_| pick.owner.is_some())
+                    .map(|entity| {
+                        [
+                            entity["px"][0].as_f64().unwrap_or(0.) as f32,
+                            entity["px"][1].as_f64().unwrap_or(0.) as f32,
+                        ]
+                    });
             if changed_world {
                 self.navigate_world(pick.key.world);
             } else if !self.world {
@@ -1455,7 +1536,8 @@ impl EditorApp {
                         }
                     }
                     egui::Event::PointerMoved(pos) if held && rect.contains(*pos) => {
-                        let (world, _) = self.canvas_pointer_pixels(project, key, rect, *pos, density);
+                        let (world, _) =
+                            self.canvas_pointer_pixels(project, key, rect, *pos, density);
                         moved |= self.selected_entity_resize_handle(world).is_none()
                             && !self.point_selection_has_priority(world, i.modifiers.alt);
                     }
@@ -1557,15 +1639,24 @@ impl EditorApp {
         let Some(pointer) = pointer else {
             return true;
         };
-        let pick = self.reference_pick.as_ref().or(self.point_pick.as_ref()).unwrap();
+        let pick = self
+            .reference_pick
+            .as_ref()
+            .or(self.point_pick.as_ref())
+            .unwrap();
         let Some(project) = &self.project else {
             return true;
         };
         let value = if pick.kind == "Point" {
             let grid = pick.point_grid(project);
             let layer = project.layer(pick.key, pick.layer);
-            let (position, _) =
-                self.canvas_pointer_pixels(project, pick.key, rect, pointer, ctx.pixels_per_point());
+            let (position, _) = self.canvas_pointer_pixels(
+                project,
+                pick.key,
+                rect,
+                pointer,
+                ctx.pixels_per_point(),
+            );
             let cell = pick.point_cell(project, &self.viewport, position);
             let width = layer
                 .map(|l| number(l, "__cWid", 0.0))
@@ -1627,7 +1718,8 @@ impl EditorApp {
         let uid = pick.uid;
         let mut close = !point || !pick.array;
         let edit = if pick.array {
-            let array = pick.owner(project)
+            let array = pick
+                .owner(project)
                 .and_then(|o| o["fieldInstances"].as_array())
                 .and_then(|a| a.iter().find(|f| f["defUid"] == uid))
                 .and_then(|f| f["__value"].as_array())
@@ -1679,9 +1771,7 @@ impl EditorApp {
                 edit.apply(p, key, owner.as_deref(), uid)
             })
         } else {
-            let result = self.edit(status, |p| {
-                edit.apply(p, key, None, uid)
-            });
+            let result = self.edit(status, |p| edit.apply(p, key, None, uid));
             if result.is_some() {
                 self.history.clear_level_timelines();
             }

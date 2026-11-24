@@ -62,13 +62,13 @@ pub(super) fn finish(
         return;
     }
     let ppp = painter.ctx().pixels_per_point();
-    let bounds = shapes
-        .iter()
-        .fold(Rect::NOTHING, |b, s| {
-            b.union(s.shape.visual_bounding_rect())
-        });
+    let bounds = shapes.iter().fold(Rect::NOTHING, |b, s| {
+        b.union(s.shape.visual_bounding_rect())
+    });
     let margin = 2. * scale / ppp;
-    let visible = bounds.expand(margin).intersect(painter.clip_rect().expand(margin));
+    let visible = bounds
+        .expand(margin)
+        .intersect(painter.clip_rect().expand(margin));
     if !visible.is_finite() || !visible.intersects(painter.clip_rect()) {
         return;
     }

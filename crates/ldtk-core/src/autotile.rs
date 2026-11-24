@@ -314,9 +314,11 @@ impl Project {
     }
     pub fn randomize_auto_layer(&mut self, key: LevelKey, index: usize) -> Result<()> {
         self.edit_document(|p| {
-            let layer = p.layer_mut(key, index)
+            let layer = p
+                .layer_mut(key, index)
                 .ok_or_else(|| Error::Invalid("Layer instance not found".into()))?;
-            let uid = layer["layerDefUid"].as_i64()
+            let uid = layer["layerDefUid"]
+                .as_i64()
                 .ok_or_else(|| Error::Invalid("Layer definition not found".into()))?;
             layer["seed"] = json!((uuid::Uuid::new_v4().as_u128() % 9_999_999) as u32);
             p.rebuild_auto_layer(key, uid)
@@ -422,7 +424,10 @@ impl Project {
         // All evaluations succeeded. Move existing tiles only at commit time.
         for (index, rules) in updates {
             let cache = &mut level["layerInstances"][index]["autoLayerTiles"];
-            let previous = cache.as_array_mut().map(Vec::as_mut_slice).unwrap_or_default();
+            let previous = cache
+                .as_array_mut()
+                .map(Vec::as_mut_slice)
+                .unwrap_or_default();
             *cache = Value::Array(
                 rules
                     .into_iter()
@@ -895,8 +900,12 @@ impl<'a> Engine<'a> {
             let break_on_match = flag(j, "breakOnMatch", false);
             let lock_on_opaque = float(j, "alpha", 1.) >= 1.
                 && [
-                    "tileXOffset", "tileYOffset", "tileRandomXMin", "tileRandomXMax",
-                    "tileRandomYMin", "tileRandomYMax",
+                    "tileXOffset",
+                    "tileYOffset",
+                    "tileRandomXMin",
+                    "tileRandomXMax",
+                    "tileRandomYMin",
+                    "tileRandomYMax",
                 ]
                 .iter()
                 .all(|k| int(j, k, 0) == 0);

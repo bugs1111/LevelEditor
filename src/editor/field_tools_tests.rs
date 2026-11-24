@@ -162,7 +162,8 @@ fn missing_reference_buttons_use_source_size_and_colors_and_open_the_picker() {
                             ["fieldInstances"][0]
                             .clone();
                         pick_rect =
-                            f.app.field_pick_controls(ui, f.source, Some(&f.owner), &field, &def);
+                            f.app
+                                .field_pick_controls(ui, f.source, Some(&f.owner), &field, &def);
                     });
                 },
             );
@@ -183,8 +184,14 @@ fn missing_reference_buttons_use_source_size_and_colors_and_open_the_picker() {
         let pos = rect.center();
         let (_, output) = draw(&mut f, vec![egui::Event::PointerMoved(pos)]);
         assert!(has_fill(&output, Color32::from_rgb(157, 18, 2)));
-        draw(&mut f, vec![button(pos, true, egui::PointerButton::Primary)]);
-        draw(&mut f, vec![button(pos, false, egui::PointerButton::Primary)]);
+        draw(
+            &mut f,
+            vec![button(pos, true, egui::PointerButton::Primary)],
+        );
+        draw(
+            &mut f,
+            vec![button(pos, false, egui::PointerButton::Primary)],
+        );
         assert!(f.app.picking_entity_ref());
     }
 }
@@ -236,7 +243,9 @@ fn level_reference_with_the_default_filter_can_pick_an_entity() {
     frame(&mut f, &ctx, vec![], false);
     let (_, labels) = frame(&mut f, &ctx, vec![], false);
     assert!(
-        labels.iter().any(|(text, _)| text == "Pick any entity in any level"),
+        labels
+            .iter()
+            .any(|(text, _)| text == "Pick any entity in any level"),
         "{labels:?}"
     );
     click_entity(&mut f, &ctx, [96., 96.]);
@@ -270,7 +279,10 @@ fn canvas_reference_pick_crosses_levels_returns_to_source_and_follow_button_navi
     click_entity(&mut f, &ctx, [96., 96.]);
     assert_eq!(value(&f)["entityIid"], f.target_iid);
     assert_eq!(f.app.selected, Some(f.source));
-    assert!(f.app.panel.is_none(), "Cross-level return does not re-open the inspector");
+    assert!(
+        f.app.panel.is_none(),
+        "Cross-level return does not re-open the inspector"
+    );
     assert!(f.app.entity_index.is_none());
     assert!(!f.app.picking_entity_ref());
     let (_, labels) = frame(&mut f, &ctx, vec![], true);
@@ -360,10 +372,18 @@ fn world_reference_picker_reports_an_empty_destination_after_selecting_it() {
     f.app.viewport.zoom = 0.35;
     frame(&mut f, &ctx, vec![], false);
     let (_, labels) = frame(&mut f, &ctx, vec![], false);
-    assert!(labels.iter().any(|(text, _)| text == "Pick another Actor in any level"));
+    assert!(
+        labels
+            .iter()
+            .any(|(text, _)| text == "Pick another Actor in any level")
+    );
     click_entity(&mut f, &ctx, [736., 96.]);
     let (_, labels) = frame(&mut f, &ctx, vec![], false);
-    assert!(labels.iter().any(|(text, _)| text == "No valid target in this level."));
+    assert!(
+        labels
+            .iter()
+            .any(|(text, _)| text == "No valid target in this level.")
+    );
     assert!(value(&f).is_null());
 }
 #[test]
@@ -393,7 +413,11 @@ fn clearing_or_removing_a_reference_cancels_the_picker_and_tidies_the_reciprocal
         assert_eq!(reciprocal(&f)[0]["entityIid"], f.owner);
         start(&mut f, &ctx);
         let (_, labels) = frame(&mut f, &ctx, vec![], true);
-        let pick = labels.iter().find(|(label, _)| label == "Canvas pick").unwrap().1;
+        let pick = labels
+            .iter()
+            .find(|(label, _)| label == "Canvas pick")
+            .unwrap()
+            .1;
         let (offset, expected) = if remove_slot {
             (46., json!([before[0]]))
         } else {
@@ -551,7 +575,11 @@ fn changing_a_boolean_stops_point_picking_and_keeps_reference_picking() {
             .unwrap();
         let picked_before = value(&f);
         let (_, labels) = frame(&mut f, &ctx, vec![], true);
-        let pick = labels.iter().find(|(label, _)| label == "Canvas pick").unwrap().1;
+        let pick = labels
+            .iter()
+            .find(|(label, _)| label == "Canvas pick")
+            .unwrap()
+            .1;
         click(&mut f, &ctx, pick, true);
         assert_eq!(f.app.picking_point(), point);
         assert_eq!(f.app.picking_entity_ref(), !point);
@@ -643,9 +671,15 @@ fn reference_picker_takes_canvas_input_until_cancelled_then_point_picking_resume
             false,
         );
         assert!(!f.app.picking_entity_ref());
-        assert!(f.app.picking_point(), "Escape only dismisses the reference picker");
+        assert!(
+            f.app.picking_point(),
+            "Escape only dismisses the reference picker"
+        );
         click_entity(&mut f, &ctx, [120., 104.]);
-        assert_eq!(fixture_entity(&f)["fieldInstances"][1]["__value"], json!({"cx":7,"cy":6}));
+        assert_eq!(
+            fixture_entity(&f)["fieldInstances"][1]["__value"],
+            json!({"cx":7,"cy":6})
+        );
         assert!(value(&f).is_null());
         f.app.undo_action(false);
         assert_eq!(fixture_entity(&f)["fieldInstances"][1]["__value"], original);
@@ -682,7 +716,10 @@ fn completing_a_reference_shows_the_point_coordinates_while_picking_stays_active
     let coordinates = field_label(&after, "10,8").expect("restored coordinate label");
     click_instance_fields(&mut f, &ctx, coordinates);
     assert!(!f.app.picking_point());
-    assert_eq!(fixture_entity(&f)["fieldInstances"][1]["__value"], json!({"cx":10,"cy":8}));
+    assert_eq!(
+        fixture_entity(&f)["fieldInstances"][1]["__value"],
+        json!({"cx":10,"cy":8})
+    );
 }
 
 #[test]
@@ -727,15 +764,17 @@ fn entity_inspector_link_array_paints_the_target_icon_and_location() {
         .add_field_definition(Some(actor), "Icon", "Tile", false)
         .unwrap();
     project
-        .update_field_definition(icon, &json!({"editorDisplayMode":"EntityTile","tilesetUid":atlas}))
+        .update_field_definition(
+            icon,
+            &json!({"editorDisplayMode":"EntityTile","tilesetUid":atlas}),
+        )
         .unwrap();
     project
         .set_field_editor_value(f.source, Some(&f.owner), f.uid, json!([f.target_iid]))
         .unwrap();
     let texture = f.app.assets.embedded(&ctx).unwrap();
-    let owner = f.app.project.as_ref().unwrap().layer(f.source, 0).unwrap()
-        ["entityInstances"][0]
-        .clone();
+    let owner =
+        f.app.project.as_ref().unwrap().layer(f.source, 0).unwrap()["entityInstances"][0].clone();
     let draw = |f: &mut Fixture| {
         ctx.run(egui::RawInput::default(), |ctx| {
             egui::CentralPanel::default().show(ctx, |ui| {
@@ -758,18 +797,24 @@ fn entity_inspector_link_array_paints_the_target_icon_and_location() {
             .set_field_editor_value(f.target, Some(&f.target_iid), icon, tile.clone())
             .unwrap();
         let output = draw(&mut f);
-        assert!(output.shapes.iter().any(|shape| {
-            matches!(&shape.shape, egui::Shape::Text(text) if text.galley.text() == "Other")
-        }), "the row must show the referenced level");
-        assert!(output.shapes.iter().any(|shape| {
-            matches!(&shape.shape, egui::Shape::Mesh(mesh)
+        assert!(
+            output.shapes.iter().any(|shape| {
+                matches!(&shape.shape, egui::Shape::Text(text) if text.galley.text() == "Other")
+            }),
+            "the row must show the referenced level"
+        );
+        assert!(
+            output.shapes.iter().any(|shape| {
+                matches!(&shape.shape, egui::Shape::Mesh(mesh)
                 if mesh.texture_id == texture.id()
                     && mesh.calc_bounds().width() == 18.
                     && mesh.vertices.iter().any(|v| v.uv.x == expected_x / texture.size_vec2().x))
-        }), "the reference preview must use the correct 18-point atlas rectangle");
+            }),
+            "the reference preview must use the correct 18-point atlas rectangle"
+        );
         assert_eq!(
-            f.app.project.as_ref().unwrap().layer(f.target, 0).unwrap()
-                ["entityInstances"][0]["fieldInstances"][1]["__value"],
+            f.app.project.as_ref().unwrap().layer(f.target, 0).unwrap()["entityInstances"][0]["fieldInstances"]
+                [1]["__value"],
             tile
         );
     }
@@ -826,7 +871,11 @@ fn canvas_picker_rejects_self_and_duplicate_array_references() {
     let ctx = egui::Context::default();
     start(&mut f, &ctx);
     click_entity(&mut f, &ctx, [32., 32.]);
-    assert_eq!(value(&f), json!([null]), "The source cannot be its own target");
+    assert_eq!(
+        value(&f),
+        json!([null]),
+        "The source cannot be its own target"
+    );
     f.app.navigate_level(f.target, false);
     click_entity(&mut f, &ctx, [96., 96.]);
     assert_eq!(value(&f).as_array().unwrap().len(), 1);
@@ -835,11 +884,18 @@ fn canvas_picker_rejects_self_and_duplicate_array_references() {
     click_entity(&mut f, &ctx, [96., 96.]);
     assert_eq!(value(&f)[0]["entityIid"], f.target_iid);
     assert_eq!(value(&f).as_array().unwrap().len(), 2);
-    assert!(value(&f)[1].is_null(), "Already-referenced targets are excluded");
+    assert!(
+        value(&f)[1].is_null(),
+        "Already-referenced targets are excluded"
+    );
     f.app.cancel_field_pick();
     assert!(!f.app.picking_field());
     assert_eq!(f.app.selected, Some(f.source));
-    assert_eq!(value(&f).as_array().unwrap().len(), 2, "Cancel retains the new slot");
+    assert_eq!(
+        value(&f).as_array().unwrap().len(),
+        2,
+        "Cancel retains the new slot"
+    );
 }
 #[test]
 fn canvas_picker_skips_invalid_entity_covering_an_allowed_target() {
@@ -903,7 +959,10 @@ fn canvas_reference_pick_crosses_worlds_and_cancel_button_restores_source() {
         false,
     );
     assert_eq!(f.app.selected, Some(f.target));
-    assert!(f.app.picking_entity_ref(), "Right click leaves the picker open");
+    assert!(
+        f.app.picking_entity_ref(),
+        "Right click leaves the picker open"
+    );
     let (_, labels) = frame(&mut f, &ctx, vec![], false);
     let cancel = labels.iter().find(|(s, _)| s == "CANCEL").unwrap().1;
     click(&mut f, &ctx, cancel, false);
@@ -925,9 +984,12 @@ fn same_level_reference_pick_keeps_the_inspector_and_camera() {
     assert_eq!(f.app.panel, Some(Panel::Entity));
     frame(&mut f, &ctx, vec![], false);
     let (rect, labels) = frame(&mut f, &ctx, vec![], false);
-    assert!(labels.iter().any(|(text, pos)| {
-        text == "Pick another Actor in any level" && pos.y > rect.bottom() * 0.85
-    }), "{labels:?}");
+    assert!(
+        labels.iter().any(|(text, pos)| {
+            text == "Pick another Actor in any level" && pos.y > rect.bottom() * 0.85
+        }),
+        "{labels:?}"
+    );
     click_entity(&mut f, &ctx, [96., 96.]);
     assert_eq!(value(&f)["entityIid"], target);
     assert_eq!(f.app.viewport.center, center);
@@ -971,10 +1033,10 @@ fn reference_target_hints_and_clicks_match_layer_visibility_and_field_restrictio
         f.app.navigate_level(f.target, false);
         frame(&mut f, &ctx, vec![], false);
         let (_, labels) = frame(&mut f, &ctx, vec![], false);
-        let has_error = labels
-            .iter()
-            .any(|(s, _)| s == "No valid target in this level."
-                || s == "You can only pick a reference in the same level for this value.");
+        let has_error = labels.iter().any(|(s, _)| {
+            s == "No valid target in this level."
+                || s == "You can only pick a reference in the same level for this value."
+        });
         assert_eq!(
             has_error,
             restriction != "hidden",
@@ -1037,8 +1099,8 @@ fn point_path_cursor_draws_the_source_line_from_the_last_accepted_point() {
     project
         .set_field_editor_value(f.source, Some(&f.owner), f.uid, json!([{"cx":4,"cy":4}]))
         .unwrap();
-    let field = &mut project.layer_mut(f.source, 0).unwrap()
-        ["entityInstances"][0]["fieldInstances"][0];
+    let field =
+        &mut project.layer_mut(f.source, 0).unwrap()["entityInstances"][0]["fieldInstances"][0];
     field["realEditorValues"][0]["extension"] = json!({"preserve":true});
     let first_wrapper = field["realEditorValues"][0].clone();
     let color = canvas::entity_smart_color(
@@ -1091,8 +1153,8 @@ fn point_path_cursor_draws_the_source_line_from_the_last_accepted_point() {
     assert!(line_at(&first, screen([72., 72.]), screen([136., 152.])));
     assert_eq!(first.platform_output.cursor_icon, egui::CursorIcon::Default);
     click(&mut f, &ctx, screen([130., 146.]), false);
-    let field = &f.app.project.as_ref().unwrap().layer(f.source, 0).unwrap()
-        ["entityInstances"][0]["fieldInstances"][0];
+    let field = &f.app.project.as_ref().unwrap().layer(f.source, 0).unwrap()["entityInstances"][0]
+        ["fieldInstances"][0];
     assert_eq!(field["__value"], json!([{"cx":4,"cy":4},{"cx":8,"cy":9}]));
     assert_eq!(field["realEditorValues"][0], first_wrapper);
     assert!(f.app.point_pick.as_ref().unwrap().point_target.is_none());
@@ -1510,7 +1572,11 @@ fn opening_a_panel_stops_point_picking_and_preserves_reference_picking() {
         }
         let original = value(&f);
         let (_, labels) = frame(&mut f, &ctx, vec![], true);
-        let pick = labels.iter().find(|(label, _)| label == "Canvas pick").unwrap().1;
+        let pick = labels
+            .iter()
+            .find(|(label, _)| label == "Canvas pick")
+            .unwrap()
+            .1;
         click(&mut f, &ctx, pick, true);
         assert!(f.app.picking_field(), "{kind} must start picking");
 
@@ -1541,13 +1607,25 @@ fn single_point_picker_can_be_cancelled_in_the_entity_inspector() {
         .unwrap();
 
     let (_, labels) = frame(&mut f, &ctx, vec![], true);
-    let pick = labels.iter().find(|(label, _)| label == "Canvas pick").unwrap().1;
+    let pick = labels
+        .iter()
+        .find(|(label, _)| label == "Canvas pick")
+        .unwrap()
+        .1;
     click(&mut f, &ctx, pick, true);
     assert!(f.app.picking_point());
-    assert_eq!(f.app.panel, Some(Panel::Entity), "the cancel control must remain accessible");
+    assert_eq!(
+        f.app.panel,
+        Some(Panel::Entity),
+        "the cancel control must remain accessible"
+    );
 
     let (_, labels) = frame(&mut f, &ctx, vec![], true);
-    let cancel = labels.iter().find(|(label, _)| label == "CANCEL").unwrap().1;
+    let cancel = labels
+        .iter()
+        .find(|(label, _)| label == "CANCEL")
+        .unwrap()
+        .1;
     click(&mut f, &ctx, cancel, true);
     assert!(!f.app.picking_point());
     assert_eq!(value(&f), original);
@@ -1582,7 +1660,10 @@ fn point_array_pick_button_reserves_the_source_summary_and_row_heights() {
         )
         .unwrap();
     for style in ["Points", "PointPathLoop"] {
-        f.app.project.as_mut().unwrap()
+        f.app
+            .project
+            .as_mut()
+            .unwrap()
             .update_field_definition(f.uid, &json!({"editorDisplayMode":style}))
             .unwrap();
         let (_, labels) = frame(&mut f, &ctx, vec![], true);
@@ -1612,7 +1693,12 @@ fn point_array_marks_only_expanded_required_slots_in_the_inspector() {
         .add_field_definition(Some(actor), "Waypoints", "Point", true)
         .unwrap();
     project
-        .set_field_editor_value(f.source, Some(&f.owner), f.uid, json!([null, {"cx":10,"cy":8}]))
+        .set_field_editor_value(
+            f.source,
+            Some(&f.owner),
+            f.uid,
+            json!([null, {"cx":10,"cy":8}]),
+        )
         .unwrap();
 
     for (mode, expected_text, required) in [
@@ -1630,9 +1716,11 @@ fn point_array_marks_only_expanded_required_slots_in_the_inspector() {
                 f.app.instance_fields(ui, f.source, Some(&f.owner), &entity);
             });
         });
-        let has_label = |expected| output.shapes.iter().any(|shape| {
+        let has_label = |expected| {
+            output.shapes.iter().any(|shape| {
             matches!(&shape.shape, egui::Shape::Text(text) if text.galley.text() == expected)
-        });
+        })
+        };
         let error_headers = output.shapes.iter().filter(|shape| {
             matches!(&shape.shape, egui::Shape::Vec(parts) if parts.iter().any(|part|
                 matches!(part, egui::Shape::Rect(rect) if rect.fill == Color32::from_rgb(121, 17, 5))
@@ -1661,26 +1749,44 @@ fn point_array_coordinates_are_read_only_and_required_slots_can_be_filled() {
         )
         .unwrap();
     project
-        .set_field_editor_value(f.source, Some(&f.owner), f.uid, json!([null,{"cx":8,"cy":8}]))
+        .set_field_editor_value(
+            f.source,
+            Some(&f.owner),
+            f.uid,
+            json!([null,{"cx":8,"cy":8}]),
+        )
         .unwrap();
 
     let (_, labels) = frame(&mut f, &ctx, vec![], true);
     let coordinates = labels.iter().find(|(label, _)| label == "8,8").unwrap().1;
     click(&mut f, &ctx, coordinates, true);
-    assert!(!f.app.picking_field(), "existing coordinates are explanatory text");
+    assert!(
+        !f.app.picking_field(),
+        "existing coordinates are explanatory text"
+    );
 
-    let required = labels.iter().find(|(label, _)| label == "POINT REQUIRED!").unwrap().1;
+    let required = labels
+        .iter()
+        .find(|(label, _)| label == "POINT REQUIRED!")
+        .unwrap()
+        .1;
     click(&mut f, &ctx, required, true);
     assert_eq!(f.app.point_pick.as_ref().unwrap().index, Some(0));
     assert_eq!(f.app.panel, Some(Panel::Entity));
     let (_, controls) = frame(&mut f, &ctx, vec![], true);
-    let cancel = controls.iter().find(|(label, _)| label == "CANCEL").unwrap().1;
+    let cancel = controls
+        .iter()
+        .find(|(label, _)| label == "CANCEL")
+        .unwrap()
+        .1;
     click(&mut f, &ctx, cancel, true);
     assert!(!f.app.picking_field());
     click(&mut f, &ctx, required, true);
     let (rect, _) = frame(&mut f, &ctx, vec![], false);
-    let target =
-        f.app.viewport.to_screen([104., 120.], rect.min.into(), rect.size().into());
+    let target = f
+        .app
+        .viewport
+        .to_screen([104., 120.], rect.min.into(), rect.size().into());
     click(&mut f, &ctx, target.into(), false);
     assert_eq!(value(&f), json!([{"cx":6,"cy":7},{"cx":8,"cy":8}]));
     assert!(!f.app.picking_field());
@@ -1772,10 +1878,7 @@ fn point_array_canvas_pick_retains_offset_parallax_geometry_and_editor_length_di
         vec![button(pointer, true, egui::PointerButton::Secondary)],
         false,
     );
-    assert!(
-        !f.app.picking_field(),
-        "right press cancels before release"
-    );
+    assert!(!f.app.picking_field(), "right press cancels before release");
     assert!(f.app.panel == Some(Panel::Entity));
     assert_eq!(
         value(&f),

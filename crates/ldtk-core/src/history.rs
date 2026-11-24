@@ -319,7 +319,10 @@ fn put(root: &mut Value, path: &[Segment], value: &Option<Value>) {
                     positions.entry(id).or_insert(index);
                 }
                 a.sort_by_cached_key(|v| {
-                    positions.get(&v[key.as_str()]).copied().unwrap_or(usize::MAX)
+                    positions
+                        .get(&v[key.as_str()])
+                        .copied()
+                        .unwrap_or(usize::MAX)
                 });
             }
         }
@@ -381,7 +384,8 @@ impl Action {
                     + c.after.as_ref().map_or(0, |v| v.to_string().len())
             })
             .sum::<usize>()
-            + self.grid_presence
+            + self
+                .grid_presence
                 .iter()
                 .map(|change| {
                     change.iid.len()
@@ -389,7 +393,8 @@ impl Action {
                         + change.after.as_ref().map_or(0, GridPresence::bytes)
                 })
                 .sum::<usize>()
-            + self.storage
+            + self
+                .storage
                 .iter()
                 .map(|(id, path)| id.len() + path.len())
                 .sum::<usize>()
@@ -412,7 +417,11 @@ impl Action {
         }
     }
     fn reload_level_grid_presence(&self, p: &mut Project) {
-        let Some((level, _)) = self.level_iid.as_deref().and_then(|iid| p.level_by_iid(iid)) else {
+        let Some((level, _)) = self
+            .level_iid
+            .as_deref()
+            .and_then(|iid| p.level_by_iid(iid))
+        else {
             return;
         };
         // LDtk's level timeline reconstructs every layer from its saved CSV.

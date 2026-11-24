@@ -246,7 +246,8 @@ impl EditorApp {
         }
         let canvas_origin = view.level_render_canvas_origin(rect, ui.ctx().pixels_per_point());
         let point = |local: [f32; 2]| -> egui::Pos2 {
-            view.to_screen(local, canvas_origin, rect.size().into()).into()
+            view.to_screen(local, canvas_origin, rect.size().into())
+                .into()
         };
         let painter = ui.painter().with_clip_rect(rect);
         if number(level, "worldDepth", 0.) as i64 == self.world_depth
@@ -366,15 +367,17 @@ mod tests {
                     ..Default::default()
                 },
                 |ctx| {
-                    egui::CentralPanel::default().show(ctx, |ui| {
-                        app.draw_level_resize_preview(ui, rect, hovered)
-                    });
+                    egui::CentralPanel::default()
+                        .show(ctx, |ui| app.draw_level_resize_preview(ui, rect, hovered));
                 },
             );
-            output.shapes.into_iter().find_map(|shape| match shape.shape {
-                egui::Shape::Mesh(mesh) if mesh.indices.len() == 8 * 24 * 3 => Some(mesh),
-                _ => None,
-            })
+            output
+                .shapes
+                .into_iter()
+                .find_map(|shape| match shape.shape {
+                    egui::Shape::Mesh(mesh) if mesh.indices.len() == 8 * 24 * 3 => Some(mesh),
+                    _ => None,
+                })
         };
         let idle = run(false, egui::Modifiers::NONE).unwrap();
         assert_eq!(idle.vertices[7 * 25].pos, egui::pos2(553., 203.));

@@ -41,7 +41,13 @@ impl DefinitionRow {
 }
 
 impl EditorApp {
-    pub(super) fn source_sidebar(&mut self, ui: &mut egui::Ui, panel: Panel, width: f32, height: f32) {
+    pub(super) fn source_sidebar(
+        &mut self,
+        ui: &mut egui::Ui,
+        panel: Panel,
+        width: f32,
+        height: f32,
+    ) {
         let width = width.min(ui.available_width());
         ui.set_width(width);
         ui.set_max_width(width);
@@ -230,7 +236,10 @@ impl EditorApp {
                             ui.vertical_centered(|ui| {
                                 ui.label(
                                     RichText::new(locale::tr(ui, "No tileset"))
-                                        .font(FontId::new(17., egui::FontFamily::Name("panel-title".into())))
+                                        .font(FontId::new(
+                                            17.,
+                                            egui::FontFamily::Name("panel-title".into()),
+                                        ))
                                         .color(theme::LIGHT)
                                         .italics(),
                                 );
@@ -246,13 +255,7 @@ impl EditorApp {
                             } else {
                                 kind != "layers" || name != kind
                             };
-                            self.source_definition_group(
-                                ui,
-                                kind,
-                                name,
-                                &definitions,
-                                show_header,
-                            );
+                            self.source_definition_group(ui, kind, name, &definitions, show_header);
                         }
                         if panel == Panel::Enums {
                             let external = self
@@ -277,10 +280,13 @@ impl EditorApp {
                                 self.source_external_enum_group(ui, &path, &defs);
                             }
                         }
-                        self.definition_list_paste_menu(ui, ClipTarget::Definition {
-                            kind: kind.to_owned(),
-                            uid: None,
-                        });
+                        self.definition_list_paste_menu(
+                            ui,
+                            ClipTarget::Definition {
+                                kind: kind.to_owned(),
+                                uid: None,
+                            },
+                        );
                     })
             });
         } else if panel == Panel::Fields {
@@ -376,18 +382,24 @@ impl EditorApp {
                         .map(|p| text(&p.json, "iid", ""))
                         .unwrap_or(""),
                     source_kind,
-                    if name == "Other" || tilesets && name.is_empty() { "null" } else { name }
+                    if name == "Other" || tilesets && name.is_empty() {
+                        "null"
+                    } else {
+                        name
+                    }
                 );
                 let mut open = !show_header || self.settings.ui_state_int(&key, None, 1) != 0;
                 if show_header {
                     if grouped_tilesets {
                         ui.add_space(2.);
                     }
-                    let (rect, response) = ui
-                        .allocate_exact_size(
-                            egui::vec2(ui.available_width(), if grouped_tilesets { 18. } else { 20. }),
-                            Sense::click(),
-                        );
+                    let (rect, response) = ui.allocate_exact_size(
+                        egui::vec2(
+                            ui.available_width(),
+                            if grouped_tilesets { 18. } else { 20. },
+                        ),
+                        Sense::click(),
+                    );
                     ui.painter().rect_filled(rect, 0., GROUP_BAR);
                     let points = if open {
                         [
@@ -407,9 +419,10 @@ impl EditorApp {
                     let heading = if tilesets && name.is_empty() {
                         locale::tr(ui, "Untagged")
                     } else if name == "Other"
-                        && definitions.iter().all(|def| {
-                            def.tags.iter().all(|tag| tag != name)
-                        }) {
+                        && definitions
+                            .iter()
+                            .all(|def| def.tags.iter().all(|tag| tag != name))
+                    {
                         locale::tr(ui, if enums { "Untagged" } else { name })
                     } else {
                         name
@@ -437,213 +450,278 @@ impl EditorApp {
                     } else {
                         egui::Margin::same(if layers { 0 } else { 4 })
                     };
-                    egui::Frame::new()
-                        .inner_margin(margin)
-                        .show(ui, |ui| {
-                            if compact {
-                                ui.spacing_mut().item_spacing = egui::vec2(8., 1.);
-                            }
-                            let drag_group = tilesets.then(|| name.to_owned());
-                            for def in definitions {
-                                let uid = def.uid;
-                                let selected = self.definition_uid == Some(uid);
-                                let color = def.color;
-                                let layer_color = def.layer_color;
-                                let fill = if layers {
-                                    match (selected, layer_color) {
-                                        (true, Some(color)) => color,
-                                        (false, Some(color)) => tint(theme::DARK, color, 0.5),
-                                        (true, None) => theme::ACCENT,
-                                        (false, None) => theme::MEDIUM,
-                                    }
-                                } else if enums || tilesets {
-                                    if selected { theme::ACCENT } else { theme::MEDIUM }
-                                } else if selected {
-                                    tint(color, Color32::WHITE, 0.65)
+                    egui::Frame::new().inner_margin(margin).show(ui, |ui| {
+                        if compact {
+                            ui.spacing_mut().item_spacing = egui::vec2(8., 1.);
+                        }
+                        let drag_group = tilesets.then(|| name.to_owned());
+                        for def in definitions {
+                            let uid = def.uid;
+                            let selected = self.definition_uid == Some(uid);
+                            let color = def.color;
+                            let layer_color = def.layer_color;
+                            let fill = if layers {
+                                match (selected, layer_color) {
+                                    (true, Some(color)) => color,
+                                    (false, Some(color)) => tint(theme::DARK, color, 0.5),
+                                    (true, None) => theme::ACCENT,
+                                    (false, None) => theme::MEDIUM,
+                                }
+                            } else if enums || tilesets {
+                                if selected {
+                                    theme::ACCENT
                                 } else {
-                                    tint(theme::MEDIUM, color, 0.22)
-                                };
-                                let item = egui::Frame::new()
-                                    .fill(fill)
-                                    .inner_margin(egui::Margin::symmetric(4, if compact { 3 } else { 0 }))
-                                    .show(ui, |ui| {
-                                        ui.horizontal(|ui| {
-                                            let grip = egui::Label::new(
-                                                RichText::new("≡").color(theme::TEXT),
-                                            )
-                                            .sense(Sense::drag());
-                                            let handle = if compact {
-                                                let (rect, response) = ui.allocate_exact_size(
-                                                    egui::vec2(16., row_height),
-                                                    Sense::drag(),
-                                                );
-                                                egui::Image::new(egui::include_image!("../../assets/icons/dragAlpha.svg"))
-                                                    .paint_at(ui, Rect::from_center_size(rect.center(), Vec2::splat(18.)));
-                                                response
-                                            } else if enums {
-                                                ui.add_sized([19., 33.], grip)
-                                            } else {
-                                                ui.add(grip)
-                                            };
-                                            handle.dnd_set_drag_payload((kind.to_owned(), uid, drag_group.clone()));
-                                            let label = def.identifier.as_str();
-                                            let response = if compact {
-                                                let (rect, response) = ui.allocate_exact_size(
-                                                    egui::vec2((ui.available_width() - menu_width - 8.).max(32.), row_height),
-                                                    Sense::click(),
-                                                );
-                                                let label_offset = if layers {
-                                                    self.source_definition_thumbnail(
-                                                        ui, def, kind,
-                                                        Rect::from_center_size(rect.left_center() + egui::vec2(12., 0.), Vec2::splat(24.)),
-                                                        color,
-                                                    );
-                                                    32.
-                                                } else if def.embedded {
-                                                    let icon = egui::Image::new(egui::include_image!("../../assets/icons/embed.svg"));
-                                                    let icon = if selected { icon.tint(Color32::BLACK) } else { icon };
-                                                    icon.paint_at(ui, Rect::from_center_size(
-                                                        rect.left_center() + egui::vec2(8., 0.), Vec2::splat(16.),
-                                                    ));
-                                                    20.
-                                                } else {
-                                                    0.
-                                                };
-                                                let ink = if selected {
-                                                    Color32::BLACK
-                                                } else if let Some(color) = layer_color {
-                                                    tint(color, Color32::WHITE, 0.3)
-                                                } else {
-                                                    theme::TEXT
-                                                };
-                                                let name = egui::WidgetText::from(RichText::new(label).color(ink));
-                                                let galley = name.into_galley(
-                                                    ui,
-                                                    Some(egui::TextWrapMode::Truncate),
-                                                    (rect.width() - label_offset).max(0.),
-                                                    FontId::proportional(14.),
-                                                );
-                                                ui.painter().galley(
-                                                    rect.left_center() + egui::vec2(label_offset, -galley.size().y / 2.),
-                                                    galley,
-                                                    ink,
-                                                );
-                                                response.widget_info(|| egui::WidgetInfo::selected(
-                                                    egui::WidgetType::SelectableLabel, true, selected, label,
-                                                ));
-                                                response
-                                            } else if enums {
-                                                let (rect, response) = ui.allocate_exact_size(
-                                                    egui::vec2((ui.available_width() - 21.).max(20.), 33.),
-                                                    Sense::click(),
-                                                );
-                                                ui.painter_at(rect).text(
-                                                    rect.left_center(),
-                                                    Align2::LEFT_CENTER,
-                                                    label,
-                                                    FontId::proportional(14.),
-                                                    if selected { Color32::BLACK } else { Color32::WHITE },
-                                                );
-                                                response
-                                            } else {
-                                                let (rect, _) = ui.allocate_exact_size(
-                                                    Vec2::splat(32.),
-                                                    Sense::hover(),
-                                                );
+                                    theme::MEDIUM
+                                }
+                            } else if selected {
+                                tint(color, Color32::WHITE, 0.65)
+                            } else {
+                                tint(theme::MEDIUM, color, 0.22)
+                            };
+                            let item = egui::Frame::new()
+                                .fill(fill)
+                                .inner_margin(egui::Margin::symmetric(
+                                    4,
+                                    if compact { 3 } else { 0 },
+                                ))
+                                .show(ui, |ui| {
+                                    ui.horizontal(|ui| {
+                                        let grip =
+                                            egui::Label::new(RichText::new("≡").color(theme::TEXT))
+                                                .sense(Sense::drag());
+                                        let handle = if compact {
+                                            let (rect, response) = ui.allocate_exact_size(
+                                                egui::vec2(16., row_height),
+                                                Sense::drag(),
+                                            );
+                                            egui::Image::new(egui::include_image!(
+                                                "../../assets/icons/dragAlpha.svg"
+                                            ))
+                                            .paint_at(
+                                                ui,
+                                                Rect::from_center_size(
+                                                    rect.center(),
+                                                    Vec2::splat(18.),
+                                                ),
+                                            );
+                                            response
+                                        } else if enums {
+                                            ui.add_sized([19., 33.], grip)
+                                        } else {
+                                            ui.add(grip)
+                                        };
+                                        handle.dnd_set_drag_payload((
+                                            kind.to_owned(),
+                                            uid,
+                                            drag_group.clone(),
+                                        ));
+                                        let label = def.identifier.as_str();
+                                        let response = if compact {
+                                            let (rect, response) = ui.allocate_exact_size(
+                                                egui::vec2(
+                                                    (ui.available_width() - menu_width - 8.)
+                                                        .max(32.),
+                                                    row_height,
+                                                ),
+                                                Sense::click(),
+                                            );
+                                            let label_offset = if layers {
                                                 self.source_definition_thumbnail(
-                                                    ui, def, kind, rect, color,
-                                                );
-                                                let available = (ui.available_width() - 42.).max(20.);
-                                                source_controls::add_sized_button(
                                                     ui,
-                                                    [available, 32.],
-                                                    egui::Button::new(
-                                                        RichText::new(label).color(if selected {
-                                                            Color32::BLACK
-                                                        } else {
-                                                            tint(color, Color32::WHITE, 0.4)
-                                                        }),
-                                                    )
-                                                    .truncate()
-                                                    .frame(false),
-                                                )
+                                                    def,
+                                                    kind,
+                                                    Rect::from_center_size(
+                                                        rect.left_center() + egui::vec2(12., 0.),
+                                                        Vec2::splat(24.),
+                                                    ),
+                                                    color,
+                                                );
+                                                32.
+                                            } else if def.embedded {
+                                                let icon = egui::Image::new(egui::include_image!(
+                                                    "../../assets/icons/embed.svg"
+                                                ));
+                                                let icon = if selected {
+                                                    icon.tint(Color32::BLACK)
+                                                } else {
+                                                    icon
+                                                };
+                                                icon.paint_at(
+                                                    ui,
+                                                    Rect::from_center_size(
+                                                        rect.left_center() + egui::vec2(8., 0.),
+                                                        Vec2::splat(16.),
+                                                    ),
+                                                );
+                                                20.
+                                            } else {
+                                                0.
                                             };
-                                            if response.clicked() {
-                                                self.clipboard_focus(
-                                                    ui.ctx(),
+                                            let ink = if selected {
+                                                Color32::BLACK
+                                            } else if let Some(color) = layer_color {
+                                                tint(color, Color32::WHITE, 0.3)
+                                            } else {
+                                                theme::TEXT
+                                            };
+                                            let name = egui::WidgetText::from(
+                                                RichText::new(label).color(ink),
+                                            );
+                                            let galley = name.into_galley(
+                                                ui,
+                                                Some(egui::TextWrapMode::Truncate),
+                                                (rect.width() - label_offset).max(0.),
+                                                FontId::proportional(14.),
+                                            );
+                                            ui.painter().galley(
+                                                rect.left_center()
+                                                    + egui::vec2(
+                                                        label_offset,
+                                                        -galley.size().y / 2.,
+                                                    ),
+                                                galley,
+                                                ink,
+                                            );
+                                            response.widget_info(|| {
+                                                egui::WidgetInfo::selected(
+                                                    egui::WidgetType::SelectableLabel,
+                                                    true,
+                                                    selected,
+                                                    label,
+                                                )
+                                            });
+                                            response
+                                        } else if enums {
+                                            let (rect, response) = ui.allocate_exact_size(
+                                                egui::vec2(
+                                                    (ui.available_width() - 21.).max(20.),
+                                                    33.,
+                                                ),
+                                                Sense::click(),
+                                            );
+                                            ui.painter_at(rect).text(
+                                                rect.left_center(),
+                                                Align2::LEFT_CENTER,
+                                                label,
+                                                FontId::proportional(14.),
+                                                if selected {
+                                                    Color32::BLACK
+                                                } else {
+                                                    Color32::WHITE
+                                                },
+                                            );
+                                            response
+                                        } else {
+                                            let (rect, _) = ui.allocate_exact_size(
+                                                Vec2::splat(32.),
+                                                Sense::hover(),
+                                            );
+                                            self.source_definition_thumbnail(
+                                                ui, def, kind, rect, color,
+                                            );
+                                            let available = (ui.available_width() - 42.).max(20.);
+                                            source_controls::add_sized_button(
+                                                ui,
+                                                [available, 32.],
+                                                egui::Button::new(RichText::new(label).color(
+                                                    if selected {
+                                                        Color32::BLACK
+                                                    } else {
+                                                        tint(color, Color32::WHITE, 0.4)
+                                                    },
+                                                ))
+                                                .truncate()
+                                                .frame(false),
+                                            )
+                                        };
+                                        if response.clicked() {
+                                            self.clipboard_focus(
+                                                ui.ctx(),
+                                                ClipTarget::Definition {
+                                                    kind: kind.to_owned(),
+                                                    uid: Some(uid),
+                                                },
+                                            );
+                                            if kind == "layers" {
+                                                self.select_layer_definition(Some(uid));
+                                            } else {
+                                                self.definition_uid = Some(uid);
+                                            }
+                                            if kind == "entities" {
+                                                self.entity_uid = Some(uid);
+                                                self.field_owner = Some(uid);
+                                                self.field_uid = None;
+                                            }
+                                        }
+                                        source_definition_menu(
+                                            ui,
+                                            compact.then_some(egui::vec2(menu_width, row_height)),
+                                            &response,
+                                            |ui| {
+                                                self.clipboard_menu(
+                                                    ui,
                                                     ClipTarget::Definition {
                                                         kind: kind.to_owned(),
                                                         uid: Some(uid),
                                                     },
-                                                );
-                                                if kind == "layers" {
-                                                    self.select_layer_definition(Some(uid));
-                                                } else {
-                                                    self.definition_uid = Some(uid);
-                                                }
-                                                if kind == "entities" {
-                                                    self.entity_uid = Some(uid);
-                                                    self.field_owner = Some(uid);
-                                                    self.field_uid = None;
-                                                }
-                                            }
-                                            source_definition_menu(
-                                                ui,
-                                                compact.then_some(egui::vec2(menu_width, row_height)),
-                                                &response,
-                                                |ui| self.clipboard_menu(ui, ClipTarget::Definition {
-                                                    kind: kind.to_owned(),
-                                                    uid: Some(uid),
-                                                }),
-                                            );
-                                        });
+                                                )
+                                            },
+                                        );
                                     });
-                                if compact {
-                                    let rect = item.response.rect;
-                                    if let Some(color) = layer_color {
-                                        ui.painter().rect_filled(
-                                            Rect::from_min_max(egui::pos2(rect.right() - 4., rect.top()), rect.max),
-                                            0.,
-                                            if selected { Color32::WHITE } else { color },
-                                        );
-                                    }
-                                    if !selected && item.response.contains_pointer() {
-                                        ui.painter().rect_stroke(
-                                            rect, 0., Stroke::new(2_f32, Color32::from_white_alpha(166)),
-                                            StrokeKind::Inside,
-                                        );
-                                    }
-                                }
-                                if let Some(payload) =
-                                    item.response.dnd_hover_payload::<(String, i64, Option<String>)>()
-                                    && payload.0 == kind
-                                    && payload.1 != uid
-                                    && payload.2 == drag_group
-                                {
-                                    ui.painter().hline(
-                                        item.response.rect.x_range(),
-                                        item.response.rect.top(),
-                                        Stroke::new(2_f32, theme::ACCENT),
+                                });
+                            if compact {
+                                let rect = item.response.rect;
+                                if let Some(color) = layer_color {
+                                    ui.painter().rect_filled(
+                                        Rect::from_min_max(
+                                            egui::pos2(rect.right() - 4., rect.top()),
+                                            rect.max,
+                                        ),
+                                        0.,
+                                        if selected { Color32::WHITE } else { color },
                                     );
                                 }
-                                if let Some(payload) =
-                                    item.response.dnd_release_payload::<(String, i64, Option<String>)>()
-                                    && payload.0 == kind
-                                    && payload.1 != uid
-                                    && payload.2 == drag_group
-                                {
-                                    self.source_reorder_definition(
-                                        ui.ctx(),
-                                        kind,
-                                        payload.1,
-                                        self.definition_index(kind, uid),
+                                if !selected && item.response.contains_pointer() {
+                                    ui.painter().rect_stroke(
+                                        rect,
+                                        0.,
+                                        Stroke::new(2_f32, Color32::from_white_alpha(166)),
+                                        StrokeKind::Inside,
                                     );
-                                }
-                                if !compact {
-                                    ui.add_space(3.);
                                 }
                             }
-                        });
+                            if let Some(payload) = item
+                                .response
+                                .dnd_hover_payload::<(String, i64, Option<String>)>()
+                                && payload.0 == kind
+                                && payload.1 != uid
+                                && payload.2 == drag_group
+                            {
+                                ui.painter().hline(
+                                    item.response.rect.x_range(),
+                                    item.response.rect.top(),
+                                    Stroke::new(2_f32, theme::ACCENT),
+                                );
+                            }
+                            if let Some(payload) = item
+                                .response
+                                .dnd_release_payload::<(String, i64, Option<String>)>()
+                                && payload.0 == kind
+                                && payload.1 != uid
+                                && payload.2 == drag_group
+                            {
+                                self.source_reorder_definition(
+                                    ui.ctx(),
+                                    kind,
+                                    payload.1,
+                                    self.definition_index(kind, uid),
+                                );
+                            }
+                            if !compact {
+                                ui.add_space(3.);
+                            }
+                        }
+                    });
                 }
             });
         if !tilesets {
@@ -652,7 +730,13 @@ impl EditorApp {
             ui.add_space(3.);
         }
     }
-    pub(super) fn source_reorder_definition(&mut self, ctx: &egui::Context, kind: &str, uid: i64, index: usize) {
+    pub(super) fn source_reorder_definition(
+        &mut self,
+        ctx: &egui::Context,
+        kind: &str,
+        uid: i64,
+        index: usize,
+    ) {
         let reordered = self.edit("Definition reordered", |p| {
             p.reorder_definition(kind, uid, index)
         });
@@ -662,7 +746,13 @@ impl EditorApp {
             } else {
                 self.definition_uid = Some(uid);
             }
-            self.clipboard_focus(ctx, ClipTarget::Definition { kind: kind.to_owned(), uid: Some(uid) });
+            self.clipboard_focus(
+                ctx,
+                ClipTarget::Definition {
+                    kind: kind.to_owned(),
+                    uid: Some(uid),
+                },
+            );
         }
     }
     fn source_definition_thumbnail(

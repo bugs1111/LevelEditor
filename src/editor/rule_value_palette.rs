@@ -219,12 +219,10 @@ impl EditorApp {
                 let title = group.map_or_else(
                     || locale::tr(ui, "Ungrouped").to_owned(),
                     |g| {
-                        g["identifier"]
-                            .as_str()
-                            .map_or_else(
-                                || locale::format(ui, "Group {uid}", &[("uid", &uid.to_string())]),
-                                str::to_owned,
-                            )
+                        g["identifier"].as_str().map_or_else(
+                            || locale::format(ui, "Group {uid}", &[("uid", &uid.to_string())]),
+                            str::to_owned,
+                        )
                     },
                 );
                 if group_heading(

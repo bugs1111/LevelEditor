@@ -40,14 +40,17 @@ fn exercise_entity_refresh(with_references: bool) {
     }
     let template = project.json["defs"]["entities"][0].clone();
     let definitions = 512;
-    project.json["defs"]["entities"] = (0..definitions).map(|i| {
-        let mut def = template.clone();
-        def["uid"] = json!(base + i);
-        def["identifier"] = json!(format!("Actor_{i}"));
-        def["pivotX"] = json!(1.);
-        def["tags"] = json!([format!("Tag_{i}")]);
-        def
-    }).collect::<Vec<_>>().into();
+    project.json["defs"]["entities"] = (0..definitions)
+        .map(|i| {
+            let mut def = template.clone();
+            def["uid"] = json!(base + i);
+            def["identifier"] = json!(format!("Actor_{i}"));
+            def["pivotX"] = json!(1.);
+            def["tags"] = json!([format!("Tag_{i}")]);
+            def
+        })
+        .collect::<Vec<_>>()
+        .into();
     project.level_mut(K).unwrap()["worldX"] = json!(128);
     project.layer_mut(K, 0).unwrap()["entityInstances"] = (0..8192).map(|i| {
         json!({"iid":format!("actor-{i}"),"defUid":base+i%definitions,"px":[16,32],"fieldInstances":[]})
@@ -58,7 +61,9 @@ fn exercise_entity_refresh(with_references: bool) {
         let start = Instant::now();
         refreshed.refresh_derived_data().unwrap();
         *time = start.elapsed();
-        let entities = refreshed.layer(K, 0).unwrap()["entityInstances"].as_array().unwrap();
+        let entities = refreshed.layer(K, 0).unwrap()["entityInstances"]
+            .as_array()
+            .unwrap();
         assert_eq!(entities.len(), 8192);
         for (i, entity) in entities.iter().enumerate() {
             let def = i as i64 % definitions;
@@ -81,8 +86,15 @@ fn exercise_entity_refresh(with_references: bool) {
         }
     }
     times.sort_unstable();
-    let workload = if with_references { "reference" } else { "definition" };
-    eprintln!("Large entity {workload} refresh: median {:?}; samples {times:?}", times[2]);
+    let workload = if with_references {
+        "reference"
+    } else {
+        "definition"
+    };
+    eprintln!(
+        "Large entity {workload} refresh: median {:?}; samples {times:?}",
+        times[2]
+    );
 }
 
 #[test]
@@ -216,19 +228,29 @@ fn entity_remove_repairs_reference_and_toc() {
 fn entity_toc_toggle_clears_field_exports_and_rebuilds_the_table() {
     let mut p = sample();
     let uid = p.json["defs"]["entities"][0]["uid"].as_i64().unwrap();
-    let field = p.add_field_definition(Some(uid), "Health", "Int", false).unwrap();
-    p.update_entity_definition(uid, &json!({"exportToToc":true})).unwrap();
-    p.update_field_definition(field, &json!({"exportToToc":true})).unwrap();
+    let field = p
+        .add_field_definition(Some(uid), "Health", "Int", false)
+        .unwrap();
+    p.update_entity_definition(uid, &json!({"exportToToc":true}))
+        .unwrap();
+    p.update_field_definition(field, &json!({"exportToToc":true}))
+        .unwrap();
     let first_entry = p.json["toc"][0]["instancesData"][0]["fields"].clone();
     assert!(first_entry.get("Health").is_some());
 
-    p.update_entity_definition(uid, &json!({"exportToToc":false})).unwrap();
-    assert_eq!(p.json["defs"]["entities"][0]["fieldDefs"][0]["exportToToc"], false);
+    p.update_entity_definition(uid, &json!({"exportToToc":false}))
+        .unwrap();
+    assert_eq!(
+        p.json["defs"]["entities"][0]["fieldDefs"][0]["exportToToc"],
+        false
+    );
     assert_eq!(p.json["toc"], json!([]));
 
-    p.update_entity_definition(uid, &json!({"exportToToc":true})).unwrap();
+    p.update_entity_definition(uid, &json!({"exportToToc":true}))
+        .unwrap();
     assert_eq!(p.json["toc"][0]["instancesData"][0]["fields"], json!({}));
-    p.update_field_definition(field, &json!({"exportToToc":true})).unwrap();
+    p.update_field_definition(field, &json!({"exportToToc":true}))
+        .unwrap();
     assert_eq!(p.json["toc"][0]["instancesData"][0]["fields"], first_entry);
 }
 
@@ -275,15 +297,25 @@ fn linear_toc_positions_restart_in_each_world() {
     let mut p = sample();
     p.resize_level(K, 64, 96, 0, 0).unwrap();
     p.duplicate_level(K, "Second").unwrap();
-    p.set_world_layout(None, "LinearHorizontal", 256, 256).unwrap();
+    p.set_world_layout(None, "LinearHorizontal", 256, 256)
+        .unwrap();
     p.enable_multiworlds().unwrap();
     let vertical = p.duplicate_world(0, "Vertical").unwrap();
-    p.set_world_layout(Some(vertical), "LinearVertical", 256, 256).unwrap();
+    p.set_world_layout(Some(vertical), "LinearVertical", 256, 256)
+        .unwrap();
     p.json["defs"]["entities"][0]["exportToToc"] = json!(true);
     p.refresh_derived_data().unwrap();
 
-    let positions: Vec<_> = p.json["toc"][0]["instancesData"].as_array().unwrap().iter()
-        .map(|entry| [entry["worldX"].as_i64().unwrap(), entry["worldY"].as_i64().unwrap()])
+    let positions: Vec<_> = p.json["toc"][0]["instancesData"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|entry| {
+            [
+                entry["worldX"].as_i64().unwrap(),
+                entry["worldY"].as_i64().unwrap(),
+            ]
+        })
         .collect();
     assert_eq!(positions, [[16, 16], [128, 16], [16, 16], [16, 160]]);
 }
@@ -695,8 +727,11 @@ fn removing_source_layer_detaches_the_auto_layer_without_removing_its_groups() {
     let uid = p.add_layer("Source", "IntGrid", 16).unwrap();
     let target = p.add_layer("Target", "AutoLayer", 16).unwrap();
     let groups = json!([{"uid":999,"active":true,"rules":[]}]);
-    p.update_layer_properties(target, &json!({"autoSourceLayerDefUid":uid,"autoRuleGroups":groups}))
-        .unwrap();
+    p.update_layer_properties(
+        target,
+        &json!({"autoSourceLayerDefUid":uid,"autoRuleGroups":groups}),
+    )
+    .unwrap();
     p.remove_definition("layers", uid).unwrap();
     let target = p.layer_def(target).unwrap();
     assert!(target["autoSourceLayerDefUid"].is_null());
@@ -1113,7 +1148,8 @@ fn int_grid_palette_edits_preserve_unrelated_auto_layer_caches() {
     p.add_layer("Decor", "AutoLayer", 16).unwrap();
     let cache = json!([{"px":[16,0],"src":[0,0],"t":0,"f":0,"d":[3,1],"a":1}]);
     p.layer_mut(K, 0).unwrap()["autoLayerTiles"] = cache.clone();
-    p.update_layer_properties(cells, &json!({"intGridValues":[]})).unwrap();
+    p.update_layer_properties(cells, &json!({"intGridValues":[]}))
+        .unwrap();
     assert_eq!(p.layer(K, 1).unwrap()["intGridCsv"][0], 0);
     assert_eq!(p.layer(K, 0).unwrap()["autoLayerTiles"], cache);
 }
@@ -1193,8 +1229,8 @@ fn finishing_entity_transform_checks_only_the_touched_entity_and_repairs_refs_an
         json!([{"cx":0,"cy":0},{"cx":9999,"cy":0}]),
     )
     .unwrap();
-    p.layer_mut(K, 0).unwrap()["entityInstances"][1]["fieldInstances"][1]
-        ["realEditorValues"][0]["extension"] = json!({"keep":true});
+    p.layer_mut(K, 0).unwrap()["entityInstances"][1]["fieldInstances"][1]["realEditorValues"][0]
+        ["extension"] = json!({"keep":true});
     p.layer_mut(K, 0).unwrap()["entityInstances"][0]["px"] = json!([-1, 0]);
     assert!(!p.finish_entity_transform(K, 0, 1).unwrap());
     assert_eq!(

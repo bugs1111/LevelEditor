@@ -25,15 +25,17 @@ pub(super) fn describe(ctx: &egui::Context, source: &Value, value: i64) -> Optio
         let title = rule_value_group(source, uid).map_or_else(
             || locale::tr_ctx(ctx, "Ungrouped").to_owned(),
             |group| {
-                group["identifier"]
-                    .as_str()
-                    .map_or_else(
-                        || locale::format_ctx(ctx, "Group {uid}", &[("uid", &uid.to_string())]),
-                        str::to_owned,
-                    )
+                group["identifier"].as_str().map_or_else(
+                    || locale::format_ctx(ctx, "Group {uid}", &[("uid", &uid.to_string())]),
+                    str::to_owned,
+                )
             },
         );
-        locale::format_ctx(ctx, "any IntGrid value from the group {name}", &[("name", &title)])
+        locale::format_ctx(
+            ctx,
+            "any IntGrid value from the group {name}",
+            &[("name", &title)],
+        )
     } else {
         let entry = source["intGridValues"]
             .as_array()?

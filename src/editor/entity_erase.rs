@@ -55,7 +55,8 @@ impl EditorApp {
                     position,
                     ctx.pixels_per_point(),
                 );
-                let local = canvas::pointer_to_layer(project, key, self.layer, &self.viewport, world);
+                let local =
+                    canvas::pointer_to_layer(project, key, self.layer, &self.viewport, world);
                 self.erase_entity_or_point_at(local);
             }
         }

@@ -6,7 +6,13 @@ use crate::app::panels::rule_detail::{
 const RULE_CONTENT_HEIGHT: f32 = 54.;
 const GROUP_HEIGHT: f32 = 34.;
 
-fn toggle(ui: &mut egui::Ui, enabled: bool, optional: bool, tip: &str, size: Vec2) -> egui::Response {
+fn toggle(
+    ui: &mut egui::Ui,
+    enabled: bool,
+    optional: bool,
+    tip: &str,
+    size: Vec2,
+) -> egui::Response {
     let (symbol, tint) = match (optional, enabled) {
         (true, true) => (
             egui::include_image!("../../assets/icons/visible.png"),
@@ -112,7 +118,11 @@ fn rule_menu_row(
     if response.hovered() {
         painter.rect_filled(rect, 0., theme::ACCENT);
     }
-    painter.hline(rect.x_range(), rect.max.y, Stroke::new(1_f32, theme::MEDIUM));
+    painter.hline(
+        rect.x_range(),
+        rect.max.y,
+        Stroke::new(1_f32, theme::MEDIUM),
+    );
     if let Some(image) = &icon {
         let icon_rect = rule_menu_icon_rect(rect);
         let icon_rect = if detail.is_empty() {
@@ -230,9 +240,8 @@ struct RuleInsertion {
 
 impl RuleInsertion {
     fn buttons(&self) -> [Rect; 2] {
-        [self.row.top() - 8., self.row.bottom() - 10.].map(|y| {
-            Rect::from_min_size(egui::pos2(self.row.right() - 20., y), Vec2::splat(18.))
-        })
+        [self.row.top() - 8., self.row.bottom() - 10.]
+            .map(|y| Rect::from_min_size(egui::pos2(self.row.right() - 20., y), Vec2::splat(18.)))
     }
 }
 
@@ -315,7 +324,10 @@ impl EditorApp {
                         if !ready {
                             ui.colored_label(
                                 Color32::LIGHT_RED,
-                                locale::tr(ui, "The current layer settings prevent its rules to work."),
+                                locale::tr(
+                                    ui,
+                                    "The current layer settings prevent its rules to work.",
+                                ),
                             );
                             if source_controls::button(ui, "Open layer settings").clicked() {
                                 self.show_panel(Some(Panel::Layers));
@@ -348,16 +360,29 @@ impl EditorApp {
                                     Sense::click(),
                                 );
                                 response.widget_info(|| {
-                                    egui::WidgetInfo::labeled(egui::WidgetType::Button, true, locale::tr(ui, tip))
+                                    egui::WidgetInfo::labeled(
+                                        egui::WidgetType::Button,
+                                        true,
+                                        locale::tr(ui, tip),
+                                    )
                                 });
                                 let opacity = if response.hovered() { 1. } else { 0.6 };
-                                ui.painter()
-                                    .rect_filled(rect, 0., SOURCE_ORANGE.gamma_multiply(opacity));
-                                egui::Image::new(egui::include_image!("../../assets/icons/add.svg"))
-                                    .tint(Color32::from_white_alpha((255. * opacity) as u8))
-                                    .paint_at(ui, rect.shrink(1.));
+                                ui.painter().rect_filled(
+                                    rect,
+                                    0.,
+                                    SOURCE_ORANGE.gamma_multiply(opacity),
+                                );
+                                egui::Image::new(egui::include_image!(
+                                    "../../assets/icons/add.svg"
+                                ))
+                                .tint(Color32::from_white_alpha((255. * opacity) as u8))
+                                .paint_at(ui, rect.shrink(1.));
                                 if response.on_hover_text(locale::tr(ui, tip)).clicked() {
-                                    self.insert_rule(view.uid, insertion.group, insertion.index + index);
+                                    self.insert_rule(
+                                        view.uid,
+                                        insertion.group,
+                                        insertion.index + index,
+                                    );
                                 }
                             }
                         } else {
@@ -419,14 +444,19 @@ impl EditorApp {
                                     "../../assets/icons/add.svg"
                                 ))
                                 .fit_to_exact_size(Vec2::splat(16.)),
-                                RichText::new(locale::tr(ui, "GROUP")).size(12.).color(Color32::WHITE),
+                                RichText::new(locale::tr(ui, "GROUP"))
+                                    .size(12.)
+                                    .color(Color32::WHITE),
                             )
                             .fill(SOURCE_ORANGE),
                         )
                     })
                     .inner;
                 egui::Popup::menu(&create).show(|ui| {
-                    if ui.button(locale::tr(ui, "Use assistant (recommended)")).clicked() {
+                    if ui
+                        .button(locale::tr(ui, "Use assistant (recommended)"))
+                        .clicked()
+                    {
                         self.begin_rule_wizard(ui.ctx(), view.uid, None);
                         ui.close();
                     }
@@ -439,7 +469,9 @@ impl EditorApp {
                             })
                         }) {
                             self.open_rule_groups.insert((view.uid, gid));
-                            ui.data_mut(|data| data.insert_temp(rename_group_id(), (view.uid, gid)));
+                            ui.data_mut(|data| {
+                                data.insert_temp(rename_group_id(), (view.uid, gid))
+                            });
                             self.rule_group_uid = Some(gid);
                             self.rule_uid = None;
                         }
@@ -448,11 +480,16 @@ impl EditorApp {
                 });
                 if compact_button(
                     ui,
-                    RichText::new(locale::tr(ui, "RANDOMIZE")).size(12.).color(Color32::WHITE),
+                    RichText::new(locale::tr(ui, "RANDOMIZE"))
+                        .size(12.)
+                        .color(Color32::WHITE),
                     [94., 40.],
                     SOURCE_ORANGE,
                 )
-                .on_hover_text(locale::tr(ui, "Change the random seed of the current layer."))
+                .on_hover_text(locale::tr(
+                    ui,
+                    "Change the random seed of the current layer.",
+                ))
                 .clicked()
                 {
                     self.edit_level("Layer seed randomized", view.key, |p| {
@@ -471,7 +508,10 @@ impl EditorApp {
                         ui.visuals_mut().override_text_color =
                             Some(Color32::from_rgb(120, 131, 157));
                         source_controls::checkbox(ui, &mut self.render_auto, "Render")
-                            .on_hover_text(locale::tr(ui, "Show or hide generated auto-layer tiles (Shift-R)."));
+                            .on_hover_text(locale::tr(
+                                ui,
+                                "Show or hide generated auto-layer tiles (Shift-R).",
+                            ));
                     });
             });
             ui.add_space(2.);
@@ -509,7 +549,11 @@ impl EditorApp {
                 ui.spacing_mut().interact_size.y = 29.;
                 ui.spacing_mut().button_padding = egui::vec2(10., 6.);
                 let widgets = &mut ui.visuals_mut().widgets;
-                for style in [&mut widgets.inactive, &mut widgets.hovered, &mut widgets.open] {
+                for style in [
+                    &mut widgets.inactive,
+                    &mut widgets.hovered,
+                    &mut widgets.open,
+                ] {
                     style.weak_bg_fill = theme::LIGHT;
                     style.bg_stroke = Stroke::new(1_f32, Color32::from_rgb(115, 127, 157));
                     style.corner_radius = egui::CornerRadius::same(3);
@@ -554,7 +598,11 @@ impl EditorApp {
                 let bounds = picker.response.rect;
                 ui.painter().rect_filled(
                     Rect::from_min_size(bounds.left_bottom(), egui::vec2(bounds.width(), 2.)),
-                    egui::CornerRadius { sw: 2, se: 2, ..Default::default() },
+                    egui::CornerRadius {
+                        sw: 2,
+                        se: 2,
+                        ..Default::default()
+                    },
                     Color32::from_black_alpha(77),
                 );
             });
@@ -644,8 +692,14 @@ impl EditorApp {
                     } else {
                         "Toggle rule group"
                     };
-                    if toggle(ui, active, optional, toggle_tip, egui::vec2(35., GROUP_HEIGHT))
-                        .clicked()
+                    if toggle(
+                        ui,
+                        active,
+                        optional,
+                        toggle_tip,
+                        egui::vec2(35., GROUP_HEIGHT),
+                    )
+                    .clicked()
                     {
                         if optional {
                             self.edit_level("Optional rule group toggled", view.key, |p| {
@@ -768,7 +822,10 @@ impl EditorApp {
                             Sense::click(),
                         );
                         self.paint_group_biomes(ui, view, group, rect, required);
-                        if response.on_hover_text(locale::tr(ui, "Assign biome enum")).clicked() {
+                        if response
+                            .on_hover_text(locale::tr(ui, "Assign biome enum"))
+                            .clicked()
+                        {
                             let frame = ui.ctx().cumulative_frame_nr();
                             ui.data_mut(|data| data.insert_temp(biome_id, frame));
                         }
@@ -860,8 +917,7 @@ impl EditorApp {
                     let edit = RichText::new(locale::tr(ui, "Edit rules").to_uppercase())
                         .size(13.333)
                         .color(Color32::WHITE);
-                    if compact_button(ui, edit, [width, 35.], SOURCE_ORANGE).clicked()
-                    {
+                    if compact_button(ui, edit, [width, 35.], SOURCE_ORANGE).clicked() {
                         self.begin_rule_wizard(ui.ctx(), view.uid, Some(gid));
                     }
                     let advanced = RichText::new(locale::tr(ui, "Switch to advanced mode"))
@@ -869,7 +925,10 @@ impl EditorApp {
                         .color(theme::ACCENT)
                         .underline();
                     if ui
-                        .add_sized([width, 21.], egui::Label::new(advanced).sense(Sense::click()))
+                        .add_sized(
+                            [width, 21.],
+                            egui::Label::new(advanced).sense(Sense::click()),
+                        )
                         .on_hover_cursor(egui::CursorIcon::PointingHand)
                         .clicked()
                     {
@@ -913,7 +972,10 @@ impl EditorApp {
         if rule_menu_row(
             ui,
             locale::tr(ui, "Duplicate and remap"),
-            locale::tr(ui, "Duplicate the group, and optionally remap IntGrid\nIDs and tiles"),
+            locale::tr(
+                ui,
+                "Duplicate the group, and optionally remap IntGrid\nIDs and tiles",
+            ),
             None,
             false,
         )
@@ -1000,12 +1062,21 @@ impl EditorApp {
         }
         let optional = group["isOptional"] == true;
         let response = if optional {
-            rule_menu_row(ui, locale::tr(ui, "Disable optional state"), "", None, false)
+            rule_menu_row(
+                ui,
+                locale::tr(ui, "Disable optional state"),
+                "",
+                None,
+                false,
+            )
         } else {
             rule_menu_row(
                 ui,
                 locale::tr(ui, "Turn into an optional group"),
-                locale::tr(ui, "An optional group is disabled everywhere by\ndefault and can be enabled manually in specific levels."),
+                locale::tr(
+                    ui,
+                    "An optional group is disabled everywhere by\ndefault and can be enabled manually in specific levels.",
+                ),
                 Some(egui::include_image!("../../assets/icons/optional.svg")),
                 false,
             )
@@ -1137,7 +1208,11 @@ impl EditorApp {
                 let mut show_items = |ui: &mut egui::Ui| {
                     if values.is_empty() {
                         ui.add_space(7.);
-                        ui.weak(locale::format(ui, "Enum {name} has no value", &[("name", text(def, "identifier", ""))]));
+                        ui.weak(locale::format(
+                            ui,
+                            "Enum {name} has no value",
+                            &[("name", text(def, "identifier", ""))],
+                        ));
                         ui.add_space(7.);
                     }
                     let before: Vec<_> = group["requiredBiomeValues"]
@@ -1156,8 +1231,14 @@ impl EditorApp {
                             egui::include_image!("../../assets/icons/checkboxOff.svg")
                         })
                     };
-                    if rule_menu_row(ui, locale::tr(ui, "Any biome"), "", check(required.is_empty()), false)
-                        .clicked()
+                    if rule_menu_row(
+                        ui,
+                        locale::tr(ui, "Any biome"),
+                        "",
+                        check(required.is_empty()),
+                        false,
+                    )
+                    .clicked()
                     {
                         required.clear();
                     }
@@ -1188,8 +1269,14 @@ impl EditorApp {
                             (0, "OR", "At least one of the checked values is required."),
                             (1, "AND", "All checked values are required."),
                         ] {
-                            if rule_menu_row(ui, locale::tr(ui, name), locale::tr(ui, detail), check(mode == value), false)
-                                .clicked()
+                            if rule_menu_row(
+                                ui,
+                                locale::tr(ui, name),
+                                locale::tr(ui, detail),
+                                check(mode == value),
+                                false,
+                            )
+                            .clicked()
                             {
                                 mode = value;
                             }
@@ -1254,13 +1341,20 @@ impl EditorApp {
         let preview_height = layout.as_ref().map_or(39., |layout| layout.span.y);
         let content_height = RULE_CONTENT_HEIGHT.max(preview_height);
         let row = egui::Frame::new()
-            .fill(if active { theme::DARK } else { Color32::from_rgba_unmultiplied(121, 17, 5, 77) })
+            .fill(if active {
+                theme::DARK
+            } else {
+                Color32::from_rgba_unmultiplied(121, 17, 5, 77)
+            })
             .inner_margin(3)
             .corner_radius(3.)
             .show(ui, |ui| {
                 ui.set_min_width((width - 6.).max(0.));
                 if !active {
-                    let rect = Rect::from_min_size(ui.cursor().min - Vec2::splat(3.), egui::vec2(width, content_height + 6.));
+                    let rect = Rect::from_min_size(
+                        ui.cursor().min - Vec2::splat(3.),
+                        egui::vec2(width, content_height + 6.),
+                    );
                     egui::Image::new(egui::include_image!("../../assets/img/stripesLight.png"))
                         .texture_options(egui::TextureOptions::NEAREST_REPEAT)
                         .uv(Rect::from_min_size(egui::Pos2::ZERO, rect.size() / 8.))
@@ -1314,11 +1408,14 @@ impl EditorApp {
                                 let scale = if chance { 100. } else { 1. };
                                 let mut value = rule[key].as_f64().unwrap_or(1.) * scale;
                                 if rule_number(ui, &mut value, chance)
-                                    .on_hover_text(locale::tr(ui, if chance {
-                                        "Random probability (%)"
-                                    } else {
-                                        "Tile opacity"
-                                    }))
+                                    .on_hover_text(locale::tr(
+                                        ui,
+                                        if chance {
+                                            "Random probability (%)"
+                                        } else {
+                                            "Tile opacity"
+                                        },
+                                    ))
                                     .changed()
                                 {
                                     patch[key] = json!(value / scale);
@@ -1346,14 +1443,20 @@ impl EditorApp {
                                     Color32::from_rgb(207, 221, 64),
                                     RuleFlag::Text(label),
                                 )
-                                .on_hover_text(locale::tr(ui, if key == "flipX" {
-                                    "Horizontal symmetry"
-                                } else {
-                                    "Vertical symmetry"
-                                }))
+                                .on_hover_text(locale::tr(
+                                    ui,
+                                    if key == "flipX" {
+                                        "Horizontal symmetry"
+                                    } else {
+                                        "Vertical symmetry"
+                                    },
+                                ))
                                 .clicked()
                                 {
-                                    if ldtk_core::auto_rule_pattern_is_symmetric(rule, key == "flipX") {
+                                    if ldtk_core::auto_rule_pattern_is_symmetric(
+                                        rule,
+                                        key == "flipX",
+                                    ) {
                                         self.report_canvas_notice(
                                             notifications::CanvasNotice::SymmetricRule,
                                         );
@@ -1366,17 +1469,19 @@ impl EditorApp {
                                 ui,
                                 43.,
                                 [
-                                        "tileXOffset",
-                                        "tileYOffset",
-                                        "tileRandomXMin",
-                                        "tileRandomXMax",
-                                        "tileRandomYMin",
-                                        "tileRandomYMax",
-                                    ]
-                                    .iter()
-                                    .any(|&k| rule[k].as_i64().unwrap_or(0) != 0),
+                                    "tileXOffset",
+                                    "tileYOffset",
+                                    "tileRandomXMin",
+                                    "tileRandomXMax",
+                                    "tileRandomYMin",
+                                    "tileRandomYMax",
+                                ]
+                                .iter()
+                                .any(|&k| rule[k].as_i64().unwrap_or(0) != 0),
                                 Color32::from_rgb(207, 221, 64),
-                                RuleFlag::Icon(egui::include_image!("../../assets/icons/offset.svg")),
+                                RuleFlag::Icon(egui::include_image!(
+                                    "../../assets/icons/offset.svg"
+                                )),
                             )
                             .on_hover_text(locale::tr(ui, "Randomize position"));
                             if offsets.clicked() {
@@ -1391,17 +1496,28 @@ impl EditorApp {
                             }
                             let x = rule["xModulo"].as_i64().unwrap_or(1);
                             let y = rule["yModulo"].as_i64().unwrap_or(1);
-                            let (rect, modulo) = ui.allocate_exact_size(egui::vec2(43., 26.), Sense::click());
+                            let (rect, modulo) =
+                                ui.allocate_exact_size(egui::vec2(43., 26.), Sense::click());
                             let (fill, ink) = if modulo.hovered() {
                                 (SOURCE_ORANGE, theme::DARK)
                             } else if x == 1 && y == 1 {
-                                (Color32::from_rgba_unmultiplied(121, 17, 5, 102), SOURCE_ORANGE.gamma_multiply(0.4))
+                                (
+                                    Color32::from_rgba_unmultiplied(121, 17, 5, 102),
+                                    SOURCE_ORANGE.gamma_multiply(0.4),
+                                )
                             } else {
                                 (theme::MEDIUM, Color32::WHITE)
                             };
                             ui.painter().rect_filled(rect, 4., fill);
-                            ui.painter().text(rect.center(), Align2::CENTER_CENTER, format!("{x}-{y}"), FontId::proportional(12.), ink);
-                            let modulo = modulo.on_hover_cursor(egui::CursorIcon::PointingHand)
+                            ui.painter().text(
+                                rect.center(),
+                                Align2::CENTER_CENTER,
+                                format!("{x}-{y}"),
+                                FontId::proportional(12.),
+                                ink,
+                            );
+                            let modulo = modulo
+                                .on_hover_cursor(egui::CursorIcon::PointingHand)
                                 .on_hover_text(locale::tr(ui, "Modulo and checkerboard options"));
                             if modulo.clicked() {
                                 self.set_anchored_rule_options(
@@ -1420,7 +1536,10 @@ impl EditorApp {
                                 Color32::from_rgb(207, 221, 64),
                                 RuleFlag::Text("P"),
                             )
-                            .on_hover_text(locale::tr(ui, "Perlin filter. Right-click to customize."));
+                            .on_hover_text(locale::tr(
+                                ui,
+                                "Perlin filter. Right-click to customize.",
+                            ));
                             if noise.clicked() {
                                 patch["perlinActive"] = json!(rule["perlinActive"] != true);
                             }
@@ -1652,8 +1771,12 @@ fn rule_number(ui: &mut egui::Ui, number: &mut f64, chance: bool) -> egui::Respo
     );
     ui.painter().set(fill, shape);
     if focused {
-        ui.painter()
-            .rect_stroke(rect, 4., Stroke::new(1_f32, SOURCE_ORANGE), StrokeKind::Inside);
+        ui.painter().rect_stroke(
+            rect,
+            4.,
+            Stroke::new(1_f32, SOURCE_ORANGE),
+            StrokeKind::Inside,
+        );
     }
     let icon = if chance {
         egui::include_image!("../../assets/icons/random.svg")
@@ -1771,7 +1894,12 @@ impl EditorApp {
         } = *layout;
         let center = size / 2;
         let grid = Rect::from_center_size(rect.center(), span);
-        painter.rect_stroke(grid, 0., Stroke::new(1_f32, theme::MEDIUM), StrokeKind::Inside);
+        painter.rect_stroke(
+            grid,
+            0.,
+            Stroke::new(1_f32, theme::MEDIUM),
+            StrokeKind::Inside,
+        );
         let mut cells = ui.new_child(egui::UiBuilder::new().max_rect(grid));
         cells.multiply_opacity(0.5);
         let stamp = rule["tileMode"] == "Stamp";

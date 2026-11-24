@@ -89,7 +89,12 @@ fn point_edits<'a>(
     points.sort_by_key(|point| std::cmp::Reverse(point["arrayIndex"].as_u64().unwrap_or(0)));
     let owners = (points.len() > 1).then(|| {
         let mut owners = HashMap::new();
-        for (index, entity) in layer["entityInstances"].as_array().into_iter().flatten().enumerate() {
+        for (index, entity) in layer["entityInstances"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .enumerate()
+        {
             if let Some(iid) = entity["iid"].as_str() {
                 owners.entry(iid.to_owned()).or_insert(index);
             }
@@ -465,8 +470,14 @@ impl Project {
                 .as_array()
                 .map(Vec::as_slice)
                 .unwrap_or_default();
-            let selected_points = entry["points"].as_array().map(Vec::as_slice).unwrap_or_default();
-            let live = layer["entityInstances"].as_array().map(Vec::as_slice).unwrap_or_default();
+            let selected_points = entry["points"]
+                .as_array()
+                .map(Vec::as_slice)
+                .unwrap_or_default();
+            let live = layer["entityInstances"]
+                .as_array()
+                .map(Vec::as_slice)
+                .unwrap_or_default();
             let indexed = (selected.len() + selected_points.len() > 1).then(|| {
                 let mut indexed = HashMap::with_capacity(live.len());
                 for entity in live {
@@ -676,11 +687,22 @@ fn apply_deferred(
             }
         }
         for entry in material["layers"].as_array_mut().expect("validated layers") {
-            for entity in entry["clipboard"]["entityInstances"].as_array_mut().into_iter().flatten() {
-                if entity["iid"].as_str().is_some_and(|id| move_originals.contains(id)) {
+            for entity in entry["clipboard"]["entityInstances"]
+                .as_array_mut()
+                .into_iter()
+                .flatten()
+            {
+                if entity["iid"]
+                    .as_str()
+                    .is_some_and(|id| move_originals.contains(id))
+                {
                     continue;
                 }
-                for field in entity["fieldInstances"].as_array_mut().into_iter().flatten() {
+                for field in entity["fieldInstances"]
+                    .as_array_mut()
+                    .into_iter()
+                    .flatten()
+                {
                     remap_field_refs(field, &remaps, false);
                 }
             }
@@ -783,12 +805,12 @@ fn apply_deferred(
                     .and_then(|d| d["intGridValues"].as_array())
                     .ok_or_else(|| invalid("IntGrid palette missing"))?;
                 let values = LazyCell::new(|| {
-                    palette.iter().map(|entry| &entry["value"]).collect::<HashSet<_>>()
+                    palette
+                        .iter()
+                        .map(|entry| &entry["value"])
+                        .collect::<HashSet<_>>()
                 });
-                if cells
-                    .iter()
-                    .any(|(_, v)| *v != 0 && !values.contains(v))
-                {
+                if cells.iter().any(|(_, v)| *v != 0 && !values.contains(v)) {
                     return Err(invalid("clipboard contains undefined IntGrid values"));
                 }
                 p.edit_layer_presence(key, index, |layer, presence| {
@@ -906,7 +928,9 @@ fn apply_deferred(
                     if !in_bounds {
                         out_of_bounds.extend(def["identifier"].as_str().map(str::to_owned));
                     }
-                    let id = entity["iid"].as_str().ok_or_else(|| invalid("entity IID missing"))?;
+                    let id = entity["iid"]
+                        .as_str()
+                        .ok_or_else(|| invalid("entity IID missing"))?;
                     if duplicate && in_bounds {
                         move_entity_points(
                             &mut e,
@@ -1128,7 +1152,10 @@ fn selection_result(
             (pt[0] >= 0 && pt[1] >= 0 && pt[0] < n(layer, "__cWid") && pt[1] < n(layer, "__cHei"))
                 .then_some(pt)
         };
-        let source_points = source["points"].as_array().map(Vec::as_slice).unwrap_or_default();
+        let source_points = source["points"]
+            .as_array()
+            .map(Vec::as_slice)
+            .unwrap_or_default();
         let changed_indices = LazyCell::new(|| {
             let mut changed = HashMap::<_, Vec<_>>::new();
             for point in source_points {
@@ -1188,7 +1215,9 @@ fn selection_result(
                 if array {
                     let changes = changed_indices
                         .get(&(&point["entityIid"], field_uid))
-                        .map_or(0, |indices| indices.partition_point(|&i| i < old_index as u64));
+                        .map_or(0, |indices| {
+                            indices.partition_point(|&i| i < old_index as u64)
+                        });
                     next_index = if duplicate {
                         old_index + changes
                     } else {
@@ -1282,8 +1311,19 @@ fn apply(
     stack: bool,
     duplicate: bool,
 ) -> Result<(usize, Value)> {
-    apply_deferred(p, key, group, target, flips, stack, duplicate, None, &BTreeSet::new(), true)
-        .map(|(count, group, _)| (count, group))
+    apply_deferred(
+        p,
+        key,
+        group,
+        target,
+        flips,
+        stack,
+        duplicate,
+        None,
+        &BTreeSet::new(),
+        true,
+    )
+    .map(|(count, group, _)| (count, group))
 }
 
 fn geometry(entry: &Value) -> Result<([f64; 2], f64)> {
@@ -1683,8 +1723,16 @@ impl Project {
         free_entities: bool,
         pending: Option<&mut DeferredAutoLayers>,
     ) -> Result<Value> {
-        self.drag_selection_group_with_report(key, group, delta, geometries, copy, free_entities, pending)
-            .map(|(group, _)| group)
+        self.drag_selection_group_with_report(
+            key,
+            group,
+            delta,
+            geometries,
+            copy,
+            free_entities,
+            pending,
+        )
+        .map(|(group, _)| group)
     }
 
     /// Apply a drag and return the selection and its user-facing notices.
@@ -1775,7 +1823,8 @@ fn drag_copy_limits(
         ];
         for entity in entities {
             let uid = n(entity, "defUid");
-            let def = p.definition("entities", uid)
+            let def = p
+                .definition("entities", uid)
                 .ok_or_else(|| invalid("clipboard entity definition missing"))?;
             let maximum = n(def, "maxCount");
             if maximum <= 0 {
@@ -1794,9 +1843,14 @@ fn drag_copy_limits(
             let in_bounds = def["allowOutOfBounds"] == true
                 || !crate::workflow::entity_out_of_layer_bounds(p, layer, &destination);
             if *count >= maximum as usize {
-                let id = entity["iid"].as_str().ok_or_else(|| invalid("entity IID missing"))?;
+                let id = entity["iid"]
+                    .as_str()
+                    .ok_or_else(|| invalid("entity IID missing"))?;
                 move_originals.insert(id.to_owned());
-                warnings.push((maximum, def["identifier"].as_str().unwrap_or_default().to_owned()));
+                warnings.push((
+                    maximum,
+                    def["identifier"].as_str().unwrap_or_default().to_owned(),
+                ));
                 if !in_bounds {
                     *count -= 1;
                 }
@@ -2027,7 +2081,9 @@ fn apply_geometry(
                 .as_array_mut()
                 .expect("selection points")
                 .retain(|pt| {
-                    !pt["entityIid"].as_str().is_some_and(|id| ids.contains(id) && !retained.contains(id))
+                    !pt["entityIid"]
+                        .as_str()
+                        .is_some_and(|id| ids.contains(id) && !retained.contains(id))
                 });
         }
         let points = json!({"type":"SelectionGroup","levelIid":group["levelIid"],"origin":origin,"size":size,"layers":[point_entry]});

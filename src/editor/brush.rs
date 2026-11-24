@@ -370,7 +370,12 @@ impl EditorApp {
         self.apply_tile_stroke(tiles, erase, stack);
     }
 
-    fn apply_tile_stroke(&mut self, mut tiles: Vec<([i32; 2], [i32; 2])>, erase: bool, stack: bool) {
+    fn apply_tile_stroke(
+        &mut self,
+        mut tiles: Vec<([i32; 2], [i32; 2])>,
+        erase: bool,
+        stack: bool,
+    ) {
         if !erase {
             self.paint_tile_region(tiles);
             return;
@@ -522,7 +527,11 @@ impl EditorApp {
         let preview = self.async_preview(key, snapshot.now);
         preview.hint_grid.get_or_insert(snapshot.grid);
         if let Some(tiles) = snapshot.tiles {
-            preview.layers.entry(snapshot.layer_uid).or_default().old_tiles = Some(tiles);
+            preview
+                .layers
+                .entry(snapshot.layer_uid)
+                .or_default()
+                .old_tiles = Some(tiles);
         }
         preview.hints.extend(hints);
     }
@@ -540,7 +549,11 @@ impl EditorApp {
         let Some(layer) = project.layer(key, self.layer) else {
             return Ok(());
         };
-        if layer["__tilesetDefUid"].as_i64().and_then(|uid| project.tileset(uid)).is_none() {
+        if layer["__tilesetDefUid"]
+            .as_i64()
+            .and_then(|uid| project.tileset(uid))
+            .is_none()
+        {
             return Ok(());
         }
         let snapshot = self.capture_tile_render(key, layer);
@@ -561,7 +574,9 @@ impl EditorApp {
         }
         if let Some(snapshot) = snapshot {
             self.defer_tile_render(
-                key, snapshot, changed.into_iter().map(|cell| (cell, Color32::RED)),
+                key,
+                snapshot,
+                changed.into_iter().map(|cell| (cell, Color32::RED)),
             );
         }
         Ok(())
@@ -614,15 +629,22 @@ impl EditorApp {
         let Some(layer) = project.layer(key, index) else {
             return true;
         };
-        let Some(def) = layer["__tilesetDefUid"].as_i64().and_then(|uid| project.tileset(uid)) else {
+        let Some(def) = layer["__tilesetDefUid"]
+            .as_i64()
+            .and_then(|uid| project.tileset(uid))
+        else {
             return true;
         };
         let grid = number(def, "tileGridSize", 16.) as i32;
         let stride = grid + number(def, "spacing", 0.) as i32;
         let padding = number(def, "padding", 0.) as i32;
         let columns = number(def, "__cWid", 1.).max(1.) as i32;
-        let asset = def["relPath"].as_str().map(|path| canvas::asset_path(project, path));
-        let path = asset.as_deref().unwrap_or_else(|| Path::new("@ldtk/embedded-atlas"));
+        let asset = def["relPath"]
+            .as_str()
+            .map(|path| canvas::asset_path(project, path));
+        let path = asset
+            .as_deref()
+            .unwrap_or_else(|| Path::new("@ldtk/embedded-atlas"));
         let mut seen = HashSet::new();
         let mut edits: Vec<_> = tiles
             .iter()
@@ -651,9 +673,10 @@ impl EditorApp {
         if self.tile_stacking {
             let mut opacity = std::collections::HashMap::from([(first.src, first_opacity)]);
             for edit in &mut edits {
-                edit.stack = *opacity.entry(edit.src).or_insert_with(|| {
-                    self.assets.tile_is_opaque(path, edit.src, [grid, grid])
-                }) == Some(false);
+                edit.stack = *opacity
+                    .entry(edit.src)
+                    .or_insert_with(|| self.assets.tile_is_opaque(path, edit.src, [grid, grid]))
+                    == Some(false);
             }
         }
         let render = self.capture_tile_render(key, layer).map(|snapshot| {
@@ -673,7 +696,8 @@ impl EditorApp {
             return false;
         };
         if self.tile_stacking {
-            self.painted_cells.extend(edits.iter().map(|edit| edit.cell));
+            self.painted_cells
+                .extend(edits.iter().map(|edit| edit.cell));
         }
         if !changed.is_empty() {
             self.dirty = true;
@@ -683,10 +707,14 @@ impl EditorApp {
                 self.history.mark_grid_change(project, key, index, x, y);
             }
             if let Some((snapshot, colors)) = render {
-                self.defer_tile_render(key, snapshot, changed.into_iter().map(|edit| {
-                    let TilePaint { cell, id, src, .. } = edits[edit];
-                    (cell, colors[&(id, src)])
-                }));
+                self.defer_tile_render(
+                    key,
+                    snapshot,
+                    changed.into_iter().map(|edit| {
+                        let TilePaint { cell, id, src, .. } = edits[edit];
+                        (cell, colors[&(id, src)])
+                    }),
+                );
             }
         }
         true
@@ -701,8 +729,12 @@ impl EditorApp {
         };
         let left = rect[0].max(0);
         let top = rect[1].max(0);
-        let right = rect[0].saturating_add(rect[2]).min(number(layer, "__cWid", 0.) as i32);
-        let bottom = rect[1].saturating_add(rect[3]).min(number(layer, "__cHei", 0.) as i32);
+        let right = rect[0]
+            .saturating_add(rect[2])
+            .min(number(layer, "__cWid", 0.) as i32);
+        let bottom = rect[1]
+            .saturating_add(rect[3])
+            .min(number(layer, "__cHei", 0.) as i32);
         if left >= right || top >= bottom {
             return;
         }
@@ -742,9 +774,11 @@ impl EditorApp {
                     self.tile_rect,
                     scale,
                 );
-                self.paint_tile_region(tiles.into_iter().filter(|(_, [x, y])| {
-                    ids.contains(&(*x + *y * columns))
-                }));
+                self.paint_tile_region(
+                    tiles
+                        .into_iter()
+                        .filter(|(_, [x, y])| ids.contains(&(*x + *y * columns))),
+                );
             }
         }
     }
@@ -875,7 +909,8 @@ impl EditorApp {
                     tile[0] + dx.div_euclid(scale).rem_euclid(tile[2]),
                     tile[1] + dy.div_euclid(scale).rem_euclid(tile[3]),
                 ];
-                ids.contains(&(src[0] + src[1] * columns)).then_some((cell, src))
+                ids.contains(&(src[0] + src[1] * columns))
+                    .then_some((cell, src))
             }));
         }
     }
@@ -906,7 +941,9 @@ mod tests {
         let (mut batch, key) = sparse_editor();
         let project = batch.project.as_mut().unwrap();
         project.json["defs"]["layers"][0]["useAsyncRender"] = Value::Bool(true);
-        let uid = project.layer(key, 0).unwrap()["layerDefUid"].as_i64().unwrap();
+        let uid = project.layer(key, 0).unwrap()["layerDefUid"]
+            .as_i64()
+            .unwrap();
         let mut sequential = EditorApp::empty();
         sequential.set_project(project.clone());
         for app in [&mut batch, &mut sequential] {
@@ -915,7 +952,8 @@ mod tests {
             app.repaint = Some(ctx);
             app.flips = 1;
             app.stroke = true;
-            app.history.begin_layer(app.project.as_ref().unwrap(), key, 0);
+            app.history
+                .begin_layer(app.project.as_ref().unwrap(), key, 0);
         }
 
         let original = batch.project.as_ref().unwrap().layer(key, 0).unwrap()["gridTiles"].clone();
@@ -925,7 +963,10 @@ mod tests {
 
         let preview = batch.async_paint.as_ref().unwrap();
         assert_eq!(preview.layers[&uid].old_tiles.as_ref(), original.as_array());
-        assert_eq!(preview.hints, sequential.async_paint.as_ref().unwrap().hints);
+        assert_eq!(
+            preview.hints,
+            sequential.async_paint.as_ref().unwrap().hints
+        );
         assert_eq!(batch.painted_cells, sequential.painted_cells);
         assert_eq!(
             batch.project.as_ref().unwrap().json,
@@ -951,12 +992,21 @@ mod tests {
         ]);
         app.paint_rectangle([0, 0, 2, 1], true);
         let expected = json!([bottom[0], {"px":[16,0],"t":2}, bottom[1]]);
-        assert_eq!(app.project.as_ref().unwrap().layer(key, 0).unwrap()["gridTiles"], expected);
+        assert_eq!(
+            app.project.as_ref().unwrap().layer(key, 0).unwrap()["gridTiles"],
+            expected
+        );
         app.paint_rectangle([0, 0, 2, 1], true);
-        assert_eq!(app.project.as_ref().unwrap().layer(key, 0).unwrap()["gridTiles"], expected);
+        assert_eq!(
+            app.project.as_ref().unwrap().layer(key, 0).unwrap()["gridTiles"],
+            expected
+        );
         app.tile_stacking = false;
         app.paint_rectangle([0, 0, 2, 1], true);
-        assert_eq!(app.project.as_ref().unwrap().layer(key, 0).unwrap()["gridTiles"], json!([]));
+        assert_eq!(
+            app.project.as_ref().unwrap().layer(key, 0).unwrap()["gridTiles"],
+            json!([])
+        );
     }
 
     #[test]
@@ -970,7 +1020,9 @@ mod tests {
         ]);
         project.json["defs"]["layers"][0]["useAsyncRender"] = json!(true);
         project.layer_mut(key, 0).unwrap()["gridTiles"] = original.clone();
-        let uid = project.layer(key, 0).unwrap()["layerDefUid"].as_i64().unwrap();
+        let uid = project.layer(key, 0).unwrap()["layerDefUid"]
+            .as_i64()
+            .unwrap();
         app.history.begin_layer(project, key, 0);
         app.repaint = Some(egui::Context::default());
         app.stroke = true;
@@ -979,7 +1031,10 @@ mod tests {
 
         let preview = app.async_paint.as_ref().unwrap();
         assert_eq!(preview.layers[&uid].old_tiles.as_ref(), original.as_array());
-        assert_eq!(preview.hints, [([0, 0], Color32::RED), ([1, 0], Color32::RED)].into());
+        assert_eq!(
+            preview.hints,
+            [([0, 0], Color32::RED), ([1, 0], Color32::RED)].into()
+        );
         app.finish_stroke();
         let project = app.project.as_mut().unwrap();
         let remaining = json!([{"px":[48,0],"t":0}]);
@@ -999,13 +1054,18 @@ mod tests {
         app.tile_stacking = false;
         app.paint_cells(&[[0, 0], [2, 0]], false);
         let tiles = app.project.as_ref().unwrap().layer(key, 0).unwrap()["gridTiles"]
-            .as_array().unwrap();
-        let positions_and_ids: Vec<_> = tiles.iter().map(|tile| (&tile["px"], &tile["t"])).collect();
-        assert_eq!(positions_and_ids, [
-            (&json!([32, 0]), &json!(2)),
-            (&json!([0, 0]), &json!(2)),
-            (&json!([64, 0]), &json!(0)),
-        ]);
+            .as_array()
+            .unwrap();
+        let positions_and_ids: Vec<_> =
+            tiles.iter().map(|tile| (&tile["px"], &tile["t"])).collect();
+        assert_eq!(
+            positions_and_ids,
+            [
+                (&json!([32, 0]), &json!(2)),
+                (&json!([0, 0]), &json!(2)),
+                (&json!([64, 0]), &json!(0)),
+            ]
+        );
         assert!(tiles.iter().all(|tile| tile["f"] == 1));
         assert!(!app.status_error);
     }
@@ -1092,13 +1152,16 @@ mod tests {
         let (mut template, key) = sparse_editor();
         let project = template.project.as_mut().unwrap();
         let (width, height) = (128, 96);
-        project.resize_level(key, width * 16, height * 16, 0, 0).unwrap();
+        project
+            .resize_level(key, width * 16, height * 16, 0, 0)
+            .unwrap();
         let row = 48;
         let cells: Vec<_> = (4..68).map(|x| [x, row]).collect();
         let original: Vec<_> = (0..height)
-            .flat_map(|y| (0..width).map(move |x| {
-                json!({"px":[x * 16, y * 16],"t":0,"src":[0,0],"f":0,"a":0.75})
-            }))
+            .flat_map(|y| {
+                (0..width)
+                    .map(move |x| json!({"px":[x * 16, y * 16],"t":0,"src":[0,0],"f":0,"a":0.75}))
+            })
             .collect();
         project.layer_mut(key, 0).unwrap()["gridTiles"] = Value::Array(original.clone());
         let atlas = project.json["defs"]["tilesets"][0]["uid"].as_i64().unwrap();
@@ -1108,11 +1171,13 @@ mod tests {
             for time in &mut times {
                 let mut app = EditorApp::empty();
                 app.set_project(project.clone());
-                app.assets.store_file_image(
-                    &egui::Context::default(),
-                    Path::new("@ldtk/embedded-atlas"),
-                    image::RgbaImage::from_pixel(48, 16, image::Rgba([255; 4])),
-                ).unwrap();
+                app.assets
+                    .store_file_image(
+                        &egui::Context::default(),
+                        Path::new("@ldtk/embedded-atlas"),
+                        image::RgbaImage::from_pixel(48, 16, image::Rgba([255; 4])),
+                    )
+                    .unwrap();
                 app.tile_rect = [1, 0, 2, 1];
                 app.atlas_selection = Some((atlas, vec![1, 2]));
                 app.tile_stacking = stacking;
@@ -1124,7 +1189,8 @@ mod tests {
 
                 assert!(app.dirty && !app.status_error);
                 let tiles = app.project.as_ref().unwrap().layer(key, 0).unwrap()["gridTiles"]
-                    .as_array().unwrap();
+                    .as_array()
+                    .unwrap();
                 let start = (row * width + 4) as usize;
                 let end = start + cells.len() + 1;
                 assert_eq!(tiles.len(), original.len());
@@ -1133,14 +1199,20 @@ mod tests {
                 for (index, tile) in tiles[start..end].iter().enumerate() {
                     let x = index as i32 + 4;
                     let id = if x == 68 || (stacking && x > 4) { 1 } else { 2 };
-                    assert_eq!(*tile, json!({
-                        "px":[x * 16,row * 16],"t":id,"src":[id * 16,0],"f":1,"a":0.75
-                    }));
+                    assert_eq!(
+                        *tile,
+                        json!({
+                            "px":[x * 16,row * 16],"t":id,"src":[id * 16,0],"f":1,"a":0.75
+                        })
+                    );
                 }
             }
             times.sort_unstable();
             let mode = if stacking { "stacking" } else { "overwrite" };
-            eprintln!("Overlapping stamps {mode}: median {:?}; samples {times:?}", times[2]);
+            eprintln!(
+                "Overlapping stamps {mode}: median {:?}; samples {times:?}",
+                times[2]
+            );
         }
     }
 
@@ -1163,13 +1235,16 @@ mod tests {
         let (mut template, key) = sparse_editor();
         let project = template.project.as_mut().unwrap();
         let (width, height) = (128, 96);
-        project.resize_level(key, width * 16, height * 16, 0, 0).unwrap();
+        project
+            .resize_level(key, width * 16, height * 16, 0, 0)
+            .unwrap();
         let row = 48;
         let cells: Vec<_> = (4..100).map(|x| [x, row]).collect();
         let values: Vec<_> = (0..height)
-            .flat_map(|y| (0..width).map(move |x| {
-                json!({"px":[x * 16,y * 16],"t":0,"f":0,"src":[0,0],"a":0.75})
-            }))
+            .flat_map(|y| {
+                (0..width)
+                    .map(move |x| json!({"px":[x * 16,y * 16],"t":0,"f":0,"src":[0,0],"a":0.75}))
+            })
             .collect();
         project.layer_mut(key, 0).unwrap()["gridTiles"] = Value::Array(values.clone());
         let atlas = project.json["defs"]["tilesets"][0]["uid"].as_i64().unwrap();
@@ -1187,33 +1262,52 @@ mod tests {
                 app.random_tiles = random;
                 app.random_state = 42;
                 let mut expected_state = app.random_state;
-                let expected_ids: Vec<_> = cells.iter().map(|_| {
-                    if random { ids[random_index(&mut expected_state, ids.len())] } else { 2 }
-                }).collect();
+                let expected_ids: Vec<_> = cells
+                    .iter()
+                    .map(|_| {
+                        if random {
+                            ids[random_index(&mut expected_state, ids.len())]
+                        } else {
+                            2
+                        }
+                    })
+                    .collect();
                 let start = Instant::now();
                 app.paint_cells(&cells, erase);
                 *time = start.elapsed();
                 assert_eq!(app.random_state, expected_state);
                 let painted = app.project.as_ref().unwrap().layer(key, 0).unwrap()["gridTiles"]
-                    .as_array().unwrap();
+                    .as_array()
+                    .unwrap();
                 assert!(app.dirty && !app.status_error);
                 let from = (row * width + 4) as usize;
                 let to = from + cells.len();
                 assert_eq!(&painted[..from], &values[..from]);
-                assert_eq!(&painted[painted.len() - (values.len() - to)..], &values[to..]);
+                assert_eq!(
+                    &painted[painted.len() - (values.len() - to)..],
+                    &values[to..]
+                );
                 if erase {
                     assert_eq!(painted.len(), values.len() - cells.len());
                 } else {
                     assert_eq!(painted.len(), values.len());
-                    for ((tile, &[x, y]), id) in painted[from..to].iter().zip(&cells).zip(expected_ids) {
-                        assert_eq!(*tile, json!({"px":[x * 16,y * 16],"t":id,"f":1,"src":[id * 16,0],"a":0.75}));
+                    for ((tile, &[x, y]), id) in
+                        painted[from..to].iter().zip(&cells).zip(expected_ids)
+                    {
+                        assert_eq!(
+                            *tile,
+                            json!({"px":[x * 16,y * 16],"t":id,"f":1,"src":[id * 16,0],"a":0.75})
+                        );
                     }
                 }
             }
             samples.sort_unstable();
             let operation = if erase { "erase" } else { "paint" };
             let brush = if random { "random tile" } else { "tile" };
-            eprintln!("Interpolated {brush} stroke {operation}: median {:?}; samples {samples:?}", samples[2]);
+            eprintln!(
+                "Interpolated {brush} stroke {operation}: median {:?}; samples {samples:?}",
+                samples[2]
+            );
         }
     }
 
@@ -1224,7 +1318,12 @@ mod tests {
         use std::time::Instant;
 
         let (mut template, key) = sparse_editor();
-        template.project.as_mut().unwrap().resize_level(key, 64 * 16, 64 * 16, 0, 0).unwrap();
+        template
+            .project
+            .as_mut()
+            .unwrap()
+            .resize_level(key, 64 * 16, 64 * 16, 0, 0)
+            .unwrap();
         let mut tiles: Vec<_> = (0..64)
             .flat_map(|y| (0..62).map(move |x| json!({"px":[x * 16, y * 16],"t":0})))
             .collect();
@@ -1256,7 +1355,10 @@ mod tests {
             );
         }
         samples.sort_unstable();
-        eprintln!("Large tile bucket erase: median {:?}; samples {samples:?}", samples[2]);
+        eprintln!(
+            "Large tile bucket erase: median {:?}; samples {samples:?}",
+            samples[2]
+        );
     }
 
     #[test]
@@ -1286,7 +1388,8 @@ mod tests {
             samples.push(start.elapsed());
             assert!(app.dirty && !app.status_error);
             let tiles = app.project.as_ref().unwrap().layer(key, 0).unwrap()["gridTiles"]
-                .as_array().unwrap();
+                .as_array()
+                .unwrap();
             assert_eq!(&tiles[..wall.len()], wall);
             assert_eq!(tiles.len(), 63 * 64);
             let mut positions = HashSet::new();
@@ -1302,7 +1405,10 @@ mod tests {
             }
         }
         samples.sort_unstable();
-        eprintln!("Large tile bucket paint: median {:?}; samples {samples:?}", samples[2]);
+        eprintln!(
+            "Large tile bucket paint: median {:?}; samples {samples:?}",
+            samples[2]
+        );
     }
 
     #[test]
@@ -1315,9 +1421,13 @@ mod tests {
         let project = template.project.as_mut().unwrap();
         project.resize_level(key, 64 * 16, 64 * 16, 0, 0).unwrap();
         let atlas = project.json["defs"]["tilesets"][0]["uid"].as_i64().unwrap();
-        let wall: Vec<_> = (0..64).map(|y| json!({"px":[62 * 16, y * 16],"t":1})).collect();
+        let wall: Vec<_> = (0..64)
+            .map(|y| json!({"px":[62 * 16, y * 16],"t":1}))
+            .collect();
         let mut dense = wall.clone();
-        dense.extend((0..64).flat_map(|y| (0..62).map(move |x| json!({"px":[x * 16, y * 16],"t":0}))));
+        dense.extend(
+            (0..64).flat_map(|y| (0..62).map(move |x| json!({"px":[x * 16, y * 16],"t":0}))),
+        );
         dense.push(json!({"px":[0, 0],"t":2}));
         let mut erase_times = Vec::new();
         let mut fill_times = Vec::new();
@@ -1328,7 +1438,9 @@ mod tests {
             let start = Instant::now();
             app.paint_rectangle([0, 0, 62, 64], true);
             erase_times.push(start.elapsed());
-            let tiles = app.project.as_ref().unwrap().layer(key, 0).unwrap()["gridTiles"].as_array().unwrap();
+            let tiles = app.project.as_ref().unwrap().layer(key, 0).unwrap()["gridTiles"]
+                .as_array()
+                .unwrap();
             assert_eq!(&tiles[..wall.len()], wall);
             assert_eq!(&tiles[wall.len()..], &[json!({"px":[0,0],"t":0})]);
             assert!(app.dirty && !app.status_error);
@@ -1341,20 +1453,35 @@ mod tests {
             app.random_tiles = true;
             app.random_state = 42;
             let mut random = app.random_state;
-            let expected: Vec<_> = (0..62 * 64).map(|_| [0, 2][random_index(&mut random, 2)]).collect();
+            let expected: Vec<_> = (0..62 * 64)
+                .map(|_| [0, 2][random_index(&mut random, 2)])
+                .collect();
             let start = Instant::now();
             app.fill([0, 0], false);
             fill_times.push(start.elapsed());
             assert_eq!(app.random_state, random);
-            let tiles = app.project.as_ref().unwrap().layer(key, 0).unwrap()["gridTiles"].as_array().unwrap();
+            let tiles = app.project.as_ref().unwrap().layer(key, 0).unwrap()["gridTiles"]
+                .as_array()
+                .unwrap();
             assert_eq!(&tiles[..wall.len()], wall);
-            assert!(tiles[wall.len()..].iter().map(|t| t["t"].as_i64().unwrap()).eq(expected));
+            assert!(
+                tiles[wall.len()..]
+                    .iter()
+                    .map(|t| t["t"].as_i64().unwrap())
+                    .eq(expected)
+            );
             assert!(app.dirty && !app.status_error);
         }
         erase_times.sort_unstable();
         fill_times.sort_unstable();
-        eprintln!("Large tile rectangle erase: median {:?}; samples {erase_times:?}", erase_times[2]);
-        eprintln!("Large random tile fill: median {:?}; samples {fill_times:?}", fill_times[2]);
+        eprintln!(
+            "Large tile rectangle erase: median {:?}; samples {erase_times:?}",
+            erase_times[2]
+        );
+        eprintln!(
+            "Large random tile fill: median {:?}; samples {fill_times:?}",
+            fill_times[2]
+        );
     }
 
     #[test]

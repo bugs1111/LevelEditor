@@ -15,7 +15,8 @@ mod selection_group;
 mod workflow;
 
 pub use autotile::{
-    DeferredAutoLayers, auto_rule_pattern_is_symmetric, auto_rule_perlin_value, trim_auto_rule_pattern,
+    DeferredAutoLayers, auto_rule_pattern_is_symmetric, auto_rule_perlin_value,
+    trim_auto_rule_pattern,
 };
 pub use definitions::{BakeMode, TilesetRemap};
 pub use edit::{EntityPlacement, TilePaint};

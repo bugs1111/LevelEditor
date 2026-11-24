@@ -81,17 +81,23 @@ impl EditorApp {
             && let Some(original) = self.backup_original(ctx)
         {
             self.show_panel(None);
-            ctx.data_mut(|data| data.insert_temp(egui::Id::new(RESTORE_PREVIEW), (backup, original)));
+            ctx.data_mut(|data| {
+                data.insert_temp(egui::Id::new(RESTORE_PREVIEW), (backup, original))
+            });
         }
     }
 
     pub(super) fn backup_restore_open(ctx: &egui::Context) -> bool {
-        ctx.data(|data| data.get_temp::<(PathBuf, PathBuf)>(egui::Id::new(RESTORE_PREVIEW)).is_some())
+        ctx.data(|data| {
+            data.get_temp::<(PathBuf, PathBuf)>(egui::Id::new(RESTORE_PREVIEW))
+                .is_some()
+        })
     }
 
     pub(super) fn preview_backup_restore_dialog(&mut self, ctx: &egui::Context) {
         let id = egui::Id::new(RESTORE_PREVIEW);
-        let Some((backup, original)) = ctx.data(|data| data.get_temp::<(PathBuf, PathBuf)>(id)) else {
+        let Some((backup, original)) = ctx.data(|data| data.get_temp::<(PathBuf, PathBuf)>(id))
+        else {
             return;
         };
         if self.project.as_ref().and_then(|p| p.path.as_ref()) != Some(&backup) {
@@ -120,7 +126,8 @@ impl EditorApp {
             });
         let (confirm, cancel) = modal.inner;
         let cancel = cancel || modal.should_close();
-        let confirm = confirm || ctx.input_mut(|input| input.consume_key(egui::Modifiers::NONE, Key::Enter));
+        let confirm =
+            confirm || ctx.input_mut(|input| input.consume_key(egui::Modifiers::NONE, Key::Enter));
         if confirm || cancel {
             ctx.data_mut(|data| data.remove::<(PathBuf, PathBuf)>(id));
         }
@@ -201,9 +208,16 @@ fn save_warning(ui: &mut egui::Ui, width: f32, message: String) {
         Color32::PLACEHOLDER,
         width - 18.,
     );
-    let (rect, _) = ui.allocate_exact_size(egui::vec2(width, galley.size().y + 18.), Sense::hover());
+    let (rect, _) =
+        ui.allocate_exact_size(egui::vec2(width, galley.size().y + 18.), Sense::hover());
     // The source's 66% black fill over the save dialog's dark red.
-    paint_warning(ui.painter(), rect, galley, Color32::from_rgb(41, 6, 2), Color32::WHITE);
+    paint_warning(
+        ui.painter(),
+        rect,
+        galley,
+        Color32::from_rgb(41, 6, 2),
+        Color32::WHITE,
+    );
 }
 
 pub(super) fn paint_warning(
@@ -259,7 +273,9 @@ pub(super) fn paint_warning(
             inset.add_triangle(a + 1, a + 3, a + 2);
         }
     }
-    painter.with_clip_rect(rect.shrink(1.)).add(egui::Shape::mesh(inset));
+    painter
+        .with_clip_rect(rect.shrink(1.))
+        .add(egui::Shape::mesh(inset));
     let edge = rect.shrink(0.5);
     for side in [
         [edge.left_top(), edge.right_top()],
@@ -353,9 +369,12 @@ impl EditorApp {
                 ui.label(warning);
                 ui.add_space(11.);
                 ui.label(
-                    RichText::new(locale::tr(ui, "Any file saved here will be LOST during next app update."))
-                        .font(bold)
-                        .color(Color32::WHITE),
+                    RichText::new(locale::tr(
+                        ui,
+                        "Any file saved here will be LOST during next app update.",
+                    ))
+                    .font(bold)
+                    .color(Color32::WHITE),
                 );
                 ui.add_space(13.);
                 let mut clicked = None;
@@ -402,7 +421,10 @@ impl EditorApp {
                 services::SaveWriteFailure::DirectoryConflict => locale::format_ctx(
                     ctx,
                     "I need to create a folder named \"{name}\", but there is a file with the exact same name there.",
-                    &[("name", &path.file_stem().unwrap_or_default().to_string_lossy())],
+                    &[(
+                        "name",
+                        &path.file_stem().unwrap_or_default().to_string_lossy(),
+                    )],
                 ),
                 services::SaveWriteFailure::Io(message) => message.clone(),
             },
@@ -815,14 +837,21 @@ mod tests {
         frame(&mut app, &ctx, vec![]);
         let output = frame(&mut app, &ctx, vec![]);
         let retry = label(&output, "RETRY");
-        let segments = output.shapes.iter().filter(|shape| {
-            matches!(&shape.shape, egui::Shape::LineSegment { points, stroke }
+        let segments = output
+            .shapes
+            .iter()
+            .filter(|shape| {
+                matches!(&shape.shape, egui::Shape::LineSegment { points, stroke }
                 if stroke.color.r() > 0 && stroke.color.g() == 0 && stroke.color.b() == 0
                     && (points[0].y - points[1].y).abs() < 0.01
                     && points[0].y < retry.top()
                     && (points[0].x - points[1].x).abs() <= 2.1)
-        }).count();
-        assert!(segments > 100, "save failure warning should paint both dashed horizontal borders");
+            })
+            .count();
+        assert!(
+            segments > 100,
+            "save failure warning should paint both dashed horizontal borders"
+        );
     }
 
     #[test]
@@ -860,7 +889,10 @@ mod tests {
         assert!(app.save_failure.is_none());
         assert_eq!(app.panel, Some(Panel::Entity));
         assert_eq!(app.entity_index, Some(0));
-        assert_eq!(app.settings.ui_state_int("extraEntityInfos", Some(&iid), 0), before_ui);
+        assert_eq!(
+            app.settings.ui_state_int("extraEntityInfos", Some(&iid), 0),
+            before_ui
+        );
         assert_eq!(label(&after, "EXTRA ENTITY INFOS"), extra);
     }
 
@@ -880,8 +912,10 @@ mod tests {
         let lower = label(&before, "Lower");
         let row_fill = |output: &egui::FullOutput| {
             output.shapes.iter().find_map(|shape| match &shape.shape {
-                egui::Shape::Rect(rect) if rect.rect.width() == 300.
-                    && rect.rect.height() == 31. && rect.rect.contains(upper.center()) =>
+                egui::Shape::Rect(rect)
+                    if rect.rect.width() == 300.
+                        && rect.rect.height() == 31.
+                        && rect.rect.contains(upper.center()) =>
                 {
                     Some(rect.fill)
                 }
@@ -929,24 +963,30 @@ mod tests {
         frame(&mut app, &ctx, vec![]);
         let output = frame(&mut app, &ctx, vec![]);
         let eye = |name| egui::pos2(285., label(&output, name).center().y);
-        let (top, upper, lower, bottom) =
-            (eye("Top"), eye("Upper"), eye("Lower"), eye("Bottom"));
+        let (top, upper, lower, bottom) = (eye("Top"), eye("Upper"), eye("Lower"), eye("Bottom"));
         let button = |pos, pressed| egui::Event::PointerButton {
             pos,
             pressed,
             button: egui::PointerButton::Primary,
             modifiers: Default::default(),
         };
-        let visibility =
-            |app: &EditorApp| [0, 1, 2, 3].map(|index| app.layer_visible(key, index));
+        let visibility = |app: &EditorApp| [0, 1, 2, 3].map(|index| app.layer_visible(key, index));
 
-        frame(&mut app, &ctx, vec![egui::Event::PointerMoved(upper), button(upper, true)]);
+        frame(
+            &mut app,
+            &ctx,
+            vec![egui::Event::PointerMoved(upper), button(upper, true)],
+        );
         assert_eq!(visibility(&app), [true, false, true, true]);
-        frame(&mut app, &ctx, vec![
-            egui::Event::PointerMoved(lower),
-            egui::Event::PointerMoved(bottom),
-            button(bottom, false),
-        ]);
+        frame(
+            &mut app,
+            &ctx,
+            vec![
+                egui::Event::PointerMoved(lower),
+                egui::Event::PointerMoved(bottom),
+                button(bottom, false),
+            ],
+        );
         assert_eq!(visibility(&app), [true, false, false, false]);
         assert_eq!(app.layer, 0);
 
@@ -958,20 +998,36 @@ mod tests {
         app.undo_action(true);
         assert_eq!(visibility(&app), [true, false, false, false]);
 
-        frame(&mut app, &ctx, vec![egui::Event::PointerMoved(upper), button(upper, true)]);
-        frame(&mut app, &ctx, vec![egui::Event::PointerMoved(bottom), button(bottom, false)]);
+        frame(
+            &mut app,
+            &ctx,
+            vec![egui::Event::PointerMoved(upper), button(upper, true)],
+        );
+        frame(
+            &mut app,
+            &ctx,
+            vec![egui::Event::PointerMoved(bottom), button(bottom, false)],
+        );
         assert_eq!(visibility(&app), [true, true, false, true]);
         frame(&mut app, &ctx, vec![egui::Event::PointerMoved(lower)]);
         assert_eq!(visibility(&app), [true, true, false, true]);
         assert_eq!(app.layer, 0);
 
-        frame(&mut app, &ctx, vec![egui::Event::PointerMoved(upper), button(upper, true)]);
+        frame(
+            &mut app,
+            &ctx,
+            vec![egui::Event::PointerMoved(upper), button(upper, true)],
+        );
         frame(&mut app, &ctx, vec![egui::Event::WindowFocused(false)]);
-        frame(&mut app, &ctx, vec![
-            egui::Event::WindowFocused(true),
-            egui::Event::PointerMoved(top),
-            button(top, false),
-        ]);
+        frame(
+            &mut app,
+            &ctx,
+            vec![
+                egui::Event::WindowFocused(true),
+                egui::Event::PointerMoved(top),
+                button(top, false),
+            ],
+        );
         assert_eq!(visibility(&app), [true, false, false, true]);
         assert_eq!(app.layer, 0);
     }
@@ -1177,7 +1233,10 @@ mod tests {
         std::fs::remove_file(blocker).unwrap();
         click(&mut app, &ctx, retry.center());
         wait_for_save(&mut app, &ctx);
-        assert_eq!(Project::load(&path).unwrap().level(key).unwrap()["identifier"], "Edited");
+        assert_eq!(
+            Project::load(&path).unwrap().level(key).unwrap()["identifier"],
+            "Edited"
+        );
         assert!(!app.dirty && !app.status_error);
     }
 

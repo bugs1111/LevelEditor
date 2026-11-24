@@ -49,10 +49,8 @@ fn recall_image(button: &egui::Response, images: &[PathBuf]) -> Option<PathBuf> 
                 .show(ui, |ui| {
                     let mut chosen = None;
                     for (path, label) in images.iter().zip(labels) {
-                        let (rect, response) = ui.allocate_exact_size(
-                            egui::vec2(width, 32.),
-                            Sense::click(),
-                        );
+                        let (rect, response) =
+                            ui.allocate_exact_size(egui::vec2(width, 32.), Sense::click());
                         response.widget_info(|| {
                             egui::WidgetInfo::labeled(
                                 egui::WidgetType::Button,
@@ -66,11 +64,13 @@ fn recall_image(button: &egui::Response, images: &[PathBuf]) -> Option<PathBuf> 
                         } else {
                             theme::ACCENT
                         };
-                        ui.painter().with_clip_rect(rect).galley_with_override_text_color(
-                            rect.left_center() + egui::vec2(20., -label.size().y * 0.5),
-                            label,
-                            color,
-                        );
+                        ui.painter()
+                            .with_clip_rect(rect)
+                            .galley_with_override_text_color(
+                                rect.left_center() + egui::vec2(20., -label.size().y * 0.5),
+                                label,
+                                color,
+                            );
                         if response.on_hover_text(path.display().to_string()).clicked() {
                             chosen = Some(path.clone());
                         }
@@ -353,7 +353,9 @@ mod tests {
         app.set_project(project);
         let ctx = egui::Context::default();
         for file in &files {
-            app.assets.store_file_image(&ctx, file, pixels.clone()).unwrap();
+            app.assets
+                .store_file_image(&ctx, file, pixels.clone())
+                .unwrap();
         }
         assert!(app.assets.loaded_image_paths().any(|file| file == files[0]));
 

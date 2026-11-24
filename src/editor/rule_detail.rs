@@ -306,7 +306,10 @@ fn offset_input(
 fn offset_label(ui: &mut egui::Ui, text: &str, width: f32, align: egui::Align) {
     let (rect, _) = ui.allocate_exact_size(egui::vec2(width, 33.), Sense::hover());
     let (position, alignment) = if align == egui::Align::Max {
-        (rect.right_center() - egui::vec2(0., 4.), Align2::RIGHT_CENTER)
+        (
+            rect.right_center() - egui::vec2(0., 4.),
+            Align2::RIGHT_CENTER,
+        )
     } else {
         (rect.center(), Align2::CENTER_CENTER)
     };
@@ -325,19 +328,21 @@ fn offset_icon(
     tint: Color32,
     label: &str,
 ) -> egui::Response {
-    let button = ui.scope(|ui| {
-        ui.spacing_mut().button_padding = Vec2::splat(3.);
-        ui.add_sized(
-            [27., 32.],
-            egui::Button::image(
-                egui::Image::new(icon)
-                    .fit_to_exact_size(Vec2::splat(17.))
-                    .tint(tint),
+    let button = ui
+        .scope(|ui| {
+            ui.spacing_mut().button_padding = Vec2::splat(3.);
+            ui.add_sized(
+                [27., 32.],
+                egui::Button::image(
+                    egui::Image::new(icon)
+                        .fit_to_exact_size(Vec2::splat(17.))
+                        .tint(tint),
+                )
+                .fill(Color32::TRANSPARENT)
+                .stroke(Stroke::NONE),
             )
-            .fill(Color32::TRANSPARENT)
-            .stroke(Stroke::NONE),
-        )
-    }).inner;
+        })
+        .inner;
     button.on_hover_text(locale::tr(ui, label))
 }
 
@@ -357,8 +362,12 @@ fn modulo_preview(ui: &mut egui::Ui, [x_step, y_step, x_offset, y_offset]: [i64;
     let ([columns, rows], size, height) = modulo_grid([x_step, y_step]);
     let (rect, _) =
         ui.allocate_exact_size(egui::vec2(MODULO_PREVIEW_WIDTH, height), Sense::hover());
-    ui.painter()
-        .rect_stroke(rect, 0., Stroke::new(1_f32, theme::LIGHT), StrokeKind::Inside);
+    ui.painter().rect_stroke(
+        rect,
+        0.,
+        Stroke::new(1_f32, theme::LIGHT),
+        StrokeKind::Inside,
+    );
     let cell_stroke = Stroke::new(1_f32, Color32::from_rgb(115, 127, 157));
     for y in 0..rows {
         for x in 0..columns {
@@ -891,8 +900,10 @@ impl EditorApp {
             if source_controls::add_sized_button(
                 ui,
                 [width, 31.],
-                egui::Button::new(RichText::new(locale::tr(ui, "Enable help")).color(rule_guidance::GREEN))
-                    .fill(rule_guidance::GREEN_DARK),
+                egui::Button::new(
+                    RichText::new(locale::tr(ui, "Enable help")).color(rule_guidance::GREEN),
+                )
+                .fill(rule_guidance::GREEN_DARK),
             )
             .clicked()
             {
@@ -1495,7 +1506,11 @@ impl EditorApp {
             patch["checker"] = json!(checker);
         }
         let edited = changed(&patch)
-            && self.edit("Rule changed", |p| p.update_auto_rule(layer, gid, rid, &patch)).is_some();
+            && self
+                .edit("Rule changed", |p| {
+                    p.update_auto_rule(layer, gid, rid, &patch)
+                })
+                .is_some();
         let close = modal.should_close();
         ctx.data_mut(|data| {
             if close || numeric_input {
@@ -1504,7 +1519,16 @@ impl EditorApp {
             if close {
                 data.remove::<RuleOptionsState>(id);
             } else {
-                data.insert_temp(id, (layer, gid, Some(rid), RuleOptions::Modulo, edited || numeric_input || opening && !laid_out));
+                data.insert_temp(
+                    id,
+                    (
+                        layer,
+                        gid,
+                        Some(rid),
+                        RuleOptions::Modulo,
+                        edited || numeric_input || opening && !laid_out,
+                    ),
+                );
             }
         });
     }
@@ -1524,89 +1548,87 @@ impl EditorApp {
         let scale = rule["perlinScale"].as_f64().unwrap_or(0.2) * 100.;
         let octaves = rule["perlinOctaves"].as_i64().unwrap_or(2);
         let mut patch = json!({});
-        let modal = rule_settings_modal(ctx, egui::vec2(350., 187.), 46)
-            .show(ctx, |ui| {
-                ui.spacing_mut().item_spacing.y = 10.;
-                for (key, label, current, style, width) in [
-                    (
-                        "perlinSeed",
-                        "Seed",
-                        seed.to_string(),
-                        NumberStyle::Plain { placeholder: None },
-                        153.,
-                    ),
-                    (
-                        "perlinScale",
-                        "Scale",
-                        scale.to_string(),
-                        NumberStyle::PercentSlider { min: 1., max: 99. },
-                        62.,
-                    ),
-                    (
-                        "perlinOctaves",
-                        "Octaves",
-                        octaves.to_string(),
-                        NumberStyle::IntegerSlider {
-                            min: 1.,
-                            max: 4.,
-                            speed: 0.0176,
-                            placeholder: None,
-                        },
-                        248.,
-                    ),
-                ] {
-                    ui.horizontal(|ui| {
-                        ui.spacing_mut().item_spacing.x = 0.;
-                        ui.add_sized(
-                            [52., 33.],
-                            egui::Label::new(RichText::new(locale::tr(ui, label)).size(13.333))
-                                .halign(egui::Align::Max),
-                        );
-                        ui.add_space(8.);
-                        if let Some(value) =
-                            source_controls::number_input_sized(ui, key, &current, style, width)
+        let modal = rule_settings_modal(ctx, egui::vec2(350., 187.), 46).show(ctx, |ui| {
+            ui.spacing_mut().item_spacing.y = 10.;
+            for (key, label, current, style, width) in [
+                (
+                    "perlinSeed",
+                    "Seed",
+                    seed.to_string(),
+                    NumberStyle::Plain { placeholder: None },
+                    153.,
+                ),
+                (
+                    "perlinScale",
+                    "Scale",
+                    scale.to_string(),
+                    NumberStyle::PercentSlider { min: 1., max: 99. },
+                    62.,
+                ),
+                (
+                    "perlinOctaves",
+                    "Octaves",
+                    octaves.to_string(),
+                    NumberStyle::IntegerSlider {
+                        min: 1.,
+                        max: 4.,
+                        speed: 0.0176,
+                        placeholder: None,
+                    },
+                    248.,
+                ),
+            ] {
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 0.;
+                    ui.add_sized(
+                        [52., 33.],
+                        egui::Label::new(RichText::new(locale::tr(ui, label)).size(13.333))
+                            .halign(egui::Align::Max),
+                    );
+                    ui.add_space(8.);
+                    if let Some(value) =
+                        source_controls::number_input_sized(ui, key, &current, style, width)
+                    {
+                        let parsed = value
+                            .trim()
+                            .parse::<f64>()
+                            .ok()
+                            .filter(|n| n.is_finite())
+                            .unwrap_or(0.);
+                        let value = match key {
+                            "perlinScale" => json!(parsed.clamp(1., 99.) / 100.),
+                            "perlinOctaves" => json!((parsed as i64).clamp(1, 4)),
+                            _ => json!((parsed as i64).clamp(i16::MIN.into(), i16::MAX.into())),
+                        };
+                        if rule[key] != value {
+                            patch[key] = value;
+                        }
+                    }
+                    if key == "perlinSeed" {
+                        ui.add_space(1.);
+                        if project_dialogs::button(
+                            ui,
+                            "RANDOM",
+                            egui::vec2(93., 32.),
+                            false,
+                            13.333,
+                        )
+                        .clicked()
                         {
-                            let parsed = value
-                                .trim()
-                                .parse::<f64>()
-                                .ok()
-                                .filter(|n| n.is_finite())
-                                .unwrap_or(0.);
-                            let value = match key {
-                                "perlinScale" => json!(parsed.clamp(1., 99.) / 100.),
-                                "perlinOctaves" => json!((parsed as i64).clamp(1, 4)),
-                                _ => json!((parsed as i64).clamp(i16::MIN.into(), i16::MAX.into())),
-                            };
-                            if rule[key] != value {
-                                patch[key] = value;
-                            }
+                            let next = std::hash::RandomState::new().hash_one(seed) % 99_999_999;
+                            patch[key] = json!(if next as i64 == seed {
+                                (next + 1) % 99_999_999
+                            } else {
+                                next
+                            });
                         }
-                        if key == "perlinSeed" {
-                            ui.add_space(1.);
-                            if project_dialogs::button(
-                                ui,
-                                "RANDOM",
-                                egui::vec2(93., 32.),
-                                false,
-                                13.333,
-                            )
-                            .clicked()
-                            {
-                                let next =
-                                    std::hash::RandomState::new().hash_one(seed) % 99_999_999;
-                                patch[key] = json!(if next as i64 == seed {
-                                    (next + 1) % 99_999_999
-                                } else {
-                                    next
-                                });
-                            }
-                        } else if key == "perlinScale" {
-                            ui.add_space(4.);
-                            ui.label("%");
-                        }
-                    });
-                }
-            });
+                    } else if key == "perlinScale" {
+                        ui.add_space(4.);
+                        ui.label("%");
+                    }
+                });
+            }
+        });
         if changed(&patch) {
             self.edit("Rule changed", |p| {
                 p.update_auto_rule(layer, group, rid, &patch)
@@ -1807,8 +1829,6 @@ impl EditorApp {
             ctx.data_mut(|data| data.remove::<RuleOptionsState>(id));
         }
     }
-
-
 }
 
 #[cfg(test)]

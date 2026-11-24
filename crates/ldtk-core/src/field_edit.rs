@@ -509,9 +509,7 @@ pub(crate) fn refresh_field_values(p: &mut Project, refs: &EntityReferences) -> 
             .level_mut(key)
             .ok_or_else(|| invalid("level not loaded"))?;
         let sort = |fields: &mut Vec<Value>| {
-            fields.sort_by_key(|f| {
-                order.get(&f["defUid"]).copied().unwrap_or(usize::MAX)
-            });
+            fields.sort_by_key(|f| order.get(&f["defUid"]).copied().unwrap_or(usize::MAX));
         };
         if let Some(fields) = level["fieldInstances"].as_array_mut() {
             sort(fields);
@@ -1822,7 +1820,10 @@ fn tidy_symmetric_refs(p: &mut Project, uid: i64, touched: &BTreeSet<String>) ->
                     continue;
                 };
                 for field in entity["fieldInstances"].as_array().into_iter().flatten() {
-                    if matches!(field["__type"].as_str(), Some("EntityRef" | "Array<EntityRef>")) {
+                    if matches!(
+                        field["__type"].as_str(),
+                        Some("EntityRef" | "Array<EntityRef>")
+                    ) {
                         let targets = wrapper_ids(field);
                         // The source tidies changed targets and their incoming referers.
                         if targets.iter().any(|target| touched.contains(target)) {
@@ -1865,9 +1866,7 @@ fn tidy_symmetric_refs(p: &mut Project, uid: i64, touched: &BTreeSet<String>) ->
                         values.retain(|v| {
                             let raw = wrapper_value(v, 2);
                             raw.as_str().is_none_or(|target| {
-                                links
-                                    .get(target)
-                                    .is_some_and(|refs| refs.contains(&iid))
+                                links.get(target).is_some_and(|refs| refs.contains(&iid))
                             })
                         });
                     }

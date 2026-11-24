@@ -104,7 +104,9 @@ fn composite(target: &mut RgbaImage, source: &RgbaImage, alpha: f64, premultipli
 }
 
 fn tile_fits(image: &RgbaImage, [x, y]: [i64; 2], size: i64) -> bool {
-    x >= 0 && y >= 0 && x <= i64::from(image.width()) - size
+    x >= 0
+        && y >= 0
+        && x <= i64::from(image.width()) - size
         && y <= i64::from(image.height()) - size
 }
 
@@ -115,7 +117,9 @@ fn opaque_atlas_tile(atlas: &RgbaImage, [x, y]: [i64; 2], size: i64) -> bool {
     (y..y + size).all(|row| {
         let start = row as usize * width + offset;
         atlas.as_raw()[start..start + bytes]
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .all(|pixel| pixel[3] == 255)
     })
 }
@@ -142,8 +146,10 @@ fn copy_opaque_tile(
         if flips & 1 == 0 {
             dst.copy_from_slice(src);
         } else {
-            for (to, from) in dst.chunks_exact_mut(4).zip(src.chunks_exact(4).rev()) {
-                to.copy_from_slice(from);
+            let (dst_pixels, _) = dst.as_chunks_mut::<4>();
+            let (src_pixels, _) = src.as_chunks::<4>();
+            for (to, from) in dst_pixels.iter_mut().zip(src_pixels.iter().rev()) {
+                *to = *from;
             }
         }
     }
@@ -371,25 +377,29 @@ impl Project {
                     (pivot_y * (h as f64 - ch * sy)).trunc(),
                 )
             };
-            let sample = |pixel: u32, offset: f64, scale: f64, crop: f64, span: f64, extent: f64| {
-                let relative = f64::from(pixel) - offset;
-                let coordinate = if repeat {
-                    relative.rem_euclid(extent)
-                } else {
-                    relative / scale + crop
+            let sample =
+                |pixel: u32, offset: f64, scale: f64, crop: f64, span: f64, extent: f64| {
+                    let relative = f64::from(pixel) - offset;
+                    let coordinate = if repeat {
+                        relative.rem_euclid(extent)
+                    } else {
+                        relative / scale + crop
+                    };
+                    (coordinate >= crop
+                        && coordinate < crop + span
+                        && coordinate >= 0.
+                        && coordinate < extent)
+                        .then_some(coordinate as u32)
                 };
-                (coordinate >= crop && coordinate < crop + span && coordinate >= 0.
-                    && coordinate < extent)
-                    .then_some(coordinate as u32)
-            };
             // Reuse each horizontal mapping across rows without allocating for the full width.
             const SAMPLE_COLUMNS: u32 = 4096;
             let mut columns = Vec::with_capacity(w.min(SAMPLE_COLUMNS) as usize);
             for start in (0..w).step_by(SAMPLE_COLUMNS as usize) {
                 columns.clear();
-                columns.extend((start..w.min(start + SAMPLE_COLUMNS)).filter_map(|dx| {
-                    sample(dx, x, sx, cx, cw, bw).map(|bx| (dx, bx))
-                }));
+                columns.extend(
+                    (start..w.min(start + SAMPLE_COLUMNS))
+                        .filter_map(|dx| sample(dx, x, sx, cx, cw, bw).map(|bx| (dx, bx))),
+                );
                 if columns.is_empty() {
                     continue;
                 }
@@ -431,7 +441,11 @@ impl<'a> PngRenderer<'a> {
             return Ok(None);
         };
         if self.last_atlas.as_ref().map(|(id, _)| *id) != Some(uid) {
-            if self.previous_atlas.as_ref().is_some_and(|(id, _)| *id == uid) {
+            if self
+                .previous_atlas
+                .as_ref()
+                .is_some_and(|(id, _)| *id == uid)
+            {
                 std::mem::swap(&mut self.last_atlas, &mut self.previous_atlas);
             } else {
                 // Keep peak residency at most the last atlas and the newly decoded image.
@@ -445,7 +459,8 @@ impl<'a> PngRenderer<'a> {
                 };
                 const DECODED_ATLAS_BUDGET: usize = 16 * 1024 * 1024;
                 self.previous_atlas = self.last_atlas.take().filter(|(_, previous)| {
-                    previous.as_raw().len().saturating_add(image.as_raw().len()) <= DECODED_ATLAS_BUDGET
+                    previous.as_raw().len().saturating_add(image.as_raw().len())
+                        <= DECODED_ATLAS_BUDGET
                 });
                 self.last_atlas = Some((uid, image));
             }

@@ -34,7 +34,9 @@ impl Viewport {
     }
     pub fn level_render_canvas_origin(&self, canvas: Rect, pixels_per_point: f32) -> [f32; 2] {
         // LevelRender.hx snaps the local root before drawing the level and its filters.
-        let root: eframe::egui::Vec2 = self.to_screen([0.; 2], [0.; 2], canvas.size().into()).into();
+        let root: eframe::egui::Vec2 = self
+            .to_screen([0.; 2], [0.; 2], canvas.size().into())
+            .into();
         let snapped = (root * pixels_per_point).round() / pixels_per_point;
         (canvas.min + (snapped - root)).into()
     }
@@ -261,7 +263,11 @@ impl CameraMotion {
         })
     }
 
-    pub fn window_dt(&mut self, ctx: &eframe::egui::Context, pointer_activity: bool) -> Option<f32> {
+    pub fn window_dt(
+        &mut self,
+        ctx: &eframe::egui::Context,
+        pointer_activity: bool,
+    ) -> Option<f32> {
         let (now, dt, input) = ctx.input(|i| {
             let input = pointer_activity
                 || i.events.iter().any(|event| {
@@ -282,7 +288,9 @@ impl CameraMotion {
             // Canvas input can wake egui early, but the first zoom uses the
             // elapsed time of the previously scheduled canvas frame.
             let interval = if idle_for > 6. { 1. / 12. } else { 1. / 30. };
-            let deadline = *self.world_entry_deadline.get_or_insert(last_frame + interval);
+            let deadline = *self
+                .world_entry_deadline
+                .get_or_insert(last_frame + interval);
             if now < deadline {
                 ctx.request_repaint_after(std::time::Duration::from_secs_f64(deadline - now));
                 return None;
@@ -363,8 +371,7 @@ impl CameraMotion {
             let settled = if motion.exact {
                 // Measure the remaining zoom at the edge of the canvas.
                 let half_extent = canvas.width().max(canvas.height()) * 0.5 * pixels_per_point;
-                error * half_extent <= zoom * FIT_SETTLE_PIXELS
-                    || (step > 0.0 && zoom == view.zoom)
+                error * half_extent <= zoom * FIT_SETTLE_PIXELS || (step > 0.0 && zoom == view.zoom)
             } else {
                 error <= 0.04 * zoom || motion.remaining <= 0.0
             };

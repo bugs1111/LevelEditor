@@ -169,8 +169,14 @@ impl EditorApp {
                 } else {
                     total_width
                 };
-                let selected =
-                    tileset_picker(ui, width, tilesets, current, "-- Tileset required --", false);
+                let selected = tileset_picker(
+                    ui,
+                    width,
+                    tilesets,
+                    current,
+                    "-- Tileset required --",
+                    false,
+                );
                 if tilesets.is_empty() {
                     open_tilesets = orange(
                         ui,
@@ -192,7 +198,10 @@ impl EditorApp {
             let warning = locale::format(
                 ui,
                 "Warning: the TILESET grid ({tileset}px) differs from the LAYER grid ({layer}px), and the values aren't multiples, which can lead to unexpected behaviors when adding a group of tiles.",
-                &[("tileset", &tile_size.to_string()), ("layer", &grid_size.to_string())],
+                &[
+                    ("tileset", &tile_size.to_string()),
+                    ("layer", &grid_size.to_string()),
+                ],
             );
             let galley = ui.painter().layout(
                 warning,
@@ -253,7 +262,9 @@ impl EditorApp {
         } else {
             self.edit("Tileset assigned", assign)
         };
-        if let Some(discarded) = discarded && discarded > 0 {
+        if let Some(discarded) = discarded
+            && discarded > 0
+        {
             self.status = format!("Tileset assigned; removed {discarded} references");
         }
     }
@@ -504,8 +515,7 @@ impl EditorApp {
                                 response.id.with("entity-depth-sorting"),
                                 selected,
                                 &options,
-                            )
-                                && choices[index].0 != current
+                            ) && choices[index].0 != current
                             {
                                 patch["entityDepthSorting"] = json!(choices[index].0);
                             }
@@ -643,7 +653,8 @@ impl EditorApp {
                             }),
                     );
                     let current = candidates.iter().position(|(id, _)| *id == source);
-                    let options: Vec<_> = candidates.iter().map(|(_, label)| (*label, None)).collect();
+                    let options: Vec<_> =
+                        candidates.iter().map(|(_, label)| (*label, None)).collect();
                     let title = current.map_or(placeholder, |index| options[index].0);
                     if let Some(index) = source_controls::form_select(
                         ui,
@@ -657,8 +668,7 @@ impl EditorApp {
                         } else {
                             FormSelectAppearance::Normal
                         },
-                    )
-                        && candidates[index].0 != source
+                    ) && candidates[index].0 != source
                     {
                         patch["autoSourceLayerDefUid"] = json!(candidates[index].0);
                     }
@@ -847,7 +857,12 @@ fn auto_layer_blockers(
         (other != uid
             && !blockers.contains(&other)
             && matches!(layer["type"].as_str(), Some("Tiles" | "IntGrid")))
-        .then(|| (Some(other), text(layer, "identifier", locale::tr(ui, "Layer"))))
+        .then(|| {
+            (
+                Some(other),
+                text(layer, "identifier", locale::tr(ui, "Layer")),
+            )
+        })
     }));
     let options: Vec<_> = candidates.iter().map(|(_, label)| (*label, None)).collect();
     let add = source_controls::form_select(

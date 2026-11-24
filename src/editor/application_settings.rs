@@ -48,7 +48,10 @@ fn choice(
             options
                 .iter()
                 .find(|(value, _)| *value == current)
-                .map_or_else(|| locale::tr(ui, options[0].1), |(_, label)| locale::tr(ui, label)),
+                .map_or_else(
+                    || locale::tr(ui, options[0].1),
+                    |(_, label)| locale::tr(ui, label),
+                ),
         )
         .show_ui(ui, |ui| {
             for (value, label) in options {
@@ -154,54 +157,63 @@ impl EditorApp {
                 if !force_scroll || content_height.is_none() {
                     scroll = scroll.vertical_scroll_offset(0.);
                 }
-                scroll.show(ui, |ui| {
-                    *ui.visuals_mut() = content_visuals;
-                    ui.set_width(width);
-                    let top = ui.next_widget_position().y;
-                    ui.spacing_mut().item_spacing = egui::vec2(8., 10.);
-                    ui.style_mut()
-                        .text_styles
-                        .insert(egui::TextStyle::Body, FontId::proportional(12.667));
-                    ui.style_mut()
-                        .text_styles
-                        .insert(egui::TextStyle::Button, FontId::proportional(12.667));
-                    let (header, _) = ui.allocate_exact_size(egui::vec2(width, 53.), Sense::hover());
-                    ui.painter().rect_filled(header, 0., theme::LIGHT);
-                    egui::Image::new(egui::include_image!("../../assets/icons/settings.svg")).paint_at(
-                        ui,
-                        Rect::from_min_size(header.min + egui::vec2(20., 6.5), Vec2::splat(40.)),
-                    );
-                    ui.painter().text(
-                        header.min + egui::vec2(72., 26.5),
-                        Align2::LEFT_CENTER,
-                        locale::tr(ui, "APPLICATION SETTINGS"),
-                        FontId::new(20., egui::FontFamily::Name("panel-title".into())),
-                        Color32::WHITE,
-                    );
-                    egui::Frame::new()
-                        .inner_margin(egui::Margin {
-                            left: 20,
-                            right: 20,
-                            top: 6,
-                            bottom: 20,
-                        })
-                        .show(ui, |ui| {
-                            ui.set_width(width - 40.);
-                            self.settings_properties(ui);
-                            let content_height = ui.next_widget_position().y - top;
-                            ui.add_space(6.);
-                            close = source_controls::add_sized_button(
+                scroll
+                    .show(ui, |ui| {
+                        *ui.visuals_mut() = content_visuals;
+                        ui.set_width(width);
+                        let top = ui.next_widget_position().y;
+                        ui.spacing_mut().item_spacing = egui::vec2(8., 10.);
+                        ui.style_mut()
+                            .text_styles
+                            .insert(egui::TextStyle::Body, FontId::proportional(12.667));
+                        ui.style_mut()
+                            .text_styles
+                            .insert(egui::TextStyle::Button, FontId::proportional(12.667));
+                        let (header, _) =
+                            ui.allocate_exact_size(egui::vec2(width, 53.), Sense::hover());
+                        ui.painter().rect_filled(header, 0., theme::LIGHT);
+                        egui::Image::new(egui::include_image!("../../assets/icons/settings.svg"))
+                            .paint_at(
                                 ui,
-                                [width - 40., 42.],
-                                egui::Button::new(RichText::new(locale::tr(ui, "CLOSE")).color(Color32::WHITE))
+                                Rect::from_min_size(
+                                    header.min + egui::vec2(20., 6.5),
+                                    Vec2::splat(40.),
+                                ),
+                            );
+                        ui.painter().text(
+                            header.min + egui::vec2(72., 26.5),
+                            Align2::LEFT_CENTER,
+                            locale::tr(ui, "APPLICATION SETTINGS"),
+                            FontId::new(20., egui::FontFamily::Name("panel-title".into())),
+                            Color32::WHITE,
+                        );
+                        egui::Frame::new()
+                            .inner_margin(egui::Margin {
+                                left: 20,
+                                right: 20,
+                                top: 6,
+                                bottom: 20,
+                            })
+                            .show(ui, |ui| {
+                                ui.set_width(width - 40.);
+                                self.settings_properties(ui);
+                                let content_height = ui.next_widget_position().y - top;
+                                ui.add_space(6.);
+                                close = source_controls::add_sized_button(
+                                    ui,
+                                    [width - 40., 42.],
+                                    egui::Button::new(
+                                        RichText::new(locale::tr(ui, "CLOSE"))
+                                            .color(Color32::WHITE),
+                                    )
                                     .fill(Color32::from_rgb(235, 78, 0)),
-                            )
-                            .clicked();
-                            content_height
-                        })
-                        .inner
-                })
-                .inner
+                                )
+                                .clicked();
+                                content_height
+                            })
+                            .inner
+                    })
+                    .inner
             });
         if close || modal.should_close() {
             self.show_panel(None);
@@ -234,7 +246,11 @@ impl EditorApp {
         // Source dl.form columns size to the longest non-wrapping label plus its help badge.
         let label_width = |label: &str| {
             ui.painter()
-                .layout_no_wrap(locale::tr(ui, label).into(), FontId::proportional(12.667), theme::TEXT)
+                .layout_no_wrap(
+                    locale::tr(ui, label).into(),
+                    FontId::proportional(12.667),
+                    theme::TEXT,
+                )
                 .size()
                 .x
                 + 32.
@@ -249,8 +265,12 @@ impl EditorApp {
                 egui::Button::image_and_text(
                     egui::Image::new(egui::include_image!("../../assets/icons/appUpdate.svg"))
                         .fit_to_exact_size(Vec2::splat(32.)),
-                    RichText::new(locale::format(ui, "A new update is available!\nInstall {version}", &[("version", &version)]))
-                        .color(Color32::WHITE),
+                    RichText::new(locale::format(
+                        ui,
+                        "A new update is available!\nInstall {version}",
+                        &[("version", &version)],
+                    ))
+                    .color(Color32::WHITE),
                 )
                 .fill(Color32::from_rgb(44, 128, 179)),
             )
@@ -710,7 +730,11 @@ mod tests {
 
         app.show_panel(Some(Panel::Settings));
         let output = frame(&mut app, &ctx, vec![]);
-        click(&mut app, &ctx, checkbox_pos(&output, "Re-open last project"));
+        click(
+            &mut app,
+            &ctx,
+            checkbox_pos(&output, "Re-open last project"),
+        );
         let saved = settings::Settings::load_at(Some(path));
         assert!(saved.bool("openLastProject"));
         assert_eq!(saved.value["singleLayerModeIntensity"], 0.8);

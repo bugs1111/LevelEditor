@@ -1,6 +1,5 @@
 use super::{
-    RenderOptions, Scene, Transform, geometry, lighten, number, pair, text, tile_anchor,
-    values,
+    RenderOptions, Scene, Transform, geometry, lighten, number, pair, text, tile_anchor, values,
 };
 use crate::{assets::Assets, theme, viewport::Viewport};
 use eframe::egui::{self, Color32, Mesh, Painter, Pos2, Rect, Stroke, StrokeKind, vec2};
@@ -204,18 +203,28 @@ impl Scene<'_> {
             .unwrap_or(&Value::Null);
         let bounds = entity_bounds(entity, def);
         let rect = self.screen(transform.rect(bounds));
-        let visible = rect.expand(300. * self.options.ui_scale).intersects(self.canvas);
-        if !visible && !values(&def["fieldDefs"]).iter().any(|field| {
-            (def["tileRenderMode"] == "FullSizeUncropped"
-                && field["__type"] == "FilePath"
-                && field["isArray"] != true
-                && field["editorDisplayMode"] == "EntityTile")
-                || matches!(
-                    text(field, "editorDisplayMode", ""),
-                    "RadiusPx" | "RadiusGrid" | "RefLinkBetweenCenters" | "RefLinkBetweenPivots"
-                        | "Points" | "PointStar" | "PointPath" | "PointPathLoop"
-                )
-        }) {
+        let visible = rect
+            .expand(300. * self.options.ui_scale)
+            .intersects(self.canvas);
+        if !visible
+            && !values(&def["fieldDefs"]).iter().any(|field| {
+                (def["tileRenderMode"] == "FullSizeUncropped"
+                    && field["__type"] == "FilePath"
+                    && field["isArray"] != true
+                    && field["editorDisplayMode"] == "EntityTile")
+                    || matches!(
+                        text(field, "editorDisplayMode", ""),
+                        "RadiusPx"
+                            | "RadiusGrid"
+                            | "RefLinkBetweenCenters"
+                            | "RefLinkBetweenPivots"
+                            | "Points"
+                            | "PointStar"
+                            | "PointPath"
+                            | "PointPathLoop"
+                    )
+            })
+        {
             return;
         }
         let image_tile = values(&def["fieldDefs"]).iter().find_map(|field| {

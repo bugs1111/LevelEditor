@@ -1,5 +1,5 @@
-use super::*;
 use super::field_definition_form::source_file_types;
+use super::*;
 
 #[test]
 fn backup_panels_keep_the_form_visible_under_the_read_only_notice() {
@@ -20,18 +20,33 @@ fn backup_panels_keep_the_form_visible_under_the_read_only_notice() {
             let pos = egui::pos2(294., 240.);
             out = ctx.run(
                 egui::RawInput {
-                    screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1440., 900.))),
+                    screen_rect: Some(Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1440., 900.),
+                    )),
                     events: vec![
                         egui::Event::PointerMoved(pos),
-                        egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE },
+                        egui::Event::PointerButton {
+                            pos,
+                            button: egui::PointerButton::Primary,
+                            pressed,
+                            modifiers: egui::Modifiers::NONE,
+                        },
                     ],
                     ..Default::default()
                 },
-                |ctx| { app.source_panel(ctx, panel); },
+                |ctx| {
+                    app.source_panel(ctx, panel);
+                },
             );
         }
-        let label = |name| out.shapes.iter().any(|shape| matches!(&shape.shape, egui::Shape::Text(text) if text.galley.text() == name));
-        assert_eq!(label("This panel is disabled for backup files."), panel != Panel::Help);
+        let label = |name| {
+            out.shapes.iter().any(|shape| matches!(&shape.shape, egui::Shape::Text(text) if text.galley.text() == name))
+        };
+        assert_eq!(
+            label("This panel is disabled for backup files."),
+            panel != Panel::Help
+        );
         if panel == Panel::Project {
             assert!(label("Backup on save"));
             assert!(label("RESTORE THIS BACKUP"));
@@ -70,16 +85,19 @@ fn modal_panel_uses_the_source_canvas_mask_and_keeps_recovery_above_it() {
     draw(&mut app, Panel::Level);
     let output = draw(&mut app, Panel::Level);
     let mask = |out: &egui::FullOutput| {
-        out.shapes.iter().enumerate().find_map(|(index, shape)| match &shape.shape {
-            egui::Shape::Rect(rect)
-                if rect.rect.right_bottom() == screen.right_bottom()
-                    && rect.fill.r() == 0
-                    && (1..255).contains(&rect.fill.a()) =>
-            {
-                Some((index, rect.rect, rect.fill))
-            }
-            _ => None,
-        })
+        out.shapes
+            .iter()
+            .enumerate()
+            .find_map(|(index, shape)| match &shape.shape {
+                egui::Shape::Rect(rect)
+                    if rect.rect.right_bottom() == screen.right_bottom()
+                        && rect.fill.r() == 0
+                        && (1..255).contains(&rect.fill.a()) =>
+                {
+                    Some((index, rect.rect, rect.fill))
+                }
+                _ => None,
+            })
     };
     let (shade, rect, fill) = mask(&output).expect("modal panel canvas mask");
     assert_eq!(rect, Rect::from_min_max(egui::pos2(300., 0.), screen.max));
@@ -103,13 +121,22 @@ fn header_controls_do_not_change_the_panel_body_position() {
     let _ = ctx.run(egui::RawInput::default(), |ctx| {
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.spacing_mut().item_spacing.y = 0.;
-            for (panel, height) in
-                [(Panel::Layers, 53.), (Panel::Rules, 46.), (Panel::Help, 53.)]
-            {
+            for (panel, height) in [
+                (Panel::Layers, 53.),
+                (Panel::Rules, 46.),
+                (Panel::Help, 53.),
+            ] {
                 for padding in [0., 6.] {
                     ui.spacing_mut().button_padding.y = padding;
                     let top = ui.next_widget_position().y;
-                    assert!(!source_panel_header(ui, panel, 400., height, title(panel), false));
+                    assert!(!source_panel_header(
+                        ui,
+                        panel,
+                        400.,
+                        height,
+                        title(panel),
+                        false
+                    ));
                     assert_eq!(ui.next_widget_position().y, top + height, "{panel:?}");
                 }
             }
@@ -146,28 +173,41 @@ fn tileset_sidebar_uses_compact_rows_and_orders_untagged_before_named_groups() {
     assert!(center(&empty, "No tileset").is_some());
     let library_help = "Tilesets are large images in which you pick sub-parts to draw them in your levels. They can also be used as icons for some specific elements (like Enums).";
     assert!(center(&empty, library_help).is_some());
-    let builtin = app.project.as_mut().unwrap().ensure_embedded_icons().unwrap();
+    let builtin = app
+        .project
+        .as_mut()
+        .unwrap()
+        .ensure_embedded_icons()
+        .unwrap();
     app.definition_uid = Some(builtin);
     let single = draw(&mut app);
     assert!(center(&single, library_help).is_none());
     assert!(center(&single, "TILESETS").is_none());
-    let row = single.shapes.iter().find_map(|shape| match &shape.shape {
-        egui::Shape::Rect(row) if row.fill == theme::ACCENT && row.rect.width() > 200. => {
-            Some(row.rect)
-        }
-        _ => None,
-    }).expect("selected tileset row");
+    let row = single
+        .shapes
+        .iter()
+        .find_map(|shape| match &shape.shape {
+            egui::Shape::Rect(row) if row.fill == theme::ACCENT && row.rect.width() > 200. => {
+                Some(row.rect)
+            }
+            _ => None,
+        })
+        .expect("selected tileset row");
     assert_eq!(row.x_range(), egui::Rangef::new(29., 311.));
     assert!((row.top() - 198.).abs() <= 1.);
     assert!((row.height() - 33.).abs() <= 1.);
     let project = app.project.as_mut().unwrap();
     for (image, tag) in [("Canopy.png", "Forest"), ("Road.png", "city")] {
         let uid = project.add_tileset(Path::new(image), 16, 32, 32).unwrap();
-        project.update_tileset_definition(uid, &json!({"tags":[tag]})).unwrap();
+        project
+            .update_tileset_definition(uid, &json!({"tags":[tag]}))
+            .unwrap();
     }
     let tagged = draw(&mut app);
     let headings = ["UNTAGGED", "CITY", "FOREST"].map(|name| {
-        center(&tagged, name).unwrap_or_else(|| panic!("missing group {name}")).y
+        center(&tagged, name)
+            .unwrap_or_else(|| panic!("missing group {name}"))
+            .y
     });
     assert!(headings[0] < headings[1] && headings[1] < headings[2]);
 }
@@ -342,7 +382,10 @@ fn source_layer_form_keeps_the_outer_scrollbar_out_of_the_column_grid() {
         ctx.run(
             egui::RawInput {
                 time: Some(time),
-                screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1440., 620.))),
+                screen_rect: Some(Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1440., 620.),
+                )),
                 events,
                 ..Default::default()
             },
@@ -369,12 +412,18 @@ fn source_layer_form_keeps_the_outer_scrollbar_out_of_the_column_grid() {
         })
     };
     assert!(title_visible(&initial));
-    draw(true, vec![egui::Event::PointerMoved(egui::pos2(750., 305.))]);
-    draw(true, vec![egui::Event::MouseWheel {
-        unit: egui::MouseWheelUnit::Point,
-        delta: egui::vec2(0., -360.),
-        modifiers: egui::Modifiers::NONE,
-    }]);
+    draw(
+        true,
+        vec![egui::Event::PointerMoved(egui::pos2(750., 305.))],
+    );
+    draw(
+        true,
+        vec![egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Point,
+            delta: egui::vec2(0., -360.),
+            modifiers: egui::Modifiers::NONE,
+        }],
+    );
     for _ in 0..5 {
         draw(true, vec![]);
     }
@@ -391,7 +440,9 @@ fn source_layer_sidebar_keeps_full_width_compact_rows_and_selects_by_icon() {
     ctx.style_mut(|style| style.animation_time = 0.);
     let mut project = Project::new();
     let lower = project.add_layer("Road", "Tiles", 16).unwrap();
-    let upper = project.add_layer("Landscape_Collision", "IntGrid", 16).unwrap();
+    let upper = project
+        .add_layer("Landscape_Collision", "IntGrid", 16)
+        .unwrap();
     let mut app = EditorApp::empty();
     app.set_project(project);
     let active_layer = |app: &EditorApp| {
@@ -413,7 +464,10 @@ fn source_layer_sidebar_keeps_full_width_compact_rows_and_selects_by_icon() {
         ctx.run(
             egui::RawInput {
                 time: Some(time),
-                screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1440., 900.))),
+                screen_rect: Some(Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1440., 900.),
+                )),
                 events,
                 ..Default::default()
             },
@@ -430,7 +484,10 @@ fn source_layer_sidebar_keeps_full_width_compact_rows_and_selects_by_icon() {
     });
     assert_eq!(
         selected,
-        Some(Rect::from_min_size(egui::pos2(25., 194.), egui::vec2(240., 34.)))
+        Some(Rect::from_min_size(
+            egui::pos2(25., 194.),
+            egui::vec2(240., 34.)
+        ))
     );
     let list = output.shapes.iter().find_map(|shape| match &shape.shape {
         egui::Shape::Rect(rect) if rect.fill == theme::DARK && rect.rect.height() > 500. => {
@@ -445,15 +502,18 @@ fn source_layer_sidebar_keeps_full_width_compact_rows_and_selects_by_icon() {
 
     let pos = egui::pos2(65., 246.);
     for pressed in [true, false] {
-        draw(&mut app, vec![
-            egui::Event::PointerMoved(pos),
-            egui::Event::PointerButton {
-                pos,
-                button: egui::PointerButton::Primary,
-                pressed,
-                modifiers: egui::Modifiers::NONE,
-            },
-        ]);
+        draw(
+            &mut app,
+            vec![
+                egui::Event::PointerMoved(pos),
+                egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ],
+        );
     }
     assert_eq!(app.definition_uid, Some(lower));
     assert_eq!(active_layer(&app), lower);
@@ -670,7 +730,10 @@ fn multi_world_panel_uses_the_source_action_rows() {
                     && (rect.size() - egui::vec2(width, height)).abs().max_elem() <= 1.
             }),
             "missing action or heading at ({x}, {y}) with size ({width}, {height}); same-color controls: {:?}",
-            rects.iter().filter(|(fill, _)| *fill == color).collect::<Vec<_>>()
+            rects
+                .iter()
+                .filter(|(fill, _)| *fill == color)
+                .collect::<Vec<_>>()
         );
     }
 }
@@ -906,8 +969,11 @@ fn draw_first_field_definition(
                 .iter()
                 .find(|entity| entity["uid"] == owner)
         })
-        .map_or(&project.json["defs"]["levelFields"], |owner| &owner["fieldDefs"])[0]
-        .clone();
+        .map_or(
+            &project.json["defs"]["levelFields"],
+            |owner| &owner["fieldDefs"],
+        )[0]
+    .clone();
     ctx.run(
         egui::RawInput {
             screen_rect: Some(Rect::from_min_size(
@@ -1366,14 +1432,14 @@ fn level_point_picker_keeps_the_form_open_through_cancel_and_canvas_commit() {
         }
     };
     let control = |output: &egui::FullOutput, label| {
-        output.shapes
+        output
+            .shapes
             .iter()
             .find_map(|shape| text_center(&shape.shape, label))
             .unwrap()
     };
     let value = |app: &EditorApp| {
-        app.project.as_ref().unwrap().level(level).unwrap()["fieldInstances"][0]["__value"]
-            .clone()
+        app.project.as_ref().unwrap().level(level).unwrap()["fieldInstances"][0]["__value"].clone()
     };
     draw(&mut app, vec![]);
     let pick = control(&draw(&mut app, vec![]), "10,8");

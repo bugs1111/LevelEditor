@@ -168,7 +168,9 @@ fn pixel_outline(
 ) -> Vec<[u8; 4]> {
     let (width, height) = (xs.len(), ys.len());
     let consecutive = |axis: &[f32]| {
-        axis.windows(2).map(|pair| pair[1] - pair[0] == 1.).collect::<Vec<_>>()
+        axis.windows(2)
+            .map(|pair| pair[1] - pair[0] == 1.)
+            .collect::<Vec<_>>()
     };
     let x_steps = consecutive(xs);
     let y_steps = consecutive(ys);
@@ -274,14 +276,19 @@ fn raster(marks: &[Mark], rect: Rect, size: [usize; 2]) -> egui::ColorImage {
     let ys: Vec<_> = (0..size[1]).map(|y| rect.min.y + y as f32 + 0.5).collect();
     egui::ColorImage::new(
         size,
-        raster_pixels(marks, &xs, &ys).into_iter().map(premultiplied).collect(),
+        raster_pixels(marks, &xs, &ys)
+            .into_iter()
+            .map(premultiplied)
+            .collect(),
     )
 }
 
 // Two outline passes need the sampled level texel and its neighbours out to
 // two pixels. Skip the gaps between these neighbourhoods when zoomed out.
 fn sample_axis(start: f32, step: f32, len: usize) -> (Vec<f32>, Vec<usize>) {
-    let centers: Vec<_> = (0..len).map(|i| (start + i as f32 * step).floor() + 0.5).collect();
+    let centers: Vec<_> = (0..len)
+        .map(|i| (start + i as f32 * step).floor() + 0.5)
+        .collect();
     let mut axis = Vec::with_capacity(len);
     for &center in &centers {
         for offset in -2..=2 {
@@ -293,7 +300,10 @@ fn sample_axis(start: f32, step: f32, len: usize) -> (Vec<f32>, Vec<usize>) {
     }
     let samples = centers
         .iter()
-        .map(|center| axis.binary_search_by(|texel| texel.total_cmp(center)).unwrap())
+        .map(|center| {
+            axis.binary_search_by(|texel| texel.total_cmp(center))
+                .unwrap()
+        })
         .collect();
     (axis, samples)
 }
@@ -315,7 +325,11 @@ fn raster_sampled(
         let strip = raster_pixels(marks, &xs, &ys);
         for row in rows {
             let start = row * xs.len();
-            pixels.extend(columns.iter().map(|column| premultiplied(strip[start + column])));
+            pixels.extend(
+                columns
+                    .iter()
+                    .map(|column| premultiplied(strip[start + column])),
+            );
         }
     }
     egui::ColorImage::new(size, pixels)
@@ -340,7 +354,8 @@ fn paint_marks(ui: &egui::Ui, canvas: Rect, view: &Viewport, marks: &[Mark]) {
     let ppp = ui.ctx().pixels_per_point();
     let origin = view.level_render_canvas_origin(canvas, ppp);
     let on_screen = |p: egui::Pos2| -> egui::Pos2 {
-        view.to_screen(p.into(), origin, canvas.size().into()).into()
+        view.to_screen(p.into(), origin, canvas.size().into())
+            .into()
     };
     let in_level = |p: egui::Pos2| -> egui::Pos2 {
         view.to_world(p.into(), origin, canvas.size().into()).into()
@@ -494,8 +509,7 @@ impl EditorApp {
         };
         let grid = number(instance, "__gridSize", 16.);
         let center = |p: [f32; 2]| {
-            let layer_pixel =
-                canvas::pointer_to_layer(project, *key, *layer, &self.viewport, p);
+            let layer_pixel = canvas::pointer_to_layer(project, *key, *layer, &self.viewport, p);
             canvas::layer_to_pointer_world(
                 project,
                 *key,
@@ -523,12 +537,8 @@ pub(super) fn draw_move_arrow(
     copy: bool,
 ) {
     let origin = view.level_render_canvas_origin(rect, ui.ctx().pixels_per_point());
-    let a: egui::Pos2 = view
-        .to_screen(from, origin, rect.size().into())
-        .into();
-    let b: egui::Pos2 = view
-        .to_screen(to, origin, rect.size().into())
-        .into();
+    let a: egui::Pos2 = view.to_screen(from, origin, rect.size().into()).into();
+    let b: egui::Pos2 = view.to_screen(to, origin, rect.size().into()).into();
     let d = b - a;
     if d.length_sq() < 0.01 {
         return;
@@ -701,7 +711,11 @@ mod interaction_tests {
         let first = run(&view);
         let second = run(&view);
         assert!(
-            first.textures_delta.set.iter().any(|(_, delta)| delta.image.size() == [36, 36]),
+            first
+                .textures_delta
+                .set
+                .iter()
+                .any(|(_, delta)| delta.image.size() == [36, 36]),
             "32 level pixels plus two one-pixel outline passes"
         );
         assert!(second.textures_delta.set.is_empty());
@@ -775,7 +789,10 @@ mod interaction_tests {
     fn oversized_selection_samples_the_same_subpixel_outline_as_a_small_selection() {
         let ctx = egui::Context::default();
         let canvas = Rect::from_min_size(egui::Pos2::ZERO, Vec2::splat(100.));
-        let view = Viewport { center: [0., 0.], zoom: 0.025 };
+        let view = Viewport {
+            center: [0., 0.],
+            zoom: 0.025,
+        };
         let marks = [Mark::Rect(
             Rect::from_min_max(egui::pos2(0., -1300.), egui::pos2(2000., 1300.)),
             YELLOW,
@@ -783,17 +800,30 @@ mod interaction_tests {
         let output = ctx.run(egui::RawInput::default(), |ctx| {
             egui::CentralPanel::default().show(ctx, |ui| paint_marks(ui, canvas, &view, &marks));
         });
-        let image = output.textures_delta.set.iter().find_map(|(id, delta)| {
-            if *id == egui::TextureId::default() {
-                return None;
-            }
-            let egui::ImageData::Color(image) = &delta.image;
-            Some(image)
-        }).unwrap();
+        let image = output
+            .textures_delta
+            .set
+            .iter()
+            .find_map(|(id, delta)| {
+                if *id == egui::TextureId::default() {
+                    return None;
+                }
+                let egui::ImageData::Color(image) = &delta.image;
+                Some(image)
+            })
+            .unwrap();
         assert!(image.width() <= 100 && image.height() <= 100);
         let middle = &image.pixels[(image.height() / 2) * image.width()..];
-        let first_visible = middle.iter().take(image.width()).find(|c| c.a() != 0).unwrap();
-        assert_eq!(first_visible.a(), 168, "the first visible pixel samples the interior");
+        let first_visible = middle
+            .iter()
+            .take(image.width())
+            .find(|c| c.a() != 0)
+            .unwrap();
+        assert_eq!(
+            first_visible.a(),
+            168,
+            "the first visible pixel samples the interior"
+        );
     }
 
     #[test]

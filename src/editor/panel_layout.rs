@@ -117,10 +117,16 @@ fn source_panel_header(
         rect.right_top() + egui::vec2(-21. - close_width, 8.),
         egui::vec2(close_width, if rules { close_width } else { 38. }),
     );
-    let sense = if backup_locked { Sense::hover() } else { Sense::click() };
+    let sense = if backup_locked {
+        Sense::hover()
+    } else {
+        Sense::click()
+    };
     let close = ui.interact(close_rect, header.id.with("close"), sense);
     if !backup_locked {
-        close.clone().on_hover_cursor(egui::CursorIcon::PointingHand);
+        close
+            .clone()
+            .on_hover_cursor(egui::CursorIcon::PointingHand);
     }
     close.widget_info(|| {
         egui::WidgetInfo::labeled(
@@ -138,8 +144,19 @@ fn source_panel_header(
     ui.painter().rect(
         close_rect,
         3.,
-        if hovered { Color32::WHITE } else { theme::LIGHT },
-        Stroke::new(1_f32, if hovered { Color32::WHITE } else { theme::MEDIUM }),
+        if hovered {
+            Color32::WHITE
+        } else {
+            theme::LIGHT
+        },
+        Stroke::new(
+            1_f32,
+            if hovered {
+                Color32::WHITE
+            } else {
+                theme::MEDIUM
+            },
+        ),
         StrokeKind::Inside,
     );
     let color = if backup_locked {
@@ -339,7 +356,11 @@ fn section(
                 ui,
                 Rect::from_center_size(rect.left_center() + egui::vec2(12., 0.), Vec2::splat(24.)),
             );
-            let ink = if open || hovered { Color32::BLACK } else { theme::ACCENT };
+            let ink = if open || hovered {
+                Color32::BLACK
+            } else {
+                theme::ACCENT
+            };
             let title = locale::widget(ui, title.into()).color(ink).into_galley(
                 ui,
                 Some(egui::TextWrapMode::Truncate),
@@ -458,7 +479,10 @@ impl EditorApp {
         } else {
             source_width.min(screen.width())
         };
-        let scroll_panel = matches!(panel, Panel::Project | Panel::Level | Panel::Layers | Panel::Tilesets);
+        let scroll_panel = matches!(
+            panel,
+            Panel::Project | Panel::Level | Panel::Layers | Panel::Tilesets
+        );
         let wrapper_width = width + if scroll_panel { 10. } else { 0. };
         let scroll_x = fixed_width && wrapper_width > screen.width();
         let outer_scroll = scroll_panel || scroll_x;
@@ -466,8 +490,15 @@ impl EditorApp {
         let rules = panel == Panel::Rules;
         let backup_locked = matches!(
             panel,
-            Panel::Project | Panel::World | Panel::Level | Panel::Layers | Panel::Entities
-                | Panel::Fields | Panel::Enums | Panel::Tilesets | Panel::Rules
+            Panel::Project
+                | Panel::World
+                | Panel::Level
+                | Panel::Layers
+                | Panel::Entities
+                | Panel::Fields
+                | Panel::Enums
+                | Panel::Tilesets
+                | Panel::Rules
         ) && self.project.as_ref().is_some_and(Project::is_backup);
         let heading = if rules {
             self.project
@@ -593,7 +624,12 @@ impl EditorApp {
                                 - f32::from(bottom_margin))
                             .max(40.);
                             close |= source_panel_header(
-                                ui, panel, width, header_height, &heading, backup_locked,
+                                ui,
+                                panel,
+                                width,
+                                header_height,
+                                &heading,
+                                backup_locked,
                             );
                             if backup_locked {
                                 let cursor = ui.cursor().min;
@@ -626,32 +662,42 @@ impl EditorApp {
                                         return;
                                     }
                                     if single_column {
-                                        let inner_width = if world_panel { width } else { width - 40. };
+                                        let inner_width =
+                                            if world_panel { width } else { width - 40. };
                                         ui.set_width(inner_width);
                                         ui.set_max_width(inner_width);
                                         ui.ctx()
                                             .data_mut(|data| data.insert_temp(active_id(), true));
                                         if world_panel {
-                                            ui.spacing_mut().scroll = source_controls::scroll_style();
+                                            ui.spacing_mut().scroll =
+                                                source_controls::scroll_style();
                                             ui.visuals_mut().clip_rect_margin = 0.;
                                             let scroll_height = height - header_height;
                                             // Keep animated scrollbar width inside the fixed panel.
-                                            let (_, rect) = ui
-                                                .allocate_space(egui::vec2(inner_width, scroll_height));
+                                            let (_, rect) = ui.allocate_space(egui::vec2(
+                                                inner_width,
+                                                scroll_height,
+                                            ));
                                             let mut viewport =
                                                 ui.new_child(egui::UiBuilder::new().max_rect(rect));
-                                            viewport.set_clip_rect(rect.intersect(viewport.clip_rect()));
+                                            viewport.set_clip_rect(
+                                                rect.intersect(viewport.clip_rect()),
+                                            );
                                             egui::ScrollArea::vertical()
                                                 .id_salt(("source-panel-body", title(panel)))
                                                 .max_height(scroll_height)
                                                 .auto_shrink([false, false])
                                                 .show(&mut viewport, |ui| {
-                                                    egui::Frame::new().inner_margin(16).show(ui, |ui| {
-                                                        let content_width = ui.available_width();
-                                                        ui.set_width(content_width);
-                                                        ui.set_max_width(content_width);
-                                                        self.source_world_form(ui);
-                                                    });
+                                                    egui::Frame::new().inner_margin(16).show(
+                                                        ui,
+                                                        |ui| {
+                                                            let content_width =
+                                                                ui.available_width();
+                                                            ui.set_width(content_width);
+                                                            ui.set_max_width(content_width);
+                                                            self.source_world_form(ui);
+                                                        },
+                                                    );
                                                 });
                                         } else if panel == Panel::Level {
                                             self.source_level_form(ui);
@@ -689,7 +735,8 @@ impl EditorApp {
                                             |ui| {
                                                 ui.set_width(right);
                                                 ui.spacing_mut().item_spacing = egui::vec2(6., 8.);
-                                                ui.ctx().data_mut(|d| d.insert_temp(active_id(), true));
+                                                ui.ctx()
+                                                    .data_mut(|d| d.insert_temp(active_id(), true));
                                                 if scroll_panel {
                                                     app.properties(ui, panel);
                                                 } else if panel == Panel::Enums {
@@ -699,7 +746,10 @@ impl EditorApp {
                                                     app.source_entity_form(ui, body_height);
                                                 } else {
                                                     egui::ScrollArea::vertical()
-                                                        .id_salt(("source-panel-body", title(panel)))
+                                                        .id_salt((
+                                                            "source-panel-body",
+                                                            title(panel),
+                                                        ))
                                                         .max_height(body_height)
                                                         .auto_shrink([false, false])
                                                         .show(ui, |ui| {
@@ -707,17 +757,25 @@ impl EditorApp {
                                                             app.properties(ui, panel);
                                                         });
                                                 }
-                                                ui.ctx().data_mut(|d| d.insert_temp(active_id(), false));
+                                                ui.ctx().data_mut(|d| {
+                                                    d.insert_temp(active_id(), false)
+                                                });
                                             },
-                                        ).response.rect.height()
+                                        )
+                                        .response
+                                        .rect
+                                        .height()
                                     };
                                     if scroll_panel {
                                         ui.set_width(width - 40.);
-                                        ui.with_layout(egui::Layout::right_to_left(egui::Align::TOP), |ui| {
-                                            let form_height = form(self, ui);
-                                            ui.add_space(gap);
-                                            sidebar(self, ui, form_height.max(body_height));
-                                        });
+                                        ui.with_layout(
+                                            egui::Layout::right_to_left(egui::Align::TOP),
+                                            |ui| {
+                                                let form_height = form(self, ui);
+                                                ui.add_space(gap);
+                                                sidebar(self, ui, form_height.max(body_height));
+                                            },
+                                        );
                                     } else {
                                         ui.horizontal_top(|ui| {
                                             sidebar(self, ui, body_height);
@@ -731,7 +789,8 @@ impl EditorApp {
                             ui.spacing_mut().scroll = source_controls::scroll_style();
                             let content_visuals = source_controls::scroll_visuals(ui);
 
-                            let frame_id = ui.make_persistent_id(("definition-panel-frame", title(panel)));
+                            let frame_id =
+                                ui.make_persistent_id(("definition-panel-frame", title(panel)));
                             let frame = ui.ctx().cumulative_frame_nr();
                             let reopened = ui.data_mut(|data| {
                                 let previous = data.get_temp::<u64>(frame_id);
@@ -771,7 +830,10 @@ impl EditorApp {
                 egui::pos2(0., top + header_height),
                 egui::pos2(right, screen.bottom()),
             );
-            if ctx.pointer_hover_pos().is_some_and(|pos| body.contains(pos)) {
+            if ctx
+                .pointer_hover_pos()
+                .is_some_and(|pos| body.contains(pos))
+            {
                 ctx.set_cursor_icon(egui::CursorIcon::NotAllowed);
             }
             let notice = locale::tr_ctx(ctx, "This panel is disabled for backup files.");
@@ -804,11 +866,9 @@ impl EditorApp {
             );
             let mask_press = ctx.input(|input| {
                 input.events.iter().find_map(|event| match event {
-                    egui::Event::PointerButton { pos, pressed: true, .. }
-                        if mask.contains(*pos) && (pos.y < top || pos.x >= right) =>
-                    {
-                        Some(*pos)
-                    }
+                    egui::Event::PointerButton {
+                        pos, pressed: true, ..
+                    } if mask.contains(*pos) && (pos.y < top || pos.x >= right) => Some(*pos),
                     _ => None,
                 })
             });

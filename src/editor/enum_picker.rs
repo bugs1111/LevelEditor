@@ -700,7 +700,11 @@ fn paint_choice(
     if let Some(tint) = tint {
         painter.rect_filled(rect, 0., tint);
     }
-    painter.hline(rect.x_range(), rect.top(), Stroke::new(1_f32, PICKER_BORDER));
+    painter.hline(
+        rect.x_range(),
+        rect.top(),
+        Stroke::new(1_f32, PICKER_BORDER),
+    );
     if grid {
         painter.vline(rect.left(), rect.y_range(), Stroke::new(1_f32, theme::DARK));
     }

@@ -115,7 +115,12 @@ pub(super) fn level_has_beneath_label(project: &Project, level: &Value) -> bool 
                 fd["editorDisplayPos"] == "Beneath"
                     && matches!(
                         fd["editorDisplayMode"].as_str(),
-                        Some("ValueOnly" | "NameAndValue" | "ArrayCountNoLabel" | "ArrayCountWithLabel")
+                        Some(
+                            "ValueOnly"
+                                | "NameAndValue"
+                                | "ArrayCountNoLabel"
+                                | "ArrayCountWithLabel"
+                        )
                     )
                     && (fd["editorAlwaysShow"] == true || !field["realEditorValues"][0].is_null())
             })
@@ -567,7 +572,11 @@ impl Scene<'_> {
                     painter,
                     self.assets,
                     label_origin
-                        - vec2(0., (2. * self.options.ui_scale).round() / self.ctx.pixels_per_point() * row.scale),
+                        - vec2(
+                            0.,
+                            (2. * self.options.ui_scale).round() / self.ctx.pixels_per_point()
+                                * row.scale,
+                        ),
                     &row.label,
                     full_brightness(row.color.lerp_to_gamma(Color32::WHITE, row.label_brighten)),
                     row.scale,
@@ -575,7 +584,14 @@ impl Scene<'_> {
                     (!self.options.fields_table && !gpu_outline).then_some(row.color),
                 );
                 if gpu_outline {
-                    super::outline::finish(painter, first, darken(row.color, 0.66), opacity, label_origin, row.scale);
+                    super::outline::finish(
+                        painter,
+                        first,
+                        darken(row.color, 0.66),
+                        opacity,
+                        label_origin,
+                        row.scale,
+                    );
                 }
             }
             let first = super::blur::begin(painter);
@@ -676,7 +692,14 @@ impl Scene<'_> {
                 }
             }
             if gpu_outline {
-                super::outline::finish(painter, first, darken(row.color, 0.66), opacity, value_origin, row.scale);
+                super::outline::finish(
+                    painter,
+                    first,
+                    darken(row.color, 0.66),
+                    opacity,
+                    value_origin,
+                    row.scale,
+                );
             }
             y +=
                 h + if row.label.is_empty() {
@@ -939,11 +962,15 @@ impl Scene<'_> {
             let position = match layout {
                 "LinearHorizontal" => [left, y + height + 32.],
                 // WorldRender adds worldX twice in this layout.
-                "LinearVertical" => [2. * x + width + 32., (y + height * 0.5).round() - level_size.y * 0.5],
+                "LinearVertical" => [
+                    2. * x + width + 32.,
+                    (y + height * 0.5).round() - level_size.y * 0.5,
+                ],
                 _ => [left, y + height - level_size.y],
             };
             (
-                self.level_annotation_point(position.map(f32::trunc)) + vec2(display_size.x * 0.5, 0.),
+                self.level_annotation_point(position.map(f32::trunc))
+                    + vec2(display_size.x * 0.5, 0.),
                 0.,
             )
         } else {

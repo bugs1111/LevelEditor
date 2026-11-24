@@ -92,19 +92,29 @@ fn exercise_dense_tile_frames(varied: bool) {
     options.grid = false;
     options.details = false;
     options.tile_tags = varied;
-    let view = Viewport { center: [1280., 1280.], zoom: 4. };
+    let view = Viewport {
+        center: [1280., 1280.],
+        zoom: 4.,
+    };
     let (expected_count, expected) = frame(&ctx, &project, &view, &options, &mut assets);
     assert_eq!(expected_count, 192);
     let mesh = |output: &egui::FullOutput| {
-        output.shapes.iter().find_map(|shape| match &shape.shape {
-            egui::Shape::Mesh(mesh) if mesh.texture_id == texture => Some(mesh.clone()),
-            _ => None,
-        }).unwrap()
+        output
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Mesh(mesh) if mesh.texture_id == texture => Some(mesh.clone()),
+                _ => None,
+            })
+            .unwrap()
     };
     let expected = mesh(&expected);
     assert_eq!(expected.vertices.len(), expected_count * 4);
-    for (index, quad) in expected.vertices.chunks_exact(4).enumerate() {
-        let min = egui::pos2(-12. + (index % 16) as f32 * 64., -34. + (index / 16) as f32 * 64.);
+    for (index, quad) in expected.vertices.as_chunks::<4>().0.iter().enumerate() {
+        let min = egui::pos2(
+            -12. + (index % 16) as f32 * 64.,
+            -34. + (index / 16) as f32 * 64.,
+        );
         assert_eq!(quad[0].pos, min);
         assert_eq!(quad[3].pos, min + egui::vec2(64., 64.));
     }
@@ -117,9 +127,15 @@ fn exercise_dense_tile_frames(varied: bool) {
         assert_eq!(mesh(&output), expected);
     }
     times.sort_unstable();
-    eprintln!("Zoomed dense tile frame: median {:?}; samples {times:?}", times[2]);
+    eprintln!(
+        "Zoomed dense tile frame: median {:?}; samples {times:?}",
+        times[2]
+    );
 
-    let view = Viewport { center: [1280., 1280.], zoom: 0.25 };
+    let view = Viewport {
+        center: [1280., 1280.],
+        zoom: 0.25,
+    };
     let (count, expected) = frame(&ctx, &project, &view, &options, &mut assets);
     let expected = mesh(&expected);
     assert_eq!(count, 160 * 160);
@@ -157,9 +173,13 @@ fn benchmark_cropped_repeating_background() {
     let ctx = egui::Context::default();
     let mut assets = Assets::default();
     let path = asset_path(&project, "background.png");
-    assets.store_file_image(
-        &ctx, &path, image::RgbaImage::from_pixel(17, 13, image::Rgba([31, 61, 121, 255])),
-    ).unwrap();
+    assets
+        .store_file_image(
+            &ctx,
+            &path,
+            image::RgbaImage::from_pixel(17, 13, image::Rgba([31, 61, 121, 255])),
+        )
+        .unwrap();
     let texture = assets.texture(&ctx, &path).unwrap().id();
     let hidden = HashSet::new();
     let mut options = options(&hidden, key);
@@ -167,17 +187,35 @@ fn benchmark_cropped_repeating_background() {
     options.details = false;
 
     for (name, view) in [
-        ("center", Viewport { center: [1920., 2048.], zoom: 4. }),
-        ("edge", Viewport { center: [4000., 3980.], zoom: 1.375 }),
+        (
+            "center",
+            Viewport {
+                center: [1920., 2048.],
+                zoom: 4.,
+            },
+        ),
+        (
+            "edge",
+            Viewport {
+                center: [4000., 3980.],
+                zoom: 1.375,
+            },
+        ),
     ] {
         let checksum = |output: &egui::FullOutput| {
-            let (clip, mesh) = output.shapes.iter().find_map(|shape| match &shape.shape {
-                egui::Shape::Mesh(mesh) if mesh.texture_id == texture => Some((shape.clip_rect, mesh)),
-                _ => None,
-            }).unwrap();
+            let (clip, mesh) = output
+                .shapes
+                .iter()
+                .find_map(|shape| match &shape.shape {
+                    egui::Shape::Mesh(mesh) if mesh.texture_id == texture => {
+                        Some((shape.clip_rect, mesh))
+                    }
+                    _ => None,
+                })
+                .unwrap();
             let mut hasher = DefaultHasher::new();
             let mut count = 0;
-            for quad in mesh.vertices.chunks_exact(4) {
+            for quad in mesh.vertices.as_chunks::<4>().0 {
                 let bounds = Rect::from_min_max(quad[0].pos, quad[3].pos).intersect(clip);
                 if bounds.is_positive() {
                     format!("{quad:?}").hash(&mut hasher);
@@ -229,13 +267,19 @@ fn benchmark_many_level_canvas_frames() {
         })
         .collect::<Vec<_>>()
         .into();
-    let view = Viewport { center: [290., 210.], zoom: 1. };
+    let view = Viewport {
+        center: [290., 210.],
+        zoom: 1.,
+    };
     let hidden = HashSet::new();
     let ctx = egui::Context::default();
     let mut assets = Assets::default();
     let mut options = options(&hidden, selected);
     options.world_depth = Some(-4);
-    options.world_hover = Some(LevelKey { world: None, level: 9 });
+    options.world_hover = Some(LevelKey {
+        world: None,
+        level: 9,
+    });
 
     for world in [false, true] {
         options.world = world;
@@ -297,7 +341,9 @@ fn benchmark_cropped_world_intgrid() {
     let mut project = Project::new();
     let key = project.level_keys()[0];
     let side = 512;
-    project.resize_level(key, side * 16, side * 16, 0, 0).unwrap();
+    project
+        .resize_level(key, side * 16, side * 16, 0, 0)
+        .unwrap();
     project.add_layer("Collision", "IntGrid", 16).unwrap();
     project.add_layer("Decoration", "IntGrid", 16).unwrap();
     for index in 0..2 {
@@ -320,14 +366,30 @@ fn benchmark_cropped_world_intgrid() {
     options.details = false;
     options.grid = false;
     let views = [
-        Viewport { center: [4000., 4000.], zoom: 2. },
-        Viewport { center: [8070., 8050.], zoom: 1.25 },
-        Viewport { center: [4096., 4096.], zoom: 0.16 },
+        Viewport {
+            center: [4000., 4000.],
+            zoom: 2.,
+        },
+        Viewport {
+            center: [8070., 8050.],
+            zoom: 1.25,
+        },
+        Viewport {
+            center: [4096., 4096.],
+            zoom: 0.16,
+        },
     ];
     for (index, view) in views.iter().enumerate() {
         let (count, expected) = frame(&ctx, &project, view, &options, &mut assets);
-        let expected_range = if index < 2 { 500..2000 } else { 80_000..120_000 };
-        assert!(expected_range.contains(&count), "unexpected visible cell count {count}");
+        let expected_range = if index < 2 {
+            500..2000
+        } else {
+            80_000..120_000
+        };
+        assert!(
+            expected_range.contains(&count),
+            "unexpected visible cell count {count}"
+        );
         let mut hasher = DefaultHasher::new();
         format!("{:?}", expected.shapes).hash(&mut hasher);
         let mut times = [Duration::ZERO; 5];
@@ -519,7 +581,10 @@ fn world_intgrid_overlap_starts_at_the_inclusive_viewport_edge() {
     options.world = true;
     options.details = false;
     options.grid = false;
-    let view = Viewport { center: [8., 8.], zoom: 1. };
+    let view = Viewport {
+        center: [8., 8.],
+        zoom: 1.,
+    };
     for (offset, visible, hidden) in [
         (-509, Color32::GREEN, Color32::RED),
         (-508, Color32::RED, Color32::GREEN),
@@ -528,12 +593,16 @@ fn world_intgrid_overlap_starts_at_the_inclusive_viewport_edge() {
         let (count, output) = frame(&ctx, &project, &view, &options, &mut assets);
         assert_eq!(count, 1);
         let has_fill = |fill| {
-            output.shapes.iter().any(|shape| {
-                matches!(&shape.shape, egui::Shape::Rect(rect) if rect.fill == fill)
-            })
+            output
+                .shapes
+                .iter()
+                .any(|shape| matches!(&shape.shape, egui::Shape::Rect(rect) if rect.fill == fill))
         };
         assert!(has_fill(visible), "missing {visible:?} at offset {offset}");
-        assert!(!has_fill(hidden), "unexpected {hidden:?} at offset {offset}");
+        assert!(
+            !has_fill(hidden),
+            "unexpected {hidden:?} at offset {offset}"
+        );
     }
 }
 
@@ -546,7 +615,9 @@ fn benchmark_world_tileset_layers() {
     let mut project = Project::new();
     let key = project.level_keys()[0];
     let side = 256;
-    project.resize_level(key, side * 16, side * 16, 0, 0).unwrap();
+    project
+        .resize_level(key, side * 16, side * 16, 0, 0)
+        .unwrap();
     project.add_layer("Generated", "AutoLayer", 16).unwrap();
     project.add_layer("HandPainted", "Tiles", 16).unwrap();
     project.json["defs"]["tilesets"] = json!([{
@@ -577,8 +648,14 @@ fn benchmark_world_tileset_layers() {
     options.details = false;
     options.grid = false;
     let views = [
-        Viewport { center: [2040., 2300.], zoom: 2. },
-        Viewport { center: [2048., 2048.], zoom: 0.125 },
+        Viewport {
+            center: [2040., 2300.],
+            zoom: 2.,
+        },
+        Viewport {
+            center: [2048., 2048.],
+            zoom: 0.125,
+        },
     ];
     for (index, view) in views.iter().enumerate() {
         let (count, expected) = frame(&ctx, &project, view, &options, &mut assets);
@@ -614,19 +691,26 @@ fn benchmark_large_tile_tag_frame() {
     project.add_layer("Ground", "Tiles", 16).unwrap();
     let layers = &mut project.json["defs"]["layers"];
     layers[0]["tilesetDefUid"] = json!(100);
-    let values = (0..24).map(|i| json!({"id":format!("Tag{i}"),"color":"#AB00CD"})).collect::<Vec<_>>();
-    let tags = (0..24).map(|i| {
-        let tile_ids = (0..16).filter(|tile| (tile + i) % 6 == 0).collect::<Vec<_>>();
-        json!({"enumValueId":format!("Tag{i}"),"tileIds":tile_ids})
-    }).collect::<Vec<_>>();
+    let values = (0..24)
+        .map(|i| json!({"id":format!("Tag{i}"),"color":"#AB00CD"}))
+        .collect::<Vec<_>>();
+    let tags = (0..24)
+        .map(|i| {
+            let tile_ids = (0..16)
+                .filter(|tile| (tile + i) % 6 == 0)
+                .collect::<Vec<_>>();
+            json!({"enumValueId":format!("Tag{i}"),"tileIds":tile_ids})
+        })
+        .collect::<Vec<_>>();
     project.json["defs"]["enums"] = json!([{"uid":101,"values":values}]);
     project.json["defs"]["tilesets"] = json!([{
         "uid":100,"relPath":null,"embedAtlas":"LdtkIcons","tileGridSize":16,
         "tagsSourceEnumUid":101,"enumTags":tags
     }]);
-    project.layer_mut(key, 0).unwrap()["gridTiles"] = (0..64 * 64).map(|i| {
-        json!({"px":[i % 64 * 16,i / 64 * 16],"src":[i % 16 * 16,0],"t":i % 16,"f":0})
-    }).collect::<Vec<_>>().into();
+    project.layer_mut(key, 0).unwrap()["gridTiles"] = (0..64 * 64)
+        .map(|i| json!({"px":[i % 64 * 16,i / 64 * 16],"src":[i % 16 * 16,0],"t":i % 16,"f":0}))
+        .collect::<Vec<_>>()
+        .into();
     let ctx = egui::Context::default();
     let mut assets = Assets::default();
     let hidden = HashSet::new();
@@ -634,7 +718,10 @@ fn benchmark_large_tile_tag_frame() {
     options.grid = false;
     options.details = false;
     options.tile_tags = true;
-    let view = Viewport { center: [512., 512.], zoom: 0.5 };
+    let view = Viewport {
+        center: [512., 512.],
+        zoom: 0.5,
+    };
     let _ = frame(&ctx, &project, &view, &options, &mut assets);
     let mut times = [Duration::ZERO; 5];
     for time in &mut times {
@@ -648,9 +735,15 @@ fn benchmark_large_tile_tag_frame() {
         assert_eq!(tags, 4_096 * 4);
     }
     times.sort_unstable();
-    eprintln!("Large tile tag frame: median {:?}; samples {times:?}", times[2]);
+    eprintln!(
+        "Large tile tag frame: median {:?}; samples {times:?}",
+        times[2]
+    );
 
-    let view = Viewport { center: [512., 512.], zoom: 4. };
+    let view = Viewport {
+        center: [512., 512.],
+        zoom: 4.,
+    };
     let (count, output) = frame(&ctx, &project, &view, &options, &mut assets);
     let shapes = output.shapes.len();
     assert_eq!(count, 192);
@@ -721,9 +814,13 @@ fn classic_tiles_with_an_unavailable_atlas_mark_each_occupied_cell_in_level_view
         .shapes
         .iter()
         .filter_map(|shape| match &shape.shape {
-            egui::Shape::Mesh(mesh) if mesh.texture_id == marker => {
-                Some(mesh.vertices.chunks_exact(4).map(|quad| quad[0].pos))
-            }
+            egui::Shape::Mesh(mesh) if mesh.texture_id == marker => Some(
+                mesh.vertices
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .map(|quad| quad[0].pos),
+            ),
             _ => None,
         })
         .flatten()
@@ -1055,7 +1152,10 @@ fn offset_tiles_follow_the_layer_mask_in_level_view_and_the_grid_in_world_view()
     neighbor["worldX"] = 32.into();
     project.json["worldLayout"] = "Free".into();
     project.json["levels"][0]["layerInstances"] = serde_json::json!([]);
-    project.json["levels"].as_array_mut().unwrap().push(neighbor);
+    project.json["levels"]
+        .as_array_mut()
+        .unwrap()
+        .push(neighbor);
     options.world = false;
     let (count, out) = frame(&ctx, &project, &view, &options, &mut assets);
     assert_eq!(count, 1);
@@ -1087,14 +1187,16 @@ fn world_simplification_does_not_reveal_tiles_under_transparent_stack_top() {
         zoom: 4.,
     };
     for offscreen in [0, 128] {
-        project.layer_mut(key, 0).unwrap()["gridTiles"].as_array_mut().unwrap()
+        project.layer_mut(key, 0).unwrap()["gridTiles"]
+            .as_array_mut()
+            .unwrap()
             .extend((0..offscreen).map(|i| serde_json::json!({"t":0,"px":[-2048-i*16,0]})));
         let (count, out) = frame(&ctx, &project, &view, &options, &mut assets);
         assert_eq!(count, 1);
         assert!(
-            out.shapes.iter().any(|s| {
-                matches!(&s.shape, egui::Shape::Rect(r) if r.fill == Color32::GREEN)
-            }),
+            out.shapes
+                .iter()
+                .any(|s| { matches!(&s.shape, egui::Shape::Rect(r) if r.fill == Color32::GREEN) }),
             "transparent topmost stack must expose next layer, not earlier tiles in same stack"
         );
     }
@@ -1721,14 +1823,22 @@ fn source_ruler_font_scales_with_level_root_not_screen_field_root() {
 fn source_ruler_hides_only_the_bottom_label_for_a_displayed_beneath_field() {
     let mut project = Project::new();
     let key = project.level_keys()[0];
-    let uid = project.add_field_definition(None, "Caption", "String", false).unwrap();
-    project
-        .update_field_definition(uid, &serde_json::json!({
-            "editorDisplayMode":"ValueOnly",
-            "editorDisplayPos":"Beneath"
-        }))
+    let uid = project
+        .add_field_definition(None, "Caption", "String", false)
         .unwrap();
-    let view = Viewport { center: [128.; 2], zoom: 1. };
+    project
+        .update_field_definition(
+            uid,
+            &serde_json::json!({
+                "editorDisplayMode":"ValueOnly",
+                "editorDisplayPos":"Beneath"
+            }),
+        )
+        .unwrap();
+    let view = Viewport {
+        center: [128.; 2],
+        zoom: 1.,
+    };
     let hidden = HashSet::new();
     let opts = options(&hidden, key);
     let ctx = egui::Context::default();
@@ -1739,15 +1849,21 @@ fn source_ruler_hides_only_the_bottom_label_for_a_displayed_beneath_field() {
                 if mesh.texture_id != egui::TextureId::default() && mesh.calc_bounds().top() > 485.)
         })
     };
-    assert!(bottom_label(frame(&ctx, &project, &view, &opts, &mut assets).1));
+    assert!(bottom_label(
+        frame(&ctx, &project, &view, &opts, &mut assets).1
+    ));
     project
         .set_field_value(key, None, uid, serde_json::json!("Caption"))
         .unwrap();
-    assert!(!bottom_label(frame(&ctx, &project, &view, &opts, &mut assets).1));
+    assert!(!bottom_label(
+        frame(&ctx, &project, &view, &opts, &mut assets).1
+    ));
     project
         .update_field_definition(uid, &serde_json::json!({"editorDisplayPos":"Above"}))
         .unwrap();
-    assert!(bottom_label(frame(&ctx, &project, &view, &opts, &mut assets).1));
+    assert!(bottom_label(
+        frame(&ctx, &project, &view, &opts, &mut assets).1
+    ));
 }
 
 #[test]
@@ -1758,7 +1874,9 @@ fn source_level_annotation_position_uses_the_world_origin_at_fractional_zoom() {
     let level = project.level_mut(key).unwrap();
     level["worldX"] = 160.into();
     level["worldY"] = (-48).into();
-    let uid = project.add_field_definition(None, "Caption", "String", false).unwrap();
+    let uid = project
+        .add_field_definition(None, "Caption", "String", false)
+        .unwrap();
     project
         .update_field_definition(uid, &serde_json::json!({"editorDisplayMode":"ValueOnly"}))
         .unwrap();
@@ -1782,8 +1900,13 @@ fn source_level_annotation_position_uses_the_world_origin_at_fractional_zoom() {
         },
         |ctx| {
             draw(
-                &ctx.layer_painter(egui::LayerId::background()), rect,
-                &project, &view, &opts, None, &mut assets,
+                &ctx.layer_painter(egui::LayerId::background()),
+                rect,
+                &project,
+                &view,
+                &opts,
+                None,
+                &mut assets,
             );
         },
     );
@@ -1798,7 +1921,7 @@ fn source_level_annotation_position_uses_the_world_origin_at_fractional_zoom() {
             (mesh.texture_id != egui::TextureId::default()
                 && (500. ..650.).contains(&bounds.center().x)
                 && (70. ..135.).contains(&bounds.top()))
-                .then_some(bounds.top())
+            .then_some(bounds.top())
         })
         .collect::<Vec<_>>();
     annotation_y.sort_by(f32::total_cmp);
@@ -1814,7 +1937,9 @@ fn source_world_fields_use_truncated_world_positions_in_each_layout() {
     let mut project = Project::new();
     let key = project.level_keys()[0];
     project.resize_level(key, 159, 127, 0, 0).unwrap();
-    let uid = project.add_field_definition(None, "Caption", "String", false).unwrap();
+    let uid = project
+        .add_field_definition(None, "Caption", "String", false)
+        .unwrap();
     project
         .update_field_definition(uid, &serde_json::json!({"editorDisplayMode":"ValueOnly"}))
         .unwrap();
@@ -1834,33 +1959,81 @@ fn source_world_fields_use_truncated_world_positions_in_each_layout() {
     // Original WorldRender's visible field container positions at these camera poses.
     for (layout, center, zoom, scale, field_origin) in [
         ("Free", [239.5, 15.5], 0.95, 1., egui::pos2(522.5, 496.75)),
-        ("LinearHorizontal", [80.301_76, 63.5], 1.247_264_7, 1., egui::pos2(522.385_1, 569.315_1)),
-        ("LinearHorizontal", [80.301_76, 63.5], 1.247_264_7, 0.5, egui::pos2(546.083_1, 569.315_1)),
-        ("LinearVertical", [80.052_08, 63.5], 1.811_320_8, 1., egui::pos2(770.962_3, 443.679_3)),
+        (
+            "LinearHorizontal",
+            [80.301_76, 63.5],
+            1.247_264_7,
+            1.,
+            egui::pos2(522.385_1, 569.315_1),
+        ),
+        (
+            "LinearHorizontal",
+            [80.301_76, 63.5],
+            1.247_264_7,
+            0.5,
+            egui::pos2(546.083_1, 569.315_1),
+        ),
+        (
+            "LinearVertical",
+            [80.052_08, 63.5],
+            1.811_320_8,
+            1.,
+            egui::pos2(770.962_3, 443.679_3),
+        ),
     ] {
         project.json["worldLayout"] = layout.into();
-        project.update_field_definition(uid, &serde_json::json!({"editorDisplayScale":scale})).unwrap();
+        project
+            .update_field_definition(uid, &serde_json::json!({"editorDisplayScale":scale}))
+            .unwrap();
         let view = Viewport { center, zoom };
         let out = ctx.run(
-            egui::RawInput { screen_rect: Some(rect), ..Default::default() },
+            egui::RawInput {
+                screen_rect: Some(rect),
+                ..Default::default()
+            },
             |ctx| {
-                draw(&ctx.layer_painter(egui::LayerId::background()), rect,
-                    &project, &view, &opts, None, &mut assets);
+                draw(
+                    &ctx.layer_painter(egui::LayerId::background()),
+                    rect,
+                    &project,
+                    &view,
+                    &opts,
+                    None,
+                    &mut assets,
+                );
             },
         );
-        let (field_index, glyph) = out.shapes.iter().enumerate().find_map(|(index, shape)| {
-            let egui::Shape::Mesh(mesh) = &shape.shape else { return None };
-            let glyph_vertices = 15 * 4; // Visible glyphs, including quotes.
-            (mesh.texture_id != egui::TextureId::default()
-                && matches!(mesh.vertices.len(), 60 | 540)
-                && mesh.calc_bounds().min.distance(field_origin) < 10.)
-                .then(|| (index, mesh.vertices[mesh.vertices.len() - glyph_vertices].pos))
-        }).expect(layout);
-        assert!(glyph.distance(field_origin + egui::vec2(0., 2. * scale)) < 0.01, "{layout} at {scale}×: {glyph:?}");
+        let (field_index, glyph) = out
+            .shapes
+            .iter()
+            .enumerate()
+            .find_map(|(index, shape)| {
+                let egui::Shape::Mesh(mesh) = &shape.shape else {
+                    return None;
+                };
+                let glyph_vertices = 15 * 4; // Visible glyphs, including quotes.
+                (mesh.texture_id != egui::TextureId::default()
+                    && matches!(mesh.vertices.len(), 60 | 540)
+                    && mesh.calc_bounds().min.distance(field_origin) < 10.)
+                    .then(|| {
+                        (
+                            index,
+                            mesh.vertices[mesh.vertices.len() - glyph_vertices].pos,
+                        )
+                    })
+            })
+            .expect(layout);
+        assert!(
+            glyph.distance(field_origin + egui::vec2(0., 2. * scale)) < 0.01,
+            "{layout} at {scale}×: {glyph:?}"
+        );
         let highlight = out.shapes.iter().position(|shape| {
             matches!(&shape.shape, egui::Shape::Rect(rect) if rect.stroke.color == theme::ACCENT)
         }).unwrap();
-        assert!(highlight > field_index, "{layout}: selected outline must cover the fields");
+        assert!(
+            highlight > field_index,
+            "{layout}: selected outline must cover the fields"
+        );
     }
 }
 

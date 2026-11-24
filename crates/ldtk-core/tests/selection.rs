@@ -47,17 +47,31 @@ fn stacked_paste_replaces_identical_tiles_in_fifo_order() {
     let mut p = tiles();
     let tile = |x, tag| json!({"px":[x,0],"src":[0,0],"t":0,"f":0,"d":[x/16],"tag":tag});
     p.layer_mut(K, 0).unwrap()["gridTiles"] = json!([
-        tile(0, "old first"), tile(16, "untouched"), tile(0, "old second")
+        tile(0, "old first"),
+        tile(16, "untouched"),
+        tile(0, "old second")
     ]);
     let mut clip = p.copy_region(K, 0, [0, 0, 3, 1]).unwrap();
     clip["gridTiles"] = json!([
-        tile(0, "incoming first"), tile(32, "new first"),
-        tile(0, "incoming second"), tile(32, "new last"), tile(0, "incoming last")
+        tile(0, "incoming first"),
+        tile(32, "new first"),
+        tile(0, "incoming second"),
+        tile(32, "new last"),
+        tile(0, "incoming last")
     ]);
-    assert_eq!(p.paste_region(K, 0, &clip, 0, 0, false, false, true).unwrap(), 5);
+    assert_eq!(
+        p.paste_region(K, 0, &clip, 0, 0, false, false, true)
+            .unwrap(),
+        5
+    );
     assert_eq!(
         p.layer(K, 0).unwrap()["gridTiles"],
-        json!([tile(16, "untouched"), tile(0, "incoming second"), tile(32, "new last"), tile(0, "incoming last")])
+        json!([
+            tile(16, "untouched"),
+            tile(0, "incoming second"),
+            tile(32, "new last"),
+            tile(0, "incoming last")
+        ])
     );
 }
 #[test]
@@ -175,7 +189,12 @@ fn batch_tile_paint_matches_sequential_draw_order_and_metadata() {
         {"px":[48,0],"t":1,"src":[16,0],"f":1,"marker":"raise","a":0.4},
         {"px":[48,0],"t":0,"src":[0,0],"f":1,"marker":"keep"}
     ]);
-    let paint = |cell, id, src, stack| TilePaint { cell, id, src, stack };
+    let paint = |cell, id, src, stack| TilePaint {
+        cell,
+        id,
+        src,
+        stack,
+    };
     let edits = [
         paint([4, 1], 0, [0, 0], true),
         paint([1, 0], 1, [16, 0], true),
@@ -185,17 +204,34 @@ fn batch_tile_paint_matches_sequential_draw_order_and_metadata() {
         paint([-1, 1], 2, [0, 16], false),
     ];
     let mut sequential = batch.clone();
-    for &TilePaint { cell: [x, y], id, src, stack } in &edits {
-        sequential.paint_tile_stacked(K, 0, x, y, id, src, 1, false, stack).unwrap();
+    for &TilePaint {
+        cell: [x, y],
+        id,
+        src,
+        stack,
+    } in &edits
+    {
+        sequential
+            .paint_tile_stacked(K, 0, x, y, id, src, 1, false, stack)
+            .unwrap();
     }
     assert_eq!(
-        batch.paint_tile_cells_with_deferred(K, 0, &edits, 1, None).unwrap(),
+        batch
+            .paint_tile_cells_with_deferred(K, 0, &edits, 1, None)
+            .unwrap(),
         [0, 2, 3, 4]
     );
     assert_eq!(batch.layer(K, 0), sequential.layer(K, 0));
     let previous = batch.json.clone();
-    let invalid = [paint([0, 1], 0, [0, 0], true), paint([1, 1], 2, [16, 16], false)];
-    assert!(batch.paint_tile_cells_with_deferred(K, 0, &invalid, 1, None).is_err());
+    let invalid = [
+        paint([0, 1], 0, [0, 0], true),
+        paint([1, 1], 2, [16, 16], false),
+    ];
+    assert!(
+        batch
+            .paint_tile_cells_with_deferred(K, 0, &invalid, 1, None)
+            .is_err()
+    );
     assert_eq!(batch.json, previous);
 }
 
@@ -210,20 +246,39 @@ fn overlapping_overwrites_keep_order_metadata_and_intermediate_changes() {
         stack: false,
     };
     let edits = [
-        edit(0, 0), edit(3, 1), edit(2, 2), edit(3, 0),
-        edit(0, 2), edit(0, 0), edit(3, 0),
+        edit(0, 0),
+        edit(3, 1),
+        edit(2, 2),
+        edit(3, 0),
+        edit(0, 2),
+        edit(0, 0),
+        edit(3, 0),
     ];
     let mut sequential = batch.clone();
     let mut changes = Vec::new();
-    for (index, &TilePaint { cell: [x, y], id, src, .. }) in edits.iter().enumerate() {
-        if sequential.paint_tile(K, 0, x, y, id, src, 0, false).unwrap() {
+    for (
+        index,
+        &TilePaint {
+            cell: [x, y],
+            id,
+            src,
+            ..
+        },
+    ) in edits.iter().enumerate()
+    {
+        if sequential
+            .paint_tile(K, 0, x, y, id, src, 0, false)
+            .unwrap()
+        {
             changes.push(index);
         }
     }
 
     assert_eq!(changes, [1, 2, 3, 4, 5]);
     assert_eq!(
-        batch.paint_tile_cells_with_deferred(K, 0, &edits, 0, None).unwrap(),
+        batch
+            .paint_tile_cells_with_deferred(K, 0, &edits, 0, None)
+            .unwrap(),
         changes
     );
     assert_eq!(batch.layer(K, 0), sequential.layer(K, 0));
@@ -254,9 +309,18 @@ fn entity_paste_checks_the_selected_limit_scope_before_editing() {
         let result = project.paste_region(K, 0, &clipboard, 1, 1, false, false, false);
         if allowed {
             assert_eq!(result.unwrap(), 1, "{scope}");
-            assert_eq!(project.layer(K, 0).unwrap()["entityInstances"][0]["px"], json!([16, 16]));
+            assert_eq!(
+                project.layer(K, 0).unwrap()["entityInstances"][0]["px"],
+                json!([16, 16])
+            );
         } else {
-            assert!(result.unwrap_err().to_string().contains("entity count limit"), "{scope}");
+            assert!(
+                result
+                    .unwrap_err()
+                    .to_string()
+                    .contains("entity count limit"),
+                "{scope}"
+            );
             assert_eq!(project.json, before);
         }
     }
@@ -272,20 +336,28 @@ fn benchmark_large_limited_entity_paste() {
     let def = project.add_entity_def("Actor", 16, 16).unwrap();
     let template = project.json["defs"]["entities"][0].clone();
     let count = 256;
-    project.json["defs"]["entities"] = (0..count).map(|index| {
-        let mut definition = template.clone();
-        definition["uid"] = json!(def + index);
-        definition["identifier"] = json!(format!("Actor_{index}"));
-        definition["maxCount"] = json!(50);
-        definition["limitScope"] = json!(["PerLayer", "PerLevel", "PerWorld"][index as usize % 3]);
-        definition
-    }).collect::<Vec<_>>().into();
+    project.json["defs"]["entities"] = (0..count)
+        .map(|index| {
+            let mut definition = template.clone();
+            definition["uid"] = json!(def + index);
+            definition["identifier"] = json!(format!("Actor_{index}"));
+            definition["maxCount"] = json!(50);
+            definition["limitScope"] =
+                json!(["PerLayer", "PerLevel", "PerWorld"][index as usize % 3]);
+            definition
+        })
+        .collect::<Vec<_>>()
+        .into();
     let other = project.add_level(None, "Other", 256, 256).unwrap();
     let entities = |level: &str, count| {
-        (0..count).map(|i| json!({
-            "iid":format!("{level}-{i}"),"defUid":def + i % 256,"px":[0,0],
-            "fieldInstances":[],"width":16,"height":16
-        })).collect::<Vec<_>>()
+        (0..count)
+            .map(|i| {
+                json!({
+                    "iid":format!("{level}-{i}"),"defUid":def + i % 256,"px":[0,0],
+                    "fieldInstances":[],"width":16,"height":16
+                })
+            })
+            .collect::<Vec<_>>()
     };
     project.layer_mut(K, 0).unwrap()["entityInstances"] = entities("first", 4_096).into();
     project.layer_mut(other, 0).unwrap()["entityInstances"] = entities("second", 4_096).into();
@@ -298,20 +370,43 @@ fn benchmark_large_limited_entity_paste() {
     for time in &mut times {
         let mut edited = project.clone();
         let start = Instant::now();
-        assert_eq!(edited.paste_region(K, 0, &clip, 2, 1, false, false, false).unwrap(), 1_024);
+        assert_eq!(
+            edited
+                .paste_region(K, 0, &clip, 2, 1, false, false, false)
+                .unwrap(),
+            1_024
+        );
         *time = start.elapsed();
-        let placed = edited.layer(K, 0).unwrap()["entityInstances"].as_array().unwrap();
+        let placed = edited.layer(K, 0).unwrap()["entityInstances"]
+            .as_array()
+            .unwrap();
         assert_eq!(placed.len(), 5_120);
         let mut ids = std::collections::HashSet::new();
         for (i, entity) in placed.iter().enumerate() {
             assert!(ids.insert(entity["iid"].as_str().unwrap()));
             assert_eq!(entity["defUid"], def + i as i64 % 256);
-            assert_eq!(entity["px"], if i < 4_096 { json!([0,0]) } else { json!([32,16]) });
+            assert_eq!(
+                entity["px"],
+                if i < 4_096 {
+                    json!([0, 0])
+                } else {
+                    json!([32, 16])
+                }
+            );
         }
-        assert_eq!(edited.layer(other, 0).unwrap()["entityInstances"].as_array().unwrap().len(), 4_096);
+        assert_eq!(
+            edited.layer(other, 0).unwrap()["entityInstances"]
+                .as_array()
+                .unwrap()
+                .len(),
+            4_096
+        );
     }
     times.sort_unstable();
-    eprintln!("Large limited entity paste: median {:?}; samples {times:?}", times[2]);
+    eprintln!(
+        "Large limited entity paste: median {:?}; samples {times:?}",
+        times[2]
+    );
 }
 
 #[test]
@@ -325,7 +420,13 @@ fn batch_intgrid_paint_is_atomic_and_last_write_wins() {
     );
     assert_eq!(p.layer(K, 0).unwrap()["intGridCsv"][0], 0);
     assert_eq!(p.layer(K, 0).unwrap()["intGridCsv"][1], 1);
-    let changes = [([1, 0], 0), ([0, 0], 1), ([1, 0], 1), ([0, 0], 0), ([1, 0], 0)];
+    let changes = [
+        ([1, 0], 0),
+        ([0, 0], 1),
+        ([1, 0], 1),
+        ([0, 0], 0),
+        ([1, 0], 0),
+    ];
     assert_eq!(p.paint_int_grid_cells(K, 0, &changes).unwrap(), 1);
     assert_eq!(p.layer(K, 0).unwrap()["intGridCsv"][0], 0);
     assert_eq!(p.layer(K, 0).unwrap()["intGridCsv"][1], 0);

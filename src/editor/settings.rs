@@ -23,23 +23,27 @@ impl Default for Settings {
 }
 impl Settings {
     pub fn load() -> Self {
-        let root = std::env::var_os("LDTK_CONFIG_DIR").map(PathBuf::from).or_else(|| {
-            let legacy = std::env::var_os("HOME").map(|home| {
-                let home = PathBuf::from(home);
-                if cfg!(target_os = "macos") {
-                    home.join("Library/Application Support/LDtk Rust")
-                } else {
-                    home.join(".config/ldtk-rust")
+        let root = std::env::var_os("LDTK_CONFIG_DIR")
+            .map(PathBuf::from)
+            .or_else(|| {
+                let legacy = std::env::var_os("HOME").map(|home| {
+                    let home = PathBuf::from(home);
+                    if cfg!(target_os = "macos") {
+                        home.join("Library/Application Support/LDtk Rust")
+                    } else {
+                        home.join(".config/ldtk-rust")
+                    }
+                });
+                if cfg!(windows)
+                    && !legacy
+                        .as_ref()
+                        .is_some_and(|p| p.join("settings.json").is_file())
+                    && let Some(appdata) = std::env::var_os("APPDATA")
+                {
+                    return Some(PathBuf::from(appdata).join("LDtk Rust"));
                 }
+                legacy
             });
-            if cfg!(windows)
-                && !legacy.as_ref().is_some_and(|p| p.join("settings.json").is_file())
-                && let Some(appdata) = std::env::var_os("APPDATA")
-            {
-                return Some(PathBuf::from(appdata).join("LDtk Rust"));
-            }
-            legacy
-        });
         Self::load_at(root.map(|p| p.join("settings.json")))
     }
 

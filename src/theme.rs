@@ -135,9 +135,7 @@ pub fn configure(ctx: &egui::Context) {
             if path.ends_with("/noto/NotoSansCJK-Regular.ttc") {
                 data.index = 2; // Simplified Chinese face in the Noto CJK collection.
             }
-            fonts
-                .font_data
-                .insert(name.into(), Arc::new(data));
+            fonts.font_data.insert(name.into(), Arc::new(data));
             for family in fonts.families.values_mut() {
                 family.push(name.into());
             }
@@ -239,7 +237,9 @@ mod tests {
             "bundled-cjk".into(),
             Arc::new(FontData::from_static(BUNDLED_CJK)),
         );
-        fonts.families.insert(FontFamily::Proportional, vec!["bundled-cjk".into()]);
+        fonts
+            .families
+            .insert(FontFamily::Proportional, vec!["bundled-cjk".into()]);
         ctx.set_fonts(fonts);
         let messages: std::collections::HashMap<String, String> =
             serde_json::from_str(include_str!("../assets/locales/zh-CN.json")).unwrap();
@@ -251,7 +251,10 @@ mod tests {
         let _ = ctx.run(egui::RawInput::default(), |ctx| {
             ctx.fonts_mut(|fonts| {
                 for ch in &glyphs {
-                    assert!(fonts.has_glyph(&FontId::proportional(14.), *ch), "missing {ch}");
+                    assert!(
+                        fonts.has_glyph(&FontId::proportional(14.), *ch),
+                        "missing {ch}"
+                    );
                 }
             });
         });

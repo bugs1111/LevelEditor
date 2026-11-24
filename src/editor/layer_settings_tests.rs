@@ -150,7 +150,11 @@ fn default_tileset_row_opens_the_library_and_reports_bound_tile_size() {
         let message = format!(
             "Warning: the TILESET grid (16px) differs from the LAYER grid ({grid}px), and the values aren't multiples, which can lead to unexpected behaviors when adding a group of tiles."
         );
-        assert_eq!(!labels(&out, &message).is_empty(), warns, "layer grid {grid}");
+        assert_eq!(
+            !labels(&out, &message).is_empty(),
+            warns,
+            "layer grid {grid}"
+        );
     }
 }
 
@@ -176,7 +180,11 @@ fn tileset_picker_groups_multitag_atlases_without_selecting_headings() {
     }
     frame(&mut app, &ctx, vec![]);
     let closed = frame(&mut app, &ctx, vec![]);
-    click(&mut app, &ctx, label(&closed, "-- Tileset required --").center());
+    click(
+        &mut app,
+        &ctx,
+        label(&closed, "-- Tileset required --").center(),
+    );
     let opened = frame(&mut app, &ctx, vec![]);
     let [untagged, city, forest, integrated] =
         ["Untagged", "City", "forest", "Integrated LDtk tilesets"].map(|name| label(&opened, name));
@@ -185,7 +193,14 @@ fn tileset_picker_groups_multitag_atlases_without_selecting_headings() {
     assert!(untagged.top() < city.top() && city.top() < canopy_rows[0].top());
     assert!(forest.top() < canopy_rows[1].top() && canopy_rows[1].top() < integrated.top());
     assert!(canopy_rows[0].left() > city.left());
-    for key in [Key::Home, Key::ArrowDown, Key::ArrowDown, Key::ArrowDown, Key::ArrowDown, Key::Enter] {
+    for key in [
+        Key::Home,
+        Key::ArrowDown,
+        Key::ArrowDown,
+        Key::ArrowDown,
+        Key::ArrowDown,
+        Key::Enter,
+    ] {
         for pressed in [true, false] {
             frame(
                 &mut app,
@@ -245,7 +260,9 @@ fn layer_tileset_pickers_create_internal_icons_once_and_undo_assignment() {
     let with_rules = p.json.clone();
     select(&mut app, auto, "-- Select a tileset --");
     assert_eq!(
-        app.last_chance.as_ref().map(|(message, _)| message.as_str()),
+        app.last_chance
+            .as_ref()
+            .map(|(message, _)| message.as_str()),
         Some("Changed auto-layer tileset")
     );
     app.restore_last_chance();
@@ -416,15 +433,22 @@ fn intgrid_icon_tileset_picker_groups_atlases_and_clears_old_icons() {
         .update_tileset_definition(replacement, &json!({"tags":["icons"]}))
         .unwrap();
     project
-        .update_layer_properties(uid, &json!({"intGridValues":[
-            {"value":1,"color":"#123456","identifier":"Floor","groupUid":0,
-             "tile":{"tilesetUid":icons,"x":0,"y":0,"w":16,"h":16}}
-        ]}))
+        .update_layer_properties(
+            uid,
+            &json!({"intGridValues":[
+                {"value":1,"color":"#123456","identifier":"Floor","groupUid":0,
+                 "tile":{"tilesetUid":icons,"x":0,"y":0,"w":16,"h":16}}
+            ]}),
+        )
         .unwrap();
     let before = project.json.clone();
     frame(&mut app, &ctx, vec![]);
     let out = frame(&mut app, &ctx, vec![]);
-    click(&mut app, &ctx, label(&out, "⚙ Internal icons by FinalBossBlues").center());
+    click(
+        &mut app,
+        &ctx,
+        label(&out, "⚙ Internal icons by FinalBossBlues").center(),
+    );
     let opened = frame(&mut app, &ctx, vec![]);
     assert!(label(&opened, "Untagged").top() < label(&opened, "icons").top());
     click(&mut app, &ctx, label(&opened, "Replacement").center());

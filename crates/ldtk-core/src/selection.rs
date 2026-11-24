@@ -12,7 +12,9 @@ fn stacked_tile_key(tile: &Value) -> [&Value; 3] {
 pub(crate) fn append_stacked_tiles(dst: &mut Vec<Value>, additions: Vec<Value>) {
     if additions.len() <= 1 {
         if let [tile] = additions.as_slice()
-            && let Some(index) = dst.iter().position(|old| stacked_tile_key(old) == stacked_tile_key(tile))
+            && let Some(index) = dst
+                .iter()
+                .position(|old| stacked_tile_key(old) == stacked_tile_key(tile))
         {
             dst.remove(index);
         }
@@ -24,7 +26,11 @@ pub(crate) fn append_stacked_tiles(dst: &mut Vec<Value>, additions: Vec<Value>) 
     // removals against the existing tiles first, then the incoming tiles.
     let mut removals = HashMap::<_, Cell<(usize, bool)>>::new();
     for tile in &additions {
-        removals.entry(stacked_tile_key(tile)).or_default().get_mut().0 += 1;
+        removals
+            .entry(stacked_tile_key(tile))
+            .or_default()
+            .get_mut()
+            .0 += 1;
     }
     dst.retain(|tile| {
         let Some(count) = removals.get(&stacked_tile_key(tile)) else {
@@ -49,7 +55,12 @@ pub(crate) fn append_stacked_tiles(dst: &mut Vec<Value>, additions: Vec<Value>) 
             keep
         })
         .collect::<Vec<_>>();
-    dst.extend(additions.into_iter().zip(keep).filter_map(|(tile, keep)| keep.then_some(tile)));
+    dst.extend(
+        additions
+            .into_iter()
+            .zip(keep)
+            .filter_map(|(tile, keep)| keep.then_some(tile)),
+    );
 }
 
 fn dims(layer: &Value) -> Result<(i64, i64, i64)> {
@@ -468,7 +479,10 @@ pub(crate) fn validate_entity_clipboard(
     let mut existing_counts = HashMap::new();
     let incoming_counts = LazyCell::new(|| {
         let mut counts = HashMap::<_, usize>::new();
-        for uid in entities.iter().filter_map(|entity| entity["defUid"].as_i64()) {
+        for uid in entities
+            .iter()
+            .filter_map(|entity| entity["defUid"].as_i64())
+        {
             *counts.entry(uid).or_default() += 1;
         }
         counts
@@ -555,12 +569,23 @@ fn visit_entities_in_limit_scope(
         if candidate.world != key.world || (scope != "PerWorld" && candidate != key) {
             continue;
         }
-        let level = p.level(candidate).ok_or_else(|| invalid("level not loaded"))?;
-        for (index, layer) in level["layerInstances"].as_array().into_iter().flatten().enumerate() {
+        let level = p
+            .level(candidate)
+            .ok_or_else(|| invalid("level not loaded"))?;
+        for (index, layer) in level["layerInstances"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .enumerate()
+        {
             if scope == "PerLayer" && index != layer_index {
                 continue;
             }
-            layer["entityInstances"].as_array().into_iter().flatten().for_each(&mut visit);
+            layer["entityInstances"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .for_each(&mut visit);
         }
     }
     Ok(())

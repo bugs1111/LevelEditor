@@ -282,7 +282,9 @@ impl EditorApp {
                 let d = l["layerDefUid"]
                     .as_i64()
                     .and_then(|uid| project.layer_def(uid));
-                (*i == self.layer || (!self.single_layer && d.is_some_and(|d| d["canSelectWhenInactive"] != false)))
+                (*i == self.layer
+                    || (!self.single_layer
+                        && d.is_some_and(|d| d["canSelectWhenInactive"] != false)))
                     && l["__type"] != "AutoLayer"
             })
             .map(|(i, _)| i)
@@ -420,7 +422,9 @@ impl EditorApp {
                     self.panel = None;
                     self.entity_index = None;
                 }
-                let any = group["elementCount"].as_u64().is_some_and(|count| count > 0);
+                let any = group["elementCount"]
+                    .as_u64()
+                    .is_some_and(|count| count > 0);
                 group["emptySpace"] = self.settings.bool("emptySpaceSelection").into();
                 group["originalRects"] = if any && group["emptySpace"] == true {
                     json!([{"leftPx":0,"topPx":0,"rightPx":width,"bottomPx":height}])
@@ -672,7 +676,10 @@ mod tests {
         app.set_project(project);
         app.settings.value["emptySpaceSelection"] = true.into();
         app.select_all();
-        assert_eq!(app.selection_group.as_ref().unwrap()["originalRects"], expected);
+        assert_eq!(
+            app.selection_group.as_ref().unwrap()["originalRects"],
+            expected
+        );
 
         app.settings.value["emptySpaceSelection"] = false.into();
         app.select_all();
@@ -680,7 +687,10 @@ mod tests {
         assert_eq!(group["originalRects"], json!([]));
         assert_eq!(group["elementCount"], 1);
         app.capture_selection([0, 0, 6, 6]);
-        assert_eq!(app.selection_group.as_ref().unwrap()["originalRects"], json!([]));
+        assert_eq!(
+            app.selection_group.as_ref().unwrap()["originalRects"],
+            json!([])
+        );
     }
 
     #[test]

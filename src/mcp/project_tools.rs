@@ -15,8 +15,12 @@ type ToolResult = Result<Value, String>;
 pub(super) enum ToolPayload<'a> {
     Owned(Value),
     Borrowed(&'a Value),
-    Layer { layer: Option<&'a Value> },
-    Levels { levels: Vec<LevelSummary<'a>> },
+    Layer {
+        layer: Option<&'a Value>,
+    },
+    Levels {
+        levels: Vec<LevelSummary<'a>>,
+    },
     Level {
         #[serde(flatten)]
         summary: LevelSummary<'a>,
@@ -69,7 +73,11 @@ impl Session {
         })
     }
 
-    pub(super) fn execute(&mut self, name: &str, args: &Arguments) -> Result<ToolPayload<'_>, String> {
+    pub(super) fn execute(
+        &mut self,
+        name: &str,
+        args: &Arguments,
+    ) -> Result<ToolPayload<'_>, String> {
         let value = match name {
             "project_info" => Ok(self.info()),
             "get_definitions" => {
@@ -208,7 +216,11 @@ impl Session {
         let keys = self.level_keys.get_or_init(|| {
             let mut keys = HashMap::new();
             for key in self.project.iter_level_keys() {
-                if let Some(iid) = self.project.level(key).and_then(|level| level["iid"].as_str()) {
+                if let Some(iid) = self
+                    .project
+                    .level(key)
+                    .and_then(|level| level["iid"].as_str())
+                {
                     keys.entry(iid.to_owned()).or_insert(key);
                 }
             }
@@ -312,7 +324,8 @@ impl Session {
             .as_ref()
             .ok_or("Reload the project before saving again.")?;
         self.check_external_save_targets()?;
-        let reload = self.project
+        let reload = self
+            .project
             .save_and_reload_if_unchanged(&self.path, snapshot)
             .map_err(|error| error.to_string())?;
         self.dirty = false;
@@ -346,7 +359,9 @@ impl Session {
         // file at a derived destination must belong to the loaded project.
         for (index, key) in self.project.iter_level_keys().enumerate() {
             let level = self.project.level(key).expect("loaded level");
-            let relative = self.project.external_level_rel_path(&self.path, index, level)
+            let relative = self
+                .project
+                .external_level_rel_path(&self.path, index, level)
                 .map_err(|_| "Unsafe external level identifier.")?;
             let target = base.join(relative);
             match fs::symlink_metadata(&target) {

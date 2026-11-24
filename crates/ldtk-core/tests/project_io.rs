@@ -12,15 +12,20 @@ fn world_level_iteration_keeps_original_keys_when_an_external_level_is_unavailab
             {"identifier":"Inline"}
         ]
     }]);
-    project.external_levels.insert(
-        "available.ldtkl".into(),
-        json!({"identifier":"External"}),
-    );
+    project
+        .external_levels
+        .insert("available.ldtkl".into(), json!({"identifier":"External"}));
 
     let levels: Vec<_> = project.levels_in_world(Some(0)).collect();
     assert_eq!(levels.len(), 2);
     for ((key, level), (index, name)) in levels.into_iter().zip([(1, "External"), (2, "Inline")]) {
-        assert_eq!(key, LevelKey { world: Some(0), level: index });
+        assert_eq!(
+            key,
+            LevelKey {
+                world: Some(0),
+                level: index
+            }
+        );
         assert_eq!(level["identifier"], name);
         assert!(std::ptr::eq(level, project.level(key).unwrap()));
     }
@@ -135,7 +140,7 @@ fn preview_154_save_tidies_rules_and_uses_the_linked_intgrid_values() {
     assert_eq!(rules[1]["checker"], "Vertical");
     assert_eq!(rules[1]["outOfBoundsValue"], 0);
     assert_eq!(rules[2]["size"], 3);
-    assert_eq!(rules[2]["pattern"], json!([0,1,0,0,1,0,0,0,0]));
+    assert_eq!(rules[2]["pattern"], json!([0, 1, 0, 0, 1, 0, 0, 0, 0]));
     assert_eq!(rules[2]["flipX"], false);
     assert_eq!(rules[2]["flipY"], true);
     assert_eq!(rules[2]["checker"], "Horizontal");
@@ -1873,7 +1878,10 @@ fn benchmark_large_world_cached_tile_order() {
         assert_eq!(project.json, expected.json);
     }
     times.sort_unstable();
-    eprintln!("Large world cached tile order: median {:?}; samples {times:?}", times[3]);
+    eprintln!(
+        "Large world cached tile order: median {:?}; samples {times:?}",
+        times[3]
+    );
 }
 
 #[test]
@@ -1890,7 +1898,10 @@ fn benchmark_large_world_filesystem_snapshot() {
         assert!(snapshot.changed_files().unwrap().is_empty());
     }
     times.sort_unstable();
-    eprintln!("Large world filesystem snapshot: median {:?}; samples {times:?}", times[3]);
+    eprintln!(
+        "Large world filesystem snapshot: median {:?}; samples {times:?}",
+        times[3]
+    );
 }
 
 #[test]
@@ -1921,7 +1932,10 @@ fn benchmark_shared_resource_filesystem_snapshot() {
         *elapsed = start.elapsed();
         assert!(snapshot.changed_files().unwrap().is_empty());
         fs::write(&sprite, b"change").unwrap();
-        assert_eq!(snapshot.changed_files().unwrap(), [sprite.clone()]);
+        assert_eq!(
+            snapshot.changed_files().unwrap().as_slice(),
+            std::slice::from_ref(&sprite)
+        );
         fs::write(&sprite, b"sprite").unwrap();
     }
     times.sort_unstable();

@@ -257,7 +257,11 @@ impl Project {
     ) -> Result<Self> {
         let path = absolute(path)?;
         let (json, bytes, mut reusable_levels) = match published {
-            Some(saved) => (parse_json_at(&path, &saved.root)?, saved.root, saved.reusable_levels),
+            Some(saved) => (
+                parse_json_at(&path, &saved.root)?,
+                saved.root,
+                saved.reusable_levels,
+            ),
             None => {
                 let (json, bytes) = read_json_with_bytes(&path)?;
                 (json, bytes, BTreeMap::new())
@@ -373,7 +377,10 @@ impl Project {
         if id.contains(['/', '\\']) || matches!(id, "." | "..") {
             return Err(Error::Invalid("unsafe external level identifier".into()));
         }
-        let directory = project_file.file_stem().unwrap_or_default().to_string_lossy();
+        let directory = project_file
+            .file_stem()
+            .unwrap_or_default()
+            .to_string_lossy();
         let indexed = self.json["flags"]
             .as_array()
             .is_some_and(|flags| flags.iter().any(|f| f == "PrependIndexToLevelFileNames"));
@@ -406,7 +413,10 @@ impl Project {
         let retired = verified_snapshot
             .and_then(|snapshot| snapshot.loaded_external_paths.as_ref())
             .filter(|(loaded, _)| loaded == &path)
-            .map_or_else(|| previous_external_paths(&path), |(_, paths)| paths.clone());
+            .map_or_else(
+                || previous_external_paths(&path),
+                |(_, paths)| paths.clone(),
+            );
         if backup_file(&path, self.json["iid"].as_str().unwrap_or("")) {
             return Err(Error::Unsupported(
                 "backup files are read-only; restore the backup or save as a new project".into(),
@@ -650,10 +660,9 @@ impl Project {
                     },
                 );
                 if parsed && let Some(saved) = published.as_deref_mut() {
-                    saved.reusable_levels.insert(
-                        target.clone(),
-                        (Arc::clone(document), length, fingerprint),
-                    );
+                    saved
+                        .reusable_levels
+                        .insert(target.clone(), (Arc::clone(document), length, fingerprint));
                 }
             }
             if let Some(bytes) = bytes {
@@ -1449,7 +1458,10 @@ struct StagedFile {
 impl StagedFile {
     /// The final rename can never need rollback after a later rename fails.
     fn final_replacement(target: PathBuf, bytes: &[u8]) -> Result<Self> {
-        let io_error = |source| Error::Io { path: target.clone(), source };
+        let io_error = |source| Error::Io {
+            path: target.clone(),
+            source,
+        };
         let permissions = match fs::File::open(&target) {
             Ok(file) => {
                 let metadata = file.metadata().map_err(io_error)?;
@@ -1465,7 +1477,11 @@ impl StagedFile {
             Err(error) => return Err(io_error(error)),
         };
         let staged = stage_file(&target, bytes, permissions)?;
-        Ok(Self { target, staged, original: None })
+        Ok(Self {
+            target,
+            staged,
+            original: None,
+        })
     }
 }
 
@@ -1806,17 +1822,26 @@ mod save_transaction_tests {
         loaded.level_mut(edited).unwrap()["bgColor"] = Value::String("#112233".into());
 
         let mut published = PublishedDocuments::default();
-        loaded.save_if_unchanged_capturing_documents(&path, &snapshot, Some(&mut published)).unwrap();
+        loaded
+            .save_if_unchanged_capturing_documents(&path, &snapshot, Some(&mut published))
+            .unwrap();
         assert_eq!(published.reusable_levels.len(), 1);
         let (target, (level, _, _)) = published.reusable_levels.iter().next().unwrap();
-        assert!(std::ptr::eq(level.as_ref(), previous.level(untouched).unwrap()));
+        assert!(std::ptr::eq(
+            level.as_ref(),
+            previous.level(untouched).unwrap()
+        ));
         let mut bytes = fs::read(target).unwrap();
         bytes.push(b'\n');
         fs::write(target, bytes).unwrap();
         let error = Project::load_snapshot_with_documents(&path, Some(published))
             .err()
             .expect("changed reused level must fail reload");
-        assert!(error.to_string().contains("Project files changed during reload"));
+        assert!(
+            error
+                .to_string()
+                .contains("Project files changed during reload")
+        );
     }
 
     #[test]
@@ -1860,7 +1885,11 @@ mod save_transaction_tests {
         let error = Project::load_snapshot_with_documents(&path, Some(published))
             .err()
             .expect("changed untouched level must fail reload");
-        assert!(error.to_string().contains("Project files changed during reload"));
+        assert!(
+            error
+                .to_string()
+                .contains("Project files changed during reload")
+        );
         assert_eq!(
             Project::load(&path).unwrap().level(edited).unwrap()["bgColor"],
             "#112233"
@@ -1935,18 +1964,28 @@ mod save_transaction_tests {
 
         let mut staged = StagedSave::default();
         staged
-            .add_parts(map.clone(), &[&prefix[..3], b"", &prefix[3..], b"old"], true)
+            .add_parts(
+                map.clone(),
+                &[&prefix[..3], b"", &prefix[3..], b"old"],
+                true,
+            )
             .unwrap();
         assert!(staged.files.is_empty());
         staged
-            .add_parts(map.clone(), &[&prefix[..3], b"", &prefix[3..], b"new"], true)
+            .add_parts(
+                map.clone(),
+                &[&prefix[..3], b"", &prefix[3..], b"new"],
+                true,
+            )
             .unwrap();
         assert_eq!(staged.files.len(), 1);
         staged
             .add_writer(first.clone(), |file| file.write_all(b"new level"))
             .unwrap();
         staged.add(created.clone(), b"new level", false).unwrap();
-        staged.files.push(StagedFile::final_replacement(last.clone(), b"new project").unwrap());
+        staged
+            .files
+            .push(StagedFile::final_replacement(last.clone(), b"new project").unwrap());
         fs::remove_file(&staged.files.last().unwrap().staged.0).unwrap();
 
         assert!(staged.publish().is_err());
@@ -2486,10 +2525,12 @@ impl Project {
         let mut published = PublishedDocuments::default();
         self.save_if_unchanged_capturing_documents(path, snapshot, Some(&mut published))?;
         let path = self.path.as_deref().expect("published document path");
-        Ok(Self::load_snapshot_with_documents(path, Some(published)).map(|(project, snapshot)| {
-            *self = project;
-            snapshot
-        }))
+        Ok(
+            Self::load_snapshot_with_documents(path, Some(published)).map(|(project, snapshot)| {
+                *self = project;
+                snapshot
+            }),
+        )
     }
 
     fn save_if_unchanged_capturing_documents(
@@ -2509,7 +2550,13 @@ impl Project {
                     .join(", ")
             )));
         }
-        self.save_document_with_progress(path, true, Some(snapshot), published, &mut |_, _, _, _| {})
+        self.save_document_with_progress(
+            path,
+            true,
+            Some(snapshot),
+            published,
+            &mut |_, _, _, _| {},
+        )
     }
 }
 
@@ -2525,9 +2572,9 @@ fn valid_backup_name(name: &str, id: &str) -> bool {
     }
     let suffix = &date[19..];
     let suffix = suffix.strip_prefix("_crash").unwrap_or(suffix);
-    let numbered = suffix.strip_prefix('_').is_some_and(|digits| {
-        digits.len() == 4 && digits.bytes().all(|c| c.is_ascii_digit())
-    });
+    let numbered = suffix
+        .strip_prefix('_')
+        .is_some_and(|digits| digits.len() == 4 && digits.bytes().all(|c| c.is_ascii_digit()));
     if !suffix.is_empty() && !numbered {
         return false;
     }

@@ -207,7 +207,12 @@ fn entity_error_kind(
         })
         .then_some(EntityErrorKind::Field)
 }
-fn entity_error(project: &Project, key: LevelKey, layer: &Value, entity: &Value) -> Option<EntityError> {
+fn entity_error(
+    project: &Project,
+    key: LevelKey,
+    layer: &Value,
+    entity: &Value,
+) -> Option<EntityError> {
     let def = project.json["defs"]["entities"]
         .as_array()?
         .iter()
@@ -272,7 +277,9 @@ pub(super) fn reset_error_scans(ctx: &egui::Context) {
 
 fn update_level_errors(ctx: &egui::Context, project: &Project, key: LevelKey) -> Option<egui::Id> {
     let state_id = error_scan_id(project, key)?;
-    let mut scan = ctx.data(|data| data.get_temp::<ErrorScan>(state_id)).unwrap_or_default();
+    let mut scan = ctx
+        .data(|data| data.get_temp::<ErrorScan>(state_id))
+        .unwrap_or_default();
     let now = ctx.input(|input| input.time);
     if !scan.running && now < scan.next_scan {
         ctx.request_repaint_after(std::time::Duration::from_secs_f64(scan.next_scan - now));
@@ -280,7 +287,8 @@ fn update_level_errors(ctx: &egui::Context, project: &Project, key: LevelKey) ->
     }
     let frame = ctx.cumulative_frame_nr();
     let budget_id = id().with("error-scan-budget");
-    let spent = ctx.data(|data| data.get_temp::<(u64, std::time::Duration)>(budget_id))
+    let spent = ctx
+        .data(|data| data.get_temp::<(u64, std::time::Duration)>(budget_id))
         .filter(|(from, _)| *from == frame)
         .map_or(std::time::Duration::ZERO, |(_, spent)| spent);
     let remaining = std::time::Duration::from_millis(1).saturating_sub(spent);
@@ -311,9 +319,15 @@ fn update_level_errors(ctx: &egui::Context, project: &Project, key: LevelKey) ->
     Some(state_id)
 }
 
-pub(crate) fn level_entity_error(ctx: &egui::Context, project: &Project, key: LevelKey) -> Option<String> {
+pub(crate) fn level_entity_error(
+    ctx: &egui::Context,
+    project: &Project,
+    key: LevelKey,
+) -> Option<String> {
     let state_id = update_level_errors(ctx, project, key)?;
-    let error = ctx.data(|data| data.get_temp::<ErrorScan>(state_id))?.result?;
+    let error = ctx
+        .data(|data| data.get_temp::<ErrorScan>(state_id))?
+        .result?;
     Some(match error.kind {
         EntityErrorKind::Tag => format!("Incorrect tag: {}", error.name),
         EntityErrorKind::Field => format!("Invalid field value: {}", error.name),
@@ -462,7 +476,10 @@ impl EditorApp {
             .level(key)
             .and_then(|level| level["layerInstances"].as_array())
             .and_then(|layers| {
-                layers.iter().enumerate().find(|(_, li)| li["layerDefUid"] == error.layer_uid)
+                layers
+                    .iter()
+                    .enumerate()
+                    .find(|(_, li)| li["layerDefUid"] == error.layer_uid)
             });
         if let Some((layer_index, layer)) = owner
             && let Some(entity) = layer["entityInstances"]
@@ -472,9 +489,12 @@ impl EditorApp {
         {
             let inspected = self.panel == Some(Panel::Entity)
                 && self.layer == layer_index
-                && self.entity_index.is_some_and(|index| layer["entityInstances"][index]["iid"] == error.iid);
+                && self
+                    .entity_index
+                    .is_some_and(|index| layer["entityInstances"][index]["iid"] == error.iid);
             if !inspected
-                && let Some(mut bleep) = entity_bleep(project, key, layer_index, &self.viewport, entity)
+                && let Some(mut bleep) =
+                    entity_bleep(project, key, layer_index, &self.viewport, entity)
             {
                 bleep.color = Color32::RED;
                 bleep.speed = 0.4;
@@ -1172,19 +1192,36 @@ mod tests {
         let field = project
             .add_field_definition(Some(def), "RequiredPoint", "Point", false)
             .unwrap();
-        project.update_field_definition(field, &json!({"canBeNull":false})).unwrap();
-        project.update_layer_properties(layer_uid, &json!({"requiredTags":["Required"]})).unwrap();
+        project
+            .update_field_definition(field, &json!({"canBeNull":false}))
+            .unwrap();
+        project
+            .update_layer_properties(layer_uid, &json!({"requiredTags":["Required"]}))
+            .unwrap();
         let check = |project: &Project, time| {
             let mut issue = None;
-            let _ = ctx.run(egui::RawInput {time: Some(time), ..Default::default()}, |ctx| {
-                issue = level_entity_error(ctx, project, KEY);
-            });
+            let _ = ctx.run(
+                egui::RawInput {
+                    time: Some(time),
+                    ..Default::default()
+                },
+                |ctx| {
+                    issue = level_entity_error(ctx, project, KEY);
+                },
+            );
             issue
         };
         assert_eq!(check(project, 0.), Some(format!("Incorrect tag: {name}")));
-        project.update_entity_definition(def, &json!({"tags":["Required"]})).unwrap();
-        assert_eq!(check(project, 1.), Some(format!("Invalid field value: {name}")));
-        project.set_field_value(KEY, Some(&iid), field, json!({"cx":4,"cy":2})).unwrap();
+        project
+            .update_entity_definition(def, &json!({"tags":["Required"]}))
+            .unwrap();
+        assert_eq!(
+            check(project, 1.),
+            Some(format!("Invalid field value: {name}"))
+        );
+        project
+            .set_field_value(KEY, Some(&iid), field, json!({"cx":4,"cy":2}))
+            .unwrap();
         assert_eq!(check(project, 2.), None);
     }
 
@@ -1236,11 +1273,7 @@ mod tests {
         for _ in 0..2 {
             draw(&app, &ctx, 0.);
         }
-        assert!(ctx.data(|d| {
-            !d.get_temp::<ErrorScan>(state_id)
-                .unwrap()
-                .running
-        }));
+        assert!(ctx.data(|d| { !d.get_temp::<ErrorScan>(state_id).unwrap().running }));
         let queue = ctx
             .data(|d| d.get_temp::<Queue>(id()))
             .expect("offscreen error still queues feedback");

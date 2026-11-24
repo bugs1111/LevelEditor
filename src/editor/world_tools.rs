@@ -527,7 +527,9 @@ impl EditorApp {
     }
 
     pub(super) fn update_world_hover(&mut self, ctx: &egui::Context, rect: Rect, hovered: bool) {
-        let pointer = ctx.pointer_hover_pos().filter(|pointer| rect.contains(*pointer));
+        let pointer = ctx
+            .pointer_hover_pos()
+            .filter(|pointer| rect.contains(*pointer));
         let resize_cursor = ctx.output(|output| {
             matches!(
                 output.cursor_icon,
@@ -552,7 +554,10 @@ impl EditorApp {
             return;
         }
         if ctx.input(|input| {
-            input.events.iter().any(|event| matches!(event, egui::Event::PointerMoved(_)))
+            input
+                .events
+                .iter()
+                .any(|event| matches!(event, egui::Event::PointerMoved(_)))
         }) {
             self.world_hover = pointer.and_then(|pos| self.level_under_pointer(ctx, rect, pos));
         }
@@ -792,13 +797,17 @@ impl EditorApp {
                 && position[1] < bounds[3]
         };
         let active = |level: &Value| number(level, "worldDepth", 0.) as i64 == self.world_depth;
-        if matches!(canvas::world_layout(project, selected), "LinearHorizontal" | "LinearVertical") {
+        if matches!(
+            canvas::world_layout(project, selected),
+            "LinearHorizontal" | "LinearVertical"
+        ) {
             return canvas::iter_placements(project, selected)
                 .filter(|(_, level, bounds)| contains(*bounds) && active(level))
                 .map(|(key, _, _)| key)
                 .last();
         }
-        project.level_keys_in_world(selected.world)
+        project
+            .level_keys_in_world(selected.world)
             .rev()
             .find(|&key| {
                 project.level(key).is_some_and(|level| {
@@ -906,10 +915,15 @@ mod tests {
         let project = app.project.as_mut().unwrap();
         let size = 8_192;
         project.json["worldLayout"] = json!("Free");
-        project.json["levels"] = (0..size).map(|i| json!({
-            "iid":format!("level-{i}"),"worldX":i*20,"worldY":0,"pxWid":16,"pxHei":16,
-            "worldDepth":usize::from(i % 5 == 2)
-        })).collect::<Vec<_>>().into();
+        project.json["levels"] = (0..size)
+            .map(|i| {
+                json!({
+                    "iid":format!("level-{i}"),"worldX":i*20,"worldY":0,"pxWid":16,"pxHei":16,
+                    "worldDepth":usize::from(i % 5 == 2)
+                })
+            })
+            .collect::<Vec<_>>()
+            .into();
         let expected: Vec<_> = std::iter::once(size - 1)
             .chain((0..size - 1).filter(|i| i % 5 != 2))
             .map(|i| format!("level-{i}"))
@@ -934,14 +948,23 @@ mod tests {
                     1 + i * 125
                 };
                 let position = [level as f32 * 20. + 3., 4.];
-                assert_eq!(app.level_at_world(position), Some(LevelKey { world: None, level }));
+                assert_eq!(
+                    app.level_at_world(position),
+                    Some(LevelKey { world: None, level })
+                );
             }
             *hit_time = start.elapsed();
         }
         marquee.sort_unstable();
         hit.sort_unstable();
-        eprintln!("Large world marquee: median {:?}; samples {marquee:?}", marquee[2]);
-        eprintln!("Large world pointer hit: median {:?}; samples {hit:?}", hit[2]);
+        eprintln!(
+            "Large world marquee: median {:?}; samples {marquee:?}",
+            marquee[2]
+        );
+        eprintln!(
+            "Large world pointer hit: median {:?}; samples {hit:?}",
+            hit[2]
+        );
     }
 
     fn marquee_frame(
@@ -1623,15 +1646,27 @@ mod tests {
         app.world = false;
         let _ = frame(&mut app, vec![egui::Event::PointerMoved(pos)]);
         app.set_world_view(true);
-        assert!(!has_hover(&frame(&mut app, vec![])), "entry keeps the stationary pointer inactive");
-        let normal = frame(&mut app, vec![egui::Event::PointerMoved(pos + egui::vec2(1., 0.))]);
+        assert!(
+            !has_hover(&frame(&mut app, vec![])),
+            "entry keeps the stationary pointer inactive"
+        );
+        let normal = frame(
+            &mut app,
+            vec![egui::Event::PointerMoved(pos + egui::vec2(1., 0.))],
+        );
         assert!(has_hover(&normal));
         assert_eq!(
             normal.platform_output.cursor_icon,
             egui::CursorIcon::PointingHand
         );
-        assert!(has_hover(&frame(&mut app, vec![])), "hover remains with the pointer still");
-        let outside = frame(&mut app, vec![egui::Event::PointerMoved(pos - egui::vec2(40., 40.))]);
+        assert!(
+            has_hover(&frame(&mut app, vec![])),
+            "hover remains with the pointer still"
+        );
+        let outside = frame(
+            &mut app,
+            vec![egui::Event::PointerMoved(pos - egui::vec2(40., 40.))],
+        );
         assert!(!has_hover(&outside));
         app.world_toggle_selection(key);
         let selected = frame(&mut app, vec![egui::Event::PointerMoved(pos)]);
@@ -1658,7 +1693,10 @@ mod tests {
         let ctx = egui::Context::default();
         let rect = Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1000., 700.));
         let pos = |x| {
-            egui::Pos2::from(app.viewport.to_screen([x, 32.], rect.min.into(), rect.size().into()))
+            egui::Pos2::from(
+                app.viewport
+                    .to_screen([x, 32.], rect.min.into(), rect.size().into()),
+            )
         };
         let (current_pos, neighbor_pos, other_pos) = (pos(40.), pos(290.), pos(450.));
         let frame = |app: &mut EditorApp, events| {

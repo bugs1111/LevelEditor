@@ -650,7 +650,10 @@ mod tests {
         click(&mut app, &ctx, "151");
         replace_text(&mut app, &ctx, "1");
         assert_eq!(app.project.as_ref().unwrap().json["defaultLevelWidth"], 16);
-        assert!(!app.fit, "world form commits must not immediately fit the camera");
+        assert!(
+            !app.fit,
+            "world form commits must not immediately fit the camera"
+        );
         assert!(app.camera_motion.is_active(), "the fit should be animated");
         app.project
             .as_mut()

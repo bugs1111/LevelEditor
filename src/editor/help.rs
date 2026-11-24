@@ -130,7 +130,12 @@ fn request_video_thumbnails(ctx: &egui::Context) {
     });
 }
 
-fn video_card(ui: &mut egui::Ui, id: &'static str, title: &'static str, width: f32) -> egui::Response {
+fn video_card(
+    ui: &mut egui::Ui,
+    id: &'static str,
+    title: &'static str,
+    width: f32,
+) -> egui::Response {
     let title = locale::tr(ui, title);
     let (rect, response) = ui.allocate_exact_size(egui::vec2(width, 182.), Sense::click());
     ui.painter().add(
@@ -164,8 +169,12 @@ fn video_card(ui: &mut egui::Ui, id: &'static str, title: &'static str, width: f
             .paint_at(ui, inner);
     }
     if response.hovered() {
-        ui.painter()
-            .rect_stroke(rect, 0., Stroke::new(1_f32, theme::ACCENT), StrokeKind::Inside);
+        ui.painter().rect_stroke(
+            rect,
+            0.,
+            Stroke::new(1_f32, theme::ACCENT),
+            StrokeKind::Inside,
+        );
     }
     response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Link, true, title));
     response.on_hover_text(title)
@@ -324,7 +333,13 @@ fn help_section(ui: &mut egui::Ui, heading: &str, rows: &[(&str, &str)], major: 
 }
 
 impl EditorApp {
-    fn help_link(&mut self, ui: &egui::Ui, response: egui::Response, url: &str, show_address: bool) {
+    fn help_link(
+        &mut self,
+        ui: &egui::Ui,
+        response: egui::Response,
+        url: &str,
+        show_address: bool,
+    ) {
         let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
         if show_address
             && response.hovered()
@@ -333,15 +348,12 @@ impl EditorApp {
         {
             let address = url.strip_prefix("https://").unwrap_or(url);
             let mut tip = egui::Tooltip::for_widget(&response);
-            tip.popup = tip
-                .popup
-                .align(egui::emath::RectAlign::RIGHT_START)
-                .frame(
-                    egui::Frame::new()
-                        .fill(Color32::from_rgb(66, 91, 131))
-                        .corner_radius(4)
-                        .inner_margin(egui::Margin::symmetric(18, 12)),
-                );
+            tip.popup = tip.popup.align(egui::emath::RectAlign::RIGHT_START).frame(
+                egui::Frame::new()
+                    .fill(Color32::from_rgb(66, 91, 131))
+                    .corner_radius(4)
+                    .inner_margin(egui::Margin::symmetric(18, 12)),
+            );
             tip.show(|ui| {
                 ui.label(
                     RichText::new(address)
@@ -363,7 +375,9 @@ impl EditorApp {
             .show(|ui| {
                 let label = locale::tr(ui, "Copy URL").to_uppercase();
                 let font = FontId::proportional(13.33);
-                let galley = ui.painter().layout_no_wrap(label, font, Color32::PLACEHOLDER);
+                let galley = ui
+                    .painter()
+                    .layout_no_wrap(label, font, Color32::PLACEHOLDER);
                 let size = egui::vec2(galley.size().x + 40., 31.);
                 let (rect, item) = ui.allocate_exact_size(size, Sense::click());
                 let color = if item.hovered() {
@@ -375,7 +389,8 @@ impl EditorApp {
                 item.widget_info(|| {
                     egui::WidgetInfo::labeled(egui::WidgetType::Button, true, galley.text())
                 });
-                ui.painter().galley(rect.center() - galley.size() * 0.5, galley, color);
+                ui.painter()
+                    .galley(rect.center() - galley.size() * 0.5, galley, color);
                 if item.clicked() {
                     ui.ctx().copy_text(url.to_owned());
                     self.report_canvas_notice(notifications::CanvasNotice::LinkCopied);
@@ -387,9 +402,9 @@ impl EditorApp {
     pub(super) fn help_contents(&mut self, ui: &mut egui::Ui) {
         request_video_thumbnails(ui.ctx());
         let width = ui.available_width();
-        let unavailable = ui.data(|data| {
-            data.get_temp::<bool>(egui::Id::new("help-video-thumbnails-unavailable"))
-        }) == Some(true);
+        let unavailable = ui
+            .data(|data| data.get_temp::<bool>(egui::Id::new("help-video-thumbnails-unavailable")))
+            == Some(true);
         let docs_width = if unavailable { 179. } else { 265.5 };
         ui.horizontal_top(|ui| {
             ui.spacing_mut().item_spacing.x = 16.;
@@ -768,9 +783,13 @@ impl EditorApp {
                                     .show(ui, |ui| {
                                         ui.set_min_width(ui.available_width());
                                         egui::CollapsingHeader::new(
-                                            RichText::new(locale::format(ui, "Patch {version}", &[("version", patch.version)]))
-                                                .strong()
-                                                .color(theme::ACCENT),
+                                            RichText::new(locale::format(
+                                                ui,
+                                                "Patch {version}",
+                                                &[("version", patch.version)],
+                                            ))
+                                            .strong()
+                                            .color(theme::ACCENT),
                                         )
                                         .id_salt(patch.version)
                                         .default_open(latest)
@@ -888,7 +907,10 @@ mod tests {
         let mut draw = |events| {
             ctx.run(
                 egui::RawInput {
-                    screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(856., 850.))),
+                    screen_rect: Some(Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(856., 850.),
+                    )),
                     events,
                     ..Default::default()
                 },
@@ -909,12 +931,15 @@ mod tests {
             })
         };
         let pointer = |pos, button, pressed| {
-            vec![egui::Event::PointerMoved(pos), egui::Event::PointerButton {
-                pos,
-                button,
-                pressed,
-                modifiers: egui::Modifiers::NONE,
-            }]
+            vec![
+                egui::Event::PointerMoved(pos),
+                egui::Event::PointerButton {
+                    pos,
+                    button,
+                    pressed,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ]
         };
         let initial = draw(vec![]);
         assert!(text_position(&initial, "ldtk.io/docs").is_none());

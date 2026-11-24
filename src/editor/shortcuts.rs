@@ -10,13 +10,20 @@ pub(super) fn save_tile_shortcut_needs_shift(navigation: &str) -> bool {
 use serde_json::json;
 
 fn fullscreen_key(platform: &str, key: Key, modifiers: egui::Modifiers) -> bool {
-    match (key, modifiers.alt, modifiers.shift, modifiers.ctrl, modifiers.mac_cmd) {
+    match (
+        key,
+        modifiers.alt,
+        modifiers.shift,
+        modifiers.ctrl,
+        modifiers.mac_cmd,
+    ) {
         (Key::F, false, true, true, false) => platform != "macos",
         (Key::F, false, true, false, true)
         | (Key::F, false, false, true, true)
         | (Key::Enter, false, false, false, true) => platform == "macos",
-        (Key::F11, false, false, false, false)
-        | (Key::Enter, true, false, false, false) => platform == "windows",
+        (Key::F11, false, false, false, false) | (Key::Enter, true, false, false, false) => {
+            platform == "windows"
+        }
         _ => false,
     }
 }
@@ -762,9 +769,14 @@ impl EditorApp {
     pub(super) fn shortcuts(&mut self, ctx: &egui::Context) {
         let window_key = ctx.input_mut(|input| {
             let pressed = input.events.iter().find_map(|event| match event {
-                egui::Event::Key { key, pressed: true, repeat: false, modifiers, .. }
-                    if fullscreen_key(std::env::consts::OS, *key, *modifiers)
-                        || mac_window_key(std::env::consts::OS, *key, *modifiers) =>
+                egui::Event::Key {
+                    key,
+                    pressed: true,
+                    repeat: false,
+                    modifiers,
+                    ..
+                } if fullscreen_key(std::env::consts::OS, *key, *modifiers)
+                    || mac_window_key(std::env::consts::OS, *key, *modifiers) =>
                 {
                     Some((*key, *modifiers))
                 }
@@ -793,7 +805,10 @@ impl EditorApp {
             || self.layer_context_menu.is_some()
             || egui::Popup::is_id_open(ctx, Self::layer_filter_popup_id())
             || palette_popout::tileset_selector_open(ctx);
-        track_zoom_keys(ctx, self.command_palette || selector_open || world_context_open);
+        track_zoom_keys(
+            ctx,
+            self.command_palette || selector_open || world_context_open,
+        );
         if selector_open {
             return;
         }
@@ -885,7 +900,11 @@ impl EditorApp {
                         Key::W | Key::Q
                             if world_context_open && !missing_resources && !modifiers.shift =>
                         {
-                            let action = if key == Key::W { Action::Close } else { Action::Quit };
+                            let action = if key == Key::W {
+                                Action::Close
+                            } else {
+                                Action::Quit
+                            };
                             self.request(ctx, action);
                             break;
                         }
@@ -1140,7 +1159,11 @@ impl EditorApp {
                 }
                 Key::R if tile_tool && !modifiers.any() => {
                     self.random_tiles = !self.random_tiles;
-                    let label = if self.random_tiles { "Random mode" } else { "Stamp mode" };
+                    let label = if self.random_tiles {
+                        "Random mode"
+                    } else {
+                        "Stamp mode"
+                    };
                     self.notify_quick(locale::tr_ctx(ctx, label).into());
                 }
                 Key::X | Key::H if tile_tool && (key == Key::X || modifiers.shift) => {
@@ -1295,12 +1318,26 @@ mod tests {
     #[cfg(target_os = "linux")]
     fn fullscreen_only_accepts_the_original_linux_chord() {
         let (mut app, ctx) = keyboard_zoom_editor();
-        let ctrl = egui::Modifiers { ctrl: true, command: true, ..Default::default() };
-        let ctrl_shift = egui::Modifiers { shift: true, ..ctrl };
+        let ctrl = egui::Modifiers {
+            ctrl: true,
+            command: true,
+            ..Default::default()
+        };
+        let ctrl_shift = egui::Modifiers {
+            shift: true,
+            ..ctrl
+        };
         for (key, modifiers, expected) in [
             (Key::F11, egui::Modifiers::NONE, false),
             (Key::Enter, ctrl, false),
-            (Key::F, egui::Modifiers { alt: true, ..ctrl_shift }, false),
+            (
+                Key::F,
+                egui::Modifiers {
+                    alt: true,
+                    ..ctrl_shift
+                },
+                false,
+            ),
             (Key::F, ctrl_shift, true),
         ] {
             let output = ctx.run(
@@ -1313,7 +1350,9 @@ mod tests {
                 |ctx| app.shortcuts(ctx),
             );
             let toggled = output.viewport_output[&egui::ViewportId::ROOT]
-                .commands.iter().any(|command| matches!(command, egui::ViewportCommand::Fullscreen(true)));
+                .commands
+                .iter()
+                .any(|command| matches!(command, egui::ViewportCommand::Fullscreen(true)));
             assert_eq!(toggled, expected, "{key:?} {modifiers:?}");
             assert!(!app.command_palette, "{key:?} {modifiers:?} opened search");
             let _ = ctx.run(
@@ -1342,7 +1381,11 @@ mod tests {
                 egui::Modifiers { ctrl: true, ..cmd },
                 egui::Modifiers { alt: true, ..cmd },
                 egui::Modifiers { shift: true, ..cmd },
-                egui::Modifiers { ctrl: true, command: true, ..Default::default() },
+                egui::Modifiers {
+                    ctrl: true,
+                    command: true,
+                    ..Default::default()
+                },
                 egui::Modifiers::NONE,
             ] {
                 assert!(!mac_window_key("macos", key, extra), "{key:?} {extra:?}");
@@ -1354,23 +1397,61 @@ mod tests {
     #[test]
     fn fullscreen_shortcuts_follow_the_original_platform_bindings() {
         let none = egui::Modifiers::NONE;
-        let ctrl = egui::Modifiers { ctrl: true, command: true, ..none };
-        let cmd = egui::Modifiers { mac_cmd: true, command: true, ..none };
+        let ctrl = egui::Modifiers {
+            ctrl: true,
+            command: true,
+            ..none
+        };
+        let cmd = egui::Modifiers {
+            mac_cmd: true,
+            command: true,
+            ..none
+        };
         let alt = egui::Modifiers { alt: true, ..none };
         for (platform, key, modifiers, accepted) in [
             ("windows", Key::F11, none, true),
             ("windows", Key::F11, ctrl, false),
             ("windows", Key::Enter, alt, true),
             ("windows", Key::Enter, ctrl, false),
-            ("windows", Key::F, egui::Modifiers { shift: true, ..ctrl }, true),
+            (
+                "windows",
+                Key::F,
+                egui::Modifiers {
+                    shift: true,
+                    ..ctrl
+                },
+                true,
+            ),
             ("macos", Key::F11, none, false),
             ("macos", Key::Enter, cmd, true),
             ("macos", Key::Enter, alt, false),
             ("macos", Key::Enter, ctrl, false),
             ("macos", Key::F, egui::Modifiers { ctrl: true, ..cmd }, true),
-            ("macos", Key::F, egui::Modifiers { shift: true, ..cmd }, true),
-            ("macos", Key::F, egui::Modifiers { ctrl: true, shift: true, ..cmd }, false),
-            ("macos", Key::F, egui::Modifiers { shift: true, ..ctrl }, false),
+            (
+                "macos",
+                Key::F,
+                egui::Modifiers { shift: true, ..cmd },
+                true,
+            ),
+            (
+                "macos",
+                Key::F,
+                egui::Modifiers {
+                    ctrl: true,
+                    shift: true,
+                    ..cmd
+                },
+                false,
+            ),
+            (
+                "macos",
+                Key::F,
+                egui::Modifiers {
+                    shift: true,
+                    ..ctrl
+                },
+                false,
+            ),
         ] {
             assert_eq!(
                 fullscreen_key(platform, key, modifiers),
@@ -1396,7 +1477,10 @@ mod tests {
                 egui::Event::WindowFocused(true),
             ],
         );
-        assert!(app.clicktrap, "the refocus frame still guards canvas clicks");
+        assert!(
+            app.clicktrap,
+            "the refocus frame still guards canvas clicks"
+        );
         keyboard_zoom_frame(&mut app, &ctx, 2.05, true, vec![]);
         keyboard_zoom_frame(
             &mut app,
@@ -1418,7 +1502,10 @@ mod tests {
             ],
         );
         keyboard_zoom_frame(&mut app, &ctx, 3.05, false, vec![]);
-        assert!(app.clicktrap, "the final blur guards the canvas until refocus");
+        assert!(
+            app.clicktrap,
+            "the final blur guards the canvas until refocus"
+        );
     }
 
     #[test]
@@ -1990,7 +2077,8 @@ mod tests {
         let mut app = EditorApp::empty();
         app.set_project(p);
         let project = app.project.as_ref().unwrap();
-        app.settings.set_ui_state_int("LayerUIFilter", project.json["iid"].as_str(), 0);
+        app.settings
+            .set_ui_state_int("LayerUIFilter", project.json["iid"].as_str(), 0);
         let ctx = egui::Context::default();
         for (key, expected) in [(Key::F1, visible), (Key::Num1, 0)] {
             let raw = egui::RawInput {

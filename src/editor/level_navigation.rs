@@ -466,7 +466,10 @@ mod tests {
         assert_ne!(app.viewport.zoom, target);
 
         let zoom = app.viewport.zoom;
-        let local = [app.viewport.center[0] - 1000., app.viewport.center[1] - 2000.];
+        let local = [
+            app.viewport.center[0] - 1000.,
+            app.viewport.center[1] - 2000.,
+        ];
         frame(&mut app, &ctx, vec![key(Key::Backtick, true)]);
         assert!(!app.world);
         near_zoom_anchor(&app.viewport, local.map(|axis| axis + (128. - axis) * 0.15));

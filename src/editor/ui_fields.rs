@@ -231,7 +231,8 @@ pub(super) fn property_value(
             }
         }
         Widget::Multiline => {
-            if let Some(v) = buffered_text_kind(ui, key, current.as_str().unwrap_or(""), true, None, None)
+            if let Some(v) =
+                buffered_text_kind(ui, key, current.as_str().unwrap_or(""), true, None, None)
             {
                 current = json!(v);
                 true
@@ -481,7 +482,9 @@ fn file_path_editor(
                 requested
             })
     });
-    let path_text = value.as_str().filter(|path| !using_default && !path.is_empty());
+    let path_text = value
+        .as_str()
+        .filter(|path| !using_default && !path.is_empty());
     let path = path_text.and_then(|path| project.make_absolute_file_path(path).ok());
     let missing = path.as_ref().is_some_and(|path| !path.exists());
     let required = path_text.is_none() && definition["canBeNull"] != true;
@@ -533,7 +536,8 @@ fn file_path_editor(
                 Sense::click(),
             );
             let invalid = missing || required;
-            ui.painter().rect_filled(rect, 0., if invalid { danger } else { theme::MEDIUM });
+            ui.painter()
+                .rect_filled(rect, 0., if invalid { danger } else { theme::MEDIUM });
             if path_text.is_none() {
                 egui::Image::new(egui::include_image!("../../assets/img/stripes.png"))
                     .texture_options(egui::TextureOptions::NEAREST_REPEAT)
@@ -544,7 +548,14 @@ fn file_path_editor(
             ui.painter().rect_stroke(
                 rect,
                 0.,
-                Stroke::new(1_f32, if highlight { theme::ACCENT } else { theme::LIGHT }),
+                Stroke::new(
+                    1_f32,
+                    if highlight {
+                        theme::ACCENT
+                    } else {
+                        theme::LIGHT
+                    },
+                ),
                 StrokeKind::Inside,
             );
             let filename = path_text
@@ -1232,92 +1243,90 @@ pub(super) fn field_value_editor(
         let len = values.len();
         let append_focus_id = ui.id().with("appended-array-item");
         let activate = ui.data_mut(|data| data.remove_temp::<usize>(append_focus_id));
-        let group = field_tools::array_field_frame(values.is_empty())
-            .show(ui, |ui| {
-                ui.spacing_mut().item_spacing.y = 0.;
-                let moved = field_tools::sortable_array_field_rows(ui, len, |ui, index| {
-                    let item = &values[index];
-                    if inner == "EntityRef"
-                        && let Some((_, _, entity)) = reference_target(project, item)
-                        && let Some((def, tile)) = reference_preview(project, entity)
-                    {
-                        let tile = tile.as_ref().unwrap_or(if number(&def["uiTileRect"], "w", 0.) > 0. {
-                            &def["uiTileRect"]
-                        } else {
-                            &def["tileRect"]
-                        });
-                        if let Some(icon) = tile["tilesetUid"].as_i64().and_then(|uid| {
-                            enum_icon(
-                                project,
-                                &json!({"iconTilesetUid": uid}),
-                                &json!({"tileRect": tile}),
-                            )
-                        }) {
-                            ui.add(icon);
-                        } else {
-                            let (rect, _) = ui
-                                .allocate_exact_size(egui::vec2(20., 20.), Sense::hover());
-                            ui.painter().rect_filled(
-                                rect,
-                                2.,
-                                theme::color(text(def, "color", "#ffcc00")),
-                            );
-                        }
+        let group = field_tools::array_field_frame(values.is_empty()).show(ui, |ui| {
+            ui.spacing_mut().item_spacing.y = 0.;
+            let moved = field_tools::sortable_array_field_rows(ui, len, |ui, index| {
+                let item = &values[index];
+                if inner == "EntityRef"
+                    && let Some((_, _, entity)) = reference_target(project, item)
+                    && let Some((def, tile)) = reference_preview(project, entity)
+                {
+                    let tile =
+                        tile.as_ref()
+                            .unwrap_or(if number(&def["uiTileRect"], "w", 0.) > 0. {
+                                &def["uiTileRect"]
+                            } else {
+                                &def["tileRect"]
+                            });
+                    if let Some(icon) = tile["tilesetUid"].as_i64().and_then(|uid| {
+                        enum_icon(
+                            project,
+                            &json!({"iconTilesetUid": uid}),
+                            &json!({"tileRect": tile}),
+                        )
+                    }) {
+                        ui.add(icon);
+                    } else {
+                        let (rect, _) =
+                            ui.allocate_exact_size(egui::vec2(20., 20.), Sense::hover());
+                        ui.painter().rect_filled(
+                            rect,
+                            2.,
+                            theme::color(text(def, "color", "#ffcc00")),
+                        );
                     }
-                    let width = (ui.available_width() - 24.).max(20.);
-                    ui.allocate_ui_with_layout(
-                        egui::vec2(width, 33.),
-                        egui::Layout::top_down(egui::Align::Min),
-                        |ui| {
-                            ui.set_width(width);
-                            if activate == Some(index) && field_uses_default(field, index) {
-                                let id = ui.make_persistent_id("instance-default-editor");
-                                ui.data_mut(|data| {
-                                    data.insert_temp(
-                                        id,
-                                        DefaultEditor {
-                                            active: true,
-                                            focus: true,
-                                        },
-                                    )
-                                });
-                            }
-                            if let Some(next) = instance_scalar_editor(
-                                ui,
-                                project,
-                                inner,
-                                item,
-                                definition,
-                                field_uses_default(field, index),
-                            ) {
-                                edit = Some(ldtk_core::FieldArrayEdit::Set {
-                                    index,
-                                    value: next,
-                                });
-                            }
-                        },
-                    );
-                    if field_tools::array_field_remove(ui).clicked() {
-                        edit = Some(ldtk_core::FieldArrayEdit::Remove { index });
-                    }
-                });
-                if let Some(moved) = moved {
-                    edit = Some(moved);
                 }
-                let max = definition["arrayMaxLength"].as_u64().unwrap_or(u64::MAX);
-                if (len as u64) < max {
-                    if len > 0 {
-                        ui.add_space(2.);
-                    }
-                    if field_tools::array_field_add(ui, "Add a new value").clicked() {
-                        if matches!(inner, "String" | "Int" | "Float" | "FilePath") {
-                            ui.data_mut(|data| data.insert_temp(append_focus_id, len));
-                            ui.ctx().request_repaint();
+                let width = (ui.available_width() - 24.).max(20.);
+                ui.allocate_ui_with_layout(
+                    egui::vec2(width, 33.),
+                    egui::Layout::top_down(egui::Align::Min),
+                    |ui| {
+                        ui.set_width(width);
+                        if activate == Some(index) && field_uses_default(field, index) {
+                            let id = ui.make_persistent_id("instance-default-editor");
+                            ui.data_mut(|data| {
+                                data.insert_temp(
+                                    id,
+                                    DefaultEditor {
+                                        active: true,
+                                        focus: true,
+                                    },
+                                )
+                            });
                         }
-                        edit = Some(ldtk_core::FieldArrayEdit::Insert { index: len });
-                    }
+                        if let Some(next) = instance_scalar_editor(
+                            ui,
+                            project,
+                            inner,
+                            item,
+                            definition,
+                            field_uses_default(field, index),
+                        ) {
+                            edit = Some(ldtk_core::FieldArrayEdit::Set { index, value: next });
+                        }
+                    },
+                );
+                if field_tools::array_field_remove(ui).clicked() {
+                    edit = Some(ldtk_core::FieldArrayEdit::Remove { index });
                 }
             });
+            if let Some(moved) = moved {
+                edit = Some(moved);
+            }
+            let max = definition["arrayMaxLength"].as_u64().unwrap_or(u64::MAX);
+            if (len as u64) < max {
+                if len > 0 {
+                    ui.add_space(2.);
+                }
+                if field_tools::array_field_add(ui, "Add a new value").clicked() {
+                    if matches!(inner, "String" | "Int" | "Float" | "FilePath") {
+                        ui.data_mut(|data| data.insert_temp(append_focus_id, len));
+                        ui.ctx().request_repaint();
+                    }
+                    edit = Some(ldtk_core::FieldArrayEdit::Insert { index: len });
+                }
+            }
+        });
         if !values.is_empty() {
             field_tools::array_field_border(ui, group.response.rect);
         }
@@ -1451,8 +1460,11 @@ mod tests {
         let field = p
             .add_field_definition(Some(def), "Icon", "Tile", false)
             .unwrap();
-        p.update_field_definition(field, &json!({"editorDisplayMode":"EntityTile","tilesetUid":atlas}))
-            .unwrap();
+        p.update_field_definition(
+            field,
+            &json!({"editorDisplayMode":"EntityTile","tilesetUid":atlas}),
+        )
+        .unwrap();
         p.add_entity(LEVEL, 0, def, 16, 16).unwrap();
         let iid = p.layer(LEVEL, 0).unwrap()["entityInstances"][0]["iid"].clone();
         p.json["defs"]["entities"][0]["uiTileRect"] =

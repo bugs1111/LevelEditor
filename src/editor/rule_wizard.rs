@@ -228,7 +228,12 @@ fn wizard_value(ui: &mut egui::Ui, values: &[Value], value: &mut i64, outer: boo
         );
         x += 36.;
     } else {
-        painter.rect_stroke(rect, 0., Stroke::new(1_f32, theme::LIGHT), StrokeKind::Inside);
+        painter.rect_stroke(
+            rect,
+            0.,
+            Stroke::new(1_f32, theme::LIGHT),
+            StrokeKind::Inside,
+        );
     }
     painter.text(
         egui::pos2(x, rect.center().y),
@@ -378,8 +383,12 @@ impl EditorApp {
             .texture_options(egui::TextureOptions::NEAREST_REPEAT)
             .uv(Rect::from_min_size(egui::Pos2::ZERO, grid.size() / 8.))
             .paint_at(ui, grid);
-        ui.painter()
-            .rect_stroke(grid, 0., Stroke::new(1_f32, theme::LIGHT), StrokeKind::Inside);
+        ui.painter().rect_stroke(
+            grid,
+            0.,
+            Stroke::new(1_f32, theme::LIGHT),
+            StrokeKind::Inside,
+        );
         let atlas = self.rule_atlas(ui.ctx(), atlas_uid);
         let id = ui.make_persistent_id("wizard-fragments");
         for (i, fragment) in fragments.iter().enumerate() {
@@ -417,7 +426,11 @@ impl EditorApp {
                 .texture_options(egui::TextureOptions::NEAREST)
                 .paint_at(ui, rect);
             if wizard.selected == Some(i) || defined.is_some() {
-                let width = if wizard.selected == Some(i) { 3. } else { 1_f32 };
+                let width = if wizard.selected == Some(i) {
+                    3.
+                } else {
+                    1_f32
+                };
                 ui.painter().rect_stroke(
                     rect,
                     0.,

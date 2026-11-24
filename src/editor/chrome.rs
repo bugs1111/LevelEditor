@@ -170,8 +170,12 @@ fn empty_layer_list(ui: &mut egui::Ui) {
         .texture_options(egui::TextureOptions::NEAREST_REPEAT)
         .uv(Rect::from_min_size(egui::Pos2::ZERO, rect.size() / 8.))
         .paint_at(ui, rect);
-    ui.painter()
-        .rect_stroke(rect, 0., Stroke::new(1_f32, theme::MEDIUM), StrokeKind::Inside);
+    ui.painter().rect_stroke(
+        rect,
+        0.,
+        Stroke::new(1_f32, theme::MEDIUM),
+        StrokeKind::Inside,
+    );
     let caption = egui::WidgetText::from(
         RichText::new(locale::tr(ui, "No layer"))
             .font(FontId::new(
@@ -292,21 +296,18 @@ pub(super) fn source_tooltip_popup<'a>(
     let mut tooltip = egui::Tooltip::for_widget(response)
         .width(0.)
         .gap(if placement.is_some() { 10. } else { 8. });
-    tooltip.popup = tooltip
-        .popup
-        .align(align)
-        .frame(
-            egui::Frame::new()
-                .fill(Color32::from_rgb(60, 97, 72))
-                .corner_radius(4)
-                .inner_margin(padding)
-                .shadow(egui::epaint::Shadow {
-                    offset: [0, 8],
-                    blur: 16,
-                    spread: 0,
-                    color: Color32::from_black_alpha(77),
-                }),
-        );
+    tooltip.popup = tooltip.popup.align(align).frame(
+        egui::Frame::new()
+            .fill(Color32::from_rgb(60, 97, 72))
+            .corner_radius(4)
+            .inner_margin(padding)
+            .shadow(egui::epaint::Shadow {
+                offset: [0, 8],
+                blur: 16,
+                spread: 0,
+                color: Color32::from_black_alpha(77),
+            }),
+    );
     tooltip
 }
 
@@ -562,14 +563,20 @@ fn paint_toolbar_icon(ui: &egui::Ui, source: egui::ImageSource<'static>, center:
         cached
     } else {
         ctx.include_bytes(uri.clone(), bytes.clone());
-        let Ok(egui::load::ImagePoll::Ready { image }) = ctx.try_load_image(uri, Default::default())
+        let Ok(egui::load::ImagePoll::Ready { image }) =
+            ctx.try_load_image(uri, Default::default())
         else {
             return;
         };
         let [width, height] = image.size;
-        let size = egui::vec2(width as f32, height as f32) * (icon_size.x / width.max(height) as f32);
+        let size =
+            egui::vec2(width as f32, height as f32) * (icon_size.x / width.max(height) as f32);
         let target = (size * scale).round().max(Vec2::splat(1.));
-        let rgba = image.pixels.iter().flat_map(|pixel| pixel.to_array()).collect();
+        let rgba = image
+            .pixels
+            .iter()
+            .flat_map(|pixel| pixel.to_array())
+            .collect();
         let Some(original) = image::RgbaImage::from_raw(width as u32, height as u32, rgba) else {
             return;
         };
@@ -614,7 +621,11 @@ fn toolbar_button(
         .interact(rect, ui.id().with(tip), Sense::click())
         .on_hover_cursor(egui::CursorIcon::PointingHand);
     response.widget_info(|| {
-        egui::WidgetInfo::labeled(egui::WidgetType::Button, response.enabled(), locale::tr(ui, tip))
+        egui::WidgetInfo::labeled(
+            egui::WidgetType::Button,
+            response.enabled(),
+            locale::tr(ui, tip),
+        )
     });
     let painter = ui.painter();
     let fill = if state == ToolbarButtonState::Active {
@@ -885,7 +896,11 @@ impl EditorApp {
         let edge = Rect::from_min_size(screen.min, egui::vec2(ZEN_EDGE_WIDTH, screen.height()));
         let edge_id = egui::Id::new("zen-sidebar-edge");
         let (pointer, moved, now) = ctx.input(|input| {
-            (input.pointer.hover_pos(), input.pointer.delta() != Vec2::ZERO, input.time)
+            (
+                input.pointer.hover_pos(),
+                input.pointer.delta() != Vec2::ZERO,
+                input.time,
+            )
         });
         let layer = pointer.and_then(|pointer| ctx.layer_id_at(pointer));
         let canvas_at_pointer = layer.is_none_or(|layer| layer.order == egui::Order::Background);
@@ -901,7 +916,9 @@ impl EditorApp {
                 if now >= *hide_after {
                     self.zen_sidebar = ZenSidebar::default();
                 } else {
-                    ctx.request_repaint_after(std::time::Duration::from_secs_f64(*hide_after - now));
+                    ctx.request_repaint_after(std::time::Duration::from_secs_f64(
+                        *hide_after - now,
+                    ));
                 }
             } else {
                 self.zen_sidebar.hide_after = None;
@@ -921,7 +938,8 @@ impl EditorApp {
                 .show(ctx, |ui| {
                     let (rect, response) = ui.allocate_exact_size(edge.size(), Sense::hover());
                     response.on_hover_cursor(egui::CursorIcon::ResizeHorizontal);
-                    ui.painter().rect_filled(rect, 0., Color32::from_white_alpha(26));
+                    ui.painter()
+                        .rect_filled(rect, 0., Color32::from_white_alpha(26));
                     egui::Image::new(egui::include_image!("../../assets/img/stripes.png"))
                         .texture_options(egui::TextureOptions::NEAREST_REPEAT)
                         .uv(Rect::from_min_size(egui::Pos2::ZERO, rect.size() / 8.))
@@ -943,7 +961,11 @@ impl EditorApp {
             self.status = error.to_string();
             self.status_error = true;
         }
-        let label = if self.zen { "Zen mode: ON" } else { "Zen mode: off" };
+        let label = if self.zen {
+            "Zen mode: ON"
+        } else {
+            "Zen mode: off"
+        };
         self.quick_notification = Some((locale::tr_ctx(ctx, label).into(), None, Instant::now()));
     }
 
@@ -1093,408 +1115,420 @@ impl EditorApp {
             self.layer_context_menu = None;
             return;
         }
-        show_sidebar(ctx, self.zen,
-            |ui| {
-                if self.is_busy() || self.pending.is_some() {
-                    self.layer_context_menu = None;
-                    ui.disable();
-                    if self.save_failure.is_some() {
-                        // The modal supplies the dimming for the sidebar.
-                        ui.set_opacity(1.);
-                    }
+        show_sidebar(ctx, self.zen, |ui| {
+            if self.is_busy() || self.pending.is_some() {
+                self.layer_context_menu = None;
+                ui.disable();
+                if self.save_failure.is_some() {
+                    // The modal supplies the dimming for the sidebar.
+                    ui.set_opacity(1.);
                 }
-                ui.spacing_mut().item_spacing = Vec2::ZERO;
-                ui.horizontal(|ui| {
-                    let (bar, _) = ui.allocate_exact_size(
-                        egui::vec2(SIDEBAR_WIDTH - 2., 36.),
-                        Sense::hover(),
-                    );
-                    // Chromium lays out the ten equal flex children in 1/64-point units.
-                    let width = (bar.width() * 64. / 10.).floor() / 64.;
-                    let slot = |index| {
-                        Rect::from_min_size(
-                            bar.min + egui::vec2(index as f32 * width, 0.),
-                            egui::vec2(width, bar.height()),
-                        )
-                    };
-                    let linked = self.panel.filter(|panel| {
-                        matches!(
-                            panel,
-                            Panel::Project | Panel::World | Panel::Level | Panel::Layers
-                                | Panel::Entities | Panel::Enums | Panel::Tilesets | Panel::Help
-                        )
-                    });
-                    let orange = (Color32::from_rgb(227, 77, 0), Color32::from_rgb(255, 93, 74));
-                    let blue = (Color32::from_rgb(42, 115, 171), Color32::from_rgb(52, 143, 213));
-                    for (index, (panel, image, fill, tip, keys)) in [
-                        (
-                            Panel::Project,
-                            egui::include_image!("../../assets/icons/projectSettings.png"),
-                            (Color32::from_rgb(148, 78, 54), Color32::from_rgb(191, 101, 70)),
-                            "Project settings",
-                            &["P"][..],
-                        ),
-                        (
-                            Panel::World,
-                            egui::include_image!("../../assets/icons/world.svg"),
-                            blue,
-                            "World view",
-                            &[if self.settings.value["navigationKeys"] == "Zqsd" {
-                                "²"
-                            } else {
-                                "~"
-                            }][..],
-                        ),
-                        (
-                            Panel::Level,
-                            egui::include_image!("../../assets/icons/level.svg"),
-                            blue,
-                            "Current level settings",
-                            &["C"][..],
-                        ),
-                        (
-                            Panel::Layers,
-                            egui::include_image!("../../assets/icons/layer.png"),
-                            orange,
-                            "Layers",
-                            &["L"][..],
-                        ),
-                        (
-                            Panel::Entities,
-                            egui::include_image!("../../assets/icons/entity.png"),
-                            orange,
-                            "Entities",
-                            &["E"][..],
-                        ),
-                        (
-                            Panel::Enums,
-                            egui::include_image!("../../assets/icons/enum.png"),
-                            orange,
-                            "Enums",
-                            &["U"][..],
-                        ),
-                        (
-                            Panel::Tilesets,
-                            egui::include_image!("../../assets/icons/tile.png"),
-                            orange,
-                            "Tilesets",
-                            &["T"][..],
-                        ),
-                        (
-                            Panel::Help,
-                            egui::include_image!("../../assets/icons/help.svg"),
-                            (Color32::from_rgb(73, 141, 85), Color32::from_rgb(94, 171, 107)),
-                            "Help and shortcuts",
-                            &["H"][..],
-                        ),
-                        (
-                            Panel::Settings,
-                            egui::include_image!("../../assets/icons/settings.svg"),
-                            (theme::LIGHT, Color32::from_rgb(115, 127, 157)),
-                            "App settings",
-                            &["F12"][..],
-                        ),
-                    ]
-                    .into_iter()
-                    .enumerate()
-                    {
-                        let state = match linked {
-                            Some(active) if active == panel => ToolbarButtonState::Active,
-                            Some(_) => ToolbarButtonState::Faded,
-                            None => ToolbarButtonState::Normal,
-                        };
-                        let response = toolbar_button(ui, slot(index), image, fill, state, tip, keys);
-                        if response.clicked() {
-                            self.toggle_toolbar_panel(panel);
-                        }
-                        if panel == Panel::Project {
-                            response.context_menu(|ui| {
-                                if ui.button(locale::tr(ui, "New project")).clicked() {
-                                    self.request(ctx, Action::New);
-                                    ui.close();
-                                }
-                                if ui.button(locale::tr(ui, "Open…")).clicked() {
-                                    self.request(ctx, Action::Browse);
-                                    ui.close();
-                                }
-                                if ui.button(locale::tr(ui, "Save")).clicked() {
-                                    self.save(false);
-                                    ui.close();
-                                }
-                                if ui.button(locale::tr(ui, "Save as…")).clicked() {
-                                    self.save(true);
-                                    ui.close();
-                                }
-                                if ui.button(locale::tr(ui, "Export…")).clicked() {
-                                    self.show_panel(Some(Panel::Export));
-                                    ui.close();
-                                }
-                            });
-                        } else if panel == Panel::World {
-                            response.context_menu(|ui| {
-                                if ui.button(locale::tr(ui, "World settings")).clicked() {
-                                    self.show_panel(Some(Panel::World));
-                                    ui.close();
-                                }
-                            });
-                        }
-                    }
-                    if toolbar_button(
-                        ui,
-                        slot(9),
-                        egui::include_image!("../../assets/icons/exit.svg"),
-                        (CLOSE_TOOLBAR_COLOR, theme::LIGHT),
-                        if linked.is_some() {
-                            ToolbarButtonState::Faded
-                        } else {
-                            ToolbarButtonState::Normal
-                        },
-                        "Close project",
-                        &["CTRL", "W"],
+            }
+            ui.spacing_mut().item_spacing = Vec2::ZERO;
+            ui.horizontal(|ui| {
+                let (bar, _) =
+                    ui.allocate_exact_size(egui::vec2(SIDEBAR_WIDTH - 2., 36.), Sense::hover());
+                // Chromium lays out the ten equal flex children in 1/64-point units.
+                let width = (bar.width() * 64. / 10.).floor() / 64.;
+                let slot = |index| {
+                    Rect::from_min_size(
+                        bar.min + egui::vec2(index as f32 * width, 0.),
+                        egui::vec2(width, bar.height()),
                     )
-                    .clicked()
-                    {
-                        self.request(ctx, Action::Close);
+                };
+                let linked = self.panel.filter(|panel| {
+                    matches!(
+                        panel,
+                        Panel::Project
+                            | Panel::World
+                            | Panel::Level
+                            | Panel::Layers
+                            | Panel::Entities
+                            | Panel::Enums
+                            | Panel::Tilesets
+                            | Panel::Help
+                    )
+                });
+                let orange = (
+                    Color32::from_rgb(227, 77, 0),
+                    Color32::from_rgb(255, 93, 74),
+                );
+                let blue = (
+                    Color32::from_rgb(42, 115, 171),
+                    Color32::from_rgb(52, 143, 213),
+                );
+                for (index, (panel, image, fill, tip, keys)) in [
+                    (
+                        Panel::Project,
+                        egui::include_image!("../../assets/icons/projectSettings.png"),
+                        (
+                            Color32::from_rgb(148, 78, 54),
+                            Color32::from_rgb(191, 101, 70),
+                        ),
+                        "Project settings",
+                        &["P"][..],
+                    ),
+                    (
+                        Panel::World,
+                        egui::include_image!("../../assets/icons/world.svg"),
+                        blue,
+                        "World view",
+                        &[if self.settings.value["navigationKeys"] == "Zqsd" {
+                            "²"
+                        } else {
+                            "~"
+                        }][..],
+                    ),
+                    (
+                        Panel::Level,
+                        egui::include_image!("../../assets/icons/level.svg"),
+                        blue,
+                        "Current level settings",
+                        &["C"][..],
+                    ),
+                    (
+                        Panel::Layers,
+                        egui::include_image!("../../assets/icons/layer.png"),
+                        orange,
+                        "Layers",
+                        &["L"][..],
+                    ),
+                    (
+                        Panel::Entities,
+                        egui::include_image!("../../assets/icons/entity.png"),
+                        orange,
+                        "Entities",
+                        &["E"][..],
+                    ),
+                    (
+                        Panel::Enums,
+                        egui::include_image!("../../assets/icons/enum.png"),
+                        orange,
+                        "Enums",
+                        &["U"][..],
+                    ),
+                    (
+                        Panel::Tilesets,
+                        egui::include_image!("../../assets/icons/tile.png"),
+                        orange,
+                        "Tilesets",
+                        &["T"][..],
+                    ),
+                    (
+                        Panel::Help,
+                        egui::include_image!("../../assets/icons/help.svg"),
+                        (
+                            Color32::from_rgb(73, 141, 85),
+                            Color32::from_rgb(94, 171, 107),
+                        ),
+                        "Help and shortcuts",
+                        &["H"][..],
+                    ),
+                    (
+                        Panel::Settings,
+                        egui::include_image!("../../assets/icons/settings.svg"),
+                        (theme::LIGHT, Color32::from_rgb(115, 127, 157)),
+                        "App settings",
+                        &["F12"][..],
+                    ),
+                ]
+                .into_iter()
+                .enumerate()
+                {
+                    let state = match linked {
+                        Some(active) if active == panel => ToolbarButtonState::Active,
+                        Some(_) => ToolbarButtonState::Faded,
+                        None => ToolbarButtonState::Normal,
+                    };
+                    let response = toolbar_button(ui, slot(index), image, fill, state, tip, keys);
+                    if response.clicked() {
+                        self.toggle_toolbar_panel(panel);
                     }
-                });
-                // The close button can remove the project during this frame.
-                if self.project.is_none() {
-                    return;
+                    if panel == Panel::Project {
+                        response.context_menu(|ui| {
+                            if ui.button(locale::tr(ui, "New project")).clicked() {
+                                self.request(ctx, Action::New);
+                                ui.close();
+                            }
+                            if ui.button(locale::tr(ui, "Open…")).clicked() {
+                                self.request(ctx, Action::Browse);
+                                ui.close();
+                            }
+                            if ui.button(locale::tr(ui, "Save")).clicked() {
+                                self.save(false);
+                                ui.close();
+                            }
+                            if ui.button(locale::tr(ui, "Save as…")).clicked() {
+                                self.save(true);
+                                ui.close();
+                            }
+                            if ui.button(locale::tr(ui, "Export…")).clicked() {
+                                self.show_panel(Some(Panel::Export));
+                                ui.close();
+                            }
+                        });
+                    } else if panel == Panel::World {
+                        response.context_menu(|ui| {
+                            if ui.button(locale::tr(ui, "World settings")).clicked() {
+                                self.show_panel(Some(Panel::World));
+                                ui.close();
+                            }
+                        });
+                    }
                 }
-                ui.add_space(4.);
-                let project_iid = self.project.as_ref().unwrap().json["iid"]
-                    .as_str()
-                    .map(str::to_owned);
-                let no_layers = self.project.as_ref().is_some_and(|p| {
-                    p.json["defs"]["layers"].as_array().is_none_or(Vec::is_empty)
-                });
-                egui::ScrollArea::vertical()
-                    .id_salt(("source-layer-list", project_iid.as_deref()))
-                    .max_height(250.)
-                    .auto_shrink([false, true])
-                    .scroll_source(egui::scroll_area::ScrollSource {
-                        drag: false,
-                        ..Default::default()
-                    })
-                    .show(ui, |ui| {
-                        if no_layers {
-                            empty_layer_list(ui);
-                            return;
-                        }
-                        ui.set_min_height(100.);
-                        self.layer_filter_controls(ui, project_iid.as_deref());
-                        let shortcut_layers = self.visible_layer_indices(false);
-                        let layers = self
-                            .visible_layer_indices(true)
-                            .into_iter()
-                            .filter_map(|i| {
-                                let p = self.project.as_ref()?;
-                                let l = p.layer(self.selected?, i)?;
-                                let uid = l["layerDefUid"].as_i64()?;
-                                let d = p.layer_def(uid)?;
-                                Some((
-                                    i,
-                                    uid,
-                                    text(l, "__identifier", locale::tr(ui, "Layer")).to_owned(),
-                                    text(l, "__type", "").to_owned(),
-                                    d.clone(),
-                                ))
-                            })
-                            .collect::<Vec<_>>();
-                        let mut visibility_rows = Vec::with_capacity(layers.len());
-                        let dismissing_menu = self.layer_context_menu.is_some();
-                        for (index, uid, name, kind, def) in &layers {
-                            let active = self.layer == *index;
-                            let visible = self
-                                .selected
-                                .is_some_and(|key| self.layer_visible(key, *index));
-                            let alpha = if visible { 1. } else { 0.4 };
-                            let custom = def["uiColor"].as_str().map(theme::color);
-                            let (fill, foreground, rail) = match (custom, active) {
-                                (Some(color), true) => {
-                                    let luminance = 299 * u32::from(color.r())
-                                        + 587 * u32::from(color.g())
-                                        + 114 * u32::from(color.b());
-                                    let foreground = if luminance >= 127_500 {
-                                        Color32::BLACK
-                                    } else {
-                                        Color32::WHITE
-                                    };
-                                    (color, foreground, Some(Color32::WHITE))
-                                }
-                                (Some(color), false) => (
-                                    theme::DARK.lerp_to_gamma(color, 0.5),
-                                    color.lerp_to_gamma(Color32::WHITE, 0.3),
-                                    Some(color),
-                                ),
-                                (None, true) => (theme::ACCENT, Color32::BLACK, None),
-                                (None, false) => (theme::MEDIUM, Color32::WHITE, None),
-                            };
-                            let (rect, response) = ui.allocate_exact_size(
-                                egui::vec2(ui.available_width(), 31.),
-                                Sense::click(),
-                            );
-                            let row = Rect::from_min_max(
-                                rect.min,
-                                rect.max - egui::vec2(2., 0.),
-                            );
-                            let fade = |color| theme::DARK.lerp_to_gamma(color, alpha);
-                            if active && custom.is_none() {
-                                let shadow = egui::epaint::Shadow {
-                                    offset: [0, 0],
-                                    blur: 4,
-                                    spread: 0,
-                                    color: Color32::from_rgb(170, 0, 0).gamma_multiply(alpha),
+                if toolbar_button(
+                    ui,
+                    slot(9),
+                    egui::include_image!("../../assets/icons/exit.svg"),
+                    (CLOSE_TOOLBAR_COLOR, theme::LIGHT),
+                    if linked.is_some() {
+                        ToolbarButtonState::Faded
+                    } else {
+                        ToolbarButtonState::Normal
+                    },
+                    "Close project",
+                    &["CTRL", "W"],
+                )
+                .clicked()
+                {
+                    self.request(ctx, Action::Close);
+                }
+            });
+            // The close button can remove the project during this frame.
+            if self.project.is_none() {
+                return;
+            }
+            ui.add_space(4.);
+            let project_iid = self.project.as_ref().unwrap().json["iid"]
+                .as_str()
+                .map(str::to_owned);
+            let no_layers = self.project.as_ref().is_some_and(|p| {
+                p.json["defs"]["layers"]
+                    .as_array()
+                    .is_none_or(Vec::is_empty)
+            });
+            egui::ScrollArea::vertical()
+                .id_salt(("source-layer-list", project_iid.as_deref()))
+                .max_height(250.)
+                .auto_shrink([false, true])
+                .scroll_source(egui::scroll_area::ScrollSource {
+                    drag: false,
+                    ..Default::default()
+                })
+                .show(ui, |ui| {
+                    if no_layers {
+                        empty_layer_list(ui);
+                        return;
+                    }
+                    ui.set_min_height(100.);
+                    self.layer_filter_controls(ui, project_iid.as_deref());
+                    let shortcut_layers = self.visible_layer_indices(false);
+                    let layers = self
+                        .visible_layer_indices(true)
+                        .into_iter()
+                        .filter_map(|i| {
+                            let p = self.project.as_ref()?;
+                            let l = p.layer(self.selected?, i)?;
+                            let uid = l["layerDefUid"].as_i64()?;
+                            let d = p.layer_def(uid)?;
+                            Some((
+                                i,
+                                uid,
+                                text(l, "__identifier", locale::tr(ui, "Layer")).to_owned(),
+                                text(l, "__type", "").to_owned(),
+                                d.clone(),
+                            ))
+                        })
+                        .collect::<Vec<_>>();
+                    let mut visibility_rows = Vec::with_capacity(layers.len());
+                    let dismissing_menu = self.layer_context_menu.is_some();
+                    for (index, uid, name, kind, def) in &layers {
+                        let active = self.layer == *index;
+                        let visible = self
+                            .selected
+                            .is_some_and(|key| self.layer_visible(key, *index));
+                        let alpha = if visible { 1. } else { 0.4 };
+                        let custom = def["uiColor"].as_str().map(theme::color);
+                        let (fill, foreground, rail) = match (custom, active) {
+                            (Some(color), true) => {
+                                let luminance = 299 * u32::from(color.r())
+                                    + 587 * u32::from(color.g())
+                                    + 114 * u32::from(color.b());
+                                let foreground = if luminance >= 127_500 {
+                                    Color32::BLACK
+                                } else {
+                                    Color32::WHITE
                                 };
-                                ui.painter().add(shadow.as_shape(row, 0.));
+                                (color, foreground, Some(Color32::WHITE))
                             }
-                            ui.painter().rect_filled(rect, 0., fade(fill));
-                            if let Some(color) = rail {
-                                let rail = Rect::from_min_max(
-                                    egui::pos2(row.right() - 4., row.top()),
-                                    row.max,
-                                );
-                                ui.painter().rect_filled(rail, 0., fade(color));
-                            }
-                            if active && custom.is_some() {
-                                ui.painter().rect_stroke(
-                                    row.shrink(1.),
-                                    0.,
-                                    Stroke::new(1_f32, fade(Color32::WHITE)),
-                                    StrokeKind::Inside,
-                                );
-                            } else if active {
-                                ui.painter().rect_stroke(
-                                    row,
-                                    0.,
-                                    Stroke::new(1_f32, fade(Color32::from_rgb(255, 223, 77))),
-                                    StrokeKind::Inside,
-                                );
-                            } else if ui.is_enabled() && ui.rect_contains_pointer(row) {
-                                ui.painter().rect_stroke(
-                                    row,
-                                    0.,
-                                    Stroke::new(2_f32, fade(fill.lerp_to_gamma(Color32::WHITE, 0.65))),
-                                    StrokeKind::Inside,
-                                );
-                            }
-                            let opacity = ui.opacity();
-                            ui.multiply_opacity(alpha);
-                            if let Some(shortcut) =
-                                shortcut_layers.iter().take(10).position(|i| i == index)
-                            {
-                                ui.painter().text(
-                                    rect.left_center() + egui::vec2(8., 0.),
-                                    Align2::LEFT_CENTER,
-                                    format!("F{}", shortcut + 1),
-                                    FontId::new(10.667, egui::FontFamily::Name("body-bold".into())),
-                                    foreground.gamma_multiply(0.5),
-                                );
-                            }
-                            let image = match kind.as_str() {
-                                "Entities" => egui::include_image!("../../assets/icons/entity.png"),
-                                "IntGrid" => egui::include_image!("../../assets/icons/intGrid.png"),
-                                "AutoLayer" => {
-                                    egui::include_image!("../../assets/icons/autoLayer.svg")
-                                }
-                                _ => egui::include_image!("../../assets/icons/tile.png"),
+                            (Some(color), false) => (
+                                theme::DARK.lerp_to_gamma(color, 0.5),
+                                color.lerp_to_gamma(Color32::WHITE, 0.3),
+                                Some(color),
+                            ),
+                            (None, true) => (theme::ACCENT, Color32::BLACK, None),
+                            (None, false) => (theme::MEDIUM, Color32::WHITE, None),
+                        };
+                        let (rect, response) = ui.allocate_exact_size(
+                            egui::vec2(ui.available_width(), 31.),
+                            Sense::click(),
+                        );
+                        let row = Rect::from_min_max(rect.min, rect.max - egui::vec2(2., 0.));
+                        let fade = |color| theme::DARK.lerp_to_gamma(color, alpha);
+                        if active && custom.is_none() {
+                            let shadow = egui::epaint::Shadow {
+                                offset: [0, 0],
+                                blur: 4,
+                                spread: 0,
+                                color: Color32::from_rgb(170, 0, 0).gamma_multiply(alpha),
                             };
-                            egui::Image::new(image).paint_at(
-                                ui,
-                                Rect::from_center_size(
-                                    rect.left_center() + egui::vec2(41.1, 0.),
-                                    Vec2::splat(20.8),
-                                ),
-                            );
-                            ui.painter().text(
-                                rect.left_center() + egui::vec2(59.5, 0.),
-                                Align2::LEFT_CENTER,
-                                name,
-                                FontId::proportional(13.333),
-                                foreground,
-                            );
-                            let eye = Rect::from_min_max(
-                                egui::pos2(row.right() - 28.8, row.top()),
+                            ui.painter().add(shadow.as_shape(row, 0.));
+                        }
+                        ui.painter().rect_filled(rect, 0., fade(fill));
+                        if let Some(color) = rail {
+                            let rail = Rect::from_min_max(
+                                egui::pos2(row.right() - 4., row.top()),
                                 row.max,
                             );
-                            visibility_rows.push((*index, row, eye));
-                            let eye_response =
-                                ui.interact(eye, ui.id().with(("visible", uid)), Sense::click());
-                            if eye_response.hovered() {
-                                ui.painter().rect_filled(eye, 3., Color32::WHITE);
-                            }
-                            egui::Image::new(
-                                if visible {
-                                    egui::include_image!("../../assets/icons/visible.png")
-                                } else {
-                                    egui::include_image!("../../assets/icons/hidden.png")
-                                },
-                            )
-                            .paint_at(ui, Rect::from_center_size(eye.center(), Vec2::splat(20.8)));
-                            let auto = kind == "AutoLayer"
-                                || def["autoRuleGroups"]
-                                    .as_array()
-                                    .is_some_and(|a| !a.is_empty());
-                            let rule_rect = Rect::from_center_size(
-                                rect.right_center() - egui::vec2(51.0, 0.0),
-                                egui::vec2(43.0, 26.0),
+                            ui.painter().rect_filled(rail, 0., fade(color));
+                        }
+                        if active && custom.is_some() {
+                            ui.painter().rect_stroke(
+                                row.shrink(1.),
+                                0.,
+                                Stroke::new(1_f32, fade(Color32::WHITE)),
+                                StrokeKind::Inside,
                             );
-                            let mut menu_response = response.union(eye_response);
-                            let mac_context = cfg!(target_os = "macos")
-                                && ui.input(|input| input.modifiers.ctrl);
-                            if auto {
-                                let r = ui.interact(
-                                    rule_rect,
-                                    ui.id().with(("layer-rules", uid)),
-                                    Sense::click(),
-                                );
-                                ui.painter().rect_filled(
-                                    rule_rect,
-                                    3.,
-                                    if r.hovered() {
-                                        theme::LIGHT
-                                    } else {
-                                        Color32::from_rgb(84, 93, 115)
-                                    },
-                                );
-                                ui.painter().text(
-                                    rule_rect.center(),
-                                    Align2::CENTER_CENTER,
-                                    locale::tr(ui, "RULES"),
-                                    FontId::proportional(11.),
-                                    Color32::WHITE,
-                                );
-                                if r.clicked() && !mac_context {
-                                    self.switch_layer(*index);
-                                    self.definition_uid = Some(*uid);
-                                    self.show_panel(Some(Panel::Rules));
-                                }
-                                menu_response = menu_response.union(r);
-                            }
-                            if response.clicked() && !mac_context {
-                                let pointer = ui.input(|i| i.pointer.interact_pos().unwrap_or_default());
-                                let on_control = eye.contains(pointer) || (auto && rule_rect.contains(pointer));
-                                if !on_control {
-                                    self.switch_layer(*index);
-                                }
-                            }
-                            ui.set_opacity(opacity);
-                            response.on_hover_text(text(def, "doc", ""));
-                            self.layer_context_menu(&menu_response, *index, *uid, auto, mac_context);
-                            ui.add_space(1.);
+                        } else if active {
+                            ui.painter().rect_stroke(
+                                row,
+                                0.,
+                                Stroke::new(1_f32, fade(Color32::from_rgb(255, 223, 77))),
+                                StrokeKind::Inside,
+                            );
+                        } else if ui.is_enabled() && ui.rect_contains_pointer(row) {
+                            ui.painter().rect_stroke(
+                                row,
+                                0.,
+                                Stroke::new(2_f32, fade(fill.lerp_to_gamma(Color32::WHITE, 0.65))),
+                                StrokeKind::Inside,
+                            );
                         }
-                        if !dismissing_menu {
-                            self.handle_layer_visibility(ui, &visibility_rows);
+                        let opacity = ui.opacity();
+                        ui.multiply_opacity(alpha);
+                        if let Some(shortcut) =
+                            shortcut_layers.iter().take(10).position(|i| i == index)
+                        {
+                            ui.painter().text(
+                                rect.left_center() + egui::vec2(8., 0.),
+                                Align2::LEFT_CENTER,
+                                format!("F{}", shortcut + 1),
+                                FontId::new(10.667, egui::FontFamily::Name("body-bold".into())),
+                                foreground.gamma_multiply(0.5),
+                            );
                         }
-                    });
-                let kind = self
-                    .selected
-                    .and_then(|key| self.project.as_ref()?.layer(key, self.layer))
-                    .map(|layer| text(layer, "__type", "").to_owned())
-                    .unwrap_or_default();
-                sidebar_guide(ui, &kind, no_layers);
-                self.library_palette(ctx, ui);
-            });
+                        let image = match kind.as_str() {
+                            "Entities" => egui::include_image!("../../assets/icons/entity.png"),
+                            "IntGrid" => egui::include_image!("../../assets/icons/intGrid.png"),
+                            "AutoLayer" => {
+                                egui::include_image!("../../assets/icons/autoLayer.svg")
+                            }
+                            _ => egui::include_image!("../../assets/icons/tile.png"),
+                        };
+                        egui::Image::new(image).paint_at(
+                            ui,
+                            Rect::from_center_size(
+                                rect.left_center() + egui::vec2(41.1, 0.),
+                                Vec2::splat(20.8),
+                            ),
+                        );
+                        ui.painter().text(
+                            rect.left_center() + egui::vec2(59.5, 0.),
+                            Align2::LEFT_CENTER,
+                            name,
+                            FontId::proportional(13.333),
+                            foreground,
+                        );
+                        let eye =
+                            Rect::from_min_max(egui::pos2(row.right() - 28.8, row.top()), row.max);
+                        visibility_rows.push((*index, row, eye));
+                        let eye_response =
+                            ui.interact(eye, ui.id().with(("visible", uid)), Sense::click());
+                        if eye_response.hovered() {
+                            ui.painter().rect_filled(eye, 3., Color32::WHITE);
+                        }
+                        egui::Image::new(if visible {
+                            egui::include_image!("../../assets/icons/visible.png")
+                        } else {
+                            egui::include_image!("../../assets/icons/hidden.png")
+                        })
+                        .paint_at(ui, Rect::from_center_size(eye.center(), Vec2::splat(20.8)));
+                        let auto = kind == "AutoLayer"
+                            || def["autoRuleGroups"]
+                                .as_array()
+                                .is_some_and(|a| !a.is_empty());
+                        let rule_rect = Rect::from_center_size(
+                            rect.right_center() - egui::vec2(51.0, 0.0),
+                            egui::vec2(43.0, 26.0),
+                        );
+                        let mut menu_response = response.union(eye_response);
+                        let mac_context =
+                            cfg!(target_os = "macos") && ui.input(|input| input.modifiers.ctrl);
+                        if auto {
+                            let r = ui.interact(
+                                rule_rect,
+                                ui.id().with(("layer-rules", uid)),
+                                Sense::click(),
+                            );
+                            ui.painter().rect_filled(
+                                rule_rect,
+                                3.,
+                                if r.hovered() {
+                                    theme::LIGHT
+                                } else {
+                                    Color32::from_rgb(84, 93, 115)
+                                },
+                            );
+                            ui.painter().text(
+                                rule_rect.center(),
+                                Align2::CENTER_CENTER,
+                                locale::tr(ui, "RULES"),
+                                FontId::proportional(11.),
+                                Color32::WHITE,
+                            );
+                            if r.clicked() && !mac_context {
+                                self.switch_layer(*index);
+                                self.definition_uid = Some(*uid);
+                                self.show_panel(Some(Panel::Rules));
+                            }
+                            menu_response = menu_response.union(r);
+                        }
+                        if response.clicked() && !mac_context {
+                            let pointer =
+                                ui.input(|i| i.pointer.interact_pos().unwrap_or_default());
+                            let on_control =
+                                eye.contains(pointer) || (auto && rule_rect.contains(pointer));
+                            if !on_control {
+                                self.switch_layer(*index);
+                            }
+                        }
+                        ui.set_opacity(opacity);
+                        response.on_hover_text(text(def, "doc", ""));
+                        self.layer_context_menu(&menu_response, *index, *uid, auto, mac_context);
+                        ui.add_space(1.);
+                    }
+                    if !dismissing_menu {
+                        self.handle_layer_visibility(ui, &visibility_rows);
+                    }
+                });
+            let kind = self
+                .selected
+                .and_then(|key| self.project.as_ref()?.layer(key, self.layer))
+                .map(|layer| text(layer, "__type", "").to_owned())
+                .unwrap_or_default();
+            sidebar_guide(ui, &kind, no_layers);
+            self.library_palette(ctx, ui);
+        });
     }
 
     pub(super) fn world_switcher(&mut self, ctx: &egui::Context) {
@@ -1906,7 +1940,10 @@ mod tests {
         let before = app.viewport.clone();
         frame(&mut app, 0.05, Some(egui::pos2(8., 20.)));
         let shown = frame(&mut app, 0.08, None);
-        assert!(visible(&shown), "hovering the left edge reveals the existing sidebar");
+        assert!(
+            visible(&shown),
+            "hovering the left edge reveals the existing sidebar"
+        );
         let canvas = ctx.data(|data| {
             data.get_temp::<Rect>(egui::Id::new("entity-instance-inspector").with("canvas"))
         });
@@ -1951,7 +1988,11 @@ mod tests {
         let mut app = EditorApp::empty();
         app.set_project(Project::new());
         app.zen = true;
-        app_frame(&mut app, &ctx, vec![egui::Event::PointerMoved(egui::pos2(8., 20.))]);
+        app_frame(
+            &mut app,
+            &ctx,
+            vec![egui::Event::PointerMoved(egui::pos2(8., 20.))],
+        );
         assert!(app.zen_sidebar.revealed);
 
         app_frame(&mut app, &ctx, vec![egui::Event::PointerGone]);
@@ -1970,15 +2011,26 @@ mod tests {
         let mut app = EditorApp::empty();
         app.set_project(project);
         app.zen = true;
-        app_frame(&mut app, &ctx, vec![egui::Event::PointerMoved(egui::pos2(730., 400.))]);
+        app_frame(
+            &mut app,
+            &ctx,
+            vec![egui::Event::PointerMoved(egui::pos2(730., 400.))],
+        );
         let key = |key, pressed| egui::Event::Key {
-            key, physical_key: Some(key), pressed, repeat: false, modifiers: egui::Modifiers::NONE,
+            key,
+            physical_key: Some(key),
+            pressed,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
         };
         app_frame(&mut app, &ctx, vec![key(Key::Tab, true)]);
         assert!(!app.zen);
         app_frame(&mut app, &ctx, vec![key(Key::Tab, false)]);
         app_frame(&mut app, &ctx, vec![key(Key::Backtick, true)]);
-        assert!(app.world, "Tab must not focus a sidebar widget when it toggles Zen mode");
+        assert!(
+            app.world,
+            "Tab must not focus a sidebar widget when it toggles Zen mode"
+        );
         app_frame(&mut app, &ctx, vec![key(Key::Tab, true)]);
         assert!(app.zen);
         assert_eq!(app.panel, Some(Panel::World));
@@ -2405,19 +2457,26 @@ mod tests {
         let mut project = Project::new();
         let away = project.add_world("awayrealm").unwrap();
         project.json["worlds"][0]["identifier"] = "Northern_Harbor_02".into();
-        let first = project.add_level(Some(away), "Away_first", 256, 256).unwrap();
-        let second = project.add_level(Some(away), "Away_second", 256, 256).unwrap();
+        let first = project
+            .add_level(Some(away), "Away_first", 256, 256)
+            .unwrap();
+        let second = project
+            .add_level(Some(away), "Away_second", 256, 256)
+            .unwrap();
         let original = project.json.clone();
         app.set_project(project);
         app_frame(&mut app, &ctx, vec![]);
         let output = app_frame(&mut app, &ctx, vec![]);
         for (label, x) in [("NoHa02", 325.), ("awayre", 369.)] {
-            assert!(output.shapes.iter().any(|shape| {
-                matches!(&shape.shape, egui::Shape::Text(text)
+            assert!(
+                output.shapes.iter().any(|shape| {
+                    matches!(&shape.shape, egui::Shape::Text(text)
                     if text.galley.text() == label
                         && ((text.pos + text.galley.size() * 0.5)
                             .distance(egui::pos2(x, 19.))) < 1.0)
-            }), "missing world tab {label}");
+                }),
+                "missing world tab {label}"
+            );
         }
         app_click(&mut app, &ctx, egui::pos2(369., 19.));
         assert!(app.world);
@@ -2428,7 +2487,11 @@ mod tests {
         app.zen = true;
         app_frame(&mut app, &ctx, vec![]);
         app_click(&mut app, &ctx, egui::pos2(369., 19.));
-        assert_eq!(app.selected, Some(first), "Clicking the active world selects its first level");
+        assert_eq!(
+            app.selected,
+            Some(first),
+            "Clicking the active world selects its first level"
+        );
         assert!(!app.world);
         assert_eq!(app.panel, None);
         assert_eq!(app.project.as_ref().unwrap().json, original);
@@ -2677,7 +2740,10 @@ mod tests {
                 if icons.len() == 10 {
                     break icons;
                 }
-                assert!(Instant::now() < deadline, "toolbar icon textures did not load");
+                assert!(
+                    Instant::now() < deadline,
+                    "toolbar icon textures did not load"
+                );
                 std::thread::sleep(std::time::Duration::from_millis(2));
             }
         };
@@ -2708,9 +2774,11 @@ mod tests {
         let layer_button = egui::pos2(105., 5.);
         let fade_color = Color32::from_rgba_premultiplied(15, 17, 20, 127);
         let fades_at = |output: &egui::FullOutput, point| {
-            output.shapes.iter().any(|shape| matches!(&shape.shape, egui::Shape::Rect(rect)
+            output.shapes.iter().any(|shape| {
+                matches!(&shape.shape, egui::Shape::Rect(rect)
                 if rect.fill == fade_color && rect.rect.contains(point)
-                    && rect.rect.top() == 0. && rect.rect.bottom() == 36.))
+                    && rect.rect.top() == 0. && rect.rect.bottom() == 36.)
+            })
         };
         assert!(!fades_at(&app_frame(&mut app, &ctx, vec![]), layer_button));
         for (x, panel) in [(75., Panel::Level), (45., Panel::World)] {
@@ -2719,10 +2787,12 @@ mod tests {
             assert_eq!(app.panel, Some(panel));
             assert!(fades_at(&output, layer_button));
             assert!(!fades_at(&output, egui::pos2(x, 5.)));
-            assert!(output.shapes.iter().any(|shape| matches!(&shape.shape, egui::Shape::Rect(rect)
+            assert!(output.shapes.iter().any(
+                |shape| matches!(&shape.shape, egui::Shape::Rect(rect)
                 if rect.rect.contains(egui::pos2(105., 33.))
                     && rect.rect.top() == 30. && rect.rect.bottom() == 36.
-                    && rect.fill == Color32::from_black_alpha(102))));
+                    && rect.fill == Color32::from_black_alpha(102))
+            ));
         }
         app_click(&mut app, &ctx, egui::pos2(45., 18.));
         assert!(!fades_at(&app_frame(&mut app, &ctx, vec![]), layer_button));
@@ -2764,7 +2834,10 @@ mod tests {
                 assert_eq!(rect.min, egui::pos2(0., 34.), "{panel:?}");
                 let width = panels::source_panel_width(panel);
                 if matches!(panel, Panel::Project | Panel::Level) {
-                    assert!((width..=width + 10.).contains(&rect.width()), "{panel:?}: {rect:?}");
+                    assert!(
+                        (width..=width + 10.).contains(&rect.width()),
+                        "{panel:?}: {rect:?}"
+                    );
                 } else {
                     assert_eq!(rect.width(), width, "{panel:?}");
                 }
@@ -3025,10 +3098,13 @@ mod tests {
                 })
                 .unwrap()
         };
-        assert!(output.shapes.iter().any(|shape| {
-            matches!(&shape.shape, egui::Shape::Rect(button) if
+        assert!(
+            output.shapes.iter().any(|shape| {
+                matches!(&shape.shape, egui::Shape::Rect(button) if
                 button.stroke.color == Color32::from_rgb(0, 157, 255))
-        }), "the enabled stop flag shows the source blue outline");
+            }),
+            "the enabled stop flag shows the source blue outline"
+        );
         assert_eq!(rule(&app)["chance"], 0.0);
         app_click(&mut app, &ctx, control("Y"));
         assert_eq!(rule(&app)["flipY"], false);
@@ -3053,12 +3129,16 @@ mod tests {
         }
         assert_eq!(rule(&app)["perlinActive"], true);
         let output = app_frame(&mut app, &ctx, vec![]);
-        let random = output.shapes.iter().find_map(|shape| match &shape.shape {
-            egui::Shape::Text(text) if text.galley.text().eq_ignore_ascii_case("Random") => {
-                Some(text.pos + text.galley.size() * 0.5)
-            }
-            _ => None,
-        }).expect("Perlin randomize button");
+        let random = output
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) if text.galley.text().eq_ignore_ascii_case("Random") => {
+                    Some(text.pos + text.galley.size() * 0.5)
+                }
+                _ => None,
+            })
+            .expect("Perlin randomize button");
         assert!(random.x < pos.x && random.y < pos.y);
         assert!(output.shapes.iter().any(|shape| {
             matches!(&shape.shape, egui::Shape::Rect(cell) if
@@ -3067,7 +3147,11 @@ mod tests {
         let seed = rule(&app)["perlinSeed"].clone();
         app_click(&mut app, &ctx, random);
         assert_ne!(rule(&app)["perlinSeed"], seed);
-        assert!(rule(&app)["perlinSeed"].as_i64().is_some_and(|n| (0..99_999_999).contains(&n)));
+        assert!(
+            rule(&app)["perlinSeed"]
+                .as_i64()
+                .is_some_and(|n| (0..99_999_999).contains(&n))
+        );
     }
 
     #[test]
@@ -3115,12 +3199,16 @@ mod tests {
         app_click(&mut app, &ctx, center("Edit rules"));
         let wizard = app_frame(&mut app, &ctx, vec![]);
         assert!(ctx.memory(|memory| memory.top_modal_layer().is_some()));
-        let cancel = wizard.shapes.iter().find_map(|shape| match &shape.shape {
-            egui::Shape::Text(text) if text.galley.text() == "CANCEL" => {
-                Some(text.pos + text.galley.size() * 0.5)
-            }
-            _ => None,
-        }).expect("Assistant cancel button");
+        let cancel = wizard
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) if text.galley.text() == "CANCEL" => {
+                    Some(text.pos + text.galley.size() * 0.5)
+                }
+                _ => None,
+            })
+            .expect("Assistant cancel button");
         app_click(&mut app, &ctx, cancel);
         app_frame(&mut app, &ctx, vec![]);
         assert!(ctx.memory(|memory| memory.top_modal_layer().is_none()));
@@ -3220,7 +3308,8 @@ mod tests {
         let button = |frame: &egui::FullOutput, label: &str| {
             frame
                 .shapes
-                .iter().rev()
+                .iter()
+                .rev()
                 .find_map(|shape| match &shape.shape {
                     egui::Shape::Text(text) if text.galley.text().eq_ignore_ascii_case(label) => {
                         Some(text.pos + text.galley.size() * 0.5)
@@ -3254,7 +3343,10 @@ mod tests {
             .as_array()
             .unwrap();
         assert_eq!(groups.len(), 2);
-        assert_eq!(groups[0], project.layer_def(layer).unwrap()["autoRuleGroups"][0]);
+        assert_eq!(
+            groups[0],
+            project.layer_def(layer).unwrap()["autoRuleGroups"][0]
+        );
         assert_eq!(groups[1]["name"], "Terrain copy");
     }
 
@@ -3467,7 +3559,13 @@ mod tests {
         let project = app.project.as_mut().unwrap();
         let atlas = project.ensure_embedded_icons().unwrap();
         project
-            .set_layer_tileset_override(key, 0, Some(atlas), ldtk_core::TilesetRemap::TileIds, false)
+            .set_layer_tileset_override(
+                key,
+                0,
+                Some(atlas),
+                ldtk_core::TilesetRemap::TileIds,
+                false,
+            )
             .unwrap();
         assert!(!warns(&app_frame(&mut app, &ctx, vec![])));
     }

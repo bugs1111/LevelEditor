@@ -379,7 +379,10 @@ fn preview_154_castledb_list_icons_preserve_tileset_grid_and_unique_name() {
     );
 
     project.sync_external_enums(&source).unwrap();
-    assert_eq!(project.json["defs"]["tilesets"].as_array().unwrap().len(), 2);
+    assert_eq!(
+        project.json["defs"]["tilesets"].as_array().unwrap().len(),
+        2
+    );
     assert_eq!(
         project.tileset(uid).unwrap()["identifier"],
         "GAME_CDB_HERO_PNG2"

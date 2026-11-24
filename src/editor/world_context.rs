@@ -342,8 +342,7 @@ impl EditorApp {
             || ctx.input(|i| {
                 i.pointer.button_down(egui::PointerButton::Secondary)
                     || i.pointer.button_released(egui::PointerButton::Secondary)
-            })
-        {
+            }) {
             egui::PopupCloseBehavior::IgnoreClicks
         } else {
             egui::PopupCloseBehavior::CloseOnClickOutside
@@ -516,7 +515,10 @@ impl EditorApp {
             let radius = preview.size().min_elem() * 0.2;
             let center = preview.center();
             for axis in [egui::vec2(radius, 0.), egui::vec2(0., radius)] {
-                painter.line_segment([center - axis, center + axis], Stroke::new(10. * scale, color));
+                painter.line_segment(
+                    [center - axis, center + axis],
+                    Stroke::new(10. * scale, color),
+                );
             }
         }
         if field_tools::picker_banner(
@@ -830,7 +832,12 @@ mod tests {
             [-256., -128., 128., 64.]
         );
         assert!(a.create_level_at([-128., -64.], true));
-        let created = a.project.as_ref().unwrap().level(a.selected.unwrap()).unwrap();
+        let created = a
+            .project
+            .as_ref()
+            .unwrap()
+            .level(a.selected.unwrap())
+            .unwrap();
         assert_eq!(created["worldX"], -256);
         assert_eq!(created["worldY"], -128);
     }
@@ -1073,7 +1080,12 @@ mod tests {
 
         let primary = egui::PointerButton::Primary;
         let none = egui::Modifiers::NONE;
-        frame(&mut app, &ctx, vec![egui::Event::PointerMoved(outside)], none);
+        frame(
+            &mut app,
+            &ctx,
+            vec![egui::Event::PointerMoved(outside)],
+            none,
+        );
         frame(
             &mut app,
             &ctx,
@@ -1384,7 +1396,10 @@ mod tests {
                 }],
                 modifiers,
             );
-            assert!(app.world_context.menu_open(), "saving keeps the menu visible");
+            assert!(
+                app.world_context.menu_open(),
+                "saving keeps the menu visible"
+            );
             app.saving
                 .take()
                 .expect("save with the context menu open")

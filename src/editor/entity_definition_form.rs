@@ -263,7 +263,10 @@ impl EditorApp {
                         })
                         .map(|index| index + SHAPES.len())
                 } else {
-                    SHAPES.iter().position(|shape| *shape == render_mode).or(Some(0))
+                    SHAPES
+                        .iter()
+                        .position(|shape| *shape == render_mode)
+                        .or(Some(0))
                 };
                 let title =
                     current.map_or_else(|| locale::tr(ui, "Choose tileset"), |i| options[i].0);
@@ -415,7 +418,10 @@ impl EditorApp {
                     ("lineOpacity", "Line=", true),
                 ] {
                     ui.weak(locale::tr(ui, label));
-                    let value = patch[key].as_f64().or_else(|| def[key].as_f64()).unwrap_or(1.);
+                    let value = patch[key]
+                        .as_f64()
+                        .or_else(|| def[key].as_f64())
+                        .unwrap_or(1.);
                     let percent = (value * 100. + 0.5).floor().to_string();
                     let edit = ui.add_enabled_ui(enabled, |ui| {
                         source_controls::number_input_sized(
@@ -468,7 +474,8 @@ impl EditorApp {
                         &Value::Null
                     };
                     ui.push_id(("entity-ui-tile", uid), |ui| {
-                        if let Some(rect) = self.value_tile_thumbnail(ui, atlas, tile, true, false) {
+                        if let Some(rect) = self.value_tile_thumbnail(ui, atlas, tile, true, false)
+                        {
                             patch["uiTileRect"] = rect;
                         }
                     });
@@ -570,41 +577,46 @@ impl EditorApp {
             row_width(ui, "Max count", 136., |ui| {
                 ui.spacing_mut().item_spacing.x = 0.;
                 let mut count = def["maxCount"].as_i64().unwrap_or(0);
-                let display = if count == 0 { String::new() } else { count.to_string() };
+                let display = if count == 0 {
+                    String::new()
+                } else {
+                    count.to_string()
+                };
                 if let Some(value) = source_controls::number_input_sized(
                     ui,
                     "maxCount",
                     &display,
-                    source_controls::NumberStyle::Plain { placeholder: Some("Unlimited") },
+                    source_controls::NumberStyle::Plain {
+                        placeholder: Some("Unlimited"),
+                    },
                     90.,
                 ) {
                     count = world_level_panel::parse_form_int(&value).clamp(0, 1024);
                     patch["maxCount"] = json!(count);
                 }
-                let mut limit_choice = |ui: &mut egui::Ui,
-                                        key: &str,
-                                        default: &str,
-                                        choices: [(&str, &str); 3]| {
-                    let current = text(&def, key, default);
-                    let selected = choices
-                        .iter()
-                        .position(|(value, _)| *value == current)
-                        .unwrap_or(choices.len());
-                    let options = choices.map(|(_, label)| (locale::tr(ui, label), Color32::WHITE));
-                    ui.add_enabled_ui(count > 0, |ui| {
-                        let title = options.get(selected).map_or(current, |option| option.0);
-                        let button = source_controls::searchable_select_button(ui, 110., title);
-                        if let Some((index, _)) = source_controls::searchable_select_popup(
-                            &button,
-                            button.id.with((key, uid)),
-                            selected,
-                            &options,
-                        ) && choices[index].0 != current
-                        {
-                            patch[key] = json!(choices[index].0);
-                        }
-                    });
-                };
+                let mut limit_choice =
+                    |ui: &mut egui::Ui, key: &str, default: &str, choices: [(&str, &str); 3]| {
+                        let current = text(&def, key, default);
+                        let selected = choices
+                            .iter()
+                            .position(|(value, _)| *value == current)
+                            .unwrap_or(choices.len());
+                        let options =
+                            choices.map(|(_, label)| (locale::tr(ui, label), Color32::WHITE));
+                        ui.add_enabled_ui(count > 0, |ui| {
+                            let title = options.get(selected).map_or(current, |option| option.0);
+                            let button = source_controls::searchable_select_button(ui, 110., title);
+                            if let Some((index, _)) = source_controls::searchable_select_popup(
+                                &button,
+                                button.id.with((key, uid)),
+                                selected,
+                                &options,
+                            ) && choices[index].0 != current
+                            {
+                                patch[key] = json!(choices[index].0);
+                            }
+                        });
+                    };
                 limit_choice(
                     ui,
                     "limitScope",

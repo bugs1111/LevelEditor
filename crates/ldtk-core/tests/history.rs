@@ -10,13 +10,22 @@ fn level_markers_follow_changed_levels_until_save_even_when_undo_restores_their_
     let mut project = Project::new();
     project.json["worldLayout"] = json!("Free");
     let second = project.add_level(None, "Second", 256, 256).unwrap();
-    let id = project.level(K).unwrap()["iid"].as_str().unwrap().to_owned();
-    let second_id = project.level(second).unwrap()["iid"].as_str().unwrap().to_owned();
+    let id = project.level(K).unwrap()["iid"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let second_id = project.level(second).unwrap()["iid"]
+        .as_str()
+        .unwrap()
+        .to_owned();
     let mut history = History::default();
     history.begin(&project, K);
     project.move_level(K, 32, 0, 0).unwrap();
     assert!(history.commit(&project));
-    assert_eq!(history.modified_levels(), &[id.clone()].into_iter().collect());
+    assert_eq!(
+        history.modified_levels(),
+        &[id.clone()].into_iter().collect()
+    );
     assert!(history.undo_level(&mut project, K));
     assert!(history.modified_levels().contains(&id));
     history.clear_modified_levels();
@@ -28,7 +37,10 @@ fn level_markers_follow_changed_levels_until_save_even_when_undo_restores_their_
     history.begin_project(&project);
     project.level_mut(second).unwrap()["identifier"] = json!("Renamed");
     assert!(history.commit(&project));
-    assert_eq!(history.modified_levels(), &[second_id].into_iter().collect());
+    assert_eq!(
+        history.modified_levels(),
+        &[second_id].into_iter().collect()
+    );
 }
 
 #[test]
@@ -546,7 +558,10 @@ fn benchmark_large_entity_reorder_history() {
         ("redo", &mut redo_times),
     ] {
         times.sort_unstable();
-        eprintln!("Large entity reorder {name}: median {:?}; samples {times:?}", times[3]);
+        eprintln!(
+            "Large entity reorder {name}: median {:?}; samples {times:?}",
+            times[3]
+        );
     }
 }
 
@@ -558,11 +573,15 @@ fn benchmark_dense_tile_stroke_history() {
     let mut project = Project::new();
     project.add_layer("Tiles", "Tiles", 16).unwrap();
     let (width, height) = (128, 96);
-    project.resize_level(K, width * 16, height * 16, 0, 0).unwrap();
+    project
+        .resize_level(K, width * 16, height * 16, 0, 0)
+        .unwrap();
     let tiles = (0..height)
-        .flat_map(|y| (0..width).map(move |x| {
-            json!({"px":[x*16,y*16],"src":[0,0],"t":0,"f":0,"a":1,"d":[y*width+x]})
-        }))
+        .flat_map(|y| {
+            (0..width).map(
+                move |x| json!({"px":[x*16,y*16],"src":[0,0],"t":0,"f":0,"a":1,"d":[y*width+x]}),
+            )
+        })
         .collect::<Vec<_>>();
     let original = serde_json::Value::Array(tiles);
     project.layer_mut(K, 0).unwrap()["gridTiles"] = original.clone();
@@ -572,7 +591,9 @@ fn benchmark_dense_tile_stroke_history() {
         let mut history = History::default();
         history.begin_layer(&project, K, 0);
         assert_eq!(
-            project.erase_tile_cells_with_deferred(K, 0, &cells, None).unwrap(),
+            project
+                .erase_tile_cells_with_deferred(K, 0, &cells, None)
+                .unwrap(),
             cells
         );
         let edited = project.layer(K, 0).unwrap()["gridTiles"].clone();
@@ -586,7 +607,10 @@ fn benchmark_dense_tile_stroke_history() {
         assert!(history.undo_level(&mut project, K));
     }
     commit_times.sort_unstable();
-    eprintln!("Dense tile stroke history commit: median {:?}; samples {commit_times:?}", commit_times[2]);
+    eprintln!(
+        "Dense tile stroke history commit: median {:?}; samples {commit_times:?}",
+        commit_times[2]
+    );
 }
 
 #[test]

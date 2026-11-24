@@ -80,7 +80,10 @@ fn invalid_indices_and_non_array_targets_are_atomic_errors() {
         Edit::Reset { index: 1 },
         Edit::Remove { index: 1 },
         Edit::Insert { index: 2 },
-        Edit::InsertValue { index: 2, value: json!(2) },
+        Edit::InsertValue {
+            index: 2,
+            value: json!(2),
+        },
         Edit::Move { from: 0, to: 1 },
         Edit::Move { from: 1, to: 0 },
     ] {

@@ -26,9 +26,7 @@ fn benchmark_large_auto_rule_group_paste() {
     let rule_count = 64;
     data.value["rules"] = json!(vec![rule; rule_count]);
     let tiles = (0..width * height)
-        .map(|index| {
-            json!({"px":[index % width * 16,index / width * 16],"t":0,"src":[0,0],"f":0})
-        })
+        .map(|index| json!({"px":[index % width * 16,index / width * 16],"t":0,"src":[0,0],"f":0}))
         .collect::<Vec<_>>();
     project.layer_mut(key, 0).unwrap()["gridTiles"] = json!(tiles);
     project.json["extension"]["lastUid"] = json!({"uid":1024});

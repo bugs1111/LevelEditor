@@ -580,10 +580,15 @@ impl EditorApp {
                         egui::StrokeKind::Inside,
                     );
                 }
-                ctx.data_mut(|d| d.insert_temp(view_id(), CanvasAtlasView {
-                    fit,
-                    sidebar_size: placeholder.size(),
-                }));
+                ctx.data_mut(|d| {
+                    d.insert_temp(
+                        view_id(),
+                        CanvasAtlasView {
+                            fit,
+                            sidebar_size: placeholder.size(),
+                        },
+                    )
+                });
                 self.atlas_picker(ctx, ui, uid);
                 ctx.data_mut(|d| d.remove::<CanvasAtlasView>(view_id()));
             });
@@ -750,10 +755,7 @@ mod tests {
         open(&mut app, &mut fit);
         press(&mut app, &mut fit, Key::End);
         press(&mut app, &mut fit, Key::Enter);
-        assert_eq!(
-            ctx.data(|data| data.get_temp::<i64>(warning)),
-            Some(other)
-        );
+        assert_eq!(ctx.data(|data| data.get_temp::<i64>(warning)), Some(other));
         press(&mut app, &mut fit, Key::Enter);
         assert_eq!(ctx.data(|data| data.get_temp::<i64>(warning)), None);
         assert_eq!(
@@ -885,7 +887,12 @@ mod tests {
         assert!(app.set_atlas_selection(10, vec![0, 1]));
         frame(&mut app, &ctx, vec![]);
         let initial = atlas(&frame(&mut app, &ctx, vec![]), texture);
-        let anchor = ctx.read_response(area_id.with("content")).unwrap().rect.center().x;
+        let anchor = ctx
+            .read_response(area_id.with("content"))
+            .unwrap()
+            .rect
+            .center()
+            .x;
         let key = |key, pressed| egui::Event::Key {
             key,
             physical_key: None,
@@ -908,7 +915,7 @@ mod tests {
 
         let moving = atlas(&frame(&mut app, &ctx, vec![right]), texture);
         assert_eq!(app.selected_tile_ids_for(10), [4]);
-        assert!((anchor - 216. .. settled.left()).contains(&moving.left()));
+        assert!((anchor - 216. ..settled.left()).contains(&moving.left()));
 
         assert!(app.set_atlas_selection(10, vec![0, 1]));
         let wrapped = atlas(&frame(&mut app, &ctx, vec![key(Key::A, true)]), texture);
@@ -920,17 +927,24 @@ mod tests {
     fn atlas_shows_saved_group_on_hover_and_merges_only_stamp_borders() {
         let (mut app, ctx, id, texture) = editor();
         ctx.style_mut(|style| style.animation_time = 0.);
-        app.project.as_mut().unwrap().update_tileset_definition(
-            10,
-            &json!({"savedSelections":[{"ids":[2,3],"mode":"Random"}]}),
-        ).unwrap();
+        app.project
+            .as_mut()
+            .unwrap()
+            .update_tileset_definition(
+                10,
+                &json!({"savedSelections":[{"ids":[2,3],"mode":"Random"}]}),
+            )
+            .unwrap();
         assert!(app.set_atlas_selection(10, vec![0, 1]));
         frame(&mut app, &ctx, vec![]);
         let initial = frame(&mut app, &ctx, vec![]);
         let origin = atlas(&initial, texture).min;
         let area = ctx.read_response(id.with("content")).unwrap().rect;
         let brush_center = origin + egui::vec2(48., 24.);
-        assert!((brush_center.x - area.center().x).abs() <= 1., "initial brush: {brush_center:?}, viewport: {area:?}");
+        assert!(
+            (brush_center.x - area.center().x).abs() <= 1.,
+            "initial brush: {brush_center:?}, viewport: {area:?}"
+        );
         assert!((brush_center.y - (area.top() + area.height() * 0.25)).abs() <= 1.);
         let selected_edge = |output: &egui::FullOutput, x: f32, color| {
             output.shapes.iter().any(|shape| match &shape.shape {
@@ -947,38 +961,54 @@ mod tests {
         let shared_edge = origin.x + 48.;
         let outline_joins = initial.shapes.iter().filter(|shape| match &shape.shape {
             egui::Shape::LineSegment { points, stroke } => {
-                stroke.color == stamp && points[0].y == points[1].y
+                stroke.color == stamp
+                    && points[0].y == points[1].y
                     && points.iter().any(|p| (p.x - shared_edge).abs() <= 0.01)
             }
             _ => false,
         });
-        assert_eq!(outline_joins.count(), 4, "continuous outline across the stamp");
+        assert_eq!(
+            outline_joins.count(),
+            4,
+            "continuous outline across the stamp"
+        );
 
         let point = origin + egui::vec2(120., 24.);
         frame(&mut app, &ctx, vec![egui::Event::PointerMoved(point)]);
         let hover = frame(&mut app, &ctx, vec![]);
-        assert!(hover.shapes.iter().any(|shape| match &shape.shape {
-            egui::Shape::Circle(dot) => {
-                dot.fill == Color32::from_rgba_unmultiplied(144, 238, 144, 128)
-                    && dot.center.x >= origin.x + 144.
-            }
-            _ => false,
-        }), "the other tile in the saved group is previewed");
+        assert!(
+            hover.shapes.iter().any(|shape| match &shape.shape {
+                egui::Shape::Circle(dot) => {
+                    dot.fill == Color32::from_rgba_unmultiplied(144, 238, 144, 128)
+                        && dot.center.x >= origin.x + 144.
+                }
+                _ => false,
+            }),
+            "the other tile in the saved group is previewed"
+        );
         assert_eq!(app.selected_tile_ids_for(10), vec![0, 1]);
         assert!(!app.random_tiles);
 
         for pressed in [true, false] {
-            frame(&mut app, &ctx, vec![egui::Event::PointerButton {
-                pos: point,
-                button: egui::PointerButton::Primary,
-                pressed,
-                modifiers: egui::Modifiers::NONE,
-            }]);
+            frame(
+                &mut app,
+                &ctx,
+                vec![egui::Event::PointerButton {
+                    pos: point,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: egui::Modifiers::NONE,
+                }],
+            );
         }
         let random = frame(&mut app, &ctx, vec![]);
         assert_eq!(app.selected_tile_ids_for(10), vec![2, 3]);
         assert!(app.random_tiles);
-        assert!(selected_edge(&random, origin.x + 144., Color32::from_rgb(144, 238, 144)));
+        assert!(selected_edge(
+            &random,
+            origin.x + 144.,
+            Color32::from_rgb(144, 238, 144)
+        ));
     }
 
     #[test]

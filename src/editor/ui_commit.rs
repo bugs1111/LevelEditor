@@ -162,7 +162,10 @@ impl EditorApp {
             DeferredUiAction::Panel(panel) => self.show_panel(panel),
             DeferredUiAction::Navigate { key, fit } => self.navigate_level(key, fit),
             DeferredUiAction::NeighborLevel(key) => self.navigate_neighbor_level(ctx, key),
-            DeferredUiAction::ScrollToLevel { key, previous_origin } => {
+            DeferredUiAction::ScrollToLevel {
+                key,
+                previous_origin,
+            } => {
                 self.scroll_to_context_level(key, previous_origin);
             }
             DeferredUiAction::World {

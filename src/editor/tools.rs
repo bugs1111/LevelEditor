@@ -188,7 +188,9 @@ impl EditorApp {
         key: LevelKey,
         operation: impl FnOnce(&mut Project) -> ldtk_core::Result<T>,
     ) -> Option<T> {
-        self.edit_operation(label, Some(key), EditHistory::Recoverable, |p, _| operation(p))
+        self.edit_operation(label, Some(key), EditHistory::Recoverable, |p, _| {
+            operation(p)
+        })
     }
     pub(super) fn edit_level_marked<T>(
         &mut self,
@@ -204,7 +206,9 @@ impl EditorApp {
         key: LevelKey,
         operation: impl FnOnce(&mut Project) -> ldtk_core::Result<T>,
     ) -> Option<T> {
-        self.edit_operation(label, Some(key), EditHistory::Unrecorded, |p, _| operation(p))
+        self.edit_operation(label, Some(key), EditHistory::Unrecorded, |p, _| {
+            operation(p)
+        })
     }
     fn edit_operation<T>(
         &mut self,
@@ -447,18 +451,27 @@ impl EditorApp {
                             if self.panel == Some(Panel::Entity)
                                 && group["elementCount"] == 1
                                 && let Some(layer) = project.layer(key, self.layer)
-                                && group["layers"].as_array().into_iter().flatten().any(|entry| {
-                                    entry["layerDefUid"] == layer["layerDefUid"]
-                                        && entry["clipboard"]["entityInstances"]
-                                            .get(0)
-                                            .is_some()
-                                })
+                                && group["layers"]
+                                    .as_array()
+                                    .into_iter()
+                                    .flatten()
+                                    .any(|entry| {
+                                        entry["layerDefUid"] == layer["layerDefUid"]
+                                            && entry["clipboard"]["entityInstances"]
+                                                .get(0)
+                                                .is_some()
+                                    })
                             {
-                                let selected = next["layers"].as_array().into_iter().flatten()
+                                let selected = next["layers"]
+                                    .as_array()
+                                    .into_iter()
+                                    .flatten()
                                     .find(|entry| entry["layerDefUid"] == layer["layerDefUid"])
                                     .and_then(|entry| entry["clipboard"]["entityInstances"].get(0));
                                 self.entity_index = selected.and_then(|entity| {
-                                    layer["entityInstances"].as_array()?.iter()
+                                    layer["entityInstances"]
+                                        .as_array()?
+                                        .iter()
                                         .position(|current| current["iid"] == entity["iid"])
                                 });
                                 if self.entity_index.is_none() {
@@ -998,12 +1011,7 @@ impl EditorApp {
         Some((key, index, handle))
     }
 
-    fn begin_entity_resize(
-        &mut self,
-        key: LevelKey,
-        index: usize,
-        handle: [i32; 2],
-    ) {
+    fn begin_entity_resize(&mut self, key: LevelKey, index: usize, handle: [i32; 2]) {
         let project = self.project.as_ref().unwrap();
         let entity = &project.layer(key, self.layer).unwrap()["entityInstances"][index];
         self.history.begin(project, key);
@@ -1028,7 +1036,11 @@ impl EditorApp {
         rect: Rect,
         response: &egui::Response,
     ) -> bool {
-        if self.world || self.picking_entity_ref() || !self.picking_point() || !response.contains_pointer() {
+        if self.world
+            || self.picking_entity_ref()
+            || !self.picking_point()
+            || !response.contains_pointer()
+        {
             return false;
         }
         let press = ctx.input(|input| {
@@ -1055,7 +1067,8 @@ impl EditorApp {
         let (Some(project), Some(key)) = (&self.project, self.selected) else {
             return false;
         };
-        let (world, _) = self.canvas_pointer_pixels(project, key, rect, pos, ctx.pixels_per_point());
+        let (world, _) =
+            self.canvas_pointer_pixels(project, key, rect, pos, ctx.pixels_per_point());
         if let Some((key, index, handle)) = self.selected_entity_resize_handle(world) {
             self.begin_entity_resize(key, index, handle);
             return true;
@@ -1193,13 +1206,7 @@ impl EditorApp {
         };
         let linear = world_tools::linear_world_axis(project, *key).is_some();
         if !*moved {
-            if !crossed
-                || linear
-                    && project
-                        .level_keys_in_world(key.world)
-                        .nth(1)
-                        .is_none()
-            {
+            if !crossed || linear && project.level_keys_in_world(key.world).nth(1).is_none() {
                 return true;
             }
             self.history.begin_project(project);
@@ -1252,19 +1259,19 @@ impl EditorApp {
 
     pub(super) fn canvas_input_blocked(&self, ctx: &egui::Context) -> bool {
         self.project.is_none()
-        || self.pending.is_some()
-        || self.suggest_backups
-        || self.is_busy()
-        || self.command_palette
-        || ui_fields::enum_picker::is_open(ctx)
-        || self.command_open
-        || !self.resource_missing.is_empty()
-        || self.crash.is_some()
-        || self.clicktrap
-        || text_editor::is_open(ctx)
-        || world_form_dialog::is_open(ctx)
-        || panels::enum_value_removal_open(ctx)
-        || help::changelog_is_open(ctx)
+            || self.pending.is_some()
+            || self.suggest_backups
+            || self.is_busy()
+            || self.command_palette
+            || ui_fields::enum_picker::is_open(ctx)
+            || self.command_open
+            || !self.resource_missing.is_empty()
+            || self.crash.is_some()
+            || self.clicktrap
+            || text_editor::is_open(ctx)
+            || world_form_dialog::is_open(ctx)
+            || panels::enum_value_removal_open(ctx)
+            || help::changelog_is_open(ctx)
     }
 
     fn canvas_controls_frame(
@@ -1281,7 +1288,8 @@ impl EditorApp {
         let fitting_ready = self.startup_window.is_none();
         #[cfg(not(target_os = "linux"))]
         let fitting_ready = true;
-        if self.fit && fitting_ready
+        if self.fit
+            && fitting_ready
             && let (Some(project), Some(key)) = (&self.project, self.selected)
         {
             self.camera_motion.cancel();
@@ -1531,7 +1539,8 @@ impl EditorApp {
         let width = number(layer, "__cWid", 0.0) as i32;
         let height = number(layer, "__cHei", 0.0) as i32;
         let kind = text(layer, "__type", "").to_owned();
-        let resize_positions: Vec<_> = if matches!(self.gesture, Some(Gesture::EntityResize { .. })) {
+        let resize_positions: Vec<_> = if matches!(self.gesture, Some(Gesture::EntityResize { .. }))
+        {
             let density = ctx.pixels_per_point();
             ctx.input(|input| {
                 input
@@ -1551,15 +1560,23 @@ impl EditorApp {
         };
         let rectangle_entered = matches!(
             self.gesture,
-            Some(Gesture::Rectangle { entered_level: false, .. })
+            Some(Gesture::Rectangle {
+                entered_level: false,
+                ..
+            })
         ) && (entity_tools::placement_in_level(project, key, local_world)
             || ctx.input(|input| {
                 input.events.iter().any(|event| {
                     let egui::Event::PointerMoved(pos) = event else {
                         return false;
                     };
-                    let (pixel, _) =
-                        self.canvas_pointer_pixels(project, key, rect, *pos, ctx.pixels_per_point());
+                    let (pixel, _) = self.canvas_pointer_pixels(
+                        project,
+                        key,
+                        rect,
+                        *pos,
+                        ctx.pixels_per_point(),
+                    );
                     entity_tools::placement_in_level(project, key, pixel)
                 })
             }));
@@ -1587,10 +1604,7 @@ impl EditorApp {
                     *moved = *moved || selection_tools::selection_drag_started(ctx, *press);
                 }
                 Gesture::EntityMove {
-                    press,
-                    end,
-                    moved,
-                    ..
+                    press, end, moved, ..
                 } => {
                     *end = local_world;
                     *moved = *moved || selection_tools::selection_drag_started(ctx, *press);
@@ -1626,8 +1640,9 @@ impl EditorApp {
                                 size,
                                 self.grid.then_some(grid as i32),
                             );
-                            let position =
-                                resize_tools::resized_entity_origin(def, origin, size, result, handle);
+                            let position = resize_tools::resized_entity_origin(
+                                def, origin, size, result, handle,
+                            );
                             (size != result || origin != position).then_some((result, position))
                         });
                         if let Some(([width, height], position)) = geometry {
@@ -1654,8 +1669,7 @@ impl EditorApp {
             && kind == "Entities"
             && !modifiers.alt
             && let Some(index) = self.entity_index
-            && let Some(handle) =
-                self.resize_handle_at(key, self.layer, index, local_world)
+            && let Some(handle) = self.resize_handle_at(key, self.layer, index, local_world)
         {
             self.begin_entity_resize(key, index, handle);
             return;
@@ -1701,7 +1715,10 @@ impl EditorApp {
             None
         };
         if !modifiers.shift
-            && matches!(entity_hit, Some((_, _, selection_click::Element::Point { .. })))
+            && matches!(
+                entity_hit,
+                Some((_, _, selection_click::Element::Point { .. }))
+            )
         {
             self.select_element_at(local_world, false, Some(pointer));
             return;
@@ -1920,7 +1937,13 @@ impl EditorApp {
         }
         self.draw_selection_highlight(ui, rect);
         let (
-            Some(Gesture::Rectangle { start, end, select, entered_level: true, .. }),
+            Some(Gesture::Rectangle {
+                start,
+                end,
+                select,
+                entered_level: true,
+                ..
+            }),
             Some(project),
             Some(key),
         ) = (&self.gesture, &self.project, self.selected)
@@ -1949,7 +1972,9 @@ impl EditorApp {
             }
         };
         let grid = number(layer, "__gridSize", 16.0);
-        let origin = self.viewport.level_render_canvas_origin(rect, ui.ctx().pixels_per_point());
+        let origin = self
+            .viewport
+            .level_render_canvas_origin(rect, ui.ctx().pixels_per_point());
         let [x, y, width, height] = region(*start, *end);
         let to_screen = |cell: [i32; 2]| {
             self.viewport.to_screen(
@@ -1969,7 +1994,13 @@ impl EditorApp {
             to_screen([x + width, y + height]).into(),
         );
         let scale = screen.width() / (width as f32 * grid);
-        preview::paint_pick_grid(&ui.painter().with_clip_rect(rect), screen, scale, color, true);
+        preview::paint_pick_grid(
+            &ui.painter().with_clip_rect(rect),
+            screen,
+            scale,
+            color,
+            true,
+        );
     }
 }
 

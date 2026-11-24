@@ -59,7 +59,12 @@ pub(super) fn requested_entity_size(
     let initial = size.map(|value| value as i32);
     let mut requested = initial;
     for axis in 0..2 {
-        if def[if axis == 0 { "resizableX" } else { "resizableY" }] == true {
+        if def[if axis == 0 {
+            "resizableX"
+        } else {
+            "resizableY"
+        }] == true
+        {
             requested[axis] = match handle[axis] {
                 -1 => (top_left[axis] + size[axis] - HANDLE_RADIUS - cursor[axis]) as i32,
                 1 => (cursor[axis] - top_left[axis] - HANDLE_RADIUS) as i32,
@@ -189,11 +194,9 @@ impl EditorApp {
                 continue;
             }
             let position = handle_position(entity, def, handle);
-            let screen = self.viewport.to_screen(
-                position,
-                rect.min.into(),
-                rect.size().into(),
-            );
+            let screen = self
+                .viewport
+                .to_screen(position, rect.min.into(), rect.size().into());
             painter.circle_filled(
                 screen.into(),
                 HANDLE_RADIUS * 0.6 * self.viewport.zoom,
@@ -289,10 +292,7 @@ mod native_tests {
         app.selected = Some(key);
         app.entity_index = Some(0);
         app.viewport.zoom = 2.;
-        assert_eq!(
-            app.resize_handle_at(key, 0, 0, [32., 11.]),
-            Some([0, -1])
-        );
+        assert_eq!(app.resize_handle_at(key, 0, 0, [32., 11.]), Some([0, -1]));
         let ctx = egui::Context::default();
         let output = ctx.run(
             egui::RawInput {

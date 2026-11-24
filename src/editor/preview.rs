@@ -40,10 +40,10 @@ impl EditorApp {
         };
         if !self.canvas_layer_visible(key, self.layer)
             || layer["__type"] == "AutoLayer"
-            && self
-                .stamp
-                .as_ref()
-                .is_none_or(|stamp| stamp["type"] != "SelectionGroup")
+                && self
+                    .stamp
+                    .as_ref()
+                    .is_none_or(|stamp| stamp["type"] != "SelectionGroup")
         {
             self.entity_eraser_preview = false;
             let [x, y] = world;

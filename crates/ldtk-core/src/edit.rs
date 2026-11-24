@@ -352,7 +352,9 @@ impl Project {
         stack: bool,
         deferred: Option<&mut DeferredAutoLayers>,
     ) -> Result<Vec<[i32; 2]>> {
-        let layer = self.layer(key, layer_index).ok_or_else(|| invalid("layer not found"))?;
+        let layer = self
+            .layer(key, layer_index)
+            .ok_or_else(|| invalid("layer not found"))?;
         if layer["__type"] != "Tiles" {
             return Err(invalid("manual tiles require a Tiles layer"));
         }
@@ -402,7 +404,11 @@ impl Project {
             &removals,
         );
         self.update_auto_after_tile_batch(
-            key, layer_index, blocker, changed.iter().copied(), deferred,
+            key,
+            layer_index,
+            blocker,
+            changed.iter().copied(),
+            deferred,
         )?;
         Ok(changed)
     }
@@ -417,7 +423,9 @@ impl Project {
         flips: i32,
         deferred: Option<&mut DeferredAutoLayers>,
     ) -> Result<Vec<usize>> {
-        let layer = self.layer(key, layer_index).ok_or_else(|| invalid("layer not found"))?;
+        let layer = self
+            .layer(key, layer_index)
+            .ok_or_else(|| invalid("layer not found"))?;
         if layer["__type"] != "Tiles" {
             return Err(invalid("manual tiles require a Tiles layer"));
         }
@@ -425,7 +433,16 @@ impl Project {
         let mut atlas = None;
         let mut targets = HashMap::with_capacity(edits.len());
         let mut groups = vec![None; edits.len()];
-        for (index, &TilePaint { cell: [x, y], id, src, stack }) in edits.iter().enumerate() {
+        for (
+            index,
+            &TilePaint {
+                cell: [x, y],
+                id,
+                src,
+                stack,
+            },
+        ) in edits.iter().enumerate()
+        {
             if !inside(x, y, width, height) {
                 continue;
             }
@@ -464,8 +481,10 @@ impl Project {
                         removals.push(index);
                     }
                 }
-                if edits[edit].stack && raise[edit].is_none()
-                    && tile["t"] == edits[edit].id && tile["f"] == flips
+                if edits[edit].stack
+                    && raise[edit].is_none()
+                    && tile["t"] == edits[edit].id
+                    && tile["f"] == flips
                 {
                     raise[edit] = Some(index);
                 }
@@ -479,10 +498,11 @@ impl Project {
             let unchanged = if let Some(previous) = latest[group] {
                 edits[previous].id == id && edits[previous].src == src
             } else {
-                !stacked[group] && first[group].is_some_and(|first| {
-                    let tile = &tiles[first];
-                    tile["t"] == id && tile["src"] == json!(src) && tile["f"] == flips
-                })
+                !stacked[group]
+                    && first[group].is_some_and(|first| {
+                        let tile = &tiles[first];
+                        tile["t"] == id && tile["src"] == json!(src) && tile["f"] == flips
+                    })
             };
             if !unchanged {
                 changed.push(index);
@@ -504,8 +524,12 @@ impl Project {
         // A new cell is appended on its first effective write. Later overwrites
         // only change its contents, so the last write can reuse that position.
         for group in write_order {
-            let TilePaint { cell: [x, y], id, src, stack } =
-                edits[latest[group].expect("changed tile group")];
+            let TilePaint {
+                cell: [x, y],
+                id,
+                src,
+                stack,
+            } = edits[latest[group].expect("changed tile group")];
             let tile = if !stack && let Some(first) = first[group] {
                 &mut tiles[first]
             } else {
@@ -523,7 +547,11 @@ impl Project {
         removals.sort_unstable();
         remove_tile_indices(tiles, &removals);
         self.update_auto_after_tile_batch(
-            key, layer_index, blocker, changed.iter().map(|&index| edits[index].cell), deferred,
+            key,
+            layer_index,
+            blocker,
+            changed.iter().map(|&index| edits[index].cell),
+            deferred,
         )?;
         Ok(changed)
     }
@@ -538,14 +566,15 @@ impl Project {
     ) -> Result<()> {
         if let Some((uid, old)) = blocker {
             let [x, y] = cells.next().expect("changed tiles");
-            let [left, top, right, bottom] = cells.fold(
-                [x, y, x, y],
-                |[left, top, right, bottom], [x, y]| {
+            let [left, top, right, bottom] =
+                cells.fold([x, y, x, y], |[left, top, right, bottom], [x, y]| {
                     [left.min(x), top.min(y), right.max(x), bottom.max(y)]
-                },
-            );
+                });
             if let Err(error) = self.update_auto_layers_after_paint(
-                key, uid, [left, top, right - left + 1, bottom - top + 1], deferred,
+                key,
+                uid,
+                [left, top, right - left + 1, bottom - top + 1],
+                deferred,
             ) {
                 self.layer_mut(key, layer_index).expect("validated layer")["gridTiles"] =
                     Value::Array(old);
@@ -753,7 +782,8 @@ impl Project {
             return Err(invalid("level dimensions must be positive"));
         }
         let [click_x, click_y] = cursor;
-        if click_x < 0 || click_y < 0 || i64::from(click_x) >= width || i64::from(click_y) >= height {
+        if click_x < 0 || click_y < 0 || i64::from(click_x) >= width || i64::from(click_y) >= height
+        {
             return Ok(EntityPlacement::Ignored);
         }
         let [x, y] = position;

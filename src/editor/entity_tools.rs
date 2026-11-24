@@ -20,8 +20,8 @@ pub(super) fn drag_delta(
     let grid = project
         .layer(key, layer)
         .map_or(16., |layer| number(layer, "__gridSize", 16.).max(1.));
-    let scale =
-        canvas::pointer_transform(project, key, layer, view).map_or(1., |transform| transform.scale);
+    let scale = canvas::pointer_transform(project, key, layer, view)
+        .map_or(1., |transform| transform.scale);
     let [start, end] =
         [start, end].map(|level| canvas::pointer_to_layer(project, key, layer, view, level));
     std::array::from_fn(|axis| {

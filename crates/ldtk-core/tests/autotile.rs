@@ -284,7 +284,10 @@ fn late_auto_layer_failure_keeps_earlier_cache_and_source_cells() {
     definition["type"] = json!("AutoLayer");
     definition["autoSourceLayerDefUid"] = json!(1);
     definition["autoRuleGroups"][0]["rules"][0]["xModulo"] = json!(0);
-    p.json["defs"]["layers"].as_array_mut().unwrap().push(definition);
+    p.json["defs"]["layers"]
+        .as_array_mut()
+        .unwrap()
+        .push(definition);
     let mut derived = p.layer(key, 0).unwrap().clone();
     derived["layerDefUid"] = json!(7);
     derived["__type"] = json!("AutoLayer");
@@ -607,8 +610,14 @@ fn benchmark_large_world_intgrid_paint() {
     }
     paint_times.sort_unstable();
     full_times.sort_unstable();
-    eprintln!("Large world IntGrid paint: median {:?}; samples {paint_times:?}", paint_times[3]);
-    eprintln!("Large world full auto rebuild: median {:?}; samples {full_times:?}", full_times[3]);
+    eprintln!(
+        "Large world IntGrid paint: median {:?}; samples {paint_times:?}",
+        paint_times[3]
+    );
+    eprintln!(
+        "Large world full auto rebuild: median {:?}; samples {full_times:?}",
+        full_times[3]
+    );
 }
 
 #[test]
@@ -1007,18 +1016,26 @@ fn tile_bucket_erase_updates_blocked_auto_tiles_and_rolls_back_on_error() {
     let (mut project, key) = fixture();
     let rules = &mut project.json["defs"]["layers"];
     rules[0]["layerUidsPreventingAutoTilingHere"] = json!([9]);
-    rules.as_array_mut().unwrap().push(json!({"uid":9,"type":"Tiles","gridSize":16}));
-    project.level_mut(key).unwrap()["layerInstances"].as_array_mut().unwrap().push(json!({
-        "layerDefUid":9, "__type":"Tiles", "__gridSize":16, "__cWid":3, "__cHei":2,
-        "gridTiles":[{"px":[0,0],"t":1},{"px":[32,0],"t":1}]
-    }));
+    rules
+        .as_array_mut()
+        .unwrap()
+        .push(json!({"uid":9,"type":"Tiles","gridSize":16}));
+    project.level_mut(key).unwrap()["layerInstances"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({
+            "layerDefUid":9, "__type":"Tiles", "__gridSize":16, "__cWid":3, "__cHei":2,
+            "gridTiles":[{"px":[0,0],"t":1},{"px":[32,0],"t":1}]
+        }));
     project.rebuild_auto_layers(key).unwrap();
     assert_eq!(tiles(&project, key).as_array().unwrap().len(), 1);
     let cells = [[2, 0], [0, 0], [2, 0], [1, 0], [-1, 0]];
 
     let mut immediate = project.clone();
     assert_eq!(
-        immediate.erase_tile_cells_with_deferred(key, 1, &cells, None).unwrap(),
+        immediate
+            .erase_tile_cells_with_deferred(key, 1, &cells, None)
+            .unwrap(),
         [[2, 0], [0, 0]]
     );
     assert_eq!(immediate.layer(key, 1).unwrap()["gridTiles"], json!([]));
@@ -1027,12 +1044,18 @@ fn tile_bucket_erase_updates_blocked_auto_tiles_and_rolls_back_on_error() {
     let mut invalid = project.clone();
     invalid.json["defs"]["layers"][0]["tilesetDefUid"] = json!(999);
     let before = invalid.json.clone();
-    assert!(invalid.erase_tile_cells_with_deferred(key, 1, &cells, None).is_err());
+    assert!(
+        invalid
+            .erase_tile_cells_with_deferred(key, 1, &cells, None)
+            .is_err()
+    );
     assert_eq!(invalid.json, before);
 
     project.json["defs"]["layers"][0]["useAsyncRender"] = json!(true);
     let mut pending = DeferredAutoLayers::default();
-    project.erase_tile_cells_with_deferred(key, 1, &cells, Some(&mut pending)).unwrap();
+    project
+        .erase_tile_cells_with_deferred(key, 1, &cells, Some(&mut pending))
+        .unwrap();
     assert!(!pending.is_empty());
     assert_eq!(tiles(&project, key).as_array().unwrap().len(), 1);
     project.settle_auto_layers(key, &mut pending).unwrap();

@@ -49,10 +49,17 @@ fn fields_encode_original_editor_wrappers_for_all_types() {
 #[test]
 fn tile_default_enables_optional_and_follows_the_current_tileset() {
     let mut p = Project::new();
-    let plain = p.add_tileset(std::path::Path::new("Plain.png"), 16, 32, 32).unwrap();
-    let canopy = p.add_tileset(std::path::Path::new("Canopy.png"), 16, 32, 32).unwrap();
-    let uid = p.add_field_definition(None, "Marker", "Tile", false).unwrap();
-    p.update_field_definition(uid, &json!({"tilesetUid":plain})).unwrap();
+    let plain = p
+        .add_tileset(std::path::Path::new("Plain.png"), 16, 32, 32)
+        .unwrap();
+    let canopy = p
+        .add_tileset(std::path::Path::new("Canopy.png"), 16, 32, 32)
+        .unwrap();
+    let uid = p
+        .add_field_definition(None, "Marker", "Tile", false)
+        .unwrap();
+    p.update_field_definition(uid, &json!({"tilesetUid":plain}))
+        .unwrap();
 
     let tile = |atlas| json!({"tilesetUid":atlas,"x":16,"y":0,"w":16,"h":16});
     p.set_field_default(uid, tile(plain)).unwrap();
@@ -60,11 +67,18 @@ fn tile_default_enables_optional_and_follows_the_current_tileset() {
     assert_eq!(def["canBeNull"], true);
     let wrapper = json!({"id":"V_String","params":["16,0,16,16"]});
     assert_eq!(def["defaultOverride"], wrapper);
-    assert_eq!(p.level(K).unwrap()["fieldInstances"][0]["__value"], tile(plain));
+    assert_eq!(
+        p.level(K).unwrap()["fieldInstances"][0]["__value"],
+        tile(plain)
+    );
 
-    p.update_field_definition(uid, &json!({"tilesetUid":canopy})).unwrap();
+    p.update_field_definition(uid, &json!({"tilesetUid":canopy}))
+        .unwrap();
     assert_eq!(p.json["defs"]["levelFields"][0]["defaultOverride"], wrapper);
-    assert_eq!(p.level(K).unwrap()["fieldInstances"][0]["__value"], tile(canopy));
+    assert_eq!(
+        p.level(K).unwrap()["fieldInstances"][0]["__value"],
+        tile(canopy)
+    );
 
     p.set_field_default(uid, Value::Null).unwrap();
     let def = &p.json["defs"]["levelFields"][0];

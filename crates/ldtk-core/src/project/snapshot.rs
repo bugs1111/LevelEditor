@@ -18,7 +18,11 @@ pub struct FilesystemSnapshot {
 impl FilesystemSnapshot {
     pub fn refresh_file(&mut self, path: &Path) -> Result<()> {
         self.files.insert(path.to_owned(), file_fingerprint(path)?);
-        if self.loaded_external_paths.as_ref().is_some_and(|(root, _)| root == path) {
+        if self
+            .loaded_external_paths
+            .as_ref()
+            .is_some_and(|(root, _)| root == path)
+        {
             self.loaded_external_paths = None;
         }
         Ok(())

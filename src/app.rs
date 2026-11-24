@@ -39,8 +39,6 @@ mod help;
 mod home_files;
 #[path = "editor/hooks.rs"]
 mod hooks;
-#[path = "editor/save_progress.rs"]
-mod save_progress;
 #[path = "editor/level_navigation.rs"]
 mod level_navigation;
 #[path = "editor/level_resize.rs"]
@@ -70,6 +68,8 @@ mod project_dialogs;
 mod resize_tools;
 #[path = "editor/resources.rs"]
 mod resources;
+#[path = "editor/save_progress.rs"]
+mod save_progress;
 #[path = "editor/search.rs"]
 mod search;
 #[path = "editor/selection_click.rs"]
@@ -132,11 +132,11 @@ fn window_title(
 ) -> String {
     let mut title = String::new();
     if let Some((done, total)) = progress {
-        let filled = if total == 0 {
-            5
-        } else {
-            done.min(total).saturating_mul(5) / total
-        };
+        let filled = done
+            .min(total)
+            .saturating_mul(5)
+            .checked_div(total)
+            .unwrap_or(5);
         title.push_str(&"▰".repeat(filled));
         title.push_str(&"▱".repeat(5 - filled));
         title.push_str("  ");
@@ -672,10 +672,8 @@ impl EditorApp {
                 let [group] = layer["autoRuleGroups"].as_array()?.as_slice() else {
                     return None;
                 };
-                (group["usesWizard"] != true).then_some((
-                    layer["uid"].as_i64()?,
-                    group["uid"].as_i64()?,
-                ))
+                (group["usesWizard"] != true)
+                    .then_some((layer["uid"].as_i64()?, group["uid"].as_i64()?))
             })
             .collect();
         self.layer_visibility_press = None;
@@ -725,7 +723,11 @@ impl EditorApp {
         self.camera_drag = None;
         self.space_fit_pending = false;
         self.project = Some(project);
-        self.layer = self.visible_layer_indices(false).first().copied().unwrap_or(0);
+        self.layer = self
+            .visible_layer_indices(false)
+            .first()
+            .copied()
+            .unwrap_or(0);
         self.history = History::default();
         if let Some(project) = self.project.as_ref().filter(|p| p.path.is_none()) {
             for key in project.level_keys() {
@@ -1019,7 +1021,8 @@ impl EditorApp {
             && self.world_context.menu_open()
             && (self.stroke && self.stroke_erase
                 || !menu_was_open
-                    && self.project
+                    && self
+                        .project
                         .as_ref()
                         .zip(self.selected)
                         .and_then(|(project, key)| project.layer(key, self.layer))
@@ -1057,7 +1060,9 @@ impl EditorApp {
             self.project
                 .as_ref()
                 .zip(self.selected)
-                .map_or([0.; 2], |(project, key)| navigation::level_world_origin(project, key))
+                .map_or([0.; 2], |(project, key)| {
+                    navigation::level_world_origin(project, key)
+                })
         } else {
             [0.; 2]
         };
@@ -1178,8 +1183,7 @@ impl EditorApp {
             .layer(key, self.layer)
             .and_then(|l| hit_entity(project, l, local).map(|e| e.0));
         if let Some(index) = index {
-            let entity =
-                project.layer(key, self.layer).unwrap()["entityInstances"][index].clone();
+            let entity = project.layer(key, self.layer).unwrap()["entityInstances"][index].clone();
             let snapshot = self.capture_entity_render(key, self.layer);
             self.history
                 .mark_entity_change(project, key, self.layer, &entity);
@@ -1233,9 +1237,9 @@ impl EditorApp {
             Ok(ldtk_core::EntityPlacement::Placed) => {
                 self.dirty = true;
                 if let Some(index) = project
-                        .layer(key, self.layer)
-                        .and_then(|l| l["entityInstances"].as_array())
-                        .map(|a| a.len().saturating_sub(1))
+                    .layer(key, self.layer)
+                    .and_then(|l| l["entityInstances"].as_array())
+                    .map(|a| a.len().saturating_sub(1))
                 {
                     self.history.mark_entity_change(
                         project,
@@ -1249,7 +1253,10 @@ impl EditorApp {
                 }
             }
             Ok(ldtk_core::EntityPlacement::Ignored) => {}
-            Ok(ldtk_core::EntityPlacement::LimitReached { maximum, identifier }) => {
+            Ok(ldtk_core::EntityPlacement::LimitReached {
+                maximum,
+                identifier,
+            }) => {
                 self.report_entity_limit(maximum, identifier);
             }
             Err(e) => self.status = e.to_string(),
@@ -1442,8 +1449,9 @@ impl EditorApp {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(true));
                 Some(Maximizing(now + wait))
             }
-            Mapping(deadline) | Maximizing(deadline)
-                if maximized || now >= deadline => finish_maximizing(),
+            Mapping(deadline) | Maximizing(deadline) if maximized || now >= deadline => {
+                finish_maximizing()
+            }
             EnteringFullscreen(deadline) if fullscreen || now >= deadline => None,
             _ => Some(stage),
         };
@@ -1618,7 +1626,8 @@ impl EditorApp {
                     .and_then(|progress| *progress.lock().unwrap_or_else(|e| e.into_inner()))
             })
             .or_else(|| {
-                self.auto_layer_rebuild_progress.as_ref()
+                self.auto_layer_rebuild_progress
+                    .as_ref()
                     .and_then(|progress| *progress.lock().unwrap_or_else(|e| e.into_inner()))
             });
         let project = self.project.as_ref().and_then(|project| {
@@ -1635,8 +1644,13 @@ impl EditorApp {
             ctx.send_viewport_cmd(egui::ViewportCommand::Title(title));
         }
         // Keep idle polling alive while input, animations and background jobs can wake us sooner.
-        let foreground = ctx.input(|input| input.focused && input.viewport().minimized != Some(true));
-        ctx.request_repaint_after(std::time::Duration::from_millis(if foreground { 83 } else { 500 }));
+        let foreground =
+            ctx.input(|input| input.focused && input.viewport().minimized != Some(true));
+        ctx.request_repaint_after(std::time::Duration::from_millis(if foreground {
+            83
+        } else {
+            500
+        }));
         self.frame_time = frame
             .info()
             .cpu_usage
@@ -1873,7 +1887,11 @@ mod tests {
             };
             frame(&mut app, 0., vec![]);
             frame(&mut app, 7., vec![]);
-            let pointer = if inside { rect.center() } else { egui::pos2(68., 840.) };
+            let pointer = if inside {
+                rect.center()
+            } else {
+                egui::pos2(68., 840.)
+            };
             frame(
                 &mut app,
                 7.015,
@@ -1986,7 +2004,10 @@ mod tests {
             "Level = 128,128",
             "World = 288,80",
         ] {
-            assert!(contains(&output, label), "missing canvas status label {label}");
+            assert!(
+                contains(&output, label),
+                "missing canvas status label {label}"
+            );
         }
         app.viewport.zoom = 900. / 336.;
         let output = update(&mut app, egui::pos2(743., 343.), None);
@@ -2079,8 +2100,14 @@ mod tests {
             assert_eq!(app.viewport.center, center);
             assert!(!app.stroke && app.gesture.is_none() && app.camera_drag.is_none());
 
-            update(&mut app, vec![press(end, egui::PointerButton::Primary, true)]);
-            update(&mut app, vec![press(end, egui::PointerButton::Primary, false)]);
+            update(
+                &mut app,
+                vec![press(end, egui::PointerButton::Primary, true)],
+            );
+            update(
+                &mut app,
+                vec![press(end, egui::PointerButton::Primary, false)],
+            );
             assert_ne!(app.project.as_ref().unwrap().json, original);
         }
     }
@@ -3178,7 +3205,7 @@ mod tests {
                         egui::Shape::Mesh(mesh) if mesh.texture_id == texture => Some(mesh),
                         _ => None,
                     })
-                    .flat_map(|mesh| mesh.vertices.chunks_exact(4))
+                    .flat_map(|mesh| mesh.vertices.as_chunks::<4>().0)
                     .any(|quad| Rect::from_two_pos(quad[0].pos, quad[3].pos).contains(point))
             };
             app.capture_selection([2, 2, 2, 2]);
@@ -3378,7 +3405,7 @@ mod tests {
                     egui::Shape::Mesh(mesh) if mesh.texture_id == texture => Some(mesh),
                     _ => None,
                 })
-                .flat_map(|mesh| mesh.vertices.chunks_exact(4))
+                .flat_map(|mesh| mesh.vertices.as_chunks::<4>().0)
                 .filter(|quad| Rect::from_two_pos(quad[0].pos, quad[3].pos).contains(point))
                 .map(|quad| (quad[0].uv.x * 3.).round() as i64)
                 .collect::<Vec<_>>()
@@ -3524,10 +3551,7 @@ mod tests {
     fn rectangle_brush_crosses_level_edges_without_clamping_the_cursor_or_filling() {
         let inside = egui::pos2(132., 168.);
         let outside = egui::pos2(120., 168.);
-        for (start, end, preview_end) in [
-            (inside, outside, [-1, 2]),
-            (outside, inside, [0, 2]),
-        ] {
+        for (start, end, preview_end) in [(inside, outside, [-1, 2]), (outside, inside, [0, 2])] {
             let mut app = editor();
             let ctx = egui::Context::default();
             let canvas = Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(512., 512.));
@@ -3613,7 +3637,12 @@ mod tests {
                 pressed,
                 modifiers,
             };
-            canvas_frame(&mut app, &ctx, vec![egui::Event::PointerMoved(start)], modifiers);
+            canvas_frame(
+                &mut app,
+                &ctx,
+                vec![egui::Event::PointerMoved(start)],
+                modifiers,
+            );
             canvas_frame(&mut app, &ctx, vec![button(start, true)], modifiers);
             assert_eq!(
                 app.world_context.menu_open(),
@@ -3621,7 +3650,12 @@ mod tests {
             );
             assert_eq!(painted(&app), before);
             assert!(!app.dirty);
-            canvas_frame(&mut app, &ctx, vec![egui::Event::PointerMoved(end)], modifiers);
+            canvas_frame(
+                &mut app,
+                &ctx,
+                vec![egui::Event::PointerMoved(end)],
+                modifiers,
+            );
             canvas_frame(&mut app, &ctx, vec![button(end, false)], modifiers);
             assert_eq!(painted(&app), after, "{pointer_button:?}");
             app.undo_action(false);
@@ -3836,26 +3870,41 @@ mod tests {
         assert!(!app.history.commit(app.project.as_ref().unwrap()));
         assert_eq!(app.project.as_ref().unwrap().json, before);
         assert!(!app.dirty);
-        assert!(!app.status_error, "the original uses a transient error notification");
+        assert!(
+            !app.status_error,
+            "the original uses a transient error notification"
+        );
 
         let ctx = egui::Context::default();
         theme::configure(&ctx);
         let rect = Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1440., 900.));
         let draw = |app: &mut EditorApp| {
             ctx.run(
-                egui::RawInput { screen_rect: Some(rect), ..Default::default() },
+                egui::RawInput {
+                    screen_rect: Some(rect),
+                    ..Default::default()
+                },
                 |ctx| app.canvas_notifications(ctx, rect),
             )
         };
         draw(&mut app);
         for (language, message) in [
-            (locale::Language::English, "You cannot have more than 1 Actor."),
-            (locale::Language::SimplifiedChinese, "Actor 的数量不能超过 1 个。"),
+            (
+                locale::Language::English,
+                "You cannot have more than 1 Actor.",
+            ),
+            (
+                locale::Language::SimplifiedChinese,
+                "Actor 的数量不能超过 1 个。",
+            ),
         ] {
             locale::set(&ctx, language);
-            assert!(draw(&mut app).shapes.iter().any(|shape| {
-                matches!(&shape.shape, egui::Shape::Text(text) if text.galley.text() == message)
-            }), "{message}");
+            assert!(
+                draw(&mut app).shapes.iter().any(|shape| {
+                    matches!(&shape.shape, egui::Shape::Text(text) if text.galley.text() == message)
+                }),
+                "{message}"
+            );
         }
     }
 
@@ -3900,7 +3949,12 @@ mod tests {
                 ..Default::default()
             };
             let pos = egui::pos2(start[0], start[1]);
-            canvas_frame(&mut app, &ctx, vec![egui::Event::PointerMoved(pos)], modifiers);
+            canvas_frame(
+                &mut app,
+                &ctx,
+                vec![egui::Event::PointerMoved(pos)],
+                modifiers,
+            );
             canvas_frame(
                 &mut app,
                 &ctx,
@@ -3913,7 +3967,12 @@ mod tests {
                 modifiers,
             );
             let pos = egui::pos2(end[0], end[1]);
-            canvas_frame(&mut app, &ctx, vec![egui::Event::PointerMoved(pos)], modifiers);
+            canvas_frame(
+                &mut app,
+                &ctx,
+                vec![egui::Event::PointerMoved(pos)],
+                modifiers,
+            );
             assert!(app.canvas_notices.is_empty(), "warning before release");
             canvas_frame(
                 &mut app,
@@ -3939,15 +3998,21 @@ mod tests {
             let rect = ctx.content_rect();
             let draw = |app: &mut EditorApp| {
                 ctx.run(
-                    egui::RawInput { screen_rect: Some(rect), ..Default::default() },
+                    egui::RawInput {
+                        screen_rect: Some(rect),
+                        ..Default::default()
+                    },
                     |ctx| app.canvas_notifications(ctx, rect),
                 )
             };
             draw(&mut app);
             let message = format!("Out-of-bounds entity removed: {name}");
-            assert!(draw(&mut app).shapes.iter().any(|shape| {
-                matches!(&shape.shape, egui::Shape::Text(text) if text.galley.text() == message)
-            }), "{message}");
+            assert!(
+                draw(&mut app).shapes.iter().any(|shape| {
+                    matches!(&shape.shape, egui::Shape::Text(text) if text.galley.text() == message)
+                }),
+                "{message}"
+            );
             app.undo_action(false);
             assert_eq!(
                 app.project.as_ref().unwrap().layer(key, 0).unwrap()["entityInstances"],
@@ -4002,7 +4067,11 @@ mod tests {
             }],
             modifiers,
         );
-        assert_eq!(app.entity_uid, Some(uid), "selecting the Point picks its owner brush");
+        assert_eq!(
+            app.entity_uid,
+            Some(uid),
+            "selecting the Point picks its owner brush"
+        );
         assert_eq!(app.panel, Some(Panel::Entity));
         canvas_frame(
             &mut app,
@@ -4069,7 +4138,11 @@ mod tests {
             .unwrap();
         assert_eq!(entities.len(), 1);
         assert!(entities[0]["fieldInstances"][0]["__value"].is_null());
-        assert_eq!(app.entity_uid, Some(uid), "erasing the Point selects its owner");
+        assert_eq!(
+            app.entity_uid,
+            Some(uid),
+            "erasing the Point selects its owner"
+        );
     }
 
     #[test]
@@ -4182,9 +4255,11 @@ mod tests {
             assert_eq!(visible_entity(&out), Some(old));
             if resizable {
                 assert_eq!(entities(&app)[0]["width"], 79);
-                assert!(out.shapes.iter().any(|shape| matches!(&shape.shape, egui::Shape::Circle(circle)
+                assert!(out.shapes.iter().any(
+                    |shape| matches!(&shape.shape, egui::Shape::Circle(circle)
                     if circle.fill == Color32::from_rgba_unmultiplied(255, 204, 0, 191)
-                        && circle.center == end + resized_handle_shift)));
+                        && circle.center == end + resized_handle_shift)
+                ));
             } else {
                 let ghost_fill = Color32::from_rgb(34, 170, 119).gamma_multiply(0.5);
                 assert!(
@@ -4209,7 +4284,10 @@ mod tests {
             );
             let next = visible_entity(&draw(&mut app, deadline + 0.001, vec![])).unwrap();
             if resizable {
-                assert_eq!(next.right_bottom() + handle_offset, end + resized_handle_shift);
+                assert_eq!(
+                    next.right_bottom() + handle_offset,
+                    end + resized_handle_shift
+                );
             } else {
                 assert_eq!(next.center(), end);
             }
@@ -4458,7 +4536,12 @@ mod tests {
                 pressed,
                 modifiers,
             };
-            canvas_frame(&mut app, &ctx, vec![egui::Event::PointerMoved(start)], modifiers);
+            canvas_frame(
+                &mut app,
+                &ctx,
+                vec![egui::Event::PointerMoved(start)],
+                modifiers,
+            );
             canvas_frame(&mut app, &ctx, vec![click(start, true)], modifiers);
             assert!(if select_all {
                 matches!(app.gesture, Some(tools::Gesture::SelectionMove { .. }))
@@ -4478,7 +4561,11 @@ mod tests {
                 serde_json::json!([expected_x, 80]),
                 "select_all={select_all}, end={end:?}"
             );
-            let second_x = if select_all { 104 + expected_x - 64 } else { 104 };
+            let second_x = if select_all {
+                104 + expected_x - 64
+            } else {
+                104
+            };
             assert_eq!(entities[1]["px"], serde_json::json!([second_x, 104]));
             assert_eq!(app.dirty, expected_x != 64);
         }
@@ -4523,7 +4610,12 @@ mod tests {
                 command,
                 ..Default::default()
             };
-            canvas_frame(&mut app, &ctx, vec![egui::Event::PointerMoved(start)], modifiers);
+            canvas_frame(
+                &mut app,
+                &ctx,
+                vec![egui::Event::PointerMoved(start)],
+                modifiers,
+            );
             for (pos, pressed) in [(start, true), (end, false)] {
                 canvas_frame(
                     &mut app,
@@ -4586,7 +4678,12 @@ mod tests {
         let start = egui::pos2(220., 162.);
         let end = egui::pos2(239., 162.);
         let modifiers = egui::Modifiers::NONE;
-        canvas_frame(&mut app, &ctx, vec![egui::Event::PointerMoved(start)], modifiers);
+        canvas_frame(
+            &mut app,
+            &ctx,
+            vec![egui::Event::PointerMoved(start)],
+            modifiers,
+        );
         for (pos, pressed) in [(start, true), (end, false)] {
             canvas_frame(
                 &mut app,
@@ -4650,7 +4747,12 @@ mod tests {
             };
             let ctx = egui::Context::default();
             let pos = egui::pos2(x, 154.);
-            canvas_frame(&mut app, &ctx, vec![egui::Event::PointerMoved(pos)], modifiers);
+            canvas_frame(
+                &mut app,
+                &ctx,
+                vec![egui::Event::PointerMoved(pos)],
+                modifiers,
+            );
             for pressed in [true, false] {
                 canvas_frame(
                     &mut app,

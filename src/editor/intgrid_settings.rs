@@ -157,8 +157,11 @@ fn value_drop(
     } else {
         response.rect.bottom()
     };
-    ui.painter()
-        .hline(response.rect.x_range(), y, Stroke::new(2_f32, theme::ACCENT));
+    ui.painter().hline(
+        response.rect.x_range(),
+        y,
+        Stroke::new(2_f32, theme::ACCENT),
+    );
     response.dnd_release_payload::<ValueDrag>()?;
     Some((drag.value, group, index))
 }
@@ -184,9 +187,14 @@ impl EditorApp {
                 .as_array()
                 .map(Vec::as_slice)
                 .unwrap_or_default();
-            if let Some(choice) =
-                tileset_picker(ui, ui.available_width(), tilesets, atlas, "-- No icon --", false)
-            {
+            if let Some(choice) = tileset_picker(
+                ui,
+                ui.available_width(),
+                tilesets,
+                atlas,
+                "-- No icon --",
+                false,
+            ) {
                 selected_atlas = match choice {
                     TilesetChoice::Unassigned => None,
                     TilesetChoice::Existing(uid) => Some(uid),
@@ -397,9 +405,7 @@ impl EditorApp {
                     p.update_layer_properties(layer, &patch)?;
                 }
                 // LDtk updates rules that read this IntGrid in the current level.
-                if confirmed_removal
-                    && let Some(key) = current_level
-                {
+                if confirmed_removal && let Some(key) = current_level {
                     // Cell removal already rebuilt the IntGrid's own rules.
                     if matches!(remove, Some(IntGridRemoval::Group(_))) {
                         p.rebuild_auto_layer(key, layer)?;
@@ -607,11 +613,7 @@ impl EditorApp {
                         .background_color(Color32::BLACK.lerp_to_gamma(color, 0.3))
                         .horizontal_align(egui::Align::Center)
                         .vertical_align(egui::Align::Center)
-                        .hint_text(
-                            RichText::new(hint)
-                                .italics()
-                                .color(theme::LIGHT),
-                        ),
+                        .hint_text(RichText::new(hint).italics().color(theme::LIGHT)),
                 )
             },
         );
@@ -695,7 +697,11 @@ impl EditorApp {
         }
         let response = modal.show(ctx, |ui| {
             ui.set_width(width);
-            ui.label(RichText::new(locale::tr(ui, question)).size(14.5).color(Color32::WHITE));
+            ui.label(
+                RichText::new(locale::tr(ui, question))
+                    .size(14.5)
+                    .color(Color32::WHITE),
+            );
             ui.add_space(12.);
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 2.;

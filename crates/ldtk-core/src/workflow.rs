@@ -63,14 +63,11 @@ pub(crate) fn alloc_uids(p: &mut Project, count: usize) -> Result<Range<i64>> {
             _ => -1,
         }
     }
-    let first = p.json["nextUid"]
-        .as_i64()
-        .unwrap_or(0)
-        .max(
-            max(&p.json)
-                .checked_add(1)
-                .ok_or_else(|| invalid("UID overflow"))?,
-        );
+    let first = p.json["nextUid"].as_i64().unwrap_or(0).max(
+        max(&p.json)
+            .checked_add(1)
+            .ok_or_else(|| invalid("UID overflow"))?,
+    );
     let end = i64::try_from(count)
         .ok()
         .and_then(|count| first.checked_add(count))
@@ -175,7 +172,11 @@ pub(crate) fn remap_refs(level: &mut Value, remaps: &BTreeMap<String, Value>, cl
         remap_field_refs(field, remaps, clear_outside)
     });
 }
-pub(crate) fn remap_field_refs(field: &mut Value, remaps: &BTreeMap<String, Value>, clear_outside: bool) {
+pub(crate) fn remap_field_refs(
+    field: &mut Value,
+    remaps: &BTreeMap<String, Value>,
+    clear_outside: bool,
+) {
     let array = match field["__type"].as_str() {
         Some("Array<EntityRef>") => true,
         Some("EntityRef") => false,
@@ -738,8 +739,10 @@ impl Project {
             let palette_edit = d["type"] == "IntGrid"
                 && (fields.contains_key("intGridValues")
                     || fields.contains_key("intGridValuesGroups"));
-            let palette_only = palette_edit && fields.keys()
-                .all(|k| matches!(k.as_str(), "intGridValues" | "intGridValuesGroups"));
+            let palette_only = palette_edit
+                && fields
+                    .keys()
+                    .all(|k| matches!(k.as_str(), "intGridValues" | "intGridValuesGroups"));
             let mut palette_invalidated = Vec::new();
             if palette_edit {
                 let mut group_ids = std::collections::BTreeSet::from([0]);
@@ -1006,10 +1009,8 @@ impl Project {
                             .as_i64()
                             .or_else(|| d["tilesetDefUid"].as_i64());
                         layer["__tilesetDefUid"] = json!(ts_uid);
-                        layer["__tilesetRelPath"] = tileset_paths
-                            .get(&ts_uid)
-                            .cloned()
-                            .unwrap_or(Value::Null);
+                        layer["__tilesetRelPath"] =
+                            tileset_paths.get(&ts_uid).cloned().unwrap_or(Value::Null);
                     }
                     layer["levelId"] = uid.clone();
                     let g = layer["__gridSize"].as_i64().unwrap_or(1).max(1);

@@ -1283,7 +1283,10 @@ mod tests {
         let support = text_rect(&output, "Support my work");
         let title = text_rect(&output, "Level Editor");
         let version = env!("CARGO_PKG_VERSION");
-        assert!(title.right() < text_rect(&output, version.strip_suffix(".0").unwrap_or(version)).left());
+        assert!(
+            title.right()
+                < text_rect(&output, version.strip_suffix(".0").unwrap_or(version)).left()
+        );
         assert!(title.bottom() < examples.top());
         assert!(output.shapes.iter().any(|shape| matches!(&shape.shape, egui::Shape::Text(text)
             if text.galley.text() == "Level Editor"
@@ -1537,8 +1540,14 @@ mod tests {
         let locate = text_rect(&output, "LOCATE FILE");
         let color = text_rect(&output, "ASSIGN CUSTOM COLOR");
         let remove = text_rect(&output, "REMOVE FROM HISTORY");
-        assert!((locate.top() - load.top() - 38.5).abs() <= 1., "{load:?} {locate:?}");
-        assert!((color.top() - locate.top() - 47.).abs() <= 1., "{locate:?} {color:?}");
+        assert!(
+            (locate.top() - load.top() - 38.5).abs() <= 1.,
+            "{load:?} {locate:?}"
+        );
+        assert!(
+            (color.top() - locate.top() - 47.).abs() <= 1.,
+            "{locate:?} {color:?}"
+        );
         assert!((locate.left() - remove.left() - 30.).abs() < 1.);
         assert!(
             app.pending.is_none() && app.project.is_none(),

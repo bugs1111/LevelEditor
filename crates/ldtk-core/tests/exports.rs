@@ -20,19 +20,26 @@ fn png_tile_flipped_at_the_atlas_and_canvas_edges() {
     project.path = Some(dir.path().join("edges.ldtk"));
     project.resize_level(key, 32, 16, 0, 0).unwrap();
     let layer = project.add_layer("Ground", "Tiles", 16).unwrap();
-    let atlas = project.add_tileset(std::path::Path::new("atlas.png"), 16, 16, 16).unwrap();
+    let atlas = project
+        .add_tileset(std::path::Path::new("atlas.png"), 16, 16, 16)
+        .unwrap();
     project.assign_tileset(layer, atlas).unwrap();
     RgbaImage::from_fn(16, 16, |x, y| Rgba([x as u8, y as u8, 29, 255]))
-        .save(dir.path().join("atlas.png")).unwrap();
+        .save(dir.path().join("atlas.png"))
+        .unwrap();
     project.layer_mut(key, 0).unwrap()["gridTiles"] = json!([
         {"px":[-4,-3],"src":[-2,-1],"f":3},
         {"px":[16,0],"src":[0,0],"f":3},
         {"px":[20,4],"src":[3,6],"f":0}
     ]);
     let options = PngExportOptions {
-        mode: PngExportMode::OneImagePerLevel, include_background: false, file_pattern: None,
+        mode: PngExportMode::OneImagePerLevel,
+        include_background: false,
+        file_pattern: None,
     };
-    let files = project.export_png_with_options(dir.path().join("png"), &options).unwrap();
+    let files = project
+        .export_png_with_options(dir.path().join("png"), &options)
+        .unwrap();
     let image = image::open(&files[0]).unwrap().into_rgba8();
     for (x, y, pixel) in image.enumerate_pixels() {
         let expected = if x <= 9 && y <= 11 {
@@ -86,8 +93,7 @@ fn benchmark_large_png_reexport() {
         let files = project.export_png_with_options(&target, &options).unwrap();
         *time = start.elapsed();
         let mut buffer = [0; 8192];
-        let mut expected =
-            BufReader::with_capacity(buffer.len(), fs::File::open(&source).unwrap());
+        let mut expected = BufReader::with_capacity(buffer.len(), fs::File::open(&source).unwrap());
         let mut actual = BufReader::new(fs::File::open(&files[0]).unwrap());
         loop {
             let block = expected.fill_buf().unwrap();
@@ -104,7 +110,10 @@ fn benchmark_large_png_reexport() {
     let (first, repeats) = times.split_first_mut().unwrap();
     eprintln!("Large PNG first export: {first:?}");
     repeats.sort_unstable();
-    eprintln!("Large PNG re-export: median {:?}; samples {repeats:?}", repeats[1]);
+    eprintln!(
+        "Large PNG re-export: median {:?}; samples {repeats:?}",
+        repeats[1]
+    );
 }
 
 #[test]
@@ -120,16 +129,22 @@ fn benchmark_png_export_alternating_atlases() {
     let first = project.level_keys()[0];
     project.resize_level(first, 32, 32, 0, 0).unwrap();
     for i in 1..8 {
-        project.add_level(None, &format!("Room_{i}"), 32, 32).unwrap();
+        project
+            .add_level(None, &format!("Room_{i}"), 32, 32)
+            .unwrap();
     }
     let back = project.add_layer("Back", "Tiles", 16).unwrap();
     let front = project.add_layer("Front", "Tiles", 16).unwrap();
     let colors = [Rgba([35, 82, 125, 255]), Rgba([197, 201, 35, 255])];
     for (index, (layer, pixel)) in [back, front].into_iter().zip(colors).enumerate() {
         let name = format!("atlas-{index}.png");
-        let atlas = project.add_tileset(std::path::Path::new(&name), 16, 1024, 1024).unwrap();
+        let atlas = project
+            .add_tileset(std::path::Path::new(&name), 16, 1024, 1024)
+            .unwrap();
         project.assign_tileset(layer, atlas).unwrap();
-        RgbaImage::from_pixel(1024, 1024, pixel).save(dir.path().join(name)).unwrap();
+        RgbaImage::from_pixel(1024, 1024, pixel)
+            .save(dir.path().join(name))
+            .unwrap();
         for key in project.level_keys() {
             project.layer_mut(key, 1 - index).unwrap()["gridTiles"] = json!([
                 {"px":[index * 16, 0],"src":[0,0],"t":0,"f":0}
@@ -137,28 +152,46 @@ fn benchmark_png_export_alternating_atlases() {
         }
     }
     let options = PngExportOptions {
-        mode: PngExportMode::OneImagePerLevel, include_background: false, file_pattern: None,
+        mode: PngExportMode::OneImagePerLevel,
+        include_background: false,
+        file_pattern: None,
     };
     let mut times = [Duration::ZERO; 5];
     for (run, time) in times.iter_mut().enumerate() {
         let start = Instant::now();
-        let paths = project.export_png_with_options(dir.path().join(format!("png-{run}")), &options).unwrap();
+        let paths = project
+            .export_png_with_options(dir.path().join(format!("png-{run}")), &options)
+            .unwrap();
         *time = start.elapsed();
         assert_eq!(paths.len(), 8);
         for path in paths {
             let image = image::open(path).unwrap().into_rgba8();
             assert_eq!(image.dimensions(), (32, 32));
             for (x, y, pixel) in image.enumerate_pixels() {
-                assert_eq!(*pixel, if y < 16 { colors[(x / 16) as usize] } else { Rgba([0; 4]) });
+                assert_eq!(
+                    *pixel,
+                    if y < 16 {
+                        colors[(x / 16) as usize]
+                    } else {
+                        Rgba([0; 4])
+                    }
+                );
             }
         }
     }
     times.sort_unstable();
-    eprintln!("Alternating PNG atlases: median {:?}; samples {times:?}", times[2]);
+    eprintln!(
+        "Alternating PNG atlases: median {:?}; samples {times:?}",
+        times[2]
+    );
 
     let updated = Rgba([4, 18, 31, 255]);
-    RgbaImage::from_pixel(16, 16, updated).save(dir.path().join("atlas-0.png")).unwrap();
-    let paths = project.export_png_with_options(dir.path().join("updated"), &options).unwrap();
+    RgbaImage::from_pixel(16, 16, updated)
+        .save(dir.path().join("atlas-0.png"))
+        .unwrap();
+    let paths = project
+        .export_png_with_options(dir.path().join("updated"), &options)
+        .unwrap();
     for path in paths {
         let image = image::open(path).unwrap().into_rgba8();
         assert_eq!(*image.get_pixel(0, 0), updated);
@@ -180,21 +213,39 @@ fn benchmark_dense_png_export() {
     project.resize_level(key, 1024, 1024, 0, 0).unwrap();
     let ground = project.add_layer("Ground", "Tiles", 16).unwrap();
     let overlay = project.add_layer("Overlay", "Tiles", 16).unwrap();
-    let atlas = project.add_tileset(std::path::Path::new("atlas.png"), 16, 32, 16).unwrap();
+    let atlas = project
+        .add_tileset(std::path::Path::new("atlas.png"), 16, 32, 16)
+        .unwrap();
     project.assign_tileset(ground, atlas).unwrap();
     project.assign_tileset(overlay, atlas).unwrap();
     RgbaImage::from_fn(32, 16, |x, _| {
-        if x < 16 { Rgba([100, 150, 200, 255]) } else { Rgba([200, 20, 40, 128]) }
-    }).save(dir.path().join("atlas.png")).unwrap();
+        if x < 16 {
+            Rgba([100, 150, 200, 255])
+        } else {
+            Rgba([200, 20, 40, 128])
+        }
+    })
+    .save(dir.path().join("atlas.png"))
+    .unwrap();
     for (index, uid) in [overlay, ground].into_iter().enumerate() {
         assert_eq!(project.layer(key, index).unwrap()["layerDefUid"], uid);
         project.layer_mut(key, index).unwrap()["gridTiles"] = (0..64 * 64)
-            .filter(|cell| if uid == overlay { cell % 2 == 1 } else { cell % 64 < 60 })
-            .map(|cell| json!({
-                "px":[cell % 64 * 16,cell / 64 * 16],
-                "src":[if uid == overlay {16} else {0},0],
-                "f":cell % 4,"a":1
-            })).collect::<Vec<_>>().into();
+            .filter(|cell| {
+                if uid == overlay {
+                    cell % 2 == 1
+                } else {
+                    cell % 64 < 60
+                }
+            })
+            .map(|cell| {
+                json!({
+                    "px":[cell % 64 * 16,cell / 64 * 16],
+                    "src":[if uid == overlay {16} else {0},0],
+                    "f":cell % 4,"a":1
+                })
+            })
+            .collect::<Vec<_>>()
+            .into();
     }
     let options = PngExportOptions {
         mode: PngExportMode::OneImagePerLevel,
@@ -204,7 +255,9 @@ fn benchmark_dense_png_export() {
     let mut times = [Duration::ZERO; 5];
     for (run, time) in times.iter_mut().enumerate() {
         let start = Instant::now();
-        let files = project.export_png_with_options(dir.path().join(format!("png-{run}")), &options).unwrap();
+        let files = project
+            .export_png_with_options(dir.path().join(format!("png-{run}")), &options)
+            .unwrap();
         *time = start.elapsed();
         assert_eq!(files.len(), 1);
         let image = image::open(&files[0]).unwrap().into_rgba8();
@@ -245,9 +298,14 @@ fn benchmark_repeating_png_background() {
     level["bgPos"] = json!("Repeat");
     level["bgPivotX"] = json!(pivot_x);
     level["bgPivotY"] = json!(pivot_y);
-    let pixels = |x: u32, y: u32| Rgba([
-        (x * 3) as u8, (y * 5) as u8, 121, if (x + y) % 3 == 0 { 0 } else { 255 },
-    ]);
+    let pixels = |x: u32, y: u32| {
+        Rgba([
+            (x * 3) as u8,
+            (y * 5) as u8,
+            121,
+            if (x + y).is_multiple_of(3) { 0 } else { 255 },
+        ])
+    };
     RgbaImage::from_fn(source_width, source_height, pixels)
         .save(dir.path().join("bg.png"))
         .unwrap();
@@ -259,7 +317,9 @@ fn benchmark_repeating_png_background() {
     let mut times = [Duration::ZERO; 5];
     for (run, time) in times.iter_mut().enumerate() {
         let start = Instant::now();
-        let files = project.export_png_with_options(dir.path().join(format!("out-{run}")), &options).unwrap();
+        let files = project
+            .export_png_with_options(dir.path().join(format!("out-{run}")), &options)
+            .unwrap();
         *time = start.elapsed();
         assert_eq!(files.len(), 1);
         let output = image::open(&files[0]).unwrap().into_rgba8();
@@ -269,12 +329,25 @@ fn benchmark_repeating_png_background() {
                 .rem_euclid(f64::from(input_size)) as u32
         };
         for (x, y, pixel) in output.enumerate_pixels() {
-            let src = pixels(expected(x, width, source_width, pivot_x), expected(y, height, source_height, pivot_y));
-            assert_eq!(*pixel, if src[3] == 0 { Rgba([16, 30, 40, 255]) } else { src });
+            let src = pixels(
+                expected(x, width, source_width, pivot_x),
+                expected(y, height, source_height, pivot_y),
+            );
+            assert_eq!(
+                *pixel,
+                if src[3] == 0 {
+                    Rgba([16, 30, 40, 255])
+                } else {
+                    src
+                }
+            );
         }
     }
     times.sort_unstable();
-    eprintln!("Repeating PNG background: median {:?}; samples {times:?}", times[2]);
+    eprintln!(
+        "Repeating PNG background: median {:?}; samples {times:?}",
+        times[2]
+    );
 }
 
 #[test]
@@ -303,13 +376,25 @@ fn benchmark_tiled_entity_properties_export() {
     let mut checksum = 0;
     for (run, time) in times.iter_mut().enumerate() {
         let start = Instant::now();
-        let files = project.export_tiled(dir.path().join(format!("out-{run}"))).unwrap();
+        let files = project
+            .export_tiled(dir.path().join(format!("out-{run}")))
+            .unwrap();
         *time = start.elapsed();
-        let map = files.iter().find(|path| path.extension().is_some_and(|e| e == "tmx")).unwrap();
+        let map = files
+            .iter()
+            .find(|path| path.extension().is_some_and(|e| e == "tmx"))
+            .unwrap();
         let xml = fs::read_to_string(map).unwrap();
         assert_eq!(xml.matches("name=\"Actor &amp; Companion\"").count(), count);
-        assert_eq!(xml.matches("name=\"Item_47\" value=\"物品47 &lt; &amp; &gt; &quot;\n\"").count(), count);
-        assert_eq!(xml.matches("name=\"Destination\" value=\"other\"").count(), count);
+        assert_eq!(
+            xml.matches("name=\"Item_47\" value=\"物品47 &lt; &amp; &gt; &quot;\n\"")
+                .count(),
+            count
+        );
+        assert_eq!(
+            xml.matches("name=\"Destination\" value=\"other\"").count(),
+            count
+        );
         let mut hasher = DefaultHasher::new();
         xml.hash(&mut hasher);
         if run == 0 {
@@ -319,7 +404,10 @@ fn benchmark_tiled_entity_properties_export() {
         }
     }
     times.sort_unstable();
-    eprintln!("Tiled entity properties: median {:?}; output {checksum:016x}; samples {times:?}", times[2]);
+    eprintln!(
+        "Tiled entity properties: median {:?}; output {checksum:016x}; samples {times:?}",
+        times[2]
+    );
 }
 
 #[test]
@@ -397,9 +485,17 @@ fn benchmark_dense_csv_export() {
     let mut project = Project::new();
     let key = project.level_keys()[0];
     let (width, height) = (1024, 512);
-    project.resize_level(key, width * 16, height * 16, 0, 0).unwrap();
+    project
+        .resize_level(key, width * 16, height * 16, 0, 0)
+        .unwrap();
     project.add_layer("Terrain", "IntGrid", 16).unwrap();
-    let value = |x, y| if (x + y) % 31 == 0 { -1 } else { (x * 3 + y) % 512 };
+    let value = |x, y| {
+        if (x + y) % 31 == 0 {
+            -1
+        } else {
+            (x * 3 + y) % 512
+        }
+    };
     let mut expected = String::new();
     let mut cells = Vec::new();
     for y in 0..height {
@@ -420,7 +516,9 @@ fn benchmark_dense_csv_export() {
     let mut times = [Duration::ZERO; 5];
     for (run, time) in times.iter_mut().enumerate() {
         let start = Instant::now();
-        let outputs = project.export_csv(dir.path().join(format!("csv-{run}"))).unwrap();
+        let outputs = project
+            .export_csv(dir.path().join(format!("csv-{run}")))
+            .unwrap();
         *time = start.elapsed();
         assert_eq!(outputs.len(), 1);
         assert_eq!(fs::read(&outputs[0]).unwrap(), expected.as_bytes());
@@ -456,9 +554,14 @@ fn benchmark_entity_heavy_simplified_export() {
     let mut times = [Duration::ZERO; 5];
     for (run, time) in times.iter_mut().enumerate() {
         let start = Instant::now();
-        let paths = project.export_simplified(dir.path().join(format!("simple-{run}"))).unwrap();
+        let paths = project
+            .export_simplified(dir.path().join(format!("simple-{run}")))
+            .unwrap();
         *time = start.elapsed();
-        let file = paths.iter().find(|path| path.ends_with("data.json")).unwrap();
+        let file = paths
+            .iter()
+            .find(|path| path.ends_with("data.json"))
+            .unwrap();
         let data: Value = serde_json::from_slice(&fs::read(file).unwrap()).unwrap();
         for (offset, name) in ["Actor", "Prop"].iter().enumerate() {
             let entities = data["entities"][name].as_array().unwrap();
@@ -467,12 +570,21 @@ fn benchmark_entity_heavy_simplified_export() {
                 assert_eq!(entity["iid"], format!("entity-{}", i * 2 + offset));
                 assert_eq!(entity["layer"], "Actors");
                 assert_eq!(entity["color"], 0x112233);
-                assert!(entity["customFields"]["Inventory"].as_array().unwrap().iter().eq(&payload));
+                assert!(
+                    entity["customFields"]["Inventory"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .eq(&payload)
+                );
             }
         }
     }
     times.sort_unstable();
-    eprintln!("Entity-heavy simplified export: median {:?}; samples {times:?}", times[2]);
+    eprintln!(
+        "Entity-heavy simplified export: median {:?}; samples {times:?}",
+        times[2]
+    );
 }
 
 #[test]
@@ -483,7 +595,9 @@ fn tiled_writes_mixed_dense_and_sparse_stacks_in_cell_order() {
     let key = p.level_keys()[0];
     p.resize_level(key, 320, 320, 0, 0).unwrap();
     let layer = p.add_layer("Ground", "Tiles", 16).unwrap();
-    let atlas = p.add_tileset(std::path::Path::new("atlas.png"), 16, 32, 16).unwrap();
+    let atlas = p
+        .add_tileset(std::path::Path::new("atlas.png"), 16, 32, 16)
+        .unwrap();
     p.assign_tileset(layer, atlas).unwrap();
     let tile = |i, id| json!({"px":[i % 20 * 16, i / 20 * 16],"t":id,"f":0});
     let mut tiles = Vec::new();
@@ -498,28 +612,55 @@ fn tiled_writes_mixed_dense_and_sparse_stacks_in_cell_order() {
     }
     p.layer_mut(key, 0).unwrap()["gridTiles"] = tiles.into();
     let paths = p.export_tiled(dir.path().join("map")).unwrap();
-    let map = paths.iter().find(|path| path.extension().is_some_and(|e| e == "tmx")).unwrap();
+    let map = paths
+        .iter()
+        .find(|path| path.extension().is_some_and(|e| e == "tmx"))
+        .unwrap();
     let xml = fs::read_to_string(map).unwrap();
-    let layers: Vec<_> = xml.split("<data encoding=\"csv\">").skip(1).map(|tail| {
-        tail.split_once("</data>").unwrap().0.split(',').collect::<Vec<_>>()
-    }).collect();
+    let layers: Vec<_> = xml
+        .split("<data encoding=\"csv\">")
+        .skip(1)
+        .map(|tail| {
+            tail.split_once("</data>")
+                .unwrap()
+                .0
+                .split(',')
+                .collect::<Vec<_>>()
+        })
+        .collect();
     assert_eq!(layers.len(), 3);
     assert_eq!(layers[0], vec!["1"; 400]);
-    assert!(layers[1].iter().copied().eq((0..400).map(|i| if i % 2 == 0 { "2" } else { "0" })));
-    assert!(layers[2].iter().copied().eq((0..400).map(|i| if i == 0 || i == 398 { "1" } else { "0" })));
+    assert!(
+        layers[1]
+            .iter()
+            .copied()
+            .eq((0..400).map(|i| if i % 2 == 0 { "2" } else { "0" }))
+    );
+    assert!(
+        layers[2]
+            .iter()
+            .copied()
+            .eq((0..400).map(|i| if i == 0 || i == 398 { "1" } else { "0" }))
+    );
 
     let output = dir.path().join("json");
     p.export_tiled_format_with_report_progress(
-        &output, ldtk_core::exports::TiledFormat::Tmj, |_, _| {},
-    ).unwrap();
+        &output,
+        ldtk_core::exports::TiledFormat::Tmj,
+        |_, _| {},
+    )
+    .unwrap();
     let map: Value =
         serde_json::from_slice(&fs::read(output.join("Level_0.tmj")).unwrap()).unwrap();
     let json_layers = map["layers"].as_array().unwrap();
     assert_eq!(json_layers.len(), layers.len());
     for (json_layer, xml_cells) in json_layers.iter().zip(layers) {
         let gids = json_layer["data"].as_array().unwrap();
-        assert!(gids.iter().map(|gid| gid.as_u64().unwrap())
-            .eq(xml_cells.into_iter().map(|gid| gid.parse::<u64>().unwrap())));
+        assert!(
+            gids.iter()
+                .map(|gid| gid.as_u64().unwrap())
+                .eq(xml_cells.into_iter().map(|gid| gid.parse::<u64>().unwrap()))
+        );
     }
 }
 
@@ -607,7 +748,9 @@ fn exercise_gamemaker_room_export(overwrite: bool) {
     let key = p.level_keys()[0];
     let (width, height) = (512, 256);
     p.resize_level(key, width * 16, height * 16, 0, 0).unwrap();
-    let atlas = p.add_tileset(std::path::Path::new("atlas.png"), 16, 32, 16).unwrap();
+    let atlas = p
+        .add_tileset(std::path::Path::new("atlas.png"), 16, 32, 16)
+        .unwrap();
     for name in ["Ground", "Walls", "Props"] {
         let layer = p.add_layer(name, "Tiles", 16).unwrap();
         p.assign_tileset(layer, atlas).unwrap();
@@ -683,15 +826,24 @@ fn exercise_sparse_tiled_stacks(overwrite: bool) {
     let (width, height, depth) = (512, 256, 48);
     let cells = width * height;
     let positions = [cells - 1, 0, width * 74 + 8];
-    project.resize_level(key, (width * 16) as i32, (height * 16) as i32, 0, 0).unwrap();
+    project
+        .resize_level(key, (width * 16) as i32, (height * 16) as i32, 0, 0)
+        .unwrap();
     let layer = project.add_layer("Ground", "Tiles", 16).unwrap();
-    let atlas = project.add_tileset(std::path::Path::new("atlas.png"), 16, 32, 16).unwrap();
+    let atlas = project
+        .add_tileset(std::path::Path::new("atlas.png"), 16, 32, 16)
+        .unwrap();
     project.assign_tileset(layer, atlas).unwrap();
-    project.layer_mut(key, 0).unwrap()["gridTiles"] = (0..depth).flat_map(|z| {
-        positions.into_iter().map(move |i| json!({
-            "px":[i % width * 16, i / width * 16],"t":z % 2,"f":z % 4
-        }))
-    }).collect::<Vec<_>>().into();
+    project.layer_mut(key, 0).unwrap()["gridTiles"] = (0..depth)
+        .flat_map(|z| {
+            positions.into_iter().map(move |i| {
+                json!({
+                    "px":[i % width * 16, i / width * 16],"t":z % 2,"f":z % 4
+                })
+            })
+        })
+        .collect::<Vec<_>>()
+        .into();
 
     let mut times = [Duration::ZERO; 5];
     let repeat_dir = dir.path().join("repeat");
@@ -699,11 +851,18 @@ fn exercise_sparse_tiled_stacks(overwrite: bool) {
         project.export_tiled(&repeat_dir).unwrap();
     }
     for (run, time) in times.iter_mut().enumerate() {
-        let target = if overwrite { repeat_dir.clone() } else { dir.path().join(format!("tiled-{run}")) };
+        let target = if overwrite {
+            repeat_dir.clone()
+        } else {
+            dir.path().join(format!("tiled-{run}"))
+        };
         let start = Instant::now();
         let files = project.export_tiled(target).unwrap();
         *time = start.elapsed();
-        let map = files.iter().find(|path| path.extension().is_some_and(|e| e == "tmx")).unwrap();
+        let map = files
+            .iter()
+            .find(|path| path.extension().is_some_and(|e| e == "tmx"))
+            .unwrap();
         let mut xml = BufReader::new(fs::File::open(map).unwrap());
         let mut chunk = Vec::new();
         let mut stack = 0;
@@ -726,7 +885,10 @@ fn exercise_sparse_tiled_stacks(overwrite: bool) {
         assert_eq!(stack, depth);
     }
     times.sort_unstable();
-    eprintln!("Sparse Tiled stacks export: median {:?}; samples {times:?}", times[2]);
+    eprintln!(
+        "Sparse Tiled stacks export: median {:?}; samples {times:?}",
+        times[2]
+    );
 }
 
 #[test]
@@ -741,26 +903,40 @@ fn benchmark_sparse_tmj_export() {
     let key = project.level_keys()[0];
     let (width, height, depth) = (512, 256, 48);
     let area = (width * height) as usize;
-    project.resize_level(key, width * 16, height * 16, 0, 0).unwrap();
+    project
+        .resize_level(key, width * 16, height * 16, 0, 0)
+        .unwrap();
     let layer = project.add_layer("Ground", "Tiles", 16).unwrap();
-    let atlas = project.add_tileset(std::path::Path::new("atlas.png"), 16, 32, 16).unwrap();
+    let atlas = project
+        .add_tileset(std::path::Path::new("atlas.png"), 16, 32, 16)
+        .unwrap();
     project.assign_tileset(layer, atlas).unwrap();
     let positions = [0, width * 74 + 8, width * height - 1];
-    project.layer_mut(key, 0).unwrap()["gridTiles"] = (0..depth).flat_map(|z| {
-        positions.into_iter().map(move |i| json!({
-            "px":[i % width * 16, i / width * 16],"t":z % 2,"f":z % 4
-        }))
-    }).collect::<Vec<_>>().into();
+    project.layer_mut(key, 0).unwrap()["gridTiles"] = (0..depth)
+        .flat_map(|z| {
+            positions.into_iter().map(move |i| {
+                json!({
+                    "px":[i % width * 16, i / width * 16],"t":z % 2,"f":z % 4
+                })
+            })
+        })
+        .collect::<Vec<_>>()
+        .into();
 
     let output = dir.path().join("tiled");
     let mut times = [Duration::ZERO; 6];
     for time in &mut times {
         let start = Instant::now();
-        project.export_tiled_format_with_report_progress(&output, TiledFormat::Tmj, |_, _| {}).unwrap();
+        project
+            .export_tiled_format_with_report_progress(&output, TiledFormat::Tmj, |_, _| {})
+            .unwrap();
         *time = start.elapsed();
     }
     times[1..].sort_unstable();
-    eprintln!("Sparse TMJ: initial {:?}, re-export median {:?}", times[0], times[3]);
+    eprintln!(
+        "Sparse TMJ: initial {:?}, re-export median {:?}",
+        times[0], times[3]
+    );
 
     // Validate every emitted GID while keeping the benchmark's memory usage bounded.
     let mut file = BufReader::new(fs::File::open(output.join("Level_0.tmj")).unwrap());
@@ -770,11 +946,19 @@ fn benchmark_sparse_tmj_export() {
         if chunk.ends_with(b"\"data\":[") {
             chunk.clear();
             assert_ne!(file.read_until(b']', &mut chunk).unwrap(), 0);
-            let data: Vec<u32> = serde_json::from_slice(&[b"[", chunk.as_slice()].concat()).unwrap();
+            let data: Vec<u32> =
+                serde_json::from_slice(&[b"[", chunk.as_slice()].concat()).unwrap();
             let gid = [1, 0x80000002, 0x40000001, 0xc0000002][stack % 4];
             assert_eq!(data.len(), area);
             for (i, tile) in data.into_iter().enumerate() {
-                assert_eq!(tile, if positions.contains(&(i as i32)) { gid } else { 0 });
+                assert_eq!(
+                    tile,
+                    if positions.contains(&(i as i32)) {
+                        gid
+                    } else {
+                        0
+                    }
+                );
             }
             stack += 1;
         }
@@ -809,7 +993,9 @@ fn benchmark_tiled_intgrid_csv() {
             .map(|index| json!(value(index)))
             .collect::<Vec<_>>()
             .into();
-        let target = directory.path().join(if dense { "dense" } else { "sparse" });
+        let target = directory
+            .path()
+            .join(if dense { "dense" } else { "sparse" });
         project.export_tiled(&target).unwrap();
         let mut times = [Duration::ZERO; 5];
         for time in &mut times {
@@ -843,31 +1029,53 @@ fn benchmark_deep_tiled_stacks_export() {
     let key = project.level_keys()[0];
     project.path = Some(dir.path().join("stacked.ldtk"));
     let layer = project.add_layer("Ground", "Tiles", 16).unwrap();
-    let atlas = project.add_tileset(std::path::Path::new("atlas.png"), 16, 32, 16).unwrap();
+    let atlas = project
+        .add_tileset(std::path::Path::new("atlas.png"), 16, 32, 16)
+        .unwrap();
     project.assign_tileset(layer, atlas).unwrap();
     let depth = 192;
-    project.layer_mut(key, 0).unwrap()["gridTiles"] = (0..depth).flat_map(|z| {
-        (0..16 * 16).map(move |i| json!({
-            "px":[i % 16 * 16, i / 16 * 16],"t":z % 2,"f":z % 4
-        }))
-    }).collect::<Vec<_>>().into();
+    project.layer_mut(key, 0).unwrap()["gridTiles"] = (0..depth)
+        .flat_map(|z| {
+            (0..16 * 16).map(move |i| {
+                json!({
+                    "px":[i % 16 * 16, i / 16 * 16],"t":z % 2,"f":z % 4
+                })
+            })
+        })
+        .collect::<Vec<_>>()
+        .into();
     let mut times = [Duration::ZERO; 5];
     for (run, time) in times.iter_mut().enumerate() {
         let start = Instant::now();
-        let files = project.export_tiled(dir.path().join(format!("tiled-{run}"))).unwrap();
+        let files = project
+            .export_tiled(dir.path().join(format!("tiled-{run}")))
+            .unwrap();
         *time = start.elapsed();
-        let map = files.iter().find(|path| path.extension().is_some_and(|e| e == "tmx")).unwrap();
+        let map = files
+            .iter()
+            .find(|path| path.extension().is_some_and(|e| e == "tmx"))
+            .unwrap();
         let xml = fs::read_to_string(map).unwrap();
-        let layers = xml.split("<data encoding=\"csv\">").skip(1).collect::<Vec<_>>();
+        let layers = xml
+            .split("<data encoding=\"csv\">")
+            .skip(1)
+            .collect::<Vec<_>>();
         assert_eq!(layers.len(), depth);
         for (z, layer) in layers.into_iter().enumerate() {
             let data = layer.split_once("</data>").unwrap().0;
             let gid = [1u32, 0x80000002, 0x40000001, 0xc0000002][z % 4];
-            assert!(data.split(',').map(|value| value.parse::<u32>().unwrap()).eq(std::iter::repeat_n(gid, 256)));
+            assert!(
+                data.split(',')
+                    .map(|value| value.parse::<u32>().unwrap())
+                    .eq(std::iter::repeat_n(gid, 256))
+            );
         }
     }
     times.sort_unstable();
-    eprintln!("Deep Tiled stacks export: median {:?}; samples {times:?}", times[2]);
+    eprintln!(
+        "Deep Tiled stacks export: median {:?}; samples {times:?}",
+        times[2]
+    );
 }
 
 #[test]
@@ -1588,7 +1796,9 @@ fn all_original_sample_exports_use_real_atlases_and_complete_files() {
             .unwrap_or_else(|e| panic!("{}: {e}", file.display()));
         let tmj_dir = t.path().join("tmj");
         let tmj = project.export_tiled_format_with_report_progress(
-            &tmj_dir, ldtk_core::exports::TiledFormat::Tmj, |_, _| {},
+            &tmj_dir,
+            ldtk_core::exports::TiledFormat::Tmj,
+            |_, _| {},
         );
         if let Err(error) = project.export_tiled(t.path().join("tmx")) {
             assert!(
@@ -1624,7 +1834,8 @@ fn all_original_sample_exports_use_real_atlases_and_complete_files() {
                 let map = read(path.as_path());
                 for layer in map["layers"].as_array().unwrap() {
                     if layer["type"] == "tilelayer" {
-                        let cells = layer["width"].as_u64().unwrap() * layer["height"].as_u64().unwrap();
+                        let cells =
+                            layer["width"].as_u64().unwrap() * layer["height"].as_u64().unwrap();
                         assert_eq!(layer["data"].as_array().unwrap().len() as u64, cells);
                     }
                 }
@@ -1677,10 +1888,14 @@ fn png_recomputes_background_scale_and_source_composite_background_quirk() {
 #[test]
 fn png_full_size_background_keeps_alpha_blending_for_all_positions() {
     let dir = tempfile::tempdir().unwrap();
-    image::RgbaImage::from_raw(3, 1, vec![11, 22, 33, 255, 240, 64, 0, 128, 200, 201, 202, 0])
-        .unwrap()
-        .save(dir.path().join("bg.png"))
-        .unwrap();
+    image::RgbaImage::from_raw(
+        3,
+        1,
+        vec![11, 22, 33, 255, 240, 64, 0, 128, 200, 201, 202, 0],
+    )
+    .unwrap()
+    .save(dir.path().join("bg.png"))
+    .unwrap();
     let mut project = Project::new();
     project.path = Some(dir.path().join("map.ldtk"));
     project.json["imageExportMode"] = json!("OneImagePerLevel");

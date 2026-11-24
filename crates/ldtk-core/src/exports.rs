@@ -4,11 +4,11 @@ mod png;
 mod tiled;
 
 use png::PngRenderer;
-pub use tiled::TiledFormat;
 pub use png::{
     PngExportMode, PngExportOptions, background_image_layout, classic_tile_cell,
     unavailable_classic_tile_red,
 };
+pub use tiled::TiledFormat;
 
 use crate::project::{StagedSave, StagingWriter};
 use crate::{Error, Project, Result};
@@ -266,17 +266,20 @@ impl Project {
                     let color =
                         u32::from_str_radix(s(e, "__smartColor").trim_start_matches('#'), 16)
                             .unwrap_or(0);
-                    entities.entry(s(e, "__identifier")).or_default().push(SimplifiedEntity {
-                        id: &e["__identifier"],
-                        iid: &e["iid"],
-                        layer: &li["__identifier"],
-                        x: &e["px"][0],
-                        y: &e["px"][1],
-                        width: &e["width"],
-                        height: &e["height"],
-                        color,
-                        custom_fields: fields(e),
-                    });
+                    entities
+                        .entry(s(e, "__identifier"))
+                        .or_default()
+                        .push(SimplifiedEntity {
+                            id: &e["__identifier"],
+                            iid: &e["iid"],
+                            layer: &li["__identifier"],
+                            x: &e["px"][0],
+                            y: &e["px"][1],
+                            width: &e["width"],
+                            height: &e["height"],
+                            color,
+                            custom_fields: fields(e),
+                        });
                 }
             }
             let simple = SimplifiedLevel {
@@ -382,7 +385,11 @@ fn load_aseprite_atlas(path: &Path) -> Result<RgbaImage> {
     let mut atlas = RgbaImage::new(atlas_width, atlas_height);
     for index in 0..frames {
         atlas
-            .copy_from(&frame_image(index)?, index % side * width, index / side * height)
+            .copy_from(
+                &frame_image(index)?,
+                index % side * width,
+                index / side * height,
+            )
             .map_err(|error| Error::Invalid(format!("{}: {error}", path.display())))?;
     }
     Ok(atlas)

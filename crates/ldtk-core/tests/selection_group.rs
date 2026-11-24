@@ -12,24 +12,34 @@ fn benchmark_large_intgrid_group_paste() {
 
     let mut project = Project::new();
     let side = 128;
-    project.resize_level(K, 2 * side * 16, side * 16, 0, 0).unwrap();
+    project
+        .resize_level(K, 2 * side * 16, side * 16, 0, 0)
+        .unwrap();
     project.add_layer("Terrain", "IntGrid", 16).unwrap();
     project.json["defs"]["layers"][0]["intGridValues"] = (1..=256)
-        .map(|v| json!({"value":v,"color":"#FFFFFF"})).collect::<Vec<_>>().into();
+        .map(|v| json!({"value":v,"color":"#FFFFFF"}))
+        .collect::<Vec<_>>()
+        .into();
     let value = |x, y| 193 + (x + y * 3) % 64;
-    project.layer_mut(K, 0).unwrap()["intGridCsv"] =
-        (0..side).flat_map(|y| (0..2 * side).map(move |x| {
-            if x < side { value(x, y) } else { 0 }
-        })).collect::<Vec<_>>().into();
-    let group = project.copy_selection_group(K, &[0], [0, 0, side * 16, side * 16]).unwrap();
+    project.layer_mut(K, 0).unwrap()["intGridCsv"] = (0..side)
+        .flat_map(|y| (0..2 * side).map(move |x| if x < side { value(x, y) } else { 0 }))
+        .collect::<Vec<_>>()
+        .into();
+    let group = project
+        .copy_selection_group(K, &[0], [0, 0, side * 16, side * 16])
+        .unwrap();
     let mut times = [Duration::ZERO; 5];
     for time in &mut times {
         let mut edited = project.clone();
         let start = Instant::now();
-        let count = edited.paste_selection_group(K, &group, [side * 16, 0], true, false, false).unwrap();
+        let count = edited
+            .paste_selection_group(K, &group, [side * 16, 0], true, false, false)
+            .unwrap();
         *time = start.elapsed();
         assert_eq!(count, (side * side) as usize);
-        let cells = edited.layer(K, 0).unwrap()["intGridCsv"].as_array().unwrap();
+        let cells = edited.layer(K, 0).unwrap()["intGridCsv"]
+            .as_array()
+            .unwrap();
         for y in 0..side {
             for x in 0..side {
                 let offset = (y * side * 2 + x) as usize;
@@ -39,7 +49,10 @@ fn benchmark_large_intgrid_group_paste() {
         }
     }
     times.sort_unstable();
-    eprintln!("Large IntGrid selection paste: median {:?}; samples {times:?}", times[2]);
+    eprintln!(
+        "Large IntGrid selection paste: median {:?}; samples {times:?}",
+        times[2]
+    );
 }
 
 #[test]
@@ -51,7 +64,9 @@ fn benchmark_large_point_selection_edit() {
     source.resize_level(K, 128 * 16, 128 * 16, 0, 0).unwrap();
     source.add_layer("Actors", "Entities", 16).unwrap();
     let def = source.add_entity_def("Actor", 16, 16).unwrap();
-    let field = source.add_field_definition(Some(def), "Path", "Point", true).unwrap();
+    let field = source
+        .add_field_definition(Some(def), "Path", "Point", true)
+        .unwrap();
     let entities = (0..4_000)
         .map(|index| {
             let (x, y) = (index % 64, index / 64);
@@ -68,15 +83,22 @@ fn benchmark_large_point_selection_edit() {
         .collect();
     source.layer_mut(K, 0).unwrap()["entityInstances"] = Value::Array(entities);
     source.refresh_derived_data().unwrap();
-    let group = source.copy_selection_group(K, &[0], [0, 0, 128 * 16, 64 * 16]).unwrap();
+    let group = source
+        .copy_selection_group(K, &[0], [0, 0, 128 * 16, 64 * 16])
+        .unwrap();
     assert_eq!(group["elementCount"], 8_000);
-    assert_eq!(group["layers"][0]["clipboard"]["entityInstances"], json!([]));
+    assert_eq!(
+        group["layers"][0]["clipboard"]["entityInstances"],
+        json!([])
+    );
     let mut move_times = [Duration::ZERO; 5];
     let mut delete_times = move_times;
     for (move_time, delete_time) in move_times.iter_mut().zip(&mut delete_times) {
         let mut moved = source.clone();
         let start = Instant::now();
-        let result = moved.move_selection_group_with_result(K, &group, [16, 0], false, false).unwrap();
+        let result = moved
+            .move_selection_group_with_result(K, &group, [16, 0], false, false)
+            .unwrap();
         *move_time = start.elapsed();
         let points = result["layers"][0]["points"].as_array().unwrap();
         assert_eq!(points.len(), 4_000);
@@ -84,10 +106,22 @@ fn benchmark_large_point_selection_edit() {
         let start = Instant::now();
         assert_eq!(deleted.delete_selection_group(K, &group).unwrap(), 8_000);
         *delete_time = start.elapsed();
-        let moved_entities = moved.layer(K, 0).unwrap()["entityInstances"].as_array().unwrap();
-        let deleted_entities = deleted.layer(K, 0).unwrap()["entityInstances"].as_array().unwrap();
-        assert_eq!((moved_entities.len(), deleted_entities.len()), (4_000, 4_000));
-        for (index, ((entity, deleted), point)) in moved_entities.iter().zip(deleted_entities).zip(points).enumerate() {
+        let moved_entities = moved.layer(K, 0).unwrap()["entityInstances"]
+            .as_array()
+            .unwrap();
+        let deleted_entities = deleted.layer(K, 0).unwrap()["entityInstances"]
+            .as_array()
+            .unwrap();
+        assert_eq!(
+            (moved_entities.len(), deleted_entities.len()),
+            (4_000, 4_000)
+        );
+        for (index, ((entity, deleted), point)) in moved_entities
+            .iter()
+            .zip(deleted_entities)
+            .zip(points)
+            .enumerate()
+        {
             let id = format!("entity-{index}");
             let value = json!({"cx":index % 64 + 1,"cy":index / 64});
             assert_eq!(entity["iid"], id);
@@ -103,7 +137,10 @@ fn benchmark_large_point_selection_edit() {
     }
     for (name, times) in [("move", &mut move_times), ("delete", &mut delete_times)] {
         times.sort_unstable();
-        eprintln!("Large point selection {name}: median {:?}; samples {times:?}", times[2]);
+        eprintln!(
+            "Large point selection {name}: median {:?}; samples {times:?}",
+            times[2]
+        );
     }
 }
 
@@ -115,28 +152,43 @@ fn benchmark_large_entity_selection_capture() {
     let mut project = Project::new();
     project.resize_level(K, 128 * 16, 128 * 16, 0, 0).unwrap();
     project.add_layer("Actors", "Entities", 16).unwrap();
-    let entities = (0..4_000).map(|i| {
-        let (x, y) = (i % 64, i / 64);
-        let points: Vec<_> = (0..12).map(|point| json!({"cx":x, "cy":100 + point})).collect();
-        json!({
-            "iid":format!("actor-{i}"), "px":[x * 16, y * 16], "__pivot":[0, 0],
-            "fieldInstances":[
-                {"defUid":10,"__type":"Array<Point>","__value":points},
-                {"defUid":11,"__type":"Point","__value":{"cx":x,"cy":y}}
-            ]
+    let entities = (0..4_000)
+        .map(|i| {
+            let (x, y) = (i % 64, i / 64);
+            let points: Vec<_> = (0..12)
+                .map(|point| json!({"cx":x, "cy":100 + point}))
+                .collect();
+            json!({
+                "iid":format!("actor-{i}"), "px":[x * 16, y * 16], "__pivot":[0, 0],
+                "fieldInstances":[
+                    {"defUid":10,"__type":"Array<Point>","__value":points},
+                    {"defUid":11,"__type":"Point","__value":{"cx":x,"cy":y}}
+                ]
+            })
         })
-    }).collect();
+        .collect();
     project.layer_mut(K, 0).unwrap()["entityInstances"] = Value::Array(entities);
     let mut times = [Duration::ZERO; 5];
     for time in &mut times {
         let start = Instant::now();
-        let group = project.copy_selection_group(K, &[0], [0, 0, 64 * 16, 64 * 16]).unwrap();
+        let group = project
+            .copy_selection_group(K, &[0], [0, 0, 64 * 16, 64 * 16])
+            .unwrap();
         *time = start.elapsed();
         assert_eq!(group["elementCount"], 8_000);
-        let selected = group["layers"][0]["clipboard"]["entityInstances"].as_array().unwrap();
-        let originals = project.layer(K, 0).unwrap()["entityInstances"].as_array().unwrap();
+        let selected = group["layers"][0]["clipboard"]["entityInstances"]
+            .as_array()
+            .unwrap();
+        let originals = project.layer(K, 0).unwrap()["entityInstances"]
+            .as_array()
+            .unwrap();
         assert_eq!(selected, originals);
-        for (i, point) in group["layers"][0]["points"].as_array().unwrap().iter().enumerate() {
+        for (i, point) in group["layers"][0]["points"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .enumerate()
+        {
             assert_eq!(point["entityIid"], originals[i]["iid"]);
             assert_eq!(point["fieldDefUid"], 11);
             assert_eq!(point["isArray"], false);
@@ -144,7 +196,10 @@ fn benchmark_large_entity_selection_capture() {
         }
     }
     times.sort_unstable();
-    eprintln!("Large entity selection capture: median {:?}; samples {times:?}", times[2]);
+    eprintln!(
+        "Large entity selection capture: median {:?}; samples {times:?}",
+        times[2]
+    );
 }
 
 #[test]
@@ -170,7 +225,9 @@ fn benchmark_large_entity_selection_refresh() {
     project.layer_mut(K, 0).unwrap()["entityInstances"] = Value::Array(entities);
     let selection = project.select_all_group(K, &[0]).unwrap();
     assert_eq!(selection["elementCount"], 16_000);
-    let entities = project.layer_mut(K, 0).unwrap()["entityInstances"].as_array_mut().unwrap();
+    let entities = project.layer_mut(K, 0).unwrap()["entityInstances"]
+        .as_array_mut()
+        .unwrap();
     entities[0]["fieldInstances"][0]["__value"]["cx"] = json!(1);
     entities.reverse();
     let mut expected = selection.clone();
@@ -186,7 +243,10 @@ fn benchmark_large_entity_selection_refresh() {
         assert_eq!(refreshed, expected);
     }
     times.sort_unstable();
-    eprintln!("Large entity selection refresh: median {:?}; samples {times:?}", times[3]);
+    eprintln!(
+        "Large entity selection refresh: median {:?}; samples {times:?}",
+        times[3]
+    );
 }
 
 #[test]
@@ -201,14 +261,15 @@ fn benchmark_large_tile_selection() {
         .add_tileset(std::path::Path::new("atlas.png"), 16, 32, 32)
         .unwrap();
     source.assign_tileset(layer, atlas).unwrap();
-    let tile = |x, y, tag| {
-        json!({"px":[x*16,y*16],"src":[0,0],"t":0,"f":0,"a":1,"d":[y*128+x],"tag":tag})
-    };
+    let tile =
+        |x, y, tag| json!({"px":[x*16,y*16],"src":[0,0],"t":0,"f":0,"a":1,"d":[y*128+x],"tag":tag});
     let original = (0..96)
         .flat_map(|y| (0..128).map(move |x| tile(x, y, x)))
         .collect::<Vec<_>>();
     source.layer_mut(K, 0).unwrap()["gridTiles"] = Value::Array(original.clone());
-    let group = source.copy_selection_group(K, &[0], [0, 0, 64 * 16, 96 * 16]).unwrap();
+    let group = source
+        .copy_selection_group(K, &[0], [0, 0, 64 * 16, 96 * 16])
+        .unwrap();
     let clip = &group["layers"][0]["clipboard"];
     let expected = (0..96)
         .flat_map(|y| (0..64).map(move |x| tile(x + 64, y, x)))
@@ -218,22 +279,40 @@ fn benchmark_large_tile_selection() {
     for (paste_time, move_time) in paste_times.iter_mut().zip(&mut move_times) {
         let mut pasted = source.clone();
         let start = Instant::now();
-        assert_eq!(pasted.paste_region(K, 0, clip, 64, 0, false, false, true).unwrap(), expected.len());
+        assert_eq!(
+            pasted
+                .paste_region(K, 0, clip, 64, 0, false, false, true)
+                .unwrap(),
+            expected.len()
+        );
         *paste_time = start.elapsed();
         let tiles = pasted.layer(K, 0).unwrap()["gridTiles"].as_array().unwrap();
-        let kept = original.iter().filter(|tile| tile["px"][0].as_i64().unwrap() < 64 * 16);
+        let kept = original
+            .iter()
+            .filter(|tile| tile["px"][0].as_i64().unwrap() < 64 * 16);
         assert!(tiles.iter().eq(kept.chain(&expected)));
 
         let mut moved = source.clone();
         let start = Instant::now();
-        let next = moved.move_selection_group_with_result(K, &group, [64 * 16, 0], false, false).unwrap();
+        let next = moved
+            .move_selection_group_with_result(K, &group, [64 * 16, 0], false, false)
+            .unwrap();
         *move_time = start.elapsed();
         assert_eq!(next["elementCount"], expected.len());
-        assert_eq!(moved.layer(K, 0).unwrap()["gridTiles"].as_array().unwrap(), &expected);
+        assert_eq!(
+            moved.layer(K, 0).unwrap()["gridTiles"].as_array().unwrap(),
+            &expected
+        );
     }
-    for (name, times) in [("stack paste", &mut paste_times), ("group move", &mut move_times)] {
+    for (name, times) in [
+        ("stack paste", &mut paste_times),
+        ("group move", &mut move_times),
+    ] {
         times.sort_unstable();
-        eprintln!("Large tile selection {name}: median {:?}; samples {times:?}", times[2]);
+        eprintln!(
+            "Large tile selection {name}: median {:?}; samples {times:?}",
+            times[2]
+        );
     }
 }
 
@@ -269,7 +348,9 @@ fn moving_selected_entities_preserves_depth_and_removes_only_out_of_bounds_entit
         .unwrap();
     assert_eq!(outside["elementCount"], 0);
     assert_eq!(
-        p.layer(K, 0).unwrap()["entityInstances"].as_array().unwrap(),
+        p.layer(K, 0).unwrap()["entityInstances"]
+            .as_array()
+            .unwrap(),
         &before.as_array().unwrap()[1..]
     );
 }
@@ -323,17 +404,27 @@ fn limited_copy_drag_moves_the_original_and_its_point_for_every_policy() {
             .unwrap();
         let geometries = json!([{"layerDefUid":layer,"origin":[0.,0.],"scale":1.}]);
         let regions = json!([{"layerIndex":0,"rect":[2,2,1,1],"geometry":geometries[0]}]);
-        let group = p.copy_selection_group_from_regions(K, &regions, [32, 32, 16, 16]).unwrap();
+        let group = p
+            .copy_selection_group_from_regions(K, &regions, [32, 32, 16, 16])
+            .unwrap();
         let (next, report) = p
             .drag_selection_group_with_report(K, &group, [32., 16.], &geometries, true, false, None)
             .unwrap();
         assert_eq!(report.copy_limits, [(1, "Actor".to_owned())]);
-        let entities = p.layer(K, 0).unwrap()["entityInstances"].as_array().unwrap();
+        let entities = p.layer(K, 0).unwrap()["entityInstances"]
+            .as_array()
+            .unwrap();
         assert_eq!(entities.len(), 1);
         assert_eq!(entities[0]["iid"], id);
         assert_eq!(entities[0]["px"], json!([64, 48]));
-        assert_eq!(entities[0]["fieldInstances"][0]["__value"], json!({"cx":8,"cy":7}));
-        assert_eq!(next["layers"][0]["clipboard"]["entityInstances"][0]["iid"], id);
+        assert_eq!(
+            entities[0]["fieldInstances"][0]["__value"],
+            json!({"cx":8,"cy":7})
+        );
+        assert_eq!(
+            next["layers"][0]["clipboard"]["entityInstances"][0]["iid"],
+            id
+        );
     }
 }
 
@@ -354,7 +445,9 @@ fn copy_drag_uses_the_available_slots_in_selection_order_and_moves_the_rest() {
         .drag_selection_group_with_report(K, &group, [32., 16.], &geometries, true, false, None)
         .unwrap();
     assert_eq!(report.copy_limits, [(3, "Actor".to_owned())]);
-    let entities = p.layer(K, 0).unwrap()["entityInstances"].as_array().unwrap();
+    let entities = p.layer(K, 0).unwrap()["entityInstances"]
+        .as_array()
+        .unwrap();
     assert_eq!(entities.len(), 3);
     assert_eq!(entities[0], original[0]);
     assert_eq!(entities[1]["iid"], original[1]["iid"]);

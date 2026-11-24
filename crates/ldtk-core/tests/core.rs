@@ -387,7 +387,8 @@ fn entity_tag_filters_and_world_count_limits_are_honored() {
     let mut p = project();
     p.json["defs"]["layers"][2]["requiredTags"] = json!(["enemy"]);
     assert!(matches!(
-        p.place_entity_with_outcome(KEY, 2, 4, [0, 0], [0, 0]).unwrap(),
+        p.place_entity_with_outcome(KEY, 2, 4, [0, 0], [0, 0])
+            .unwrap(),
         ldtk_core::EntityPlacement::Ignored
     ));
     p.json["defs"]["layers"][2]["requiredTags"] = json!(["actor"]);

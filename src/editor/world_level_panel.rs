@@ -172,7 +172,11 @@ fn background_pivot_inputs(
                     ui.horizontal(|ui| {
                         ui.set_height(32.);
                         ui.spacing_mut().item_spacing.x = 4.;
-                        ui.label(RichText::new(locale::tr(ui, caption)).size(12.).color(theme::TEXT));
+                        ui.label(
+                            RichText::new(locale::tr(ui, caption))
+                                .size(12.)
+                                .color(theme::TEXT),
+                        );
                         for axis in 0..2 {
                             if axis == 1 {
                                 ui.label(",");
@@ -192,7 +196,9 @@ fn background_pivot_inputs(
                                         |ui, text, id| {
                                             ui.add_sized(
                                                 [40., 32.],
-                                                form_text_box(text).font(FontId::proportional(12.)).id(id),
+                                                form_text_box(text)
+                                                    .font(FontId::proportional(12.))
+                                                    .id(id),
                                             )
                                         },
                                     )
@@ -200,10 +206,17 @@ fn background_pivot_inputs(
                                 .inner;
                             if let Some(draft) = draft {
                                 let value = if pixels {
-                                    draft.trim().parse::<i64>().ok()
+                                    draft
+                                        .trim()
+                                        .parse::<i64>()
+                                        .ok()
                                         .map(|v| v.clamp(-2048, 2048) as f64 / extent)
                                 } else {
-                                    draft.trim().parse::<f64>().ok().filter(|v| v.is_finite())
+                                    draft
+                                        .trim()
+                                        .parse::<f64>()
+                                        .ok()
+                                        .filter(|v| v.is_finite())
                                         .map(|v| v.clamp(-50., 50.))
                                 };
                                 if let Some(value) = value {
@@ -260,7 +273,10 @@ fn world_selector(
             let salt = "world-properties";
             let id = ui.make_persistent_id(egui::Id::new(salt));
             ui.data_mut(|data| data.insert_temp(world_selector_id(), id));
-            let options: Vec<_> = worlds.iter().map(|(_, name)| (name.as_str(), None)).collect();
+            let options: Vec<_> = worlds
+                .iter()
+                .map(|(_, name)| (name.as_str(), None))
+                .collect();
             let current = worlds
                 .iter()
                 .position(|(index, _)| Some(*index) == current_world);
@@ -327,7 +343,9 @@ pub(super) fn parse_form_int(draft: &str) -> i64 {
         .strip_prefix("0x")
         .or_else(|| digits.strip_prefix("0X"))
         .map_or((10, digits), |digits| (16, digits));
-    let end = digits.find(|c: char| !c.is_digit(radix)).unwrap_or(digits.len());
+    let end = digits
+        .find(|c: char| !c.is_digit(radix))
+        .unwrap_or(digits.len());
     if end == 0 {
         return 0;
     }
@@ -1167,10 +1185,7 @@ mod tests {
                 _ => None,
             }
         }
-        output
-            .shapes
-            .iter()
-            .find_map(|s| find(&s.shape, expected))
+        output.shapes.iter().find_map(|s| find(&s.shape, expected))
     }
     fn label(output: &egui::FullOutput, expected: &str) -> egui::Pos2 {
         find_label(output, expected)
@@ -1593,27 +1608,45 @@ mod tests {
 
         edit_depth(&mut app, "2");
         assert_eq!(app.world_depth, 0);
-        assert_eq!(app.project.as_ref().unwrap().level(key).unwrap()["worldDepth"], 2);
+        assert_eq!(
+            app.project.as_ref().unwrap().level(key).unwrap()["worldDepth"],
+            2
+        );
         edit_x(&mut app, "160");
-        assert_eq!(app.project.as_ref().unwrap().level(key).unwrap()["worldX"], 160);
+        assert_eq!(
+            app.project.as_ref().unwrap().level(key).unwrap()["worldX"],
+            160
+        );
 
         app.select_world_depth(1);
         edit_x(&mut app, "32");
-        assert_eq!(app.project.as_ref().unwrap().level(key).unwrap()["worldX"], 160);
+        assert_eq!(
+            app.project.as_ref().unwrap().level(key).unwrap()["worldX"],
+            160
+        );
         app.select_world_depth(2);
         edit_x(&mut app, "32");
-        assert_eq!(app.project.as_ref().unwrap().level(key).unwrap()["worldX"], 32);
+        assert_eq!(
+            app.project.as_ref().unwrap().level(key).unwrap()["worldX"],
+            32
+        );
 
         edit_depth(&mut app, "3");
         app.dismiss_panel();
         app.show_panel(Some(Panel::Level));
         edit_x(&mut app, "48");
-        assert_eq!(app.project.as_ref().unwrap().level(key).unwrap()["worldX"], 48);
+        assert_eq!(
+            app.project.as_ref().unwrap().level(key).unwrap()["worldX"],
+            48
+        );
 
         app.show_panel(Some(Panel::World));
         app.select_world_depth(2);
         edit_x(&mut app, "64");
-        assert_eq!(app.project.as_ref().unwrap().level(key).unwrap()["worldX"], 48);
+        assert_eq!(
+            app.project.as_ref().unwrap().level(key).unwrap()["worldX"],
+            48
+        );
     }
 
     #[test]
@@ -1831,7 +1864,10 @@ mod tests {
             Panel::World,
             vec![key(Key::Enter, egui::Modifiers::NONE)],
         );
-        assert_eq!(app.project.as_ref().unwrap().json["worldLayout"], "GridVania");
+        assert_eq!(
+            app.project.as_ref().unwrap().json["worldLayout"],
+            "GridVania"
+        );
     }
     #[test]
     fn source_world_layout_confirmation_uses_friendly_labels_and_conditional_grid() {
@@ -1848,7 +1884,9 @@ mod tests {
         assert!(world_form_dialog::is_open(&ctx));
         fn red_frame(shape: &egui::Shape) -> Option<Rect> {
             match shape {
-                egui::Shape::Rect(rect) if rect.fill == LEVEL_ACTION_RED && rect.rect.width() > 300. => {
+                egui::Shape::Rect(rect)
+                    if rect.fill == LEVEL_ACTION_RED && rect.rect.width() > 300. =>
+                {
                     Some(rect.rect)
                 }
                 egui::Shape::Vec(children) => children.iter().find_map(red_frame),
@@ -1860,8 +1898,14 @@ mod tests {
             .iter()
             .find_map(|shape| red_frame(&shape.shape))
             .expect("red layout warning backdrop");
-        assert!((warning_rect.min - egui::pos2(0., 16.)).abs().max_elem() <= 1., "{warning_rect:?}");
-        assert!((warning_rect.width() - 400.).abs() <= 1., "{warning_rect:?}");
+        assert!(
+            (warning_rect.min - egui::pos2(0., 16.)).abs().max_elem() <= 1.,
+            "{warning_rect:?}"
+        );
+        assert!(
+            (warning_rect.width() - 400.).abs() <= 1.,
+            "{warning_rect:?}"
+        );
         assert_eq!(app.project.as_ref().unwrap().json["worldLayout"], "Free");
         click(&mut app, &ctx, Panel::World, "CANCEL");
         click(&mut app, &ctx, Panel::World, WORLD_LAYOUTS[0].1);
@@ -1888,8 +1932,16 @@ mod tests {
             egui::pos2(156., label(&view, "World coords").y),
         );
         for (arrow, expected) in [(Key::ArrowUp, 1), (Key::ArrowDown, 0)] {
-            frame(&mut app, &ctx, Panel::Level, vec![key(arrow, egui::Modifiers::NONE)]);
-            assert_eq!(app.project.as_ref().unwrap().level(level).unwrap()["worldX"], expected);
+            frame(
+                &mut app,
+                &ctx,
+                Panel::Level,
+                vec![key(arrow, egui::Modifiers::NONE)],
+            );
+            assert_eq!(
+                app.project.as_ref().unwrap().level(level).unwrap()["worldX"],
+                expected
+            );
         }
         let view = frame(&mut app, &ctx, Panel::Level, vec![]);
         click_at(
@@ -1898,12 +1950,25 @@ mod tests {
             Panel::Level,
             egui::pos2(156., label(&view, "Size").y),
         );
-        frame(&mut app, &ctx, Panel::Level, vec![key(Key::ArrowUp, egui::Modifiers::NONE)]);
-        assert_eq!(app.project.as_ref().unwrap().level(level).unwrap()["pxWid"], 257);
+        frame(
+            &mut app,
+            &ctx,
+            Panel::Level,
+            vec![key(Key::ArrowUp, egui::Modifiers::NONE)],
+        );
+        assert_eq!(
+            app.project.as_ref().unwrap().level(level).unwrap()["pxWid"],
+            257
+        );
 
         app.show_panel(Some(Panel::World));
         click(&mut app, &ctx, Panel::World, "320");
-        frame(&mut app, &ctx, Panel::World, vec![key(Key::ArrowDown, egui::Modifiers::NONE)]);
+        frame(
+            &mut app,
+            &ctx,
+            Panel::World,
+            vec![key(Key::ArrowDown, egui::Modifiers::NONE)],
+        );
         assert_eq!(app.project.as_ref().unwrap().json["defaultLevelWidth"], 319);
     }
 
@@ -1911,7 +1976,12 @@ mod tests {
     fn typed_world_coordinates_use_source_integer_parsing_and_bounds() {
         let (mut app, ctx) = editor();
         let level = app.selected.unwrap();
-        for (typed, expected) in [("40000", 32767), ("-40000", -32768), ("-37.8", -37), ("", 0)] {
+        for (typed, expected) in [
+            ("40000", 32767),
+            ("-40000", -32768),
+            ("-37.8", -37),
+            ("", 0),
+        ] {
             let view = frame(&mut app, &ctx, Panel::Level, vec![]);
             click_at(
                 &mut app,
@@ -1920,7 +1990,10 @@ mod tests {
                 egui::pos2(156., label(&view, "World coords").y),
             );
             replace_text(&mut app, &ctx, Panel::Level, typed);
-            assert_eq!(app.project.as_ref().unwrap().level(level).unwrap()["worldX"], expected);
+            assert_eq!(
+                app.project.as_ref().unwrap().level(level).unwrap()["worldX"],
+                expected
+            );
         }
     }
 

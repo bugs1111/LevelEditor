@@ -327,8 +327,12 @@ impl Project {
             validate_group(group)?;
             if was_optional && group["isOptional"] != true {
                 for key in p.level_keys() {
-                    let Some(layers) = p.level_mut(key)
-                        .and_then(|level| level["layerInstances"].as_array_mut()) else { continue };
+                    let Some(layers) = p
+                        .level_mut(key)
+                        .and_then(|level| level["layerInstances"].as_array_mut())
+                    else {
+                        continue;
+                    };
                     for layer in layers {
                         if layer["layerDefUid"] == layer_uid
                             && let Some(optional) = layer["optionalRules"].as_array_mut()

@@ -116,7 +116,10 @@ type EntityNames<'a> = HashMap<&'a str, (&'a str, &'a str)>;
 
 fn entity_names(project: &Project) -> EntityNames<'_> {
     let mut names = HashMap::new();
-    for level in project.iter_level_keys().filter_map(|key| project.level(key)) {
+    for level in project
+        .iter_level_keys()
+        .filter_map(|key| project.level(key))
+    {
         let level_name = text(level, "identifier", "Level");
         for entity in values(&level["layerInstances"])
             .iter()
@@ -607,12 +610,10 @@ impl EditorApp {
             return;
         }
         let opening = self.search_entries.is_none();
-        let index = self
-            .search_entries
-            .get_or_insert_with(|| SearchIndex {
-                entries: self.project.as_ref().map(search_index).unwrap_or_default(),
-                ..Default::default()
-            });
+        let index = self.search_entries.get_or_insert_with(|| SearchIndex {
+            entries: self.project.as_ref().map(search_index).unwrap_or_default(),
+            ..Default::default()
+        });
         let id = egui::Id::new("command-palette");
         let width = 733.333_f32.min(ctx.content_rect().width() - 16.).max(1.);
         let modal = egui::Modal::new(id)
@@ -660,7 +661,10 @@ impl EditorApp {
                 let mut navigated = false;
                 let mut selected = ctx.input(|input| {
                     for event in &input.events {
-                        let egui::Event::Key { key, pressed: true, .. } = event else {
+                        let egui::Event::Key {
+                            key, pressed: true, ..
+                        } = event
+                        else {
                             continue;
                         };
                         match key {
@@ -784,19 +788,20 @@ mod tests {
         }]);
         let count = 8_000;
         let entities: Vec<_> = (0..count)
-            .map(|index| json!({
-                "iid": format!("entity-{index}"),
-                "__identifier": format!("Actor{index}"),
-                "defUid": 42,
-                "fieldInstances": [{
-                    "defUid": 43,
-                    "__type": "EntityRef",
-                    "__value": {"entityIid": format!("entity-{}", count - 1 - index)}
-                }]
-            }))
+            .map(|index| {
+                json!({
+                    "iid": format!("entity-{index}"),
+                    "__identifier": format!("Actor{index}"),
+                    "defUid": 42,
+                    "fieldInstances": [{
+                        "defUid": 43,
+                        "__type": "EntityRef",
+                        "__value": {"entityIid": format!("entity-{}", count - 1 - index)}
+                    }]
+                })
+            })
             .collect();
-        project.json["levels"][0]["layerInstances"] =
-            json!([{"entityInstances": entities}]);
+        project.json["levels"][0]["layerInstances"] = json!([{"entityInstances": entities}]);
         let mut times = [std::time::Duration::ZERO; 5];
         for elapsed in &mut times {
             let start = std::time::Instant::now();
@@ -806,7 +811,10 @@ mod tests {
             assert!(results[3].title.contains("@(Actor7999 in Level_0)"));
         }
         times.sort_unstable();
-        eprintln!("Search entity references: median {:?}; samples {times:?}", times[2]);
+        eprintln!(
+            "Search entity references: median {:?}; samples {times:?}",
+            times[2]
+        );
     }
     use serde_json::json;
 
@@ -926,17 +934,14 @@ mod tests {
             assert!(!app.fit);
             assert_eq!(app.viewport.center, [-208.0, 105.0]);
             assert_eq!(app.viewport.zoom, 1.25);
-            assert!(
-                app.camera_motion
-                    .tick(
-                        &mut app.viewport,
-                        Rect::from_min_max(egui::pos2(300., 0.), egui::pos2(1440., 900.)),
-                        [0.; 2],
-                        1.0,
-                        1,
-                        1.0 / 60.0,
-                    )
-            );
+            assert!(app.camera_motion.tick(
+                &mut app.viewport,
+                Rect::from_min_max(egui::pos2(300., 0.), egui::pos2(1440., 900.)),
+                [0.; 2],
+                1.0,
+                1,
+                1.0 / 60.0,
+            ));
             assert!(app.viewport.center[0] > -208.0 && app.viewport.center[0] < 128.0);
             assert!(app.viewport.zoom > 1.25 && app.viewport.zoom < 900.0 / 336.0);
         }
@@ -960,17 +965,14 @@ mod tests {
         assert_eq!(app.active_world, world);
         assert!(matches!(&app.quick_notification, Some((name, _, _)) if name == "World view"));
         assert!(!app.fit);
-        assert!(
-            app.camera_motion
-                .tick(
-                    &mut app.viewport,
-                    Rect::from_min_max(egui::pos2(300., 0.), egui::pos2(1440., 900.)),
-                    [0.; 2],
-                    1.0,
-                    1,
-                    0.0,
-                )
-        );
+        assert!(app.camera_motion.tick(
+            &mut app.viewport,
+            Rect::from_min_max(egui::pos2(300., 0.), egui::pos2(1440., 900.)),
+            [0.; 2],
+            1.0,
+            1,
+            0.0,
+        ));
         assert_eq!(app.viewport.center, [-160.0, 3.0]);
         assert!((app.viewport.zoom - 1140.0 / (832.0 * 1.1 + 300.0)).abs() < 0.001);
     }

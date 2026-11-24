@@ -174,18 +174,22 @@ impl EditorApp {
                     egui::include_image!("../../assets/icons/saveAs.svg"),
                     true,
                 ),
-            ].into_iter().filter(|_| !read_only) {
+            ]
+            .into_iter()
+            .filter(|_| !read_only)
+            {
                 if action(ui, !self.is_busy(), image, label).clicked() {
                     self.save(save_as);
                 }
             }
-            if !read_only && action(
-                ui,
-                path.is_some() && !self.is_busy(),
-                egui::include_image!("../../assets/icons/rename.svg"),
-                "RENAME PROJECT",
-            )
-            .clicked()
+            if !read_only
+                && action(
+                    ui,
+                    path.is_some() && !self.is_busy(),
+                    egui::include_image!("../../assets/icons/rename.svg"),
+                    "RENAME PROJECT",
+                )
+                .clicked()
                 && let Some(path) = &path
             {
                 ui.ctx().data_mut(|data| {
@@ -414,14 +418,10 @@ impl EditorApp {
                 .clicked()
                 {
                     let mut dialog = FileDialog::new();
-                    if let Some(dir) = directory
-                        .clone()
-                        .filter(|dir| dir.is_dir())
-                        .or_else(|| {
-                            path.as_ref()
-                                .and_then(|path| path.parent().map(PathBuf::from))
-                        })
-                    {
+                    if let Some(dir) = directory.clone().filter(|dir| dir.is_dir()).or_else(|| {
+                        path.as_ref()
+                            .and_then(|path| path.parent().map(PathBuf::from))
+                    }) {
                         dialog = dialog.set_directory(dir);
                     }
                     if let Some(dir) = dialog.pick_folder() {
@@ -436,15 +436,17 @@ impl EditorApp {
                                 ui,
                                 [reset_width, 33.],
                                 egui::Button::image(
-                                    egui::Image::new(egui::include_image!("../../assets/icons/reset.svg"))
-                                        .fit_to_exact_size(Vec2::splat(16.)),
+                                    egui::Image::new(egui::include_image!(
+                                        "../../assets/icons/reset.svg"
+                                    ))
+                                    .fit_to_exact_size(Vec2::splat(16.)),
                                 )
                                 .fill(theme::LIGHT),
                             )
                         })
-                    .inner
-                    .on_hover_text(locale::tr(ui, "Reset destination folder to default"))
-                    .clicked()
+                        .inner
+                        .on_hover_text(locale::tr(ui, "Reset destination folder to default"))
+                        .clicked()
                 {
                     patch["backupRelPath"] = Value::Null;
                 }
@@ -1180,7 +1182,10 @@ mod tests {
             .iter()
             .find_map(|shape| action_rect(&shape.shape, add_command))
             .expect("orange add command button");
-        assert!(add_rect.width() > 500., "add command fills the value column");
+        assert!(
+            add_rect.width() > 500.,
+            "add command fills the value column"
+        );
     }
 
     #[test]
@@ -1259,7 +1264,8 @@ mod tests {
         json["backupOnSave"] = json!(true);
         let output = frame(&mut app, &ctx, vec![]);
         let export_heading = label(&output, "EXTRA FILES").unwrap();
-        let png_names = label(&output, "PNG file names").expect("PNG pattern when export is enabled");
+        let png_names =
+            label(&output, "PNG file names").expect("PNG pattern when export is enabled");
         assert!((png_names.left() - export_heading.left()).abs() <= 1.);
         label(&output, "LevelName").expect("effective default PNG naming pattern");
         label(&output, "LayerName").expect("effective default PNG naming pattern");
@@ -1560,7 +1566,13 @@ mod tests {
         );
         frame(&mut app, &ctx, vec![]);
         let filtered = frame(&mut app, &ctx, vec![egui::Event::Text("compact".into())]);
-        assert!(label(&filtered, "COMPACT (mostly indented, but small arrays are inlined)").is_some());
+        assert!(
+            label(
+                &filtered,
+                "COMPACT (mostly indented, but small arrays are inlined)"
+            )
+            .is_some()
+        );
         assert!(label(&filtered, "MINIFIED (minimal file size, no indentation)").is_none());
         frame(
             &mut app,
@@ -1685,7 +1697,10 @@ mod tests {
         );
         let project = app.project.as_ref().unwrap();
         assert_eq!(project.json["identifierStyle"], "Lowercase");
-        assert_eq!(project.json["defs"]["entities"][0]["identifier"], "my_entity");
+        assert_eq!(
+            project.json["defs"]["entities"][0]["identifier"],
+            "my_entity"
+        );
         assert!(label(&output, "WARNING!").is_none());
         assert!(app.last_chance.is_some());
         app.restore_last_chance();
@@ -1771,7 +1786,11 @@ mod tests {
         frame(&mut app, &ctx, vec![]);
         let output = frame(&mut app, &ctx, vec![egui::Event::Text("  LdNg  ".into())]);
         assert!(label(&output, "Run after saving").is_none());
-        click(&mut app, &ctx, label(&output, "Run after loading").unwrap().center());
+        click(
+            &mut app,
+            &ctx,
+            label(&output, "Run after loading").unwrap().center(),
+        );
         assert_eq!(
             app.project.as_ref().unwrap().json["customCommands"][0]["when"],
             "AfterLoad"

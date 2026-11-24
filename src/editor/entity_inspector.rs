@@ -594,12 +594,20 @@ mod tests {
         let mut f = Fixture::new();
         let project = f.app.project.as_mut().unwrap();
         let uid = project.json["defs"]["entities"][0]["uid"].as_i64().unwrap();
-        project.update_entity_definition(uid, &json!({"doc":null})).unwrap();
+        project
+            .update_entity_definition(uid, &json!({"doc":null}))
+            .unwrap();
         let output = f.warm();
-        fn find_rect(shape: &egui::Shape, color: Color32, width: f32, height: Option<f32>) -> Option<Rect> {
+        fn find_rect(
+            shape: &egui::Shape,
+            color: Color32,
+            width: f32,
+            height: Option<f32>,
+        ) -> Option<Rect> {
             match shape {
                 egui::Shape::Rect(shape)
-                    if shape.fill == color && shape.rect.width() == width
+                    if shape.fill == color
+                        && shape.rect.width() == width
                         && height.is_none_or(|height| shape.rect.height() == height) =>
                 {
                     Some(shape.rect)
@@ -611,9 +619,11 @@ mod tests {
             }
         }
         let rect = |color, width, height| {
-            output.shapes.iter().find_map(|shape| {
-                find_rect(&shape.shape, color, width, height)
-            }).unwrap()
+            output
+                .shapes
+                .iter()
+                .find_map(|shape| find_rect(&shape.shape, color, width, height))
+                .unwrap()
         };
         let strip = rect(theme::LIGHT, 330., Some(30.));
         let left = rect(Color32::from_rgb(115, 127, 157), 120., None);

@@ -11,7 +11,11 @@ pub(super) fn layer_notification(
         Some("AutoLayer") => egui::include_image!("../../assets/icons/autoLayer.svg"),
         _ => egui::include_image!("../../assets/icons/tile.png"),
     };
-    (text(layer, "__identifier", "").to_owned(), Some(icon), Instant::now())
+    (
+        text(layer, "__identifier", "").to_owned(),
+        Some(icon),
+        Instant::now(),
+    )
 }
 
 #[derive(PartialEq, Eq)]
@@ -55,7 +59,10 @@ impl CanvasNotice {
                 "Out-of-bounds entity removed: {names}",
                 &[("names", names)],
             ),
-            Self::EntityLimit { maximum, identifier } => locale::format_ctx(
+            Self::EntityLimit {
+                maximum,
+                identifier,
+            } => locale::format_ctx(
                 ctx,
                 "You cannot have more than {count} {entity}.",
                 &[("count", &maximum.to_string()), ("entity", identifier)],
@@ -116,7 +123,10 @@ impl EditorApp {
     }
 
     pub(super) fn report_entity_limit(&mut self, maximum: i64, identifier: String) {
-        self.report_canvas_notice(CanvasNotice::EntityLimit { maximum, identifier });
+        self.report_canvas_notice(CanvasNotice::EntityLimit {
+            maximum,
+            identifier,
+        });
     }
 
     pub(super) fn report_out_of_bounds(&mut self, names: &[String]) {
@@ -166,13 +176,20 @@ impl EditorApp {
         let now = Instant::now();
         if let Some(last) = self.canvas_notices.last_mut() {
             let repeated = last.notice == notice
-                || matches!((&last.notice, &notice), (CanvasNotice::SavedProject(_), CanvasNotice::SavedProject(_)));
+                || matches!(
+                    (&last.notice, &notice),
+                    (CanvasNotice::SavedProject(_), CanvasNotice::SavedProject(_))
+                );
             if repeated && now.duration_since(last.since).as_secs_f32() <= 0.7 {
                 return;
             }
             last.compacted.get_or_insert(now);
         }
-        self.canvas_notices.push(CanvasNoticeEntry { notice, since: now, compacted: None });
+        self.canvas_notices.push(CanvasNoticeEntry {
+            notice,
+            since: now,
+            compacted: None,
+        });
     }
 
     fn paint_canvas_notices(&mut self, ctx: &egui::Context, now: Instant) {
@@ -183,7 +200,8 @@ impl EditorApp {
         }
         let screen = ctx.content_rect();
         let painter = ctx.layer_painter(egui::LayerId::new(
-            egui::Order::Tooltip, egui::Id::new("canvas-notices"),
+            egui::Order::Tooltip,
+            egui::Id::new("canvas-notices"),
         ));
         let mut bottom = screen.bottom() - screen.height() * 0.1 - 38.;
         let mut scheduled = f32::INFINITY;
@@ -195,7 +213,9 @@ impl EditorApp {
             if age >= duration + 0.1 {
                 continue;
             }
-            let compact_age = entry.compacted.map(|since| now.duration_since(since).as_secs_f32());
+            let compact_age = entry
+                .compacted
+                .map(|since| now.duration_since(since).as_secs_f32());
             let compact_remaining = match compact_age {
                 Some(age) if age < 0.3 => css_ease_remaining(age / 0.3),
                 Some(_) => 0.,
@@ -215,19 +235,23 @@ impl EditorApp {
             } else {
                 body_font.clone()
             };
-            let galley = painter.layout(
-                message, title_font, Color32::PLACEHOLDER, max_text_width,
-            );
+            let galley = painter.layout(message, title_font, Color32::PLACEHOLDER, max_text_width);
             let subtitle_inset = 4. * zoom;
-            let subtitle = subtitle.map(|text| painter.layout(
-                text.to_owned(), body_font, Color32::PLACEHOLDER,
-                (max_text_width - subtitle_inset).max(1.),
-            ));
+            let subtitle = subtitle.map(|text| {
+                painter.layout(
+                    text.to_owned(),
+                    body_font,
+                    Color32::PLACEHOLDER,
+                    (max_text_width - subtitle_inset).max(1.),
+                )
+            });
             let text_width = subtitle.as_ref().map_or(galley.size().x, |line| {
                 galley.size().x.max(line.size().x + subtitle_inset)
             });
             let subtitle_y = galley.size().y + 4. * zoom;
-            let text_height = subtitle.as_ref().map_or(galley.size().y, |line| subtitle_y + line.size().y);
+            let text_height = subtitle
+                .as_ref()
+                .map_or(galley.size().y, |line| subtitle_y + line.size().y);
             let width = (text_width + left + right).max(150.) + edge_width + 1.;
             let height = text_height + vertical * 2. + 2.;
             // Match the source's max-height arrival and jQuery slide-up on dismissal.
@@ -247,23 +271,37 @@ impl EditorApp {
             let exit = ((age - duration) / 0.1).clamp(0., 1.);
             let visible = 0.5 + 0.5 * (std::f32::consts::PI * exit).cos();
             let top = bottom - height.min(arrived) * visible;
-            let row = Rect::from_min_size(egui::pos2(screen.right() - width, top), egui::vec2(width, height));
+            let row = Rect::from_min_size(
+                egui::pos2(screen.right() - width, top),
+                egui::vec2(width, height),
+            );
             let clip = Rect::from_min_max(
                 egui::pos2(screen.left(), screen.top()),
-                egui::pos2(screen.right(), if top + height > bottom + 0.01 { bottom } else { bottom + 8. }),
+                egui::pos2(
+                    screen.right(),
+                    if top + height > bottom + 0.01 {
+                        bottom
+                    } else {
+                        bottom + 8.
+                    },
+                ),
             );
             bottom = top - 8. * visible;
             if row.bottom() >= screen.top() {
                 let painter = painter.with_clip_rect(clip);
-                let brightness = if !blink { 1. } else { [(0.25, 7.), (0.4, 3.), (0.85, 1.5), (1.75, 1.)]
-                    .windows(2)
-                    .find_map(|points| {
-                        let [(start, from), (end, to)] = [points[0], points[1]];
-                        (start..end).contains(&age).then(|| {
-                            to + (from - to) * css_ease_remaining((age - start) / (end - start))
+                let brightness = if !blink {
+                    1.
+                } else {
+                    [(0.25, 7.), (0.4, 3.), (0.85, 1.5), (1.75, 1.)]
+                        .windows(2)
+                        .find_map(|points| {
+                            let [(start, from), (end, to)] = [points[0], points[1]];
+                            (start..end).contains(&age).then(|| {
+                                to + (from - to) * css_ease_remaining((age - start) / (end - start))
+                            })
                         })
-                    })
-                    .unwrap_or(1.) };
+                        .unwrap_or(1.)
+                };
                 let (fill, edge) = match entry.notice {
                     CanvasNotice::EntityLimit { .. }
                     | CanvasNotice::SavingFailed
@@ -272,9 +310,9 @@ impl EditorApp {
                     | CanvasNotice::NothingToSelect
                     | CanvasNotice::SymmetricRule
                     | CanvasNotice::LocateMissingPath => ([87, 0, 0], [255, 0, 0]),
-                    CanvasNotice::SavedProject(_) | CanvasNotice::ValueReset | CanvasNotice::EnteredFullscreen => {
-                        ([22, 62, 38], [66, 183, 113])
-                    }
+                    CanvasNotice::SavedProject(_)
+                    | CanvasNotice::ValueReset
+                    | CanvasNotice::EnteredFullscreen => ([22, 62, 38], [66, 183, 113]),
                     CanvasNotice::SavedTileSelection
                     | CanvasNotice::LinkOpened
                     | CanvasNotice::LinkCopied
@@ -286,9 +324,15 @@ impl EditorApp {
                     let [r, g, b] = channels.map(|v| (f32::from(v) * brightness).round() as u8);
                     Color32::from_rgb(r, g, b).gamma_multiply(opacity)
                 };
-                let corners = egui::CornerRadius { nw: 3, sw: 3, ..Default::default() };
+                let corners = egui::CornerRadius {
+                    nw: 3,
+                    sw: 3,
+                    ..Default::default()
+                };
                 let shadow = egui::epaint::Shadow {
-                    offset: [0, 4], blur: 6, spread: 0,
+                    offset: [0, 4],
+                    blur: 6,
+                    spread: 0,
                     color: Color32::from_black_alpha(180).gamma_multiply(opacity),
                 };
                 painter.add(shadow.as_shape(row, corners));
@@ -300,23 +344,31 @@ impl EditorApp {
                             .load_for_size(ctx, row.size())
                 {
                     painter.image(
-                        texture.id, row,
+                        texture.id,
+                        row,
                         Rect::from_min_size(egui::Pos2::ZERO, row.size() / 8.),
                         Color32::WHITE.gamma_multiply(opacity),
                     );
                 }
                 let border = shade(edge);
-                painter.rect_stroke(row, corners, Stroke::new(1_f32, border), egui::StrokeKind::Inside);
+                painter.rect_stroke(
+                    row,
+                    corners,
+                    Stroke::new(1_f32, border),
+                    egui::StrokeKind::Inside,
+                );
                 painter.rect_filled(
                     Rect::from_min_max(egui::pos2(row.right() - edge_width, top), row.max),
-                    0., border,
+                    0.,
+                    border,
                 );
                 let pos = row.min + egui::vec2(left + 1., vertical + 1.);
                 let text_opacity = opacity * if entry.compacted.is_some() { 0.8 } else { 1. };
                 painter.galley(pos, galley, Color32::WHITE.gamma_multiply(text_opacity));
                 if let Some(subtitle) = subtitle {
                     painter.galley(
-                        pos + egui::vec2(subtitle_inset, subtitle_y), subtitle,
+                        pos + egui::vec2(subtitle_inset, subtitle_y),
+                        subtitle,
                         Color32::WHITE.gamma_multiply(0.8 * text_opacity),
                     );
                 }
@@ -395,7 +447,10 @@ impl EditorApp {
                                 ui.spacing_mut().item_spacing.x = 8.;
                                 ui.horizontal(|ui| {
                                     if let Some(icon) = icon {
-                                        ui.add(egui::Image::new(icon.clone()).fit_to_exact_size(Vec2::splat(50.)));
+                                        ui.add(
+                                            egui::Image::new(icon.clone())
+                                                .fit_to_exact_size(Vec2::splat(50.)),
+                                        );
                                     }
                                     ui.label(
                                         RichText::new(name)
@@ -528,9 +583,11 @@ impl EditorApp {
             toast = (self.status.clone(), Instant::now());
             ctx.data_mut(|d| d.insert_temp(id, toast.clone()));
         }
-        let resize_notice = self.status == "Level resized" && self.canvas_notices.iter().any(|entry| {
-            matches!(entry.notice, CanvasNotice::ResizeRemovals(_))
-        });
+        let resize_notice = self.status == "Level resized"
+            && self
+                .canvas_notices
+                .iter()
+                .any(|entry| matches!(entry.notice, CanvasNotice::ResizeRemovals(_)));
         if !self.is_busy()
             && !self.status.is_empty()
             && self.status != SAVED_PROJECT_TITLE
@@ -744,12 +801,16 @@ mod tests {
         let at = Instant::now() + std::time::Duration::from_secs(2);
         let output = paint(&mut app, &ctx, at);
         let row = |color| {
-            output.shapes.iter().find_map(|shape| match &shape.shape {
-                egui::Shape::Rect(rect) if rect.fill == color && rect.rect.width() > 150. => {
-                    Some(rect.rect)
-                }
-                _ => None,
-            }).expect("notice background")
+            output
+                .shapes
+                .iter()
+                .find_map(|shape| match &shape.shape {
+                    egui::Shape::Rect(rect) if rect.fill == color && rect.rect.width() > 150. => {
+                        Some(rect.rect)
+                    }
+                    _ => None,
+                })
+                .expect("notice background")
         };
         let red = row(Color32::from_rgb(87, 0, 0).gamma_multiply(0.8));
         let amber = row(Color32::from_rgb(69, 48, 6));

@@ -78,7 +78,10 @@ impl EditorApp {
             offset,
             pixels_per_point,
         );
-        ([world_pixel[0] - offset[0], world_pixel[1] - offset[1]], world_pixel)
+        (
+            [world_pixel[0] - offset[0], world_pixel[1] - offset[1]],
+            world_pixel,
+        )
     }
 
     pub(super) fn wheel_zoom(&mut self, ctx: &egui::Context, rect: Rect, pointer: egui::Pos2) {
@@ -304,20 +307,36 @@ mod tests {
             let output = ctx.run(input, |ctx| {
                 eframe::App::update(&mut app, ctx, &mut eframe::Frame::_new_kittest());
             });
-            (app.fit, output.viewport_output[&egui::ViewportId::ROOT].commands.clone())
+            (
+                app.fit,
+                output.viewport_output[&egui::ViewportId::ROOT]
+                    .commands
+                    .clone(),
+            )
         };
         let normal = egui::vec2(800., 600.);
         let full = egui::vec2(1440., 900.);
         assert!(draw(normal, false, false, false).0);
         let (fit_pending, commands) = draw(normal, true, false, false);
         assert!(fit_pending);
-        assert!(commands.iter().any(|cmd| matches!(cmd, egui::ViewportCommand::Maximized(true))));
+        assert!(
+            commands
+                .iter()
+                .any(|cmd| matches!(cmd, egui::ViewportCommand::Maximized(true)))
+        );
         let (fit_pending, commands) = draw(egui::vec2(1440., 876.), true, true, false);
         assert!(fit_pending);
-        assert!(commands.iter().any(|cmd| matches!(cmd, egui::ViewportCommand::Fullscreen(true))));
+        assert!(
+            commands
+                .iter()
+                .any(|cmd| matches!(cmd, egui::ViewportCommand::Fullscreen(true)))
+        );
         assert!(!draw(full, true, true, true).0);
         assert!(!draw(normal, true, false, false).1.iter().any(|cmd| {
-            matches!(cmd, egui::ViewportCommand::Maximized(_) | egui::ViewportCommand::Fullscreen(_))
+            matches!(
+                cmd,
+                egui::ViewportCommand::Maximized(_) | egui::ViewportCommand::Fullscreen(_)
+            )
         }));
         assert!((app.viewport.zoom - 900. / (256. + 80.)).abs() < 0.001);
     }

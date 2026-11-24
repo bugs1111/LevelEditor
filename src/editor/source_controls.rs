@@ -46,10 +46,15 @@ pub(in crate::app) fn edit_text(
 
 #[derive(Clone, Copy)]
 pub(in crate::app) enum NumberStyle {
-    Plain { placeholder: Option<&'static str> },
+    Plain {
+        placeholder: Option<&'static str>,
+    },
     Float,
     Percent,
-    PercentSlider { min: f64, max: f64 },
+    PercentSlider {
+        min: f64,
+        max: f64,
+    },
     IntegerSlider {
         min: f64,
         max: f64,
@@ -70,7 +75,11 @@ pub(in crate::app) fn step_number(ui: &mut egui::Ui, id: egui::Id, draft: &mut S
     if step == 0. {
         return false;
     }
-    let value = draft.trim().parse::<f64>().ok().filter(|value| value.is_finite());
+    let value = draft
+        .trim()
+        .parse::<f64>()
+        .ok()
+        .filter(|value| value.is_finite());
     *draft = (value.unwrap_or(0.) + step).to_string();
     true
 }
@@ -92,7 +101,10 @@ pub(in crate::app) fn number_input(
     current: &str,
     style: NumberStyle,
 ) -> Option<String> {
-    let width = if matches!(style, NumberStyle::Plain { placeholder: None } | NumberStyle::Float) {
+    let width = if matches!(
+        style,
+        NumberStyle::Plain { placeholder: None } | NumberStyle::Float
+    ) {
         60.
     } else {
         90.
@@ -107,10 +119,15 @@ pub(in crate::app) fn number_input_sized(
     style: NumberStyle,
     width: f32,
 ) -> Option<String> {
-    let percent = matches!(style, NumberStyle::Percent | NumberStyle::PercentSlider { .. });
+    let percent = matches!(
+        style,
+        NumberStyle::Percent | NumberStyle::PercentSlider { .. }
+    );
     let slider_bounds = match style {
         NumberStyle::PercentSlider { min, max } => Some((min, max, 0.4)),
-        NumberStyle::IntegerSlider { min, max, speed, .. } => Some((min, max, speed)),
+        NumberStyle::IntegerSlider {
+            min, max, speed, ..
+        } => Some((min, max, speed)),
         _ => None,
     };
     let slider = slider_bounds.is_some();
@@ -171,8 +188,9 @@ pub(in crate::app) fn number_input_sized(
             edit = edit.text_color(theme::ACCENT);
         }
         let placeholder = match style {
-            NumberStyle::Plain { placeholder }
-            | NumberStyle::IntegerSlider { placeholder, .. } => placeholder,
+            NumberStyle::Plain { placeholder } | NumberStyle::IntegerSlider { placeholder, .. } => {
+                placeholder
+            }
             _ => None,
         };
         if let Some(placeholder) = placeholder {
@@ -400,7 +418,10 @@ pub(in crate::app) fn help_paragraph(ui: &mut egui::Ui, message: &str) {
     ui.add(
         egui::Label::new(
             RichText::new(locale::tr(ui, message))
-                .font(FontId::new(16., egui::FontFamily::Name("panel-title".into())))
+                .font(FontId::new(
+                    16.,
+                    egui::FontFamily::Name("panel-title".into()),
+                ))
                 .color(HELP_GREEN),
         )
         .wrap(),
@@ -681,7 +702,11 @@ fn property_label_layout(
     let width = ui.available_width().min(label_size.x);
     let text_width = (width - reserve).max(0.);
     let font = FontId::proportional(PROPERTY_LABEL_FONT_SIZE);
-    let color = if left_aligned { Color32::WHITE } else { ui.visuals().text_color() };
+    let color = if left_aligned {
+        Color32::WHITE
+    } else {
+        ui.visuals().text_color()
+    };
     // CSS dt labels wrap at spaces, without splitting an individual word.
     let mut lines = Vec::new();
     let mut line = String::new();
@@ -847,7 +872,11 @@ fn help_badge(ui: &mut egui::Ui, help: &str, below: bool) -> egui::Response {
             Color32::from_rgba_unmultiplied(30, 34, 41, 115)
         },
     );
-    help_tooltip(response.on_hover_cursor(egui::CursorIcon::Help), help, below)
+    help_tooltip(
+        response.on_hover_cursor(egui::CursorIcon::Help),
+        help,
+        below,
+    )
 }
 
 pub(super) fn field_instance_label(
@@ -981,8 +1010,7 @@ pub(super) fn form_select(
     let text_height = ui.fonts_mut(|fonts| fonts.row_height(&font));
     let spacing = ui.spacing_mut();
     spacing.interact_size.y = height;
-    spacing.button_padding =
-        egui::vec2(9., (height - text_height.max(spacing.icon_width)) * 0.5);
+    spacing.button_padding = egui::vec2(9., (height - text_height.max(spacing.icon_width)) * 0.5);
     let inactive = !open && !ui.memory(|memory| memory.has_focus(id));
     let invalid = inactive && appearance == FormSelectAppearance::Required;
     let striped = inactive && appearance == FormSelectAppearance::Unassigned;
@@ -1025,7 +1053,11 @@ pub(super) fn form_select(
         style.corner_radius = 3.into();
     }
     const ROW_HEIGHT: f32 = 17.;
-    let rows = options.len() + options.iter().filter(|(_, heading)| heading.is_some()).count();
+    let rows = options.len()
+        + options
+            .iter()
+            .filter(|(_, heading)| heading.is_some())
+            .count();
     let screen = ui.ctx().content_rect();
     let anchor = ui.next_widget_position().y;
     let available = (anchor - screen.top()).max(screen.bottom() - anchor - height) - 2.;
@@ -1081,13 +1113,15 @@ pub(super) fn form_select(
                         egui::vec2(ui.available_width(), ROW_HEIGHT),
                         Sense::hover(),
                     );
-                    ui.painter().with_clip_rect(rect.intersect(ui.clip_rect())).text(
-                        rect.left_center() + egui::vec2(11., 0.),
-                        Align2::LEFT_CENTER,
-                        heading,
-                        FontId::new(13.333, egui::FontFamily::Name("body-bold".into())),
-                        Color32::WHITE,
-                    );
+                    ui.painter()
+                        .with_clip_rect(rect.intersect(ui.clip_rect()))
+                        .text(
+                            rect.left_center() + egui::vec2(11., 0.),
+                            Align2::LEFT_CENTER,
+                            heading,
+                            FontId::new(13.333, egui::FontFamily::Name("body-bold".into())),
+                            Color32::WHITE,
+                        );
                     indent = 30.;
                 }
                 let (rect, response) = ui.allocate_exact_size(
@@ -1181,14 +1215,23 @@ pub(super) fn grouped_tileset_choices<'a>(
         } else {
             tag.unwrap_or_else(|| locale::tr(ui, "Untagged"))
         };
-        candidates.extend(choices.into_iter().enumerate().map(|(index, (choice, label))| {
-            (choice, (label, (index == 0).then_some(heading)))
-        }));
+        candidates.extend(
+            choices
+                .into_iter()
+                .enumerate()
+                .map(|(index, (choice, label))| (choice, (label, (index == 0).then_some(heading)))),
+        );
     }
-    if !tilesets.iter().any(|tileset| tileset["embedAtlas"] == "LdtkIcons") {
+    if !tilesets
+        .iter()
+        .any(|tileset| tileset["embedAtlas"] == "LdtkIcons")
+    {
         candidates.push((
             TilesetChoice::EmbeddedIcons,
-            (internal_icons, Some(locale::tr(ui, "Integrated LDtk tilesets"))),
+            (
+                internal_icons,
+                Some(locale::tr(ui, "Integrated LDtk tilesets")),
+            ),
         ));
     }
     candidates
@@ -1207,7 +1250,9 @@ pub(super) fn tileset_picker(
     let mut candidates = vec![(TilesetChoice::Unassigned, (placeholder, None))];
     candidates.extend(grouped_tileset_choices(ui, tilesets));
     let selection = current.map_or(TilesetChoice::Unassigned, TilesetChoice::Existing);
-    let index = candidates.iter().position(|(choice, _)| *choice == selection);
+    let index = candidates
+        .iter()
+        .position(|(choice, _)| *choice == selection);
     let options: Vec<_> = candidates.iter().map(|(_, label)| *label).collect();
     let title = index.map_or(placeholder, |i| options[i].0);
     let appearance = if required {
@@ -1226,9 +1271,9 @@ pub(super) fn tileset_picker(
             form_select(ui, salt, 29., &options, index, title, appearance)
         },
     )
-        .inner
-        .map(|index| candidates[index].0)
-        .filter(|choice| *choice != selection)
+    .inner
+    .map(|index| candidates[index].0)
+    .filter(|choice| *choice != selection)
 }
 
 pub(in crate::app) fn select_popup(
@@ -1332,19 +1377,19 @@ fn select_popup_contents(
         popup
     };
     popup.show(|ui| {
-            let pointer_moved = ui.input(|input| input.pointer.delta() != Vec2::ZERO);
-            let font = FontId::proportional(14.667);
-            let width = options
-                .iter()
-                .map(|(label, _)| {
-                    ui.painter()
-                        .layout_no_wrap((*label).to_owned(), font.clone(), Color32::WHITE)
-                        .size()
-                        .x
-                        + 16.
-                })
-                .fold(response.rect.width(), f32::max)
-                .min(ctx.content_rect().width());
+        let pointer_moved = ui.input(|input| input.pointer.delta() != Vec2::ZERO);
+        let font = FontId::proportional(14.667);
+        let width = options
+            .iter()
+            .map(|(label, _)| {
+                ui.painter()
+                    .layout_no_wrap((*label).to_owned(), font.clone(), Color32::WHITE)
+                    .size()
+                    .x
+                    + 16.
+            })
+            .fold(response.rect.width(), f32::max)
+            .min(ctx.content_rect().width());
 
         let navigation = select_navigation(ui, !searchable);
         let mut search = String::new();
@@ -1667,7 +1712,14 @@ mod tests {
         }
         for (key, label, left, top, above, right_aligned) in [
             ("png", "Export as PNG", 40., 280., true, false),
-            ("simplifiedExport", "Super simple export ❤", 40., 280., false, false),
+            (
+                "simplifiedExport",
+                "Super simple export ❤",
+                40.,
+                280.,
+                false,
+                false,
+            ),
             ("jsonStyle", "JSON indent style", 525., 285., true, true),
             ("jsonStyle", "JSON indent style", 40., 8., false, false),
         ] {

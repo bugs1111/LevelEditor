@@ -98,7 +98,12 @@ pub(crate) fn world_layout(project: &Project, selected: LevelKey) -> &str {
 }
 
 fn placement_bounds(origin: [f32; 2], size: [f32; 2]) -> [f32; 4] {
-    [origin[0], origin[1], origin[0] + size[0], origin[1] + size[1]]
+    [
+        origin[0],
+        origin[1],
+        origin[0] + size[0],
+        origin[1] + size[1],
+    ]
 }
 
 pub(crate) fn free_level_bounds(level: &Value) -> [f32; 4] {
@@ -137,7 +142,12 @@ const EMPTY_BOUNDS: [f32; 4] = [
 ];
 
 fn union_bounds(a: [f32; 4], b: [f32; 4]) -> [f32; 4] {
-    [a[0].min(b[0]), a[1].min(b[1]), a[2].max(b[2]), a[3].max(b[3])]
+    [
+        a[0].min(b[0]),
+        a[1].min(b[1]),
+        a[2].max(b[2]),
+        a[3].max(b[3]),
+    ]
 }
 
 pub fn bounds(project: &Project, selected: LevelKey, world: bool) -> [f32; 4] {
@@ -634,7 +644,8 @@ impl Scene<'_> {
             view.center[1] += number(level, "worldY", 0.);
         }
         let origin = view.level_render_canvas_origin(self.canvas, self.ctx.pixels_per_point());
-        view.to_screen(world, origin, self.canvas.size().into()).into()
+        view.to_screen(world, origin, self.canvas.size().into())
+            .into()
     }
 
     fn level_identifier(
@@ -651,12 +662,16 @@ impl Scene<'_> {
         }
         let name = text(level, "identifier", "Level");
         let modified = level["iid"].as_str().is_some_and(|iid| {
-            self.options.modified_levels.is_some_and(|levels| levels.contains(iid))
+            self.options
+                .modified_levels
+                .is_some_and(|levels| levels.contains(iid))
         });
-        let error = crate::app::bleep::level_entity_error(self.ctx, self.project, key)
-            .or_else(|| {
+        let error =
+            crate::app::bleep::level_entity_error(self.ctx, self.project, key).or_else(|| {
                 let background = level["bgRelPath"].as_str()?;
-                self.assets.errors.contains_key(&asset_path(self.project, background))
+                self.assets
+                    .errors
+                    .contains_key(&asset_path(self.project, background))
                     .then(|| "Bg image".to_owned())
             });
         let marker = if modified { "*" } else { "" };
@@ -733,7 +748,11 @@ impl Scene<'_> {
             self.assets,
             min + rotate(egui::vec2(6., -2.) * scale),
             &label,
-            if error.is_some() { Color32::RED } else { lighten(color, 0.5) },
+            if error.is_some() {
+                Color32::RED
+            } else {
+                lighten(color, 0.5)
+            },
             scale,
             f32::INFINITY,
             false,
@@ -838,7 +857,11 @@ impl Scene<'_> {
             );
             let world = |point: Pos2| {
                 self.view
-                    .to_world(point.into(), self.projection_origin, self.canvas.size().into())
+                    .to_world(
+                        point.into(),
+                        self.projection_origin,
+                        self.canvas.size().into(),
+                    )
                     .into()
             };
             let clip = painter.clip_rect();
@@ -862,7 +885,9 @@ impl Scene<'_> {
             }
             quads
         };
-        let raster = repeat_anchor.as_ref().or_else(|| quads.first())
+        let raster = repeat_anchor
+            .as_ref()
+            .or_else(|| quads.first())
             .filter(|quad| filtered && quad.src.is_positive() && quad.dst.is_positive())
             .map(|quad| blur::LayerRaster {
                 origin: self.point(quad.dst.min.into()),
@@ -1098,8 +1123,8 @@ impl Scene<'_> {
         let base_tint = self.tile_base_tint(!active);
         let tag_opacity = if self.options.tile_tags { 0.5 } else { 1. };
         let mut opaque_tint = None;
-        let unshifted = region.is_none() && tile_size.is_finite()
-            && tile_size == grid && pivot == [0.; 2];
+        let unshifted =
+            region.is_none() && tile_size.is_finite() && tile_size == grid && pivot == [0.; 2];
         let screen_center = self.projection_origin;
         let screen_size = self.canvas.size();
         let screen_center = [
@@ -1171,7 +1196,8 @@ impl Scene<'_> {
                 }
                 let [min, max] = tile_uv(source, [tile_size; 2], atlas, flips);
                 let tint = if opacity == 1. {
-                    *opaque_tint.get_or_insert_with(|| base_tint.gamma_multiply(alpha * tag_opacity))
+                    *opaque_tint
+                        .get_or_insert_with(|| base_tint.gamma_multiply(alpha * tag_opacity))
                 } else {
                     base_tint.gamma_multiply(alpha * opacity * tag_opacity)
                 };
@@ -1211,7 +1237,9 @@ impl Scene<'_> {
             number(def, "tilePivotY", 0.) * grid,
         ];
         let clip = painter.clip_rect();
-        let cull = self.ctx.tessellation_options(|options| options.coarse_tessellation_culling);
+        let cull = self
+            .ctx
+            .tessellation_options(|options| options.coarse_tessellation_culling);
         let screen_center: [f32; 2] =
             (Pos2::from(self.projection_origin) + self.canvas.size() * 0.5).into();
         let project = |axis: usize, point: f32| {
@@ -1265,12 +1293,7 @@ impl Scene<'_> {
                 if cull && !r.intersects(clip) {
                     continue;
                 }
-                painter.rect_stroke(
-                    r,
-                    0.,
-                    Stroke::new(stroke_width, color),
-                    StrokeKind::Inside,
-                );
+                painter.rect_stroke(r, 0., Stroke::new(stroke_width, color), StrokeKind::Inside);
             }
         }
     }
@@ -1386,7 +1409,10 @@ impl Scene<'_> {
             // Heaps truncates the text's offset before applying the level zoom.
             let offset = egui::vec2((-size.x * 0.5).trunc(), (-size.y * 0.5).trunc());
             let (offset, angle) = if vertical {
-                (egui::vec2(offset.y, -offset.x), -std::f32::consts::FRAC_PI_2)
+                (
+                    egui::vec2(offset.y, -offset.x),
+                    -std::f32::consts::FRAC_PI_2,
+                )
             } else {
                 (offset, 0.)
             };
@@ -1394,7 +1420,10 @@ impl Scene<'_> {
                 self.ctx,
                 painter,
                 self.assets,
-                self.point([origin[0] + anchor[0] + offset.x, origin[1] + anchor[1] + offset.y]),
+                self.point([
+                    origin[0] + anchor[0] + offset.x,
+                    origin[1] + anchor[1] + offset.y,
+                ]),
                 label,
                 label_color,
                 local_scale * self.view.zoom,
@@ -1516,7 +1545,10 @@ pub fn draw(
     let mut hover_rect = None;
     let mut world_level_fields = Vec::new();
     for (key, level, bounds, rect, depth) in levels {
-        if !options.world && key == options.selected && let Some(rect) = hover_rect.take() {
+        if !options.world
+            && key == options.selected
+            && let Some(rect) = hover_rect.take()
+        {
             paint_level_hover(ctx, painter, rect);
         }
         let depth_delta = depth - active_depth;
@@ -1740,11 +1772,10 @@ pub fn draw(
                     if width <= 0 || height <= 0 {
                         continue;
                     }
-                    let mask = Rect::from_min_size(
-                        Pos2::ZERO,
-                        egui::vec2(width as f32, height as f32),
-                    );
-                    let layer_painter = canvas_painter.with_clip_rect(scene.screen(base.rect(mask)));
+                    let mask =
+                        Rect::from_min_size(Pos2::ZERO, egui::vec2(width as f32, height as f32));
+                    let layer_painter =
+                        canvas_painter.with_clip_rect(scene.screen(base.rect(mask)));
                     let autotile = kind != "Tiles" && visible_in_tiles_only;
                     if kind == "IntGrid" && (!autotile || !options.render_auto) {
                         count += scene.intgrid(&layer_painter, layer, def, transform, draw_alpha);
@@ -1996,7 +2027,10 @@ pub fn draw_group_ghost(
             scale: 1.,
         });
         let entity_transform = if mode == GhostMode::EntityDrag {
-            Transform { scale: 1., ..transform }
+            Transform {
+                scale: 1.,
+                ..transform
+            }
         } else {
             transform
         };
@@ -2157,7 +2191,13 @@ pub fn draw_group_ghost(
                     .find(|d| d["uid"] == e["defUid"])
                     .unwrap_or(&Value::Null);
                 let (owner, link_origin) = if mode == GhostMode::EntityDrag {
-                    (entity, Transform { origin: delta_px, scale: 1. })
+                    (
+                        entity,
+                        Transform {
+                            origin: delta_px,
+                            scale: 1.,
+                        },
+                    )
                 } else {
                     (&e, transform)
                 };

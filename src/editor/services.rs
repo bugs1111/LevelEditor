@@ -20,7 +20,10 @@ pub(super) struct SavedProject {
 }
 
 pub(super) enum SaveFailure {
-    Write { path: PathBuf, reason: SaveWriteFailure },
+    Write {
+        path: PathBuf,
+        reason: SaveWriteFailure,
+    },
     MissingTarget(PathBuf),
 }
 
@@ -125,7 +128,10 @@ impl EditorApp {
         self.clear_save_progress();
         self.status = match &reason {
             SaveWriteFailure::DirectoryConflict => {
-                format!("Save failed: {} occupies the project folder path", path.with_extension("").display())
+                format!(
+                    "Save failed: {} occupies the project folder path",
+                    path.with_extension("").display()
+                )
             }
             SaveWriteFailure::Io(error) => format!("Save failed: {error}"),
         };
@@ -246,7 +252,9 @@ impl EditorApp {
                         .project
                         .as_ref()
                         .and_then(|p| p.filesystem_snapshot().ok());
-                    let saved_name = self.project.as_ref()
+                    let saved_name = self
+                        .project
+                        .as_ref()
                         .and_then(|p| p.path.as_deref())
                         .and_then(Path::file_stem)
                         .filter(|_| saved.report.export_errors.is_empty())
@@ -278,7 +286,11 @@ impl EditorApp {
                             .unwrap_or(0);
                         self.settings.remember(path, uid);
                     }
-                    self.queue_project_hooks(ctx, "AfterSave", hooks::Continuation::AfterSave(saved_name));
+                    self.queue_project_hooks(
+                        ctx,
+                        "AfterSave",
+                        hooks::Continuation::AfterSave(saved_name),
+                    );
                 }
                 Err(e) => {
                     if let Some(path) = self.save_attempt.take() {
@@ -520,8 +532,11 @@ impl EditorApp {
         restore: bool,
     ) {
         // Relinking or restoring the open backup reuses the original editor's preview state.
-        let keep_canvas_preview =
-            self.project.as_ref().and_then(|project| project.path.as_ref()) == Some(&backup);
+        let keep_canvas_preview = self
+            .project
+            .as_ref()
+            .and_then(|project| project.path.as_ref())
+            == Some(&backup);
         let (tx, rx) = mpsc::channel();
         self.loading = Some(rx);
         self.status = if restore {
@@ -537,8 +552,7 @@ impl EditorApp {
                     Project::restore_backup_with_exports(&backup, &original)
                         .map(|(project, report)| (project, report.warnings))
                 } else {
-                    Project::load_backup(&backup, &original)
-                        .map(|project| (project, Vec::new()))
+                    Project::load_backup(&backup, &original).map(|project| (project, Vec::new()))
                 }
                 .map_err(|e| e.to_string())?;
                 let migrated = project.migrate_to_current().map_err(|e| e.to_string())?;
@@ -826,7 +840,9 @@ mod creation_tests {
         let mut project = Project::new();
         project.json["externalLevels"] = true.into();
         project.save(&external).unwrap();
-        let level = project.json["levels"][0]["externalRelPath"].as_str().unwrap();
+        let level = project.json["levels"][0]["externalRelPath"]
+            .as_str()
+            .unwrap();
         std::fs::remove_file(directory.path().join(level)).unwrap();
 
         let ctx = egui::Context::default();
@@ -977,13 +993,18 @@ mod creation_tests {
         ] {
             locale::set(&ctx, language);
             let output = ctx.run(
-                egui::RawInput { screen_rect: Some(screen), ..Default::default() },
+                egui::RawInput {
+                    screen_rect: Some(screen),
+                    ..Default::default()
+                },
                 |ctx| app.canvas_notifications(ctx, screen),
             );
-            let text = |label| output.shapes.iter().find_map(|shape| match &shape.shape {
-                egui::Shape::Text(text) if text.galley.text() == label => Some(text.pos),
-                _ => None,
-            });
+            let text = |label| {
+                output.shapes.iter().find_map(|shape| match &shape.shape {
+                    egui::Shape::Text(text) if text.galley.text() == label => Some(text.pos),
+                    _ => None,
+                })
+            };
             let title = text(title).expect("successful save title");
             let name = text("雨.林").expect("file stem as notification subtitle");
             assert!(name.x > title.x && name.y > title.y);
@@ -1148,7 +1169,9 @@ mod creation_tests {
         for (key, expected) in [(Key::Escape, "Current"), (Key::Enter, "Archived")] {
             app.confirm_preview_restore(&ctx);
             assert!(EditorApp::backup_restore_open(&ctx));
-            let _ = ctx.run(egui::RawInput::default(), |ctx| app.preview_backup_restore_dialog(ctx));
+            let _ = ctx.run(egui::RawInput::default(), |ctx| {
+                app.preview_backup_restore_dialog(ctx)
+            });
             let _ = ctx.run(
                 egui::RawInput {
                     events: vec![egui::Event::Key {
@@ -1164,7 +1187,10 @@ mod creation_tests {
             );
             assert!(!EditorApp::backup_restore_open(&ctx));
             wait(&mut app, &ctx);
-            assert_eq!(Project::load(&original).unwrap().json["levels"][0]["identifier"], expected);
+            assert_eq!(
+                Project::load(&original).unwrap().json["levels"][0]["identifier"],
+                expected
+            );
         }
         assert!(!app.project.as_ref().unwrap().is_backup());
         assert!(!app.details && !app.render_auto);

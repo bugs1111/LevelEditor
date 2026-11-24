@@ -156,12 +156,14 @@ impl EditorApp {
                                             Color32::WHITE
                                         };
                                         let inset = 8.;
-                                        let galley = egui::WidgetText::from(RichText::new(name).color(ink)).into_galley(
-                                            ui,
-                                            Some(egui::TextWrapMode::Truncate),
-                                            (rect.width() - inset).max(0.),
-                                            FontId::proportional(14.),
-                                        );
+                                        let galley =
+                                            egui::WidgetText::from(RichText::new(name).color(ink))
+                                                .into_galley(
+                                                    ui,
+                                                    Some(egui::TextWrapMode::Truncate),
+                                                    (rect.width() - inset).max(0.),
+                                                    FontId::proportional(14.),
+                                                );
                                         ui.painter_at(rect).galley(
                                             rect.left_center()
                                                 + egui::vec2(inset, -galley.size().y / 2.),
@@ -211,12 +213,20 @@ impl EditorApp {
                                                     );
                                                 }
                                             });
-                                        source_definition_menu(ui, Some(menu_size), &response, |ui| {
-                                            self.clipboard_menu(ui, ClipTarget::Field {
-                                                owner,
-                                                uid: Some(uid),
-                                            });
-                                        });
+                                        source_definition_menu(
+                                            ui,
+                                            Some(menu_size),
+                                            &response,
+                                            |ui| {
+                                                self.clipboard_menu(
+                                                    ui,
+                                                    ClipTarget::Field {
+                                                        owner,
+                                                        uid: Some(uid),
+                                                    },
+                                                );
+                                            },
+                                        );
                                     });
                                 });
                             if let Some(payload) =
@@ -278,7 +288,11 @@ fn field_display_select<'a>(
 }
 
 impl EditorApp {
-    pub(in crate::app::panels) fn source_field_properties(&mut self, ui: &mut egui::Ui, def: &Value) {
+    pub(in crate::app::panels) fn source_field_properties(
+        &mut self,
+        ui: &mut egui::Ui,
+        def: &Value,
+    ) {
         let previous_spacing = ui.spacing().item_spacing.y;
         ui.spacing_mut().item_spacing.y = 10.;
         source_controls::form_heading_line(ui, "General settings");
@@ -292,7 +306,12 @@ impl EditorApp {
             let type_width = (ui.available_width() - 73.).max(40.);
             let (rect, _) = ui.allocate_exact_size(egui::vec2(type_width, 33.), Sense::hover());
             let painter = ui.painter().with_clip_rect(rect.intersect(ui.clip_rect()));
-            painter.rect_stroke(rect, 0., Stroke::new(1_f32, theme::LIGHT), StrokeKind::Inside);
+            painter.rect_stroke(
+                rect,
+                0.,
+                Stroke::new(1_f32, theme::LIGHT),
+                StrokeKind::Inside,
+            );
             painter.text(
                 rect.left_center() + egui::vec2(8., 0.),
                 Align2::LEFT_CENTER,
@@ -392,13 +411,7 @@ impl EditorApp {
                         .map(|raw| source_field_number(&raw, kind))
                     } else {
                         ui.vertical(|ui| {
-                            scalar_editor(
-                                ui,
-                                self.project.as_ref().unwrap(),
-                                kind,
-                                &value,
-                                def,
-                            )
+                            scalar_editor(ui, self.project.as_ref().unwrap(), kind, &value, def)
                         })
                         .inner
                     }
@@ -721,14 +734,15 @@ impl EditorApp {
                                         (text(entity, "identifier", "Entity"), Color32::TRANSPARENT)
                                     })
                                     .collect();
-                                let current = entities
-                                    .iter()
-                                    .position(|entity| entity["uid"] == def["allowedRefsEntityUid"]);
+                                let current = entities.iter().position(|entity| {
+                                    entity["uid"] == def["allowedRefsEntityUid"]
+                                });
                                 let title = current.map_or_else(
                                     || locale::tr(ui, "Choose entity"),
                                     |index| options[index].0,
                                 );
-                                let button = searchable_select_button(ui, ui.available_width(), title);
+                                let button =
+                                    searchable_select_button(ui, ui.available_width(), title);
                                 if let Some((index, _)) = searchable_select_popup(
                                     &button,
                                     ui.make_persistent_id(("field-reference-type", uid)),
@@ -778,14 +792,24 @@ impl EditorApp {
                             ui,
                             key,
                             current.as_deref().unwrap_or(""),
-                            NumberStyle::Plain { placeholder: Some(placeholder) },
+                            NumberStyle::Plain {
+                                placeholder: Some(placeholder),
+                            },
                             width,
                         ) {
                             let length = raw.trim().parse::<i64>().unwrap_or(0).clamp(0, 99_999);
-                            patch[key] = if length == 0 { Value::Null } else { json!(length) };
+                            patch[key] = if length == 0 {
+                                Value::Null
+                            } else {
+                                json!(length)
+                            };
                             if length > 0
                                 && def[opposite].as_i64().is_some_and(|bound| {
-                                    if minimum { bound < length } else { bound > length }
+                                    if minimum {
+                                        bound < length
+                                    } else {
+                                        bound > length
+                                    }
                                 })
                             {
                                 patch[opposite] = json!(length);
