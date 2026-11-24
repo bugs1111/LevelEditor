@@ -427,7 +427,10 @@ impl EditorApp {
                 });
         }
         if let Some((name, icon, since)) = &self.quick_notification {
-            let elapsed = since.elapsed().as_secs_f32();
+            let elapsed = since.elapsed();
+            #[cfg(test)]
+            let elapsed = self.quick_notification_test_age.unwrap_or(elapsed);
+            let elapsed = elapsed.as_secs_f32();
             if elapsed >= 1.2 {
                 self.quick_notification = None;
             } else if self.project.is_some() {

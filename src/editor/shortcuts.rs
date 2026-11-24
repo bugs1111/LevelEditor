@@ -1511,6 +1511,7 @@ mod tests {
     #[test]
     fn canvas_option_shortcuts_save_preferences_and_report_source_feedback() {
         let (mut app, ctx) = keyboard_zoom_editor();
+        app.quick_notification_test_age = Some(std::time::Duration::ZERO);
         let mut project = Project::new();
         let level = project.level_keys()[0];
         project.add_layer("Ground", "IntGrid", 16).unwrap();

@@ -665,6 +665,7 @@ impl EditorApp {
 mod tests {
     use super::*;
     use serde_json::json;
+    use std::time::Duration;
 
     fn frame(
         app: &mut EditorApp,
@@ -1437,6 +1438,7 @@ mod tests {
         project.add_layer("Walls", "IntGrid", 16).unwrap();
         let key = project.level_keys()[0];
         let mut app = EditorApp::empty();
+        app.quick_notification_test_age = Some(Duration::ZERO);
         app.set_project(project);
         let ctx = egui::Context::default();
         theme::configure(&ctx);
@@ -1472,6 +1474,7 @@ mod tests {
     #[test]
     fn entering_world_view_shows_the_notification_without_editing() {
         let mut app = EditorApp::empty();
+        app.quick_notification_test_age = Some(Duration::ZERO);
         app.set_project(Project::new());
         let ctx = egui::Context::default();
         theme::configure(&ctx);
@@ -1511,6 +1514,7 @@ mod tests {
         }
         let original = project.json.clone();
         let mut app = EditorApp::empty();
+        app.quick_notification_test_age = Some(Duration::ZERO);
         app.set_project(project);
         let ctx = egui::Context::default();
         theme::configure(&ctx);
@@ -1553,8 +1557,10 @@ mod tests {
             assert_eq!(app.project.as_ref().unwrap().json, original);
             assert!(!app.dirty);
         }
-        app.quick_notification.as_mut().unwrap().2 =
-            Instant::now() - std::time::Duration::from_secs(2);
+        app.quick_notification_test_age = Some(Duration::from_millis(1199));
+        frame(&mut app, &ctx, vec![]);
+        assert!(app.quick_notification.is_some());
+        app.quick_notification_test_age = Some(Duration::from_millis(1200));
         frame(&mut app, &ctx, vec![]);
         assert!(app.quick_notification.is_none());
         app.switch_layer(app.layer);

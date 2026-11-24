@@ -291,6 +291,8 @@ pub struct EditorApp {
     pending: Option<Action>,
     suggest_backups: bool,
     quick_notification: Option<(String, Option<egui::ImageSource<'static>>, Instant)>,
+    #[cfg(test)]
+    quick_notification_test_age: Option<std::time::Duration>,
     canvas_notices: Vec<notifications::CanvasNoticeEntry>,
     loading: Option<Receiver<Result<services::LoadedProject, services::LoadFailure>>>,
     loading_progress: Option<OperationProgress>,
@@ -522,6 +524,8 @@ impl EditorApp {
             pending: None,
             suggest_backups: false,
             quick_notification: None,
+            #[cfg(test)]
+            quick_notification_test_age: None,
             canvas_notices: Vec::new(),
             loading: None,
             loading_progress: None,
