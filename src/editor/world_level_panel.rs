@@ -1191,6 +1191,63 @@ mod tests {
         find_label(output, expected)
             .unwrap_or_else(|| panic!("missing source form label {expected}"))
     }
+
+    #[test]
+    fn biome_field_in_both_panels_shows_only_the_project_documentation() {
+        const DOC: &str = "Change this Biome value to enable/disable rule groups.";
+        for panel in [Panel::World, Panel::Level] {
+            let (mut app, ctx) = editor();
+            let mut project = Project::new();
+            let field = project
+                .add_field_definition(None, "biome", "String", false)
+                .unwrap();
+            project
+                .update_field_definition(field, &json!({"doc": DOC}))
+                .unwrap();
+            app.set_project(project);
+            locale::set(&ctx, locale::Language::SimplifiedChinese);
+            ctx.style_mut(|style| {
+                style.interaction.tooltip_delay = 0.;
+                style.interaction.show_tooltips_only_when_still = false;
+            });
+
+            let initial = frame(&mut app, &ctx, panel, vec![]);
+            let name = label(&initial, "biome");
+            let badge = initial
+                .shapes
+                .iter()
+                .find_map(|shape| match &shape.shape {
+                    egui::Shape::Text(text) if text.galley.text() == "?" => {
+                        let center = text.pos + text.galley.size() * 0.5;
+                        ((center.y - name.y).abs() < 7. && center.x > name.x).then_some(center)
+                    }
+                    _ => None,
+                })
+                .expect("biome question badge");
+            for (position, shows_help) in [(name, false), (badge, true)] {
+                frame(
+                    &mut app,
+                    &ctx,
+                    panel,
+                    vec![egui::Event::PointerMoved(position)],
+                );
+                frame(&mut app, &ctx, panel, vec![]);
+                let output = frame(&mut app, &ctx, panel, vec![]);
+                let name_count = output
+                    .shapes
+                    .iter()
+                    .filter(|shape| {
+                        matches!(
+                            &shape.shape, egui::Shape::Text(text) if text.galley.text() == "biome"
+                        )
+                    })
+                    .count();
+                assert_eq!(name_count, 1);
+                assert_eq!(find_label(&output, DOC).is_some(), shows_help);
+            }
+        }
+    }
+
     fn depth_arrow_centers(output: &egui::FullOutput) -> [egui::Pos2; 2] {
         let mut centers = output
             .shapes

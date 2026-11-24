@@ -948,20 +948,27 @@ pub(super) fn field_instance_label(
         (width - reserve).max(0.),
         FontId::proportional(PROPERTY_LABEL_FONT_SIZE),
     );
+    let truncated = galley.elided;
     ui.painter().galley(
         egui::pos2(rect.right() - reserve - galley.size().x, rect.top() + 4.),
         galley,
         theme::TEXT,
     );
-    if let Some(help) = help {
+    let help_hovered = if let Some(help) = help {
         let badge = Rect::from_min_size(
             rect.right_top() + egui::vec2(-32., 4.),
             egui::vec2(24., 16.),
         );
         let mut child = ui.new_child(egui::UiBuilder::new().max_rect(badge));
-        help_badge(&mut child, help, false);
+        help_badge(&mut child, help, false).hovered()
+    } else {
+        false
+    };
+    if truncated && !help_hovered {
+        response.on_hover_text(name)
+    } else {
+        response
     }
-    response.on_hover_text(name)
 }
 
 pub(in crate::app) fn context_menu_frame(style: &egui::Style) -> egui::Frame {
