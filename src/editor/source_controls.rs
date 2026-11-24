@@ -654,6 +654,20 @@ const PROPERTY_LABEL_FONT_SIZE: f32 = 12.667;
 pub(in crate::app) fn property_label(ui: &mut egui::Ui, label: &str, key: &str) {
     property_label_with_width(ui, label, key, PROPERTY_LABEL_WIDTH);
 }
+pub(in crate::app) fn property_label_left_aligned(
+    ui: &mut egui::Ui,
+    label: &str,
+    key: &str,
+    width: f32,
+) {
+    property_label_layout(
+        ui,
+        label,
+        key,
+        egui::vec2(width, 24.),
+        FormLabel::LeftAligned,
+    );
+}
 pub(in crate::app) fn property_label_with_width(
     ui: &mut egui::Ui,
     label: &str,
@@ -1605,9 +1619,11 @@ pub(in crate::app) fn add_enabled_button(
     finish(ui, index, &response);
     response
 }
+pub(in crate::app) const CHECKBOX_WIDTH: f32 = 24.;
+
 pub(in crate::app) fn checkbox(ui: &mut egui::Ui, value: &mut bool, label: &str) -> egui::Response {
     ui.scope(|ui| {
-        ui.spacing_mut().icon_width = 24.;
+        ui.spacing_mut().icon_width = CHECKBOX_WIDTH;
         ui.spacing_mut().icon_width_inner = 18.;
         let fill = if *value {
             Color32::from_rgb(0, 117, 255)

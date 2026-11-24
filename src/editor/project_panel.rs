@@ -60,6 +60,30 @@ fn project_locate_button(ui: &mut egui::Ui, is_file: bool) -> bool {
     .clicked()
 }
 
+fn project_advanced_option(
+    ui: &mut egui::Ui,
+    checked: &mut bool,
+    label: &str,
+    description: &str,
+) -> egui::Response {
+    ui.spacing_mut().icon_spacing = 11.;
+    let response = ui
+        .scope(|ui| {
+            ui.style_mut().override_font_id =
+                Some(FontId::new(13., egui::FontFamily::Name("body-bold".into())));
+            ui.visuals_mut().override_text_color = Some(Color32::WHITE);
+            source_checkbox(ui, checked, label)
+        })
+        .inner;
+    ui.add_space(2.);
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 0.;
+        ui.add_space(source_controls::CHECKBOX_WIDTH + ui.spacing().icon_spacing);
+        ui.add(egui::Label::new(RichText::new(locale::tr(ui, description)).size(11.5)).wrap());
+    });
+    response
+}
+
 fn project_number(
     ui: &mut egui::Ui,
     project: &Project,
@@ -154,7 +178,6 @@ impl EditorApp {
                     )
                 })
                 .inner
-                .on_hover_text(locale::tr(ui, label))
             };
             if read_only {
                 source_controls::add_sized_button(
@@ -163,14 +186,18 @@ impl EditorApp {
                     egui::Button::new(locale::tr(ui, "RESTORE THIS BACKUP")).fill(theme::DARK),
                 );
             }
-            for (label, image, save_as) in [
+            for (label, tooltip, keys, image, save_as) in [
                 (
                     "SAVE PROJECT",
+                    "Save project",
+                    &["CTRL", "S"][..],
                     egui::include_image!("../../assets/icons/save.svg"),
                     false,
                 ),
                 (
                     "SAVE AS...",
+                    "Save project as...",
+                    &["CTRL", "SHIFT", "S"][..],
                     egui::include_image!("../../assets/icons/saveAs.svg"),
                     true,
                 ),
@@ -178,7 +205,9 @@ impl EditorApp {
             .into_iter()
             .filter(|_| !read_only)
             {
-                if action(ui, !self.is_busy(), image, label).clicked() {
+                let response = action(ui, !self.is_busy(), image, label);
+                chrome::source_tooltip(&response, tooltip, keys, false);
+                if response.clicked() {
                     self.save(save_as);
                 }
             }
@@ -189,6 +218,7 @@ impl EditorApp {
                     egui::include_image!("../../assets/icons/rename.svg"),
                     "RENAME PROJECT",
                 )
+                .on_hover_text(locale::tr(ui, "RENAME PROJECT"))
                 .clicked()
                 && let Some(path) = &path
             {
@@ -1022,56 +1052,136 @@ impl EditorApp {
         let has_extra_worlds = project["worlds"]
             .as_array()
             .is_some_and(|worlds| worlds.len() > 1);
-        egui::CollapsingHeader::new(locale::tr(ui, "Advanced project settings"))
-            .id_salt("Advanced project settings")
-            .default_open(options.iter().any(|(flag, _, _)| flags.iter().any(|value| value == *flag)))
-            .show(ui, |ui| {
-                ui.label(locale::tr(ui, "Advanced options are not recommended for most users as they might break compatibility with older game APIs. Please make sure you know what you're doing before using any of them!"));
-                for (flag, label, description) in options {
-                    ui.add_space(6.);
-                    let mut enabled = flags.contains(&json!(flag));
-                    let response = ui
-                        .add_enabled_ui(flag != "MultiWorlds" || !has_extra_worlds, |ui| {
-                            source_checkbox(ui, &mut enabled, label)
-                        })
-                        .inner;
-                    ui.horizontal(|ui| {
-                        ui.add_space(32.);
-                        ui.add(egui::Label::new(RichText::new(locale::tr(ui, description)).size(12.)).wrap());
-                    });
-                    if response.changed() {
-                        if flag == "MultiWorlds" {
-                            let updated = if enabled {
-                                self.edit("Multiple worlds enabled", Project::enable_multiworlds)
-                            } else {
-                                self.edit("Multiple worlds disabled", Project::disable_multiworlds)
-                            };
-                            if updated == Some(true) {
-                                self.active_world = enabled.then_some(0);
-                                if let Some(key) = &mut self.selected {
-                                    key.world = self.active_world;
-                                }
-                            }
-                            continue;
-                        }
-                        self.edit("Project option changed", |project| {
-                            let flags = project.json["flags"].as_array_mut().ok_or_else(|| ldtk_core::Error::Invalid("flags must be an array".into()))?;
-                            flags.retain(|value| value != flag);
-                            if enabled { flags.push(json!(flag)); }
-                            Ok(())
-                        });
-                    }
-                }
-                let patch = form(ui, &self.project.as_ref().unwrap().json, &[
-                    P("tutorialDesc", "Tutorial description", W::Multiline),
-                ]);
-                if changed(&patch) {
-                    self.edit("Workspace settings changed", |project| {
-                        apply_patch(&mut project.json, &patch);
-                        project.refresh_derived_data()
-                    });
-                }
+        let title = "Advanced project settings";
+        let default_open = options
+            .iter()
+            .any(|(flag, _, _)| flags.iter().any(|value| value == *flag));
+        let mut section = egui::collapsing_header::CollapsingState::load_with_default_open(
+            ui.ctx(),
+            ui.make_persistent_id(title),
+            default_open,
+        );
+        ui.scope(|ui| {
+            ui.spacing_mut().item_spacing.y = 0.;
+            let (header, response) =
+                ui.allocate_exact_size(egui::vec2(ui.available_width(), 28.), Sense::click());
+            if response.clicked() {
+                section.toggle(ui);
+            }
+            let expanded = section.is_open();
+            let title = locale::tr(ui, title).to_uppercase();
+            response.widget_info(|| {
+                egui::WidgetInfo::selected(
+                    egui::WidgetType::CollapsingHeader,
+                    response.enabled(),
+                    expanded,
+                    &title,
+                )
             });
+            let highlighted = expanded || response.hovered() || response.has_focus();
+            let (fill, ink) = if highlighted {
+                (theme::ACCENT, Color32::BLACK)
+            } else {
+                (theme::LIGHT, theme::ACCENT)
+            };
+            ui.painter().rect_filled(header, 0., fill);
+            let arrow = if expanded {
+                egui::include_image!("../../assets/icons/expanded.svg")
+            } else {
+                egui::include_image!("../../assets/icons/collapsed.svg")
+            };
+            egui::Image::new(arrow).paint_at(
+                ui,
+                Rect::from_center_size(header.left_center() + egui::vec2(12., 0.), Vec2::splat(24.)),
+            );
+            ui.painter().text(
+                header.left_center() + egui::vec2(24., 0.),
+                Align2::LEFT_CENTER,
+                title,
+                FontId::new(17., egui::FontFamily::Name("panel-title".into())),
+                ink,
+            );
+            section.show_body_unindented(ui, |ui| {
+                egui::Frame::new()
+                    .stroke(Stroke::new(1., theme::LIGHT))
+                    .inner_margin(8)
+                    .show(ui, |ui| {
+                        source_controls::help_card(ui, ui.available_width(), 56., |ui| {
+                            source_controls::help_paragraph(ui, "Advanced options are not recommended for most users as they might break compatibility with older game APIs. Please make sure you know what you're doing before using any of them!");
+                        });
+                        ui.add_space(12.);
+                        for (flag, label, description) in options {
+                            let mut enabled = flags.iter().any(|value| value == flag);
+                            let response = ui.add_enabled_ui(flag != "MultiWorlds" || !has_extra_worlds, |ui| {
+                                project_advanced_option(ui, &mut enabled, label, description)
+                            }).inner;
+                            ui.add_space(10.);
+                            if !response.changed() {
+                                continue;
+                            }
+                            if flag == "MultiWorlds" {
+                                let updated = if enabled {
+                                    self.edit("Multiple worlds enabled", Project::enable_multiworlds)
+                                } else {
+                                    self.edit("Multiple worlds disabled", Project::disable_multiworlds)
+                                };
+                                if updated == Some(true) {
+                                    self.active_world = enabled.then_some(0);
+                                    if let Some(key) = &mut self.selected {
+                                        key.world = self.active_world;
+                                    }
+                                }
+                                continue;
+                            }
+                            self.edit("Project option changed", |project| {
+                                let flags = project.json["flags"].as_array_mut().ok_or_else(|| ldtk_core::Error::Invalid("flags must be an array".into()))?;
+                                flags.retain(|value| value != flag);
+                                if enabled { flags.push(json!(flag)); }
+                                Ok(())
+                            });
+                        }
+                        ui.add_space(48.);
+                        self.source_project_tutorial_description(ui);
+                    });
+            });
+        });
+    }
+
+    fn source_project_tutorial_description(&mut self, ui: &mut egui::Ui) {
+        let description = text(&self.project.as_ref().unwrap().json, "tutorialDesc", "");
+        let updated = ui
+            .horizontal_top(|ui| {
+                ui.spacing_mut().item_spacing.x = 8.;
+                let label_width = (ui.available_width() / 3.).min(250.);
+                source_controls::property_label_left_aligned(
+                    ui,
+                    "Tutorial description",
+                    "tutorialDesc",
+                    label_width,
+                );
+                ui.set_height(200.);
+                ui.style_mut().override_font_id = Some(FontId::monospace(13.));
+                ui.visuals_mut().override_text_color = Some(Color32::WHITE);
+                egui::ScrollArea::vertical()
+                    .max_height(200.)
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        ui_fields::buffered_multiline_sized(
+                            ui,
+                            "tutorialDesc",
+                            description,
+                            egui::vec2(ui.available_width(), 200.),
+                        )
+                    })
+                    .inner
+            })
+            .inner;
+        if let Some(description) = updated {
+            self.edit("Workspace settings changed", |project| {
+                project.json["tutorialDesc"] = json!(description);
+                project.refresh_derived_data()
+            });
+        }
     }
 }
 
@@ -1130,6 +1240,33 @@ mod tests {
     }
 
     #[test]
+    fn source_project_save_buttons_show_platform_shortcuts_in_chinese() {
+        for (button, tooltip, save_as) in [
+            ("保存项目", "保存项目", false),
+            ("另存为…", "项目另存为…", true),
+        ] {
+            let (mut app, ctx) = editor();
+            locale::set(&ctx, locale::Language::SimplifiedChinese);
+            ctx.style_mut(|style| style.interaction.tooltip_delay = 0.);
+            let before = frame(&mut app, &ctx, vec![]);
+            let center = label(&before, button).unwrap().center();
+            let mut out = frame(&mut app, &ctx, vec![egui::Event::PointerMoved(center)]);
+            for _ in 0..4 {
+                out = frame(&mut app, &ctx, vec![]);
+            }
+            assert!(label(&out, tooltip).is_some());
+            let command = if cfg!(target_os = "macos") {
+                "⌘"
+            } else {
+                "CTRL"
+            };
+            assert!(label(&out, command).is_some());
+            assert!(label(&out, "S").is_some());
+            assert_eq!(label(&out, "⇧").is_some(), save_as);
+        }
+    }
+
+    #[test]
     fn source_project_actions_share_the_first_row_and_sections_follow_the_template() {
         let (mut app, ctx) = editor();
         let output = frame(&mut app, &ctx, vec![]);
@@ -1143,7 +1280,7 @@ mod tests {
             "PROJECT SETTINGS",
             "USER CUSTOM COMMANDS",
             "WORKSPACE SETTINGS",
-            "Advanced project settings",
+            "ADVANCED PROJECT SETTINGS",
         ];
         let mut previous = save.bottom();
         for heading in headings {
@@ -1524,12 +1661,30 @@ mod tests {
 
         let out = frame(&mut app, &ctx, vec![]);
         assert!(label(&out, "Multi-worlds support").is_none());
-        click(
-            &mut app,
-            &ctx,
-            label(&out, "Advanced project settings").unwrap().center(),
-        );
+        let title = label(&out, "ADVANCED PROJECT SETTINGS").unwrap();
+        click(&mut app, &ctx, egui::pos2(780., title.center().y));
         let out = frame(&mut app, &ctx, vec![]);
+        let option = label(&out, "Multi-worlds support").unwrap();
+        let description = label(&out, "Stores levels in a 'worlds' array at the root of the project JSON. Experimental support for embedded levels.").unwrap();
+        assert!((option.left() - description.left()).abs() < 1.);
+        let tutorial = label(&out, "Tutorial description").unwrap();
+        let editor = out
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Rect(rect)
+                    if rect.fill == theme::DARK
+                        && (tutorial.top() - rect.rect.top()).abs() <= 8.
+                        && rect.rect.height() >= 190.
+                        && rect.rect.width() >= 490. =>
+                {
+                    Some(rect.rect)
+                }
+                _ => None,
+            })
+            .expect("full-width tutorial editor");
+        assert!(editor.top() <= tutorial.top());
+        assert!(editor.bottom() > tutorial.bottom());
         for name in internal.as_array().unwrap() {
             assert!(label(&out, name.as_str().unwrap()).is_none());
         }
@@ -1551,6 +1706,21 @@ mod tests {
         );
         assert!(app.history.undo(app.project.as_mut().unwrap()));
         assert_eq!(app.project.as_ref().unwrap().json["flags"], internal);
+
+        click(&mut app, &ctx, editor.center());
+        assert!(
+            ui_commit::has_pending_ui_edit(&ctx),
+            "clicking tutorial editor {editor:?} must focus it"
+        );
+        let notes = "First line\nSecond line";
+        let out = frame(&mut app, &ctx, vec![egui::Event::Paste(notes.into())]);
+        assert!(label(&out, "First line Second line").is_some());
+        click(&mut app, &ctx, tutorial.center());
+        frame(&mut app, &ctx, vec![]);
+        assert_eq!(app.project.as_ref().unwrap().json["tutorialDesc"], notes);
+
+        click(&mut app, &ctx, egui::pos2(780., title.center().y));
+        assert!(label(&frame(&mut app, &ctx, vec![]), "Tutorial description").is_none());
     }
 
     #[test]

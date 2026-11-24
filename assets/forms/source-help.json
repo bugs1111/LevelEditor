@@ -146,6 +146,7 @@
     "Default level bg color": "Default background color of all levels.",
     "defaultLevelbgColor": "Default background color of all levels.",
     "Default pivot point for new entities": "Default entity pivot point position for all entities. See the Entity panel for more information about the pivot point.",
+    "tutorialDesc": "This optional description is shown in a banner while the project is open. It is mainly used to explain sample projects.",
     "Source image": "This is the tileset \"atlas\" image which contains all the tiles organized in a grid layout. Supported file formats: Aseprite (recommended), PNG, GIF and JPEG.",
     "Identifier": "An identifier should be UNIQUE (in this context) and can only contain LETTERS, NUMBERS or UNDERSCORES (ie. \"_\").",
     "name": "Level width and height in pixels.",

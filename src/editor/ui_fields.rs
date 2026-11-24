@@ -116,6 +116,15 @@ pub(super) fn buffered_text_sized(
     buffered_text_kind(ui, key, current, false, Some(size), None)
 }
 
+pub(super) fn buffered_multiline_sized(
+    ui: &mut egui::Ui,
+    key: impl std::hash::Hash,
+    current: &str,
+    size: Vec2,
+) -> Option<String> {
+    buffered_text_kind(ui, key, current, true, Some(size), None)
+}
+
 fn buffered_text_kind(
     ui: &mut egui::Ui,
     key: impl std::hash::Hash,

@@ -1169,6 +1169,7 @@
   "Try to use best GPU": "优先使用高性能显卡",
   "Turn into an optional group": "设为可选分组",
   "Tutorial description": "教程说明",
+  "This optional description is shown in a banner while the project is open. It is mainly used to explain sample projects.": "此说明会在项目打开时显示于顶部横幅中，主要用于介绍示例项目。可以留空。",
   "Type": "类型",
   "UI tags": "界面标签",
   "UNDO": "撤销",
