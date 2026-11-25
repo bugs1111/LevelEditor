@@ -297,6 +297,64 @@ fn ogmo_atlas_fixture(directory: &Path) -> PathBuf {
 }
 
 #[test]
+fn ogmo_rejects_invalid_or_unrepresentable_atlas_metrics() {
+    let directory = tempfile::tempdir().unwrap();
+    let source = ogmo_atlas_fixture(directory.path());
+    image::RgbaImage::new(36, 36)
+        .save(directory.path().join("atlas.png"))
+        .unwrap();
+    let original: serde_json::Value = serde_json::from_slice(&fs::read(&source).unwrap()).unwrap();
+    for (field, value) in [
+        ("tileSeparationX", json!(-16)),
+        ("tileSeparationY", json!(3)),
+        ("tileMarginY", json!(2)),
+        ("tileMarginX", json!(i64::MAX)),
+        ("tileWidth", json!(u64::MAX)),
+    ] {
+        let mut data = original.clone();
+        data["tilesets"][0][field] = value;
+        fs::write(&source, data.to_string()).unwrap();
+        let Err(error) = Project::import_ogmo(&source) else {
+            panic!("accepted invalid atlas field {field}");
+        };
+        assert!(error.to_string().contains("Atlas"), "{field}: {error}");
+    }
+}
+
+#[test]
+fn ogmo_reports_out_of_image_ids_but_keeps_the_tiles_for_repair() {
+    let directory = tempfile::tempdir().unwrap();
+    let source = ogmo_atlas_fixture(directory.path());
+    image::RgbaImage::new(36, 36)
+        .save(directory.path().join("atlas.png"))
+        .unwrap();
+    let room = directory.path().join("levels/room.json");
+    let mut data: serde_json::Value = serde_json::from_slice(&fs::read(&room).unwrap()).unwrap();
+    data["layers"][0]["data"][0] = json!(5);
+    fs::write(&room, data.to_string()).unwrap();
+    let report = Project::import_ogmo_with_report(&source).unwrap();
+    assert_eq!(report.warnings.len(), 1);
+    let message = &report.warnings[0];
+    for context in ["Atlas", "Terrain", "room.json", "5"] {
+        assert!(message.contains(context), "{message}");
+    }
+    let key = report.project.level_keys()[0];
+    let tiles = &report.project.layer(key, 0).unwrap()["gridTiles"];
+    assert_eq!(tiles[0]["t"], 5);
+    assert_eq!(tiles[0]["src"], json!([19, 37]));
+    assert_eq!(tiles[1]["t"], 3);
+
+    for value in [json!(i32::MAX), json!(i64::MAX), json!(u64::MAX)] {
+        data["layers"][0]["data"][0] = value;
+        fs::write(&room, data.to_string()).unwrap();
+        let Err(error) = Project::import_ogmo(&source) else {
+            panic!("accepted an unrepresentable tile ID or source coordinate");
+        };
+        assert!(error.to_string().contains("Terrain"), "{error}");
+    }
+}
+
+#[test]
 fn ogmo_keeps_tiles_when_the_atlas_has_to_be_reattached() {
     let directory = tempfile::tempdir().unwrap();
     let source = ogmo_atlas_fixture(directory.path());

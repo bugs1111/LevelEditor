@@ -56,16 +56,45 @@ fn rgb(raw: &str) -> String {
     )
 }
 fn grid(v: &Value, fallback: i64) -> Result<i64> {
-    let Some(x) = v["x"].as_i64() else {
+    if v["x"].is_null() && v["y"].is_null() {
         return Ok(fallback);
-    };
-    if v["y"].as_i64() != Some(x) || x <= 0 {
-        return Err(Error::Unsupported(
-            "Ogmo rectangular or nonpositive grid cells".into(),
-        ));
     }
-    Ok(x)
+    v["x"]
+        .as_i64()
+        .filter(|x| (1..=i64::from(i32::MAX)).contains(x) && v["y"].as_i64() == Some(*x))
+        .ok_or_else(|| Error::Unsupported("invalid or rectangular Ogmo grid cells".into()))
 }
+
+fn atlas_metric(tileset: &Value, fields: [&str; 2]) -> Result<i64> {
+    let read = |field: &str| {
+        let value = &tileset[field];
+        if value.is_null() {
+            return Ok(None);
+        }
+        value
+            .as_i64()
+            .filter(|n| (0..=i64::from(i32::MAX)).contains(n))
+            .map(Some)
+            .ok_or_else(|| {
+                Error::Invalid(format!(
+                    "invalid {field} in Ogmo tileset {}",
+                    s(tileset, "label")
+                ))
+            })
+    };
+    let [x, y] = fields.map(read);
+    let (x, y) = (x?, y?);
+    if x.zip(y).is_some_and(|(x, y)| x != y) {
+        return Err(Error::Unsupported(format!(
+            "{} and {} differ in Ogmo tileset {}",
+            fields[0],
+            fields[1],
+            s(tileset, "label")
+        )));
+    }
+    Ok(x.or(y).unwrap_or(0))
+}
+
 enum OgmoCells<'a> {
     Flat(&'a [Value], usize),
     Rows(&'a [Value]),
@@ -226,6 +255,16 @@ impl Project {
         p.json["defaultGridSize"] = json!(grid(&source["layerGridDefaultSize"], 16)?);
         let mut tilesets = BTreeMap::new();
         for ts in arr(&source["tilesets"]) {
+            let label = s(ts, "label");
+            let size =
+                grid(&json!({"x":ts["tileWidth"],"y":ts["tileHeight"]}), 16).map_err(|_| {
+                    Error::Unsupported(format!(
+                        "invalid or rectangular grid in Ogmo tileset {label}"
+                    ))
+                })?;
+            let spacing = atlas_metric(ts, ["tileSeparationX", "tileSeparationY"])?;
+            let padding = atlas_metric(ts, ["tileMarginX", "tileMarginY"])?;
+            let stride = size + spacing;
             let rel = s(ts, "path");
             let atlas_path = base.join(rel);
             let (dimensions, rel_path) = match load_image_rgba(&atlas_path) {
@@ -249,17 +288,14 @@ impl Project {
                     Err(_) => return Err(error),
                 },
             };
-            let size = grid(&json!({"x":ts["tileWidth"],"y":ts["tileHeight"]}), 16)?;
             let id = uid(&mut p);
-            let spacing = n(ts, "tileSeparationX");
-            let padding = n(ts, "tileMarginX");
             let (width, height, cols, rows) = if let Some((width, height)) = dimensions {
-                let cols = (i64::from(width) - 2 * padding + spacing) / (size + spacing);
-                let rows = (i64::from(height) - 2 * padding + spacing) / (size + spacing);
-                if cols <= 0 || rows <= 0 {
-                    return Err(Error::Invalid(
-                        "invalid Ogmo tileset atlas dimensions".into(),
-                    ));
+                let cols = (i64::from(width) - 2 * padding + spacing) / stride;
+                let rows = (i64::from(height) - 2 * padding + spacing) / stride;
+                if cols <= 0 || rows <= 0 || width > i32::MAX as u32 || height > i32::MAX as u32 {
+                    return Err(Error::Invalid(format!(
+                        "invalid image dimensions for Ogmo tileset {label}: {width} × {height}"
+                    )));
                 }
                 (width, height, cols, rows)
             } else {
@@ -479,21 +515,49 @@ impl Project {
                                 warnings.push(format!("Found {rotations} unsupported Ogmo tile rotations in {}: rotations ignored",s(d,"identifier")));
                             }
                             let cols = n(td, "__cWid");
-                            let size = n(td, "tileGridSize");
-                            let spacing = n(td, "spacing");
+                            let tile_count = cols * n(td, "__cHei");
+                            let stride = n(td, "tileGridSize") + n(td, "spacing");
                             let padding = n(td, "padding");
                             let mut tiles = Vec::new();
+                            let mut outside = None;
                             let input_tiles = OgmoCells::new(data, "data", "data2D", source_width);
                             for ([x, y], t) in input_tiles.cells() {
-                                let tid = t.as_i64().unwrap_or(-1);
-                                if tid < 0 || x >= cw || y >= ch {
+                                if t.is_null() || x >= cw || y >= ch {
+                                    continue;
+                                }
+                                let invalid_tile = || {
+                                    Error::Invalid(format!(
+                                        "invalid Ogmo tile ID or atlas coordinates at ({x}, {y}) in layer {} of {}",
+                                        s(d, "identifier"),
+                                        file.display()
+                                    ))
+                                };
+                                let tid = t
+                                    .as_i64()
+                                    .filter(|&id| id <= i64::from(i32::MAX))
+                                    .ok_or_else(invalid_tile)?;
+                                if tid < 0 {
                                     continue;
                                 }
                                 let f = flags.get(x, y).and_then(Value::as_i64).unwrap_or(0);
                                 let flips = ((f >> 2) & 1) | (f & 2);
                                 let row = if cols == 0 { 0 } else { tid / cols };
                                 let col = tid - row * cols;
-                                tiles.push(json!({"px":[x as i64*grid,y as i64*grid],"src":[padding+col*(size+spacing),padding+row*(size+spacing)],"f":flips,"t":tid,"d":[x+y*cw],"a":1}));
+                                let [Ok(src_x), Ok(src_y)] =
+                                    [col, row].map(|axis| i32::try_from(padding + axis * stride))
+                                else {
+                                    return Err(invalid_tile());
+                                };
+                                if tile_count > 0 && tid >= tile_count {
+                                    outside.get_or_insert((0, tid)).0 += 1;
+                                }
+                                tiles.push(json!({"px":[x as i64*grid,y as i64*grid],"src":[src_x,src_y],"f":flips,"t":tid,"d":[x+y*cw],"a":1}));
+                            }
+                            if let Some((count, first)) = outside {
+                                warnings.push(format!(
+                                    "Found {count} Ogmo tiles outside tileset {} in layer {} of {} (first tile ID {first}); kept for repair",
+                                    s(td, "identifier"), s(d, "identifier"), file.display()
+                                ));
                             }
                             li["gridTiles"] = json!(tiles);
                         }
