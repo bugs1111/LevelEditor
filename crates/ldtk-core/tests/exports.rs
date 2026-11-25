@@ -1184,6 +1184,7 @@ fn tiled_intgrid_gids_follow_each_palette_in_tmx_and_tmj() {
     p.json["defs"]["layers"][0]["intGridValues"] = json!([
         {"value":257,"color":"#00ff00"}, {"value":1,"color":"#ff0000"}
     ]);
+    p.json["levels"][0]["layerInstances"][0]["intGridCsv"] = json!([1, 257, 1]);
     p.json["defs"]["layers"]
         .as_array_mut()
         .unwrap()
@@ -1196,7 +1197,7 @@ fn tiled_intgrid_gids_follow_each_palette_in_tmx_and_tmj() {
         .unwrap()
         .push(json!({
             "layerDefUid":8,"__identifier":"Zones","__type":"IntGrid","__gridSize":16,
-            "__cWid":2,"__cHei":1,"intGridCsv":[257,0]
+            "__cWid":2,"__cHei":1,"intGridCsv":[257]
         }));
 
     p.export_tiled(dir.path()).unwrap();

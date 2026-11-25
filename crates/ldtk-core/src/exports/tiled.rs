@@ -694,24 +694,32 @@ fn intgrid_gids<'a>(
     area: usize,
     palette: Option<&'a IntGridGids>,
 ) -> impl Iterator<Item = u32> + 'a {
+    let cells = if palette.is_some() {
+        &cells[..cells.len().min(area)]
+    } else {
+        &[]
+    };
     let (first, count, by_value) = match palette {
         Some(IntGridGids::Sequential { first, count }) => (*first, u64::from(*count), None),
         Some(IntGridGids::ByValue(gids)) => (0, 0, Some(gids)),
         None => (0, 0, None),
     };
-    (0..area).map(move |i| {
-        let value = cells.get(i).and_then(Value::as_i64).unwrap_or(0);
-        // Zero and negative cells fall outside the unsigned palette index range.
-        let index = (value as u64).wrapping_sub(1);
-        if index < count {
-            first + index as u32
-        } else {
-            by_value
-                .and_then(|gids| gids.get(&value))
-                .copied()
-                .unwrap_or(0)
-        }
-    })
+    cells
+        .iter()
+        .map(move |cell| {
+            let value = cell.as_i64().unwrap_or(0);
+            // Zero and negative cells fall outside the unsigned palette index range.
+            let index = (value as u64).wrapping_sub(1);
+            if index < count {
+                first + index as u32
+            } else {
+                by_value
+                    .and_then(|gids| gids.get(&value))
+                    .copied()
+                    .unwrap_or(0)
+            }
+        })
+        .chain(std::iter::repeat_n(0, area - cells.len()))
 }
 
 fn tiled_tile_layers<'a>(
@@ -834,10 +842,10 @@ fn write_tmx_layer(
     out.text.reserve_exact(reserve + "</data></layer>".len());
     let numbers = &*CSV_BYTE_TEXT;
     let mut empty = 0;
-    for value in data {
+    data.for_each(|value| {
         if value == 0 {
             empty += 1;
-            continue;
+            return;
         }
         if empty > 0 {
             out.push_empty_tiles(std::mem::take(&mut empty), true);
@@ -847,7 +855,7 @@ fn write_tmx_layer(
         } else {
             write!(out.text, "{value},").expect("writing to a String is infallible");
         }
-    }
+    });
     if empty > 0 {
         out.push_empty_tiles(empty, false);
     } else if out.text.len() > start {
