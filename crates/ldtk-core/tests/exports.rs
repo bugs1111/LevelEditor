@@ -1564,7 +1564,7 @@ fn png_uses_source_tileset_pivot_when_atlas_grid_differs_from_layer_grid() {
     p.json["levels"][0]["pxHei"] = json!(32);
     p.json["defs"]["layers"][0]["type"] = json!("Tiles");
     p.json["defs"]["layers"][0]["tilePivotX"] = json!(0.5);
-    p.json["defs"]["layers"][0]["tilePivotY"] = json!(0.5);
+    p.json["defs"]["layers"][0]["tilePivotY"] = json!(0.25);
     p.json["defs"]["tilesets"] = json!([{"uid":7,"identifier":"Atlas","relPath":"atlas.png","pxWid":32,"pxHei":32,"tileGridSize":32}]);
     let li = &mut p.json["levels"][0]["layerInstances"][0];
     li["__type"] = json!("Tiles");
@@ -1574,8 +1574,8 @@ fn png_uses_source_tileset_pivot_when_atlas_grid_differs_from_layer_grid() {
     let image = image::open(t.path().join("out/Level_0__Solid.png"))
         .unwrap()
         .to_rgba8();
-    assert_eq!(image.get_pixel(23, 23)[3], 255);
-    assert_eq!(image.get_pixel(24, 24)[3], 0);
+    assert_eq!(image.get_pixel(23, 31)[3], 255);
+    assert_eq!(image.get_pixel(24, 31)[3], 0);
 }
 
 fn tiles_png_project() -> Project {

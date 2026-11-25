@@ -600,46 +600,30 @@ impl<'a> PngRenderer<'a> {
         let grid = n(li, "__gridSize").max(1) as f64;
         let pivot_x = num(def, "tilePivotX", 0.);
         let pivot_y = num(def, "tilePivotY", 0.);
+        let offsets = |grid_pivot: f64, tile_pivot: f64| {
+            [false, true].map(|flipped| {
+                let grid_offset = (grid_pivot + if flipped { 1. } else { 0. }) * grid;
+                let tile_offset = match (classic, flipped) {
+                    (true, false) => tile_pivot * size as f64,
+                    (true, true) => (1. - tile_pivot) * size as f64,
+                    (false, false) => 0.,
+                    (false, true) => size as f64,
+                };
+                (grid_offset - tile_offset).round() as i64
+            })
+        };
+        let x_offsets = offsets(pivot_x, pivot_x);
+        // Classic tiles use the X pivot for the grid offset on both axes.
+        let y_offsets = offsets(if classic { pivot_x } else { pivot_y }, pivot_y);
         let mut opaque = HashMap::new();
         for t in values {
             let f = n(t, "f");
-            let (tx, ty) = if classic {
-                (
-                    t["px"][0].as_i64().unwrap_or(0)
-                        + ox
-                        + ((pivot_x + if f & 1 != 0 { 1. } else { 0. }) * grid
-                            - if f & 1 != 0 {
-                                (1. - pivot_x) * size as f64
-                            } else {
-                                pivot_x * size as f64
-                            })
-                        .round() as i64,
-                    t["px"][1].as_i64().unwrap_or(0)
-                        + oy
-                        + ((pivot_x + if f & 2 != 0 { 1. } else { 0. }) * grid
-                            - if f & 2 != 0 {
-                                (1. - pivot_y) * size as f64
-                            } else {
-                                pivot_y * size as f64
-                            })
-                        .round() as i64,
-                )
-            } else {
-                (
-                    t["px"][0].as_i64().unwrap_or(0)
-                        + ox
-                        + ((pivot_x + if f & 1 != 0 { 1. } else { 0. }) * grid
-                            - if f & 1 != 0 { size as f64 } else { 0. })
-                        .round() as i64,
-                    t["px"][1].as_i64().unwrap_or(0)
-                        + oy
-                        + ((pivot_y + if f & 2 != 0 { 1. } else { 0. }) * grid
-                            - if f & 2 != 0 { size as f64 } else { 0. })
-                        .round() as i64,
-                )
-            };
-            let sx = t["src"][0].as_i64().unwrap_or(0);
-            let sy = t["src"][1].as_i64().unwrap_or(0);
+            let px = &t["px"];
+            let tx = px[0].as_i64().unwrap_or(0) + ox + x_offsets[(f & 1) as usize];
+            let ty = px[1].as_i64().unwrap_or(0) + oy + y_offsets[((f & 2) >> 1) as usize];
+            let src = &t["src"];
+            let sx = src[0].as_i64().unwrap_or(0);
+            let sy = src[1].as_i64().unwrap_or(0);
             let tile_alpha = alpha * num(t, "a", 1.);
             if tile_alpha >= 1.
                 && tile_fits(&img, [tx, ty], size)

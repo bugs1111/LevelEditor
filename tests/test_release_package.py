@@ -99,6 +99,13 @@ class ReleasePackageTests(unittest.TestCase):
             | {f"target-{target}.json" for target in release.TARGETS}
             | {release.archive_name(target) for target in release.TARGETS},
         )
+        with arm_asset.open("r+b") as archive:
+            first_byte = archive.read(1)
+            archive.seek(0)
+            archive.write(bytes([first_byte[0] ^ 1]))
+        with patch("sys.argv", ["package-release.py", "--merge", str(output)]):
+            with self.assertRaisesRegex(ValueError, "Release checksum mismatch"):
+                release.main()
 
     def test_universal_bundle_accepts_only_architectures_in_its_slices(self):
         executable = self.make_bundle()

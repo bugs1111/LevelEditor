@@ -21,6 +21,14 @@ def archive_name(target):
     return f"level-editor-v{VERSION}-{target}.zip"
 
 
+def archive_sha256(path):
+    digest = hashlib.sha256()
+    with path.open("rb") as archive:
+        for chunk in iter(lambda: archive.read(256 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def macho_matches(executable, header, cpu):
     def thin_matches(data):
         # A 64-bit little-endian Mach-O with the requested CPU and MH_EXECUTE.
@@ -131,7 +139,7 @@ def main():
             if target not in TARGETS or target in targets or entry["asset"] != archive_name(target):
                 raise ValueError(f"Invalid release package name or target: {path}")
             archive = args.merge / entry["asset"]
-            if archive.stat().st_size != entry["size"] or hashlib.sha256(archive.read_bytes()).hexdigest() != entry["sha256"]:
+            if archive.stat().st_size != entry["size"] or archive_sha256(archive) != entry["sha256"]:
                 raise ValueError(f"Release checksum mismatch: {archive}")
             targets[target] = entry
         if set(targets) != TARGETS:
@@ -145,7 +153,7 @@ def main():
         name = archive_name(args.target)
         archive = output / name
         package(args.target, archive)
-        entry = {"asset": name, "sha256": hashlib.sha256(archive.read_bytes()).hexdigest(), "size": archive.stat().st_size}
+        entry = {"asset": name, "sha256": archive_sha256(archive), "size": archive.stat().st_size}
         (output / f"target-{args.target}.json").write_text(json.dumps({"version": VERSION, "target": args.target, "entry": entry}, indent=2) + "\n")
         print(archive)
     else:
