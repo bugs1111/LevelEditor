@@ -992,6 +992,103 @@ fn saving_preserves_a_retired_level_edited_after_project_publication() {
     }
 }
 
+#[cfg(unix)]
+#[test]
+fn retiring_external_levels_preserves_files_below_linked_directories() {
+    for (linked_directory, filename) in [
+        ("Map", "Level_0.ldtkl"),
+        ("Map/Legacy", "Nested/Level_0.ldtkl"),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("Map.ldtk");
+        let mut project = Project::new();
+        project.set_external_levels(true).unwrap();
+        project.save(&path).unwrap();
+        let original = dir.path().join("Map/Level_0.ldtkl");
+        let shared = dir.path().join("shared");
+        let outside = shared.join(filename);
+        fs::create_dir_all(outside.parent().unwrap()).unwrap();
+        let bytes = fs::read(&original).unwrap();
+        fs::rename(&original, &outside).unwrap();
+
+        let link = dir.path().join(linked_directory);
+        if link.is_dir() {
+            fs::remove_dir(&link).unwrap();
+        }
+        std::os::unix::fs::symlink(&shared, &link).unwrap();
+        project.json["levels"][0]["externalRelPath"] =
+            json!(format!("{linked_directory}/{filename}"));
+        fs::write(&path, serde_json::to_vec(&project.json).unwrap()).unwrap();
+
+        let (mut project, snapshot) = Project::load_with_snapshot(&path).unwrap();
+        project.set_external_levels(false).unwrap();
+        project.save_if_unchanged(&path, &snapshot).unwrap();
+
+        assert_eq!(fs::read(&outside).unwrap(), bytes);
+        assert!(fs::symlink_metadata(&link).unwrap().is_symlink());
+        let saved = Project::load(&path).unwrap();
+        assert!(saved.json["levels"][0]["layerInstances"].is_array());
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn retiring_external_levels_does_not_clean_up_a_normalized_alias() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("Map.ldtk");
+    let mut project = Project::new();
+    project.set_external_levels(true).unwrap();
+    project.save(&path).unwrap();
+    let unrelated = dir.path().join("Map/Level_0.ldtkl");
+    let outside = dir.path().join("shared/Level_0.ldtkl");
+    let linked_directory = dir.path().join("shared/nested");
+    fs::create_dir_all(&linked_directory).unwrap();
+    fs::copy(&unrelated, &outside).unwrap();
+    let bytes = fs::read(&outside).unwrap();
+    std::os::unix::fs::symlink(linked_directory, dir.path().join("Map/Legacy")).unwrap();
+    project.json["levels"][0]["externalRelPath"] = json!("Map/Legacy/../Level_0.ldtkl");
+    fs::write(&path, serde_json::to_vec(&project.json).unwrap()).unwrap();
+
+    let (mut project, snapshot) = Project::load_with_snapshot(&path).unwrap();
+    project.set_external_levels(false).unwrap();
+    project.save_if_unchanged(&path, &snapshot).unwrap();
+
+    assert_eq!(fs::read(&outside).unwrap(), bytes);
+    assert_eq!(fs::read(&unrelated).unwrap(), bytes);
+    let saved = Project::load(&path).unwrap();
+    assert!(saved.json["levels"][0]["layerInstances"].is_array());
+}
+
+#[cfg(unix)]
+#[test]
+fn retiring_external_levels_rechecks_the_directory_after_publication() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("Map.ldtk");
+    let managed = dir.path().join("Map");
+    let outside = dir.path().join("shared");
+    let mut project = Project::new();
+    project.set_external_levels(true).unwrap();
+    project.save(&path).unwrap();
+    let bytes = fs::read(managed.join("Level_0.ldtkl")).unwrap();
+    let (mut project, snapshot) = Project::load_with_snapshot(&path).unwrap();
+    project.set_external_levels(false).unwrap();
+
+    project
+        .save_with_snapshot_and_progress(&path, Some(&snapshot), |stage, _, _, label| {
+            if stage == ldtk_core::SaveStage::RemoveObsoleteLevels && label == Some("Level_0.ldtkl")
+            {
+                fs::rename(&managed, &outside).unwrap();
+                std::os::unix::fs::symlink(&outside, &managed).unwrap();
+            }
+        })
+        .unwrap();
+
+    assert_eq!(fs::read(outside.join("Level_0.ldtkl")).unwrap(), bytes);
+    assert!(fs::symlink_metadata(managed).unwrap().is_symlink());
+    let saved = Project::load(&path).unwrap();
+    assert!(saved.json["levels"][0]["layerInstances"].is_array());
+}
+
 #[test]
 fn retiring_external_levels_keeps_files_used_by_level_fields() {
     for keep_external_storage in [true, false] {

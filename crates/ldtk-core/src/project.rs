@@ -449,7 +449,13 @@ impl Project {
                 |(_, paths)| paths.clone(),
             )
             .into_iter()
-            .map(|rel| absolute(&base.join(rel)))
+            .map(|rel| {
+                let relative = Path::new(&rel);
+                let has_parent_components = relative
+                    .components()
+                    .any(|part| part == Component::ParentDir);
+                Ok((absolute(&base.join(relative))?, has_parent_components))
+            })
             .collect::<Result<Vec<_>>>()?;
         if backup_file(&path, self.json["iid"].as_str().unwrap_or("")) {
             return Err(Error::Unsupported(
@@ -618,7 +624,7 @@ impl Project {
         let watched_retired = if verified_snapshot.is_some() {
             retired
                 .iter()
-                .map(PathBuf::as_path)
+                .map(|(path, _)| path.as_path())
                 .collect::<BTreeSet<_>>()
         } else {
             BTreeSet::new()
@@ -783,11 +789,16 @@ impl Project {
         staged.files.push(root);
         let retired: Vec<_> = retired
             .iter()
-            .filter(|target| target.starts_with(&document_dir) && !paths.contains(*target))
-            .filter_map(|target| {
+            .filter(|(target, has_parent_components)| {
+                // Collapsing `..` across a link may select a different file.
+                !has_parent_components
+                    && target.starts_with(&document_dir)
+                    && !paths.contains(target)
+            })
+            .filter_map(|(target, _)| {
                 let fingerprint = match verified_snapshot {
                     Some(snapshot) => snapshot.document_fingerprint(target),
-                    None => retired_level_fingerprint(target),
+                    None => retired_level_fingerprint(target, &document_dir),
                 }?;
                 Some((target, fingerprint))
             })
@@ -814,7 +825,7 @@ impl Project {
                 );
                 // A retired file may still be used as an asset or resolve to a live document.
                 if !referenced.contains(target)
-                    && retired_level_fingerprint(target) == Some(fingerprint)
+                    && retired_level_fingerprint(target, &document_dir) == Some(fingerprint)
                 {
                     let _ = fs::remove_file(target);
                 }
@@ -826,7 +837,16 @@ impl Project {
     }
 }
 
-fn retired_level_fingerprint(path: &Path) -> Option<u64> {
+fn retired_level_fingerprint(path: &Path, document_dir: &Path) -> Option<u64> {
+    let parent = path.parent()?;
+    if !parent.starts_with(document_dir)
+        || !parent
+            .ancestors()
+            .take_while(|dir| dir.starts_with(document_dir))
+            .all(|dir| fs::symlink_metadata(dir).is_ok_and(|metadata| metadata.is_dir()))
+    {
+        return None;
+    }
     if !fs::symlink_metadata(path).ok()?.is_file() {
         return None;
     }
