@@ -6,6 +6,8 @@ use eframe::egui::{self, Color32, Painter, Pos2, Rect, Stroke, Vec2, vec2};
 use ldtk_core::{LevelKey, Project};
 use serde_json::{Value, json};
 use std::borrow::Cow;
+use std::cell::OnceCell;
+use std::collections::HashMap;
 
 fn text_width(ctx: &egui::Context, level: bool) -> f32 {
     // Heaps Text.maxWidth is in font pixels; the field root cancels DPI.
@@ -246,10 +248,7 @@ impl Scene<'_> {
                     .as_str()
                     .or_else(|| item.as_str())
                     .unwrap_or("");
-                let index = self
-                    .entity_index
-                    .get_or_init(|| EntityIndex::new(self.project));
-                let Some((_, _, target)) = index.entities.get(iid) else {
+                let Some((_, _, target)) = self.entity_index.target(iid) else {
                     return Some("Lost reference!".into());
                 };
                 let target_def = values(&self.project.json["defs"]["entities"])
@@ -342,15 +341,12 @@ impl Scene<'_> {
                             .as_str()
                             .or_else(|| item.as_str())
                             .unwrap_or("");
-                        let index = self
-                            .entity_index
-                            .get_or_init(|| EntityIndex::new(self.project));
-                        match index.entities.get(iid) {
+                        match self.entity_index.target(iid) {
                             Some((key, _, entity)) => format!(
                                 "@({} in {})",
                                 text(entity, "__identifier", "Entity"),
                                 self.project
-                                    .level(*key)
+                                    .level(key)
                                     .map(|l| text(l, "identifier", "Level"))
                                     .unwrap_or("Level")
                             ),
@@ -805,63 +801,60 @@ impl Scene<'_> {
                 );
             }
         }
-        if let Some(iid) = entity["iid"].as_str() {
-            let index = self
-                .entity_index
-                .get_or_init(|| EntityIndex::new(self.project));
-            if let Some(refs) = index.incoming.get(iid) {
-                for &(source_key, source_layer, source, fd) in refs {
-                    if source_key == key {
-                        continue;
-                    }
-                    let source_def = values(&self.project.json["defs"]["entities"])
-                        .iter()
-                        .find(|d| d["uid"] == source["defUid"])
-                        .unwrap_or(&Value::Null);
-                    let center = fd["editorDisplayMode"] == "RefLinkBetweenCenters";
-                    let source_point = if center {
-                        entity_bounds(source, source_def).center().into()
-                    } else {
-                        pair(&source["px"], [0.; 2])
-                    };
-                    let target_point = if center {
-                        bounds.center().into()
-                    } else {
-                        pair(&entity["px"], [0.; 2])
-                    };
-                    let source_level = self.project.level(source_key).unwrap();
-                    let target_level = self.project.level(key).unwrap();
-                    let world_origin = [
-                        number(source_level, "worldX", 0.) - number(target_level, "worldX", 0.),
-                        number(source_level, "worldY", 0.) - number(target_level, "worldY", 0.),
-                    ];
-                    let start = self.point(transform.point([
-                        source_point[0]
-                            + world_origin[0]
-                            + number(source_layer, "__pxTotalOffsetX", 0.)
-                            - number(layer_def, "pxOffsetX", 0.),
-                        source_point[1]
-                            + world_origin[1]
-                            + number(source_layer, "__pxTotalOffsetY", 0.)
-                            - number(layer_def, "pxOffsetY", 0.),
-                    ]));
-                    let end = self.point(transform.point(target_point));
-                    let cut = source_key.world != key.world
-                        || source_level["worldDepth"] != target_level["worldDepth"];
-                    render_link(
-                        painter,
-                        start,
-                        end,
-                        self.smart_color(source, source_def),
-                        text(fd, "editorLinkStyle", "CurvedArrow"),
-                        self.view.zoom,
-                        if cut {
-                            LinkEnding::CutTarget
-                        } else {
-                            LinkEnding::Full
-                        },
-                    );
+        if let Some(iid) = entity["iid"].as_str()
+            && let Some(refs) = self.entity_index.incoming(iid)
+        {
+            for &(source_key, source_layer, source, fd) in refs {
+                if source_key == key {
+                    continue;
                 }
+                let source_def = values(&self.project.json["defs"]["entities"])
+                    .iter()
+                    .find(|d| d["uid"] == source["defUid"])
+                    .unwrap_or(&Value::Null);
+                let center = fd["editorDisplayMode"] == "RefLinkBetweenCenters";
+                let source_point = if center {
+                    entity_bounds(source, source_def).center().into()
+                } else {
+                    pair(&source["px"], [0.; 2])
+                };
+                let target_point = if center {
+                    bounds.center().into()
+                } else {
+                    pair(&entity["px"], [0.; 2])
+                };
+                let source_level = self.project.level(source_key).unwrap();
+                let target_level = self.project.level(key).unwrap();
+                let world_origin = [
+                    number(source_level, "worldX", 0.) - number(target_level, "worldX", 0.),
+                    number(source_level, "worldY", 0.) - number(target_level, "worldY", 0.),
+                ];
+                let start = self.point(transform.point([
+                    source_point[0]
+                        + world_origin[0]
+                        + number(source_layer, "__pxTotalOffsetX", 0.)
+                        - number(layer_def, "pxOffsetX", 0.),
+                    source_point[1]
+                        + world_origin[1]
+                        + number(source_layer, "__pxTotalOffsetY", 0.)
+                        - number(layer_def, "pxOffsetY", 0.),
+                ]));
+                let end = self.point(transform.point(target_point));
+                let cut = source_key.world != key.world
+                    || source_level["worldDepth"] != target_level["worldDepth"];
+                render_link(
+                    painter,
+                    start,
+                    end,
+                    self.smart_color(source, source_def),
+                    text(fd, "editorLinkStyle", "CurvedArrow"),
+                    self.view.zoom,
+                    if cut {
+                        LinkEnding::CutTarget
+                    } else {
+                        LinkEnding::Full
+                    },
+                );
             }
         }
         let graphic_alpha = alpha
@@ -1046,13 +1039,7 @@ impl Scene<'_> {
                 else {
                     continue;
                 };
-                let Some((target_key, target_layer, target)) = self
-                    .entity_index
-                    .get_or_init(|| EntityIndex::new(self.project))
-                    .entities
-                    .get(iid)
-                    .copied()
-                else {
+                let Some((target_key, target_layer, target)) = self.entity_index.target(iid) else {
                     continue;
                 };
                 let target_def = values(&self.project.json["defs"]["entities"])
@@ -1186,35 +1173,83 @@ impl Scene<'_> {
         }
     }
 }
+type EntityLocation<'a> = (LevelKey, &'a Value, &'a Value);
+type ReferenceSource<'a> = (LevelKey, &'a Value, &'a Value, &'a Value);
+type LinkDefinition<'a> = (&'a Value, Vec<&'a Value>);
+
+#[derive(Default)]
+struct EntityRecords<'a> {
+    targets: HashMap<&'a str, EntityLocation<'a>>,
+    incoming: HashMap<&'a str, Vec<ReferenceSource<'a>>>,
+}
+
 pub(super) struct EntityIndex<'a> {
-    entities: std::collections::HashMap<&'a str, (LevelKey, &'a Value, &'a Value)>,
-    incoming: std::collections::HashMap<&'a str, Vec<(LevelKey, &'a Value, &'a Value, &'a Value)>>,
+    project: &'a Project,
+    link_definitions: OnceCell<Vec<LinkDefinition<'a>>>,
+    records: OnceCell<EntityRecords<'a>>,
 }
 impl<'a> EntityIndex<'a> {
     pub(super) fn new(project: &'a Project) -> Self {
-        let mut index = Self {
-            entities: Default::default(),
-            incoming: Default::default(),
-        };
-        for key in project.level_keys() {
-            let Some(level) = project.level(key) else {
+        Self {
+            project,
+            link_definitions: OnceCell::new(),
+            records: OnceCell::new(),
+        }
+    }
+
+    fn target(&self, iid: &str) -> Option<EntityLocation<'a>> {
+        self.records().targets.get(iid).copied()
+    }
+
+    fn incoming(&self, iid: &str) -> Option<&[ReferenceSource<'a>]> {
+        if self.link_definitions().is_empty() {
+            return None;
+        }
+        self.records().incoming.get(iid).map(Vec::as_slice)
+    }
+
+    fn link_definitions(&self) -> &[LinkDefinition<'a>] {
+        self.link_definitions.get_or_init(|| {
+            let definitions = values(&self.project.json["defs"]["entities"]);
+            definitions
+                .iter()
+                .enumerate()
+                .filter_map(|(i, def)| {
+                    let fields: Vec<_> = values(&def["fieldDefs"])
+                        .iter()
+                        .filter(|f| text(f, "editorDisplayMode", "").starts_with("RefLink"))
+                        .collect();
+                    // Keep the first definition for a UID, as the renderer does when looking it up.
+                    (!fields.is_empty() && !definitions[..i].iter().any(|d| d["uid"] == def["uid"]))
+                        .then_some((&def["uid"], fields))
+                })
+                .collect()
+        })
+    }
+
+    fn records(&self) -> &EntityRecords<'a> {
+        self.records.get_or_init(|| self.index_entities())
+    }
+
+    fn index_entities(&self) -> EntityRecords<'a> {
+        let link_definitions = self.link_definitions();
+        let mut records = EntityRecords::default();
+        for key in self.project.level_keys() {
+            let Some(level) = self.project.level(key) else {
                 continue;
             };
             for layer in values(&level["layerInstances"]) {
                 for entity in values(&layer["entityInstances"]) {
                     if let Some(iid) = entity["iid"].as_str() {
-                        index.entities.insert(iid, (key, layer, entity));
+                        records.targets.insert(iid, (key, layer, entity));
                     }
-                    let Some(def) = values(&project.json["defs"]["entities"])
+                    let Some((_, fields)) = link_definitions
                         .iter()
-                        .find(|d| d["uid"] == entity["defUid"])
+                        .find(|(uid, _)| **uid == entity["defUid"])
                     else {
                         continue;
                     };
-                    for fd in values(&def["fieldDefs"])
-                        .iter()
-                        .filter(|f| text(f, "editorDisplayMode", "").starts_with("RefLink"))
-                    {
+                    for &fd in fields {
                         if let Some(field) = values(&entity["fieldInstances"])
                             .iter()
                             .find(|f| f["defUid"] == fd["uid"])
@@ -1228,7 +1263,7 @@ impl<'a> EntityIndex<'a> {
                                 if let Some(iid) =
                                     value["entityIid"].as_str().or_else(|| value.as_str())
                                 {
-                                    index
+                                    records
                                         .incoming
                                         .entry(iid)
                                         .or_default()
@@ -1240,7 +1275,7 @@ impl<'a> EntityIndex<'a> {
                 }
             }
         }
-        index
+        records
     }
 }
 
@@ -1435,6 +1470,55 @@ mod tests {
         assert_eq!(size.y, line * 3.);
     }
     #[test]
+    fn entity_index_is_lazy_without_links_and_keeps_cross_level_sources_in_order() {
+        let mut project = Project::new();
+        project.json["defs"]["entities"] = json!([
+            {
+                "uid": 3,
+                "fieldDefs": [{"uid": 4, "isArray": true, "editorDisplayMode": "Hidden"}]
+            },
+            {
+                "uid": 3,
+                "fieldDefs": [
+                    {"uid": 4, "isArray": true, "editorDisplayMode": "RefLinkBetweenCenters"}
+                ]
+            }
+        ]);
+        project.json["levels"] = json!([
+            {"layerInstances": [{"entityInstances": [
+                {"iid": "target", "defUid": 5}
+            ]}]},
+            {"layerInstances": [{"entityInstances": [
+                {"iid": "first", "defUid": 3, "fieldInstances": [
+                    {"defUid": 4, "__value": [{"entityIid": "target"}, "missing"]}
+                ]},
+                {"iid": "second", "defUid": 3, "fieldInstances": [
+                    {"defUid": 4, "__value": ["target"]}
+                ]}
+            ]}]}
+        ]);
+        {
+            let index = EntityIndex::new(&project);
+            assert!(index.incoming("target").is_none());
+            assert!(
+                index.records.get().is_none(),
+                "no entity scan for hidden links"
+            );
+            assert_eq!(index.target("target").unwrap().0.level, 0);
+            assert!(index.target("missing").is_none());
+        }
+        project.json["defs"]["entities"][0]["fieldDefs"][0]["editorDisplayMode"] =
+            json!("RefLinkBetweenCenters");
+        let index = EntityIndex::new(&project);
+        let links = index.incoming("target").unwrap();
+        assert_eq!(links.len(), 2);
+        assert_eq!(links[0].0.level, 1);
+        assert_eq!(links[0].2["iid"], "first");
+        assert_eq!(links[1].2["iid"], "second");
+        assert_eq!(index.target("target").unwrap().0.level, 0);
+    }
+
+    #[test]
     fn validation_labels_match_installed_original_js_vectors() {
         let oracle: Value =
             serde_json::from_str(include_str!("../docs/status/renderer-oracle.json")).unwrap();
@@ -1462,7 +1546,7 @@ mod tests {
             projection_origin: Rect::EVERYTHING.min.into(),
             options: &options,
             assets: &mut assets,
-            entity_index: Default::default(),
+            entity_index: EntityIndex::new(&project),
             file_states: Default::default(),
         };
         for case in values(&oracle["fields"]) {
@@ -1497,7 +1581,7 @@ mod tests {
             projection_origin: Rect::EVERYTHING.min.into(),
             options: &options,
             assets: &mut assets,
-            entity_index: Default::default(),
+            entity_index: EntityIndex::new(&project),
             file_states: Default::default(),
         };
         let owner = json!({"fieldInstances":[{"defUid":1,"__value":null}]});

@@ -730,7 +730,7 @@ pub(super) fn preview(
         projection_origin: rect.min.into(),
         options: &options,
         assets,
-        entity_index: std::cell::OnceCell::new(),
+        entity_index: super::fields::EntityIndex::new(project),
         file_states: Default::default(),
     };
     scene.entity(

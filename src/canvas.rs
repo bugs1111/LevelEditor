@@ -461,7 +461,7 @@ pub(super) struct Scene<'a> {
     projection_origin: [f32; 2],
     pub options: &'a RenderOptions<'a>,
     pub assets: &'a mut Assets,
-    entity_index: std::cell::OnceCell<fields::EntityIndex<'a>>,
+    entity_index: fields::EntityIndex<'a>,
     file_states: std::cell::RefCell<std::collections::HashMap<PathBuf, bool>>,
 }
 impl Scene<'_> {
@@ -1480,7 +1480,7 @@ pub fn draw(
         projection_origin,
         options,
         assets,
-        entity_index: std::cell::OnceCell::new(),
+        entity_index: fields::EntityIndex::new(project),
         file_states: Default::default(),
     };
     if options.world {
@@ -1591,7 +1591,7 @@ pub fn draw(
                 projection_origin,
                 options: &neighbor_options,
                 assets: scene.assets,
-                entity_index: std::cell::OnceCell::new(),
+                entity_index: fields::EntityIndex::new(project),
                 file_states: Default::default(),
             };
             let mut content = painter.with_clip_rect(canvas.intersect(rect));
@@ -1986,7 +1986,7 @@ pub fn draw_group_ghost(
         projection_origin: view.level_render_canvas_origin(canvas, ctx.pixels_per_point()),
         options: &options,
         assets,
-        entity_index: Default::default(),
+        entity_index: fields::EntityIndex::new(project),
         file_states: Default::default(),
     };
     let painter = painter.with_clip_rect(canvas);
