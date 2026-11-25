@@ -9,8 +9,10 @@ pub(super) struct LoadedProject {
     keep_canvas_preview: bool,
 }
 
+#[derive(Debug)]
 pub(super) enum LoadFailure {
     MissingProject(PathBuf),
+    ChangedDuringOpen,
     Other(String),
 }
 
@@ -92,10 +94,34 @@ fn unreadable_auto_tile_caches(project: &Project) -> Vec<(LevelKey, usize, i64)>
     repairs
 }
 
-pub(super) fn prepare_project(
+pub(super) fn load_project(
+    path: PathBuf,
+    progress: impl FnMut(usize, usize),
+) -> Result<LoadedProject, LoadFailure> {
+    let (project, documents) = Project::load_with_document_snapshot_progress(&path, progress)
+        .map_err(|error| {
+            let missing_document = matches!(
+                &error,
+                ldtk_core::Error::Io { source, .. }
+                    if source.kind() == std::io::ErrorKind::NotFound
+            );
+            if missing_document
+                && std::fs::metadata(&path)
+                    .is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound)
+            {
+                LoadFailure::MissingProject(path)
+            } else {
+                LoadFailure::Other(error.to_string())
+            }
+        })?;
+    prepare_project(project, documents)
+}
+
+fn prepare_project(
     mut project: Project,
-    warnings: Vec<String>,
-) -> Result<LoadedProject, String> {
+    documents: ldtk_core::FilesystemSnapshot,
+) -> Result<LoadedProject, LoadFailure> {
+    let failure = |error: ldtk_core::Error| LoadFailure::Other(error.to_string());
     let version = text(&project.json, "jsonVersion", "0.0");
     let mut parts = version.split('.').map(|p| p.parse::<u32>().unwrap_or(0));
     let modern = (parts.next().unwrap_or(0), parts.next().unwrap_or(0)) >= (1, 5);
@@ -104,26 +130,27 @@ pub(super) fn prepare_project(
         // Migration expects an array or null. The cache is derived from the source grid.
         project.layer_mut(key, index).expect("enumerated layer")["autoLayerTiles"] = Value::Null;
     }
-    let migrated = project.migrate_to_current().map_err(|e| e.to_string())?;
+    let migrated = project.migrate_to_current().map_err(failure)?;
     if modern {
         for &(key, _, uid) in &repairs {
-            project
-                .rebuild_auto_layer(key, uid)
-                .map_err(|e| e.to_string())?;
+            project.rebuild_auto_layer(key, uid).map_err(failure)?;
         }
         project.reconcile_cached_auto_tiles();
     } else {
         for key in project.level_keys() {
-            project
-                .rebuild_auto_layers(key)
-                .map_err(|e| e.to_string())?;
+            project.rebuild_auto_layers(key).map_err(failure)?;
         }
     }
+    let mut snapshot = documents.clone();
+    project.watch_available_resources(&mut snapshot);
+    if !documents.changed_files().map_err(failure)?.is_empty() {
+        return Err(LoadFailure::ChangedDuringOpen);
+    }
     Ok(LoadedProject {
-        snapshot: project.filesystem_snapshot().ok(),
+        snapshot: Some(snapshot),
         project,
         migrated: migrated || !repairs.is_empty(),
-        warnings,
+        warnings: Vec::new(),
         backup_original: None,
         keep_canvas_preview: false,
     })
@@ -248,6 +275,9 @@ impl EditorApp {
                         LoadFailure::MissingProject(path) => {
                             self.remove_recent("recentProjects", &path);
                             "Project file not found".into()
+                        }
+                        LoadFailure::ChangedDuringOpen => {
+                            "Project files changed while opening. Open the project again.".into()
                         }
                         LoadFailure::Other(error) => format!("Open failed: {error}"),
                     };
@@ -783,6 +813,55 @@ mod creation_tests {
     }
 
     #[test]
+    fn opening_does_not_use_newer_disk_bytes_as_the_baseline_for_old_documents() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("Map.ldtk");
+        let mut project = Project::new();
+        project.set_external_levels(true).unwrap();
+        project.save(&path).unwrap();
+        let external = dir
+            .path()
+            .join(project.external_levels.keys().next().unwrap());
+        for target in [&path, &external] {
+            let original = std::fs::read(target).unwrap();
+            let mut changed = original.clone();
+            changed.push(b'\n');
+            let result = load_project(path.clone(), |done, total| {
+                if total > 0 && done == total {
+                    std::fs::write(target, &changed).unwrap();
+                }
+            });
+            assert!(matches!(result, Err(LoadFailure::ChangedDuringOpen)));
+            std::fs::write(target, original).unwrap();
+        }
+    }
+
+    #[test]
+    fn unreadable_artwork_keeps_the_document_and_other_resource_watches() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("Map.ldtk");
+        let unreadable = dir.path().join("A.png");
+        let missing = dir.path().join("Missing.png");
+        let readable = dir.path().join("Z.png");
+        std::fs::create_dir(&unreadable).unwrap();
+        std::fs::write(&readable, b"first artwork").unwrap();
+        let mut project = Project::new();
+        project.add_tileset(&unreadable, 16, 16, 16).unwrap();
+        project.add_tileset(&missing, 16, 16, 16).unwrap();
+        project.add_tileset(&readable, 16, 16, 16).unwrap();
+        project.save(&path).unwrap();
+
+        let loaded = load_project(path.clone(), |_, _| {}).unwrap();
+        let snapshot = loaded.snapshot.expect("the document needs a baseline");
+        let mut changed = std::fs::read(&path).unwrap();
+        changed.push(b'\n');
+        std::fs::write(&path, changed).unwrap();
+        std::fs::write(&missing, b"restored artwork").unwrap();
+        std::fs::write(&readable, b"other artwork").unwrap();
+        assert_eq!(snapshot.changed_files().unwrap(), [path, missing, readable]);
+    }
+
+    #[test]
     fn disconnected_open_export_and_rename_workers_release_the_editor() {
         let ctx = egui::Context::default();
         let mut app = EditorApp::empty();
@@ -900,7 +979,7 @@ mod creation_tests {
             let mut corrupt: Value = serde_json::from_slice(&original).unwrap();
             corrupt["layerInstances"][affected_index]["autoLayerTiles"] = malformed;
             std::fs::write(ext_file(level), serde_json::to_vec(&corrupt).unwrap()).unwrap();
-            let mut loaded = prepare_project(Project::load(&path).unwrap(), Vec::new()).unwrap();
+            let mut loaded = load_project(path.clone(), |_, _| {}).unwrap();
             assert!(loaded.migrated);
             assert_eq!(
                 loaded.project.layer(level, affected_index).unwrap()["autoLayerTiles"],
@@ -1016,8 +1095,11 @@ mod creation_tests {
         let (tx, rx) = mpsc::channel();
         app.loading = Some(rx);
         app.loading_progress = Some(Arc::new(Mutex::new(Some((2, 2)))));
-        tx.send(prepare_project(Project::new(), Vec::new()).map_err(LoadFailure::Other))
-            .unwrap();
+        tx.send(prepare_project(
+            Project::new(),
+            ldtk_core::FilesystemSnapshot::default(),
+        ))
+        .unwrap();
 
         app.poll_services(&ctx);
         assert!(app.project.is_some());

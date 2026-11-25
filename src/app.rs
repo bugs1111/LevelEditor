@@ -627,27 +627,10 @@ impl EditorApp {
         let ctx = ctx.clone();
         std::thread::spawn(move || {
             let result = (|| {
-                let project = Project::load_with_progress(&path, |done, total| {
+                let loaded = services::load_project(path, |done, total| {
                     *progress.lock().unwrap_or_else(|e| e.into_inner()) = Some((done, total));
                     ctx.request_repaint();
-                })
-                .map_err(|error| {
-                    let file_read_missing = matches!(
-                        &error,
-                        ldtk_core::Error::Io { source, .. }
-                            if source.kind() == std::io::ErrorKind::NotFound
-                    );
-                    if file_read_missing
-                        && std::fs::metadata(&path)
-                            .is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound)
-                    {
-                        services::LoadFailure::MissingProject(path)
-                    } else {
-                        services::LoadFailure::Other(error.to_string())
-                    }
                 })?;
-                let loaded = services::prepare_project(project, Vec::new())
-                    .map_err(services::LoadFailure::Other)?;
                 let mut progress = progress.lock().unwrap_or_else(|e| e.into_inner());
                 let total = progress.map_or(1, |(_, total)| total);
                 *progress = Some((total, total));

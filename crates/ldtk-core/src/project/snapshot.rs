@@ -69,6 +69,19 @@ impl Project {
     }
 
     pub(super) fn snapshot_resources(&self, snapshot: &mut FilesystemSnapshot) -> Result<()> {
+        self.add_resource_watches(snapshot, true)
+    }
+
+    /// Extend an existing baseline with readable resources and missing paths.
+    pub fn watch_available_resources(&self, snapshot: &mut FilesystemSnapshot) {
+        let _ = self.add_resource_watches(snapshot, false);
+    }
+
+    fn add_resource_watches(
+        &self,
+        snapshot: &mut FilesystemSnapshot,
+        require_readable: bool,
+    ) -> Result<()> {
         let mut paths = BTreeSet::new();
         if let Some(path) = &self.path {
             paths.insert(path.clone());
@@ -85,8 +98,13 @@ impl Project {
         }
         for path in paths {
             if let std::collections::btree_map::Entry::Vacant(entry) = snapshot.files.entry(path) {
-                let fingerprint = file_fingerprint(entry.key())?;
-                entry.insert(fingerprint);
+                match file_fingerprint(entry.key()) {
+                    Ok(fingerprint) => {
+                        entry.insert(fingerprint);
+                    }
+                    Err(error) if require_readable => return Err(error),
+                    Err(_) => {}
+                }
             }
         }
         Ok(())

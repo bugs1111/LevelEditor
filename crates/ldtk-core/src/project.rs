@@ -231,21 +231,35 @@ impl Project {
         Self::load_snapshot_with_documents(path.as_ref(), None)
     }
 
+    /// Record the exact bytes parsed for the project and its external levels.
+    pub fn load_with_document_snapshot_progress(
+        path: impl AsRef<Path>,
+        progress: impl FnMut(usize, usize),
+    ) -> Result<(Self, FilesystemSnapshot)> {
+        Self::read_document_snapshot(path.as_ref(), progress, None)
+    }
+
     fn load_snapshot_with_documents(
         path: &Path,
         published: Option<PublishedDocuments>,
     ) -> Result<(Self, FilesystemSnapshot)> {
-        let mut snapshot = FilesystemSnapshot {
-            files: BTreeMap::new(),
-            loaded_external_paths: None,
-        };
-        let project = Self::read_documents(path, |_, _| {}, Some(&mut snapshot), published)?;
+        let (project, mut snapshot) = Self::read_document_snapshot(path, |_, _| {}, published)?;
         project.snapshot_resources(&mut snapshot)?;
         if !snapshot.changed_files()?.is_empty() {
             return Err(Error::Invalid(
                 "Project files changed during reload. Try reloading again.".into(),
             ));
         }
+        Ok((project, snapshot))
+    }
+
+    fn read_document_snapshot(
+        path: &Path,
+        progress: impl FnMut(usize, usize),
+        published: Option<PublishedDocuments>,
+    ) -> Result<(Self, FilesystemSnapshot)> {
+        let mut snapshot = FilesystemSnapshot::default();
+        let project = Self::read_documents(path, progress, Some(&mut snapshot), published)?;
         Ok((project, snapshot))
     }
 
