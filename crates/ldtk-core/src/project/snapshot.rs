@@ -12,10 +12,17 @@ use std::{
 /// A content snapshot, independent of the mutable project, for filesystem watchers.
 #[derive(Clone, Debug, Default)]
 pub struct FilesystemSnapshot {
-    pub(super) files: BTreeMap<PathBuf, Option<u64>>,
+    files: BTreeMap<PathBuf, FileFingerprint>,
     documents: BTreeSet<PathBuf>,
     pub(super) loaded_external_paths: Option<(PathBuf, Vec<String>)>,
 }
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum FileFingerprint {
+    Known(Option<u64>),
+    Unreadable,
+}
+
 impl FilesystemSnapshot {
     /// Capture the destination document and its registered external levels.
     /// An absent destination is tracked so a later creation is detected.
@@ -35,7 +42,10 @@ impl FilesystemSnapshot {
     }
 
     pub fn refresh_file(&mut self, path: &Path) -> Result<()> {
-        self.files.insert(path.to_owned(), file_fingerprint(path)?);
+        self.files.insert(
+            path.to_owned(),
+            FileFingerprint::Known(file_fingerprint(path)?),
+        );
         if self
             .loaded_external_paths
             .as_ref()
@@ -48,13 +58,14 @@ impl FilesystemSnapshot {
 
     pub(super) fn record_document(&mut self, path: PathBuf, fingerprint: Option<u64>) {
         self.documents.insert(path.clone());
-        self.files.insert(path, fingerprint);
+        self.files.insert(path, FileFingerprint::Known(fingerprint));
     }
 
     pub(super) fn rename_document(&mut self, old: &Path, new: &Path) {
         if let Some(fingerprint) = self.files.remove(old) {
             self.documents.remove(old);
-            self.record_document(new.to_owned(), fingerprint);
+            self.documents.insert(new.to_owned());
+            self.files.insert(new.to_owned(), fingerprint);
         }
         if let Some((root, _)) = &mut self.loaded_external_paths
             && root == old
@@ -65,6 +76,13 @@ impl FilesystemSnapshot {
 
     pub fn is_document(&self, path: &Path) -> bool {
         self.documents.contains(path)
+    }
+
+    pub(super) fn document_fingerprint(&self, path: &Path) -> Option<u64> {
+        match self.files.get(path) {
+            Some(FileFingerprint::Known(fingerprint)) if self.is_document(path) => *fingerprint,
+            _ => None,
+        }
     }
 
     /// Accept the listed document contents while retaining the loaded manifest and other watches.
@@ -101,7 +119,8 @@ impl FilesystemSnapshot {
         self.files
             .iter()
             .filter(|(path, old)| {
-                !self.is_document(path) && file_fingerprint(path).is_ok_and(|new| &new != *old)
+                !self.is_document(path)
+                    && file_fingerprint(path).is_ok_and(|new| FileFingerprint::Known(new) != **old)
             })
             .map(|(path, _)| path.clone())
             .collect()
@@ -115,8 +134,15 @@ impl FilesystemSnapshot {
     pub fn changed_files_matching(&self, include: impl Fn(&Path) -> bool) -> Result<Vec<PathBuf>> {
         let mut changed = Vec::new();
         for (path, fingerprint) in &self.files {
-            if include(path) && &file_fingerprint(path)? != fingerprint {
-                changed.push(path.clone());
+            if include(path) {
+                match file_fingerprint(path) {
+                    Ok(current) if FileFingerprint::Known(current) != *fingerprint => {
+                        changed.push(path.clone());
+                    }
+                    Ok(_) => {}
+                    Err(_) if *fingerprint == FileFingerprint::Unreadable => {}
+                    Err(error) => return Err(error),
+                }
             }
         }
         Ok(changed)
@@ -128,15 +154,11 @@ impl Project {
             documents: self.saved_document_paths()?,
             ..Default::default()
         };
-        self.snapshot_resources(&mut snapshot)?;
+        self.add_resource_watches(&mut snapshot, true)?;
         Ok(snapshot)
     }
 
-    pub(super) fn snapshot_resources(&self, snapshot: &mut FilesystemSnapshot) -> Result<()> {
-        self.add_resource_watches(snapshot, true)
-    }
-
-    /// Extend an existing baseline with readable resources and missing paths.
+    /// Watch unavailable resources so they can be detected when they become readable.
     pub fn watch_available_resources(&self, snapshot: &mut FilesystemSnapshot) {
         let _ = self.add_resource_watches(snapshot, false);
     }
@@ -207,10 +229,12 @@ fn add_file_watches(
         if let std::collections::btree_map::Entry::Vacant(entry) = snapshot.files.entry(path) {
             match file_fingerprint(entry.key()) {
                 Ok(fingerprint) => {
-                    entry.insert(fingerprint);
+                    entry.insert(FileFingerprint::Known(fingerprint));
                 }
                 Err(error) if require_readable => return Err(error),
-                Err(_) => {}
+                Err(_) => {
+                    entry.insert(FileFingerprint::Unreadable);
+                }
             }
         }
     }

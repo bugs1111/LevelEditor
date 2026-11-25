@@ -226,7 +226,7 @@ impl Project {
         Self::read_documents(path.as_ref(), progress, None, None)
     }
 
-    /// Bind the watch baseline to the same document bytes that were parsed.
+    /// Bind the watch baseline to the parsed documents and track resources even if unavailable.
     pub fn load_with_snapshot(path: impl AsRef<Path>) -> Result<(Self, FilesystemSnapshot)> {
         Self::load_snapshot_with_documents(path.as_ref(), None)
     }
@@ -244,7 +244,7 @@ impl Project {
         published: Option<PublishedDocuments>,
     ) -> Result<(Self, FilesystemSnapshot)> {
         let (project, mut snapshot) = Self::read_document_snapshot(path, |_, _| {}, published)?;
-        project.snapshot_resources(&mut snapshot)?;
+        project.watch_available_resources(&mut snapshot);
         if !snapshot.changed_files()?.is_empty() {
             return Err(Error::Invalid(
                 "Project files changed during reload. Try reloading again.".into(),
@@ -604,9 +604,7 @@ impl Project {
         if let Some(snapshot) = verified_snapshot {
             let mut occupied = Vec::new();
             for (_, _, target) in &external {
-                if snapshot.is_document(target)
-                    && snapshot.files.get(target).is_some_and(Option::is_some)
-                {
+                if snapshot.document_fingerprint(target).is_some() {
                     continue;
                 }
                 match fs::symlink_metadata(target) {
@@ -696,8 +694,7 @@ impl Project {
             let level = projected.as_deref().unwrap_or(document);
             let revision = std::ptr::eq(level, document.as_ref()).then_some(document);
             let checked_before_reload = if published.is_some() {
-                verified_snapshot
-                    .and_then(|snapshot| snapshot.files.get(&target).copied().flatten())
+                verified_snapshot.and_then(|snapshot| snapshot.document_fingerprint(&target))
             } else {
                 None
             };

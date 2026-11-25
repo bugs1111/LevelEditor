@@ -987,6 +987,73 @@ fn batches_manual_tile_paint_and_erase_with_sequential_results() {
 }
 
 #[test]
+fn unavailable_artwork_keeps_mcp_usable_and_watches_its_recovery() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = copy_external_project(temp.path());
+    let external_path = path.with_extension("").join("World_Level_0.ldtkl");
+    let artwork = temp.path().join("unavailable.png");
+    fs::create_dir(&artwork).unwrap();
+    let mut root: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    root["levels"][0]["bgRelPath"] = json!("unavailable.png");
+    fs::write(&path, serde_json::to_vec(&root).unwrap()).unwrap();
+    let mut external: Value = serde_json::from_slice(&fs::read(&external_path).unwrap()).unwrap();
+    external["bgRelPath"] = json!("unavailable.png");
+    fs::write(&external_path, serde_json::to_vec(&external).unwrap()).unwrap();
+    let level_iid = &root["levels"][0]["iid"];
+    let layer_iid = &external["layerInstances"][0]["iid"];
+    let target = json!({"level_iid":level_iid,"layer_iid":layer_iid});
+    let paint =
+        |value| json!({"level_iid":level_iid,"layer_iid":layer_iid,"x":0,"y":0,"value":value});
+
+    let mut client = Client::start(&path);
+    client.initialize(PROTOCOL);
+    client.initialized();
+    assert_eq!(
+        client.tool("get_layer", target.clone())["layer"]["intGridCsv"][0],
+        0
+    );
+    assert_eq!(client.tool("paint_int_grid", paint(1))["changed"], true);
+    assert_eq!(
+        client.tool("save_project", json!({})),
+        json!({"saved":true,"dirty":false})
+    );
+
+    let mut level_bytes = fs::read(&external_path).unwrap();
+    level_bytes.push(b'\n');
+    fs::write(&external_path, &level_bytes).unwrap();
+    assert_eq!(client.tool("paint_int_grid", paint(0))["changed"], true);
+    let conflict = client.call("save_project", json!({}));
+    assert_eq!(conflict["isError"], true, "{conflict}");
+    assert!(
+        conflict["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("World_Level_0.ldtkl")
+    );
+    assert_eq!(fs::read(&external_path).unwrap(), level_bytes);
+    client.tool("reload_project", json!({"discard_changes":true}));
+    assert_eq!(
+        client.tool("get_layer", target)["layer"]["intGridCsv"][0],
+        1
+    );
+
+    fs::remove_dir(&artwork).unwrap();
+    fs::write(&artwork, b"restored artwork").unwrap();
+    assert_eq!(client.tool("paint_int_grid", paint(0))["changed"], true);
+    let conflict = client.call("save_project", json!({}));
+    assert_eq!(conflict["isError"], true, "{conflict}");
+    assert!(
+        conflict["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("unavailable.png")
+    );
+    assert_eq!(fs::read(&external_path).unwrap(), level_bytes);
+    assert_eq!(client.tool("project_info", json!({}))["dirty"], true);
+    client.close();
+}
+
+#[test]
 fn save_detects_changes_to_root_external_levels_and_watched_assets() {
     let temp = tempfile::tempdir().unwrap();
     let path = copy_external_project(temp.path());
@@ -1044,6 +1111,20 @@ fn save_detects_changes_to_root_external_levels_and_watched_assets() {
         );
     }
     assert_eq!(client.tool("paint_int_grid", paint)["changed"], true);
+    let verified_artwork = fs::read(&asset).unwrap();
+    fs::remove_file(&asset).unwrap();
+    fs::create_dir(&asset).unwrap();
+    let conflict = client.call("save_project", json!({}));
+    assert_eq!(conflict["isError"], true, "{conflict}");
+    assert!(
+        conflict["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("watched.png")
+    );
+    assert_eq!(client.tool("project_info", json!({}))["dirty"], true);
+    fs::remove_dir(&asset).unwrap();
+    fs::write(&asset, verified_artwork).unwrap();
     assert_eq!(client.tool("save_project", json!({}))["saved"], true);
     client.close();
     let saved: Value = serde_json::from_slice(&fs::read(external_path).unwrap()).unwrap();
