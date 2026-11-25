@@ -1689,6 +1689,77 @@ fn gamemaker_matches_original_experimental_room_schema() {
     assert_eq!(room["layers"][0]["resourceType"], "?");
 }
 #[test]
+fn gamemaker_preserves_manual_tile_flips_and_layer_offsets() {
+    let mut p = project();
+    p.json["defs"]["tilesets"] = json!([{"uid":42,"identifier":"Atlas"}]);
+    let level = &mut p.json["levels"][0];
+    level["pxWid"] = json!(80);
+    let layer = &mut level["layerInstances"][0];
+    layer["__type"] = json!("Tiles");
+    layer["__tilesetDefUid"] = json!(42);
+    layer["__cWid"] = json!(5);
+    layer["__pxTotalOffsetX"] = json!(7);
+    layer["__pxTotalOffsetY"] = json!(-9);
+    layer["gridTiles"] = json!([
+        {"px":[-1,0],"t":99,"f":0},
+        {"px":[0,0],"t":17,"f":0},
+        {"px":[16,0],"t":17,"f":1},
+        {"px":[16,0],"t":99,"f":0},
+        {"px":[32,0],"t":17,"f":2},
+        {"px":[48,0],"t":17,"f":3}
+    ]);
+    let directory = tempfile::tempdir().unwrap();
+    p.export_gamemaker(directory.path()).unwrap();
+    let room: Value =
+        serde_json::from_slice(&fs::read(directory.path().join("Level_0.yy")).unwrap()).unwrap();
+    let layer = &room["layers"][0];
+    assert_eq!(
+        (layer["x"].as_i64(), layer["y"].as_i64()),
+        (Some(7), Some(-9))
+    );
+    assert_eq!(
+        layer["tiles"],
+        json!({"SerialiseWidth":5,"SerialiseHeight":1,"TileSerialiseData":[
+            17, 17 | (1_u32 << 28), 17 | (1_u32 << 29), 17 | (3_u32 << 28), 1_u32 << 31
+        ]})
+    );
+}
+
+#[test]
+fn gamemaker_rejects_invalid_tile_dimensions_and_ids_without_replacing_outputs() {
+    let mut p = project();
+    p.json["defs"]["tilesets"] = json!([{"uid":42,"identifier":"Atlas"}]);
+    let layer = &mut p.json["levels"][0]["layerInstances"][0];
+    layer["__type"] = json!("Tiles");
+    layer["__tilesetDefUid"] = json!(42);
+    layer["gridTiles"] = json!([{"px":[0,0],"t":17,"f":0}]);
+    let valid = layer.clone();
+    let directory = tempfile::tempdir().unwrap();
+    let files = p.export_gamemaker(directory.path()).unwrap();
+    let before: Vec<_> = files.iter().map(|file| fs::read(file).unwrap()).collect();
+    for (field, invalid) in [
+        ("__cWid", json!(i64::MAX)),
+        ("__cWid", json!(u64::MAX)),
+        ("__cHei", json!(-1)),
+        ("__gridSize", json!(0)),
+        ("gridTiles", json!([{"px":[0,0],"t":1_u32 << 19}])),
+    ] {
+        let layer = &mut p.json["levels"][0]["layerInstances"][0];
+        *layer = valid.clone();
+        layer[field] = invalid;
+        let error = p
+            .export_gamemaker(directory.path())
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("Solid"), "{field}: {error}");
+        for (file, bytes) in files.iter().zip(&before) {
+            assert_eq!(&fs::read(file).unwrap(), bytes, "{field}: {file:?}");
+        }
+        assert_eq!(fs::read_dir(directory.path()).unwrap().count(), files.len());
+    }
+}
+
+#[test]
 fn late_gamemaker_error_keeps_existing_room_and_discards_staged_files() {
     let mut p = project();
     p.json["defs"]["tilesets"] = json!([{"identifier":"Atlas"}]);

@@ -1,4 +1,5 @@
 use super::{ExportBatch, arr, bytes, n, s, safe_name};
+use crate::workflow::MAX_LAYER_CELLS;
 use crate::{Error, Project, Result};
 use serde::{Serialize, Serializer, ser::SerializeMap};
 use serde_json::{Value, json};
@@ -40,11 +41,42 @@ struct GameMakerTileLayer<'a> {
     tileset_id: Value,
 }
 
-struct GameMakerTiles<'a>(&'a Value);
+struct GameMakerTiles<'a> {
+    instance: &'a Value,
+    width: usize,
+    height: usize,
+    grid: i64,
+}
+
+impl<'a> GameMakerTiles<'a> {
+    fn new(instance: &'a Value) -> Result<Self> {
+        let width = instance["__cWid"].as_i64().unwrap_or(-1);
+        let height = instance["__cHei"].as_i64().unwrap_or(-1);
+        let grid = n(instance, "__gridSize");
+        if !(0..=MAX_LAYER_CELLS).contains(&width)
+            || !(0..=MAX_LAYER_CELLS).contains(&height)
+            || width * height > MAX_LAYER_CELLS
+            || grid <= 0
+        {
+            return Err(Error::Invalid(format!(
+                "invalid GameMaker tile dimensions for layer {}: {width} × {height}, grid {grid}",
+                s(instance, "__identifier")
+            )));
+        }
+        Ok(Self {
+            instance,
+            width: width as usize,
+            height: height as usize,
+            grid,
+        })
+    }
+}
 
 impl Serialize for GameMakerTiles<'_> {
     fn serialize<S: Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
-        gamemaker_tiles(self.0).serialize(serializer)
+        gamemaker_tiles(self.instance, self.width, self.height, self.grid)
+            .map_err(serde::ser::Error::custom)?
+            .serialize(serializer)
     }
 }
 
@@ -127,7 +159,7 @@ impl Project {
                     .and_then(|uid| self.tileset(uid))
                     .ok_or_else(|| Error::Invalid("GMS tile layer has no tileset".into()))?;
                 Some(GameMakerTileLayer {
-                    tiles: GameMakerTiles(instance),
+                    tiles: GameMakerTiles::new(instance)?,
                     x: n(instance, "__pxTotalOffsetX"),
                     y: n(instance, "__pxTotalOffsetY"),
                     tileset_id: json!({
@@ -160,25 +192,39 @@ impl Project {
     }
 }
 
-fn gamemaker_tiles(instance: &Value) -> GameMakerTileData {
+fn gamemaker_tiles(
+    instance: &Value,
+    width: usize,
+    height: usize,
+    grid: i64,
+) -> Result<GameMakerTileData> {
     const EMPTY: u32 = 1 << 31;
-    let width = n(instance, "__cWid").max(0) as usize;
-    let height = n(instance, "__cHei").max(0) as usize;
-    let grid = n(instance, "__gridSize").max(1);
+    const TILE_INDEX_MASK: u64 = (1 << 19) - 1;
     let mut tiles = vec![EMPTY; width * height];
     for tile in arr(&instance["gridTiles"]) {
-        let x = tile["px"][0].as_i64().unwrap_or(0) / grid;
-        let y = tile["px"][1].as_i64().unwrap_or(0) / grid;
-        if x >= 0 && y >= 0 && (x as usize) < width && (y as usize) < height {
+        let x = tile["px"][0].as_i64().unwrap_or(0).div_euclid(grid);
+        let y = tile["px"][1].as_i64().unwrap_or(0).div_euclid(grid);
+        if (0..width as i64).contains(&x) && (0..height as i64).contains(&y) {
             let cell = &mut tiles[x as usize + y as usize * width];
             if *cell == EMPTY {
-                *cell = n(tile, "t") as u32;
+                let id = tile["t"]
+                    .as_u64()
+                    .filter(|&id| id <= TILE_INDEX_MASK)
+                    .ok_or_else(|| {
+                        Error::Invalid(format!(
+                            "invalid GameMaker tile ID at ({x}, {y}) in layer {}",
+                            s(instance, "__identifier")
+                        ))
+                    })?;
+                // GameMaker puts the horizontal mirror and vertical flip in bits 28 and 29.
+                let flips = (n(tile, "f") as u32 & 3) << 28;
+                *cell = id as u32 | flips;
             }
         }
     }
-    GameMakerTileData {
+    Ok(GameMakerTileData {
         width,
         height,
         tiles,
-    }
+    })
 }
