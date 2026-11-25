@@ -532,6 +532,7 @@ impl Grid<'_> {
     }
 }
 struct Engine<'a> {
+    layers: &'a [Value],
     li: &'a Value,
     ld: &'a Value,
     atlas: &'a Value,
@@ -545,7 +546,6 @@ struct Engine<'a> {
     sh: i32,
     grid_size: i32,
     atlas_width: i32,
-    killed: BTreeSet<(i32, i32)>,
     seed: i32,
 }
 
@@ -721,7 +721,7 @@ impl Project {
 impl<'a> Engine<'a> {
     fn new(
         level: &'a Value,
-        layers: &[Value],
+        layers: &'a [Value],
         li: &'a Value,
         ld: &'a Value,
         source: &'a Value,
@@ -780,35 +780,8 @@ impl<'a> Engine<'a> {
         let rules = active_rules(level, li, ld)
             .map(Rule::new)
             .collect::<Result<Vec<_>>>()?;
-        let mut killed = BTreeSet::new();
-        for blocker in layers.iter().filter(|l| {
-            l["layerDefUid"]
-                .as_i64()
-                .is_some_and(|uid| blocks_auto_layer(ld, uid))
-        }) {
-            let blocker_grid = int(blocker, "__gridSize", grid_size).max(1);
-            if blocker["__type"] == "IntGrid" {
-                let width = int(blocker, "__cWid", 0);
-                if width > 0 {
-                    for (index, value) in arr(&blocker["intGridCsv"]).iter().enumerate() {
-                        if value.as_i64().unwrap_or(0) != 0 {
-                            killed.insert((index as i32 % width, index as i32 / width));
-                        }
-                    }
-                }
-            } else if blocker["__type"] == "Tiles" || blocker["__type"].is_null() {
-                for tile in arr(&blocker["gridTiles"]) {
-                    let px = arr(&tile["px"]);
-                    if px.len() == 2 {
-                        killed.insert((
-                            px[0].as_i64().unwrap_or(0) as i32 / blocker_grid,
-                            px[1].as_i64().unwrap_or(0) as i32 / blocker_grid,
-                        ));
-                    }
-                }
-            }
-        }
         Ok(Self {
+            layers,
             li,
             ld,
             atlas,
@@ -822,9 +795,55 @@ impl<'a> Engine<'a> {
             sh,
             grid_size,
             atlas_width,
-            killed,
             seed: int(li, "seed", 0),
         })
+    }
+
+    fn blocked_cells(&self, region: &CellRegion) -> BTreeSet<(i32, i32)> {
+        let mut killed = BTreeSet::new();
+        for blocker in self.layers.iter().filter(|l| {
+            l["layerDefUid"]
+                .as_i64()
+                .is_some_and(|uid| blocks_auto_layer(self.ld, uid))
+        }) {
+            if blocker["__type"] == "IntGrid" {
+                let width = int(blocker, "__cWid", 0).max(0) as usize;
+                if width == 0 {
+                    continue;
+                }
+                let cells = arr(&blocker["intGridCsv"]);
+                for (y, span) in region.spans() {
+                    let Some(row) = (y as usize)
+                        .checked_mul(width)
+                        .and_then(|start| cells.get(start..))
+                    else {
+                        break;
+                    };
+                    let left = span.start as usize;
+                    let right = (span.end as usize).min(width).min(row.len());
+                    for (index, value) in
+                        row.get(left..right).unwrap_or_default().iter().enumerate()
+                    {
+                        if value.as_i64().unwrap_or(0) != 0 {
+                            killed.insert(((left + index) as i32, y));
+                        }
+                    }
+                }
+            } else if blocker["__type"] == "Tiles" || blocker["__type"].is_null() {
+                let blocker_grid = int(blocker, "__gridSize", self.grid_size).max(1);
+                for tile in arr(&blocker["gridTiles"]) {
+                    let px = arr(&tile["px"]);
+                    if let [x, y] = px {
+                        let x = x.as_i64().unwrap_or(0) as i32 / blocker_grid;
+                        let y = y.as_i64().unwrap_or(0) as i32 / blocker_grid;
+                        if region.contains(x, y) {
+                            killed.insert((x, y));
+                        }
+                    }
+                }
+            }
+        }
+        killed
     }
     fn relevant(&self, r: &Rule, x: i32, y: i32) -> bool {
         for &v in &r.pattern {
@@ -899,6 +918,7 @@ impl<'a> Engine<'a> {
             ]
         });
         let region = CellRegion::new(bounds.clone());
+        let killed = self.blocked_cells(&region);
         // Relevance counts need only the 10-cell source buckets touched by rule
         // footprints. A brush update does not scan or copy the whole IntGrid.
         let radius = self.rules.iter().map(|r| r.size / 2).max().unwrap_or(0);
@@ -986,7 +1006,7 @@ impl<'a> Engine<'a> {
                 for x in span {
                     let id = x + y * self.width;
                     if locked.contains(&id)
-                        || self.killed.contains(&(x, y))
+                        || killed.contains(&(x, y))
                         || r.rects.is_empty()
                         || !self.relevant(r, x, y)
                     {

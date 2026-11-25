@@ -1063,6 +1063,33 @@ fn preview_154_multiple_tile_and_intgrid_blockers_update_incrementally() {
 }
 
 #[test]
+fn incremental_rebuild_respects_the_blocker_stride_and_partial_row() {
+    let (mut project, key) = fixture();
+    project.json["defs"]["layers"][0]["layerUidsPreventingAutoTilingHere"] = json!([9]);
+    let layers = project.level_mut(key).unwrap()["layerInstances"]
+        .as_array_mut()
+        .unwrap();
+    layers[0]["intGridCsv"] = json!([0, 0, 1, 1, 0, 1]);
+    layers.push(json!({
+        "layerDefUid":9, "__type":"IntGrid", "__gridSize":16, "__cWid":2, "__cHei":2,
+        "intGridCsv":[0,0,1]
+    }));
+    let mut full = project.clone();
+    full.rebuild_auto_layers(key).unwrap();
+    project
+        .rebuild_auto_layers_area(key, 1, [2, 1, 1, 1])
+        .unwrap();
+    assert_eq!(tiles(&project, key), tiles(&full, key));
+    let cells = tiles(&project, key)
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|tile| tile["d"][1].as_i64().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(cells, [2, 5]);
+}
+
+#[test]
 fn tile_bucket_erase_updates_blocked_auto_tiles_and_rolls_back_on_error() {
     let (mut project, key) = fixture();
     let rules = &mut project.json["defs"]["layers"];
