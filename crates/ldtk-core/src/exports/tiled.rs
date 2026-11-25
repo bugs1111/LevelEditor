@@ -3,6 +3,7 @@ use super::{
     png::checked_image_dimensions, s, safe_name,
 };
 use crate::project::relative_to;
+use crate::workflow::{MAX_LAYER_CELLS, layer_cell_extent};
 use crate::{Error, Project, Result};
 use image::RgbaImage;
 use serde_json::{Value, json};
@@ -32,6 +33,66 @@ impl TiledFormat {
 enum TiledTilesets {
     Xml(String),
     Json(Vec<Value>),
+}
+
+struct TiledMap<'a> {
+    level: &'a Value,
+    pixels: [i64; 2],
+    size: [i64; 2],
+    grid: i64,
+    layers: Vec<(&'a Value, [usize; 2])>,
+}
+
+impl<'a> TiledMap<'a> {
+    fn new(level: &'a Value, grid: i64) -> Result<Self> {
+        let name = s(level, "identifier");
+        let pixels = [n(level, "pxWid"), n(level, "pxHei")];
+        if !pixels
+            .iter()
+            .all(|size| (1..=i64::from(i32::MAX)).contains(size))
+        {
+            return Err(Error::Invalid(format!(
+                "invalid Tiled map dimensions for level {name}"
+            )));
+        }
+        let size = pixels.map(|pixels| layer_cell_extent(pixels, 0, grid));
+        let mut layers = Vec::new();
+        for layer in arr(&level["layerInstances"])
+            .iter()
+            .rev()
+            .filter(|layer| n(layer, "__gridSize") == grid)
+        {
+            let size = if layer["__type"] == "Entities" {
+                [0; 2]
+            } else {
+                tiled_layer_size(layer).ok_or_else(|| {
+                    Error::Invalid(format!(
+                        "invalid Tiled layer dimensions for {} in level {name}",
+                        s(layer, "__identifier")
+                    ))
+                })?
+            };
+            layers.push((layer, size));
+        }
+        Ok(Self {
+            level,
+            pixels,
+            size,
+            grid,
+            layers,
+        })
+    }
+}
+
+fn tiled_layer_size(layer: &Value) -> Option<[usize; 2]> {
+    let dimension = |field| {
+        layer
+            .get(field)
+            .map_or(Some(0), Value::as_i64)
+            .filter(|size| (0..=MAX_LAYER_CELLS).contains(size))
+    };
+    let (width, height) = (dimension("__cWid")?, dimension("__cHei")?);
+    (width.checked_mul(height)? <= MAX_LAYER_CELLS).then_some([width as usize, height as usize])
 }
 
 #[derive(Default)]
@@ -463,16 +524,17 @@ impl Project {
                 let (l, [x, y]) =
                     level.ok_or_else(|| Error::Invalid("missing external level".into()))?;
                 let name = safe_name(s(l, "identifier"))?;
+                let map = TiledMap::new(l, grid)?;
                 let filename = if total > 1 {
                     format!("{:04}_{name}.{extension}", index + 1)
                 } else {
                     format!("{name}.{extension}")
                 };
                 let path = dir.join(&filename);
-                let mut map = json!({"fileName":filename,"x":x,"y":y});
+                let mut world_map = json!({"fileName":filename,"x":x,"y":y});
                 match &tilesets {
                     TiledTilesets::Xml(tilesets) => {
-                        let (header, layers) = self.tiled_map_xml(l, grid, &gids);
+                        let (header, layers) = self.tiled_map_xml(&map, &gids);
                         let mut parts = Vec::with_capacity(layers.len() + 3);
                         parts.extend([header.as_bytes(), tilesets.as_bytes()]);
                         for layer in &layers {
@@ -483,13 +545,13 @@ impl Project {
                     }
                     TiledTilesets::Json(tilesets) => {
                         batch.add_writer(path, |writer| {
-                            self.write_tiled_map_json(writer, l, grid, &gids, tilesets)
+                            self.write_tiled_map_json(writer, &map, &gids, tilesets)
                         })?;
-                        map["width"] = n(l, "pxWid").into();
-                        map["height"] = n(l, "pxHei").into();
+                        world_map["width"] = map.pixels[0].into();
+                        world_map["height"] = map.pixels[1].into();
                     }
                 }
-                maps.push(map);
+                maps.push(world_map);
                 progress(index + 1, total);
             }
             progress(0, 0);
@@ -506,17 +568,13 @@ impl Project {
         )?;
         batch.publish()
     }
-    fn tiled_map_xml(&self, l: &Value, grid: i64, gids: &TiledGids) -> (String, Vec<TmxLayer>) {
+    fn tiled_map_xml(&self, map: &TiledMap<'_>, gids: &TiledGids) -> (String, Vec<TmxLayer>) {
+        let grid = map.grid;
         let mut layers = Vec::new();
         let mut layer_id = 1;
         let object_id = 1;
-        for li in arr(&l["layerInstances"]).iter().rev() {
+        for &(li, [cw, ch]) in &map.layers {
             let def = self.layer_def(n(li, "layerDefUid")).unwrap_or(li);
-            if n(li, "__gridSize") != grid {
-                continue;
-            }
-            let cw = n(li, "__cWid").max(0) as usize;
-            let ch = n(li, "__cHei").max(0) as usize;
             let typ = s(li, "__type");
             let opacity = num(def, "displayOpacity", 1.);
             if typ == "Entities" {
@@ -579,9 +637,9 @@ impl Project {
         }
         let header = format!(
             "<map version=\"1.4\" tiledversion=\"1.4.2\" orientation=\"orthogonal\" renderorder=\"right-down\" compressionlevel=\"0\" width=\"{}\" height=\"{}\" tilewidth=\"{grid}\" tileheight=\"{grid}\" infinite=\"0\" backgroundcolor=\"{}\" nextlayerid=\"{layer_id}\" nextobjectid=\"{object_id}\">",
-            (n(l, "pxWid") + grid - 1) / grid,
-            (n(l, "pxHei") + grid - 1) / grid,
-            xml(s(l, "__bgColor"))
+            map.size[0],
+            map.size[1],
+            xml(s(map.level, "__bgColor"))
         );
         (header, layers)
     }

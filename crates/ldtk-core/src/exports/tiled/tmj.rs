@@ -1,6 +1,6 @@
 use super::{
-    EntityRect, TileStack, TiledGids, arr, field_text, for_each_entity_field, intgrid_gids,
-    intgrid_name, n, num, s, tiled_tile_layers,
+    EntityRect, TileStack, TiledGids, TiledMap, arr, field_text, for_each_entity_field,
+    intgrid_gids, intgrid_name, n, num, s, tiled_tile_layers,
 };
 use crate::Project;
 use serde::Serialize;
@@ -123,18 +123,15 @@ impl Project {
     pub(super) fn write_tiled_map_json(
         &self,
         writer: &mut impl Write,
-        level: &Value,
-        grid: i64,
+        map: &TiledMap<'_>,
         gids: &TiledGids,
         tilesets: &[Value],
     ) -> io::Result<()> {
+        let grid = map.grid;
         writer.write_all(b"{\"layers\":[")?;
         let mut layer_id = 0;
         let mut object_id = 1;
-        for li in arr(&level["layerInstances"]).iter().rev() {
-            if n(li, "__gridSize") != grid {
-                continue;
-            }
+        for &(li, size) in &map.layers {
             let layer_uid = n(li, "layerDefUid");
             let def = self.layer_def(layer_uid).unwrap_or(li);
             let opacity = num(def, "displayOpacity", 1.);
@@ -194,10 +191,6 @@ impl Project {
                 continue;
             }
 
-            let size = [
-                n(li, "__cWid").max(0) as usize,
-                n(li, "__cHei").max(0) as usize,
-            ];
             let area = size[0] * size[1];
             if typ == "IntGrid" {
                 let palette = gids.intgrids.get(&layer_uid);
@@ -233,10 +226,10 @@ impl Project {
         let mut header = json!({
             "type":"map","version":"1.8","tiledversion":"1.8.0","orientation":"orthogonal",
             "renderorder":"right-down","infinite":false,"tilewidth":grid,"tileheight":grid,
-            "width":(n(level,"pxWid")+grid-1)/grid,"height":(n(level,"pxHei")+grid-1)/grid,
+            "width":map.size[0],"height":map.size[1],
             "nextlayerid":layer_id+1,"nextobjectid":object_id
         });
-        let background = s(level, "__bgColor");
+        let background = s(map.level, "__bgColor");
         if !background.is_empty() {
             header["backgroundcolor"] = json!(background);
         }

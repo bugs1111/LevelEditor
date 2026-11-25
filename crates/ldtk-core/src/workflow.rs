@@ -6,6 +6,8 @@ use std::cell::OnceCell;
 use std::collections::{BTreeMap, HashMap};
 use std::ops::Range;
 
+pub(crate) const MAX_LAYER_CELLS: i64 = 16_777_216;
+
 #[derive(Default)]
 pub(crate) struct EntityReferences {
     // Entities in a layer share its layer, level, and world IIDs.
@@ -328,7 +330,7 @@ impl Project {
         self.edit_document(|p|{
  unique_level(p,name)?;if width<=0||height<=0{return Err(invalid("level dimensions must be positive"));}container(p,world)?;let uid=alloc_uid(p)?;
  let mut level:Value=serde_json::from_str::<Value>(include_str!("empty.ldtk")).expect("template")["levels"][0].clone();level["identifier"]=json!(name);level["useAutoIdentifier"]=json!(false);level["iid"]=iid();level["uid"]=json!(uid);level["pxWid"]=json!(width);level["pxHei"]=json!(height);level["__bgColor"]=p.json["defaultLevelBgColor"].clone();
- let defs=p.json["defs"]["layers"].as_array().cloned().unwrap_or_default();let mut layers=vec![];for d in defs{let g=d["gridSize"].as_i64().filter(|v|*v>0).ok_or_else(||invalid("invalid layer grid"))?;let cw=(i64::from(width)+g-1)/g;let ch=(i64::from(height)+g-1)/g;let count=cw.checked_mul(ch).filter(|n|*n<=16_777_216).ok_or_else(||invalid("level IntGrid allocation too large"))?;let ts=p.tileset(d["tilesetDefUid"].as_i64().unwrap_or(-1));layers.push(json!({"__identifier":d["identifier"],"__type":d["type"],"__gridSize":g,"__cWid":cw,"__cHei":ch,"__opacity":d["displayOpacity"],"__pxTotalOffsetX":d["pxOffsetX"].as_i64().unwrap_or(0),"__pxTotalOffsetY":d["pxOffsetY"].as_i64().unwrap_or(0),"__tilesetDefUid":d["tilesetDefUid"],"__tilesetRelPath":ts.map(|v|v["relPath"].clone()),"iid":iid(),"levelId":uid,"layerDefUid":d["uid"],"pxOffsetX":0,"pxOffsetY":0,"visible":true,"optionalRules":[],"intGridCsv":if d["type"]=="IntGrid"{vec![json!(0);count as usize]}else{vec![]},"autoLayerTiles":[],"seed":0,"overrideTilesetUid":null,"gridTiles":[],"entityInstances":[]}));}
+ let defs=p.json["defs"]["layers"].as_array().cloned().unwrap_or_default();let mut layers=vec![];for d in defs{let g=d["gridSize"].as_i64().filter(|v|*v>0).ok_or_else(||invalid("invalid layer grid"))?;let cw=(i64::from(width)+g-1)/g;let ch=(i64::from(height)+g-1)/g;let count=cw.checked_mul(ch).filter(|n|*n<=MAX_LAYER_CELLS).ok_or_else(||invalid("level IntGrid allocation too large"))?;let ts=p.tileset(d["tilesetDefUid"].as_i64().unwrap_or(-1));layers.push(json!({"__identifier":d["identifier"],"__type":d["type"],"__gridSize":g,"__cWid":cw,"__cHei":ch,"__opacity":d["displayOpacity"],"__pxTotalOffsetX":d["pxOffsetX"].as_i64().unwrap_or(0),"__pxTotalOffsetY":d["pxOffsetY"].as_i64().unwrap_or(0),"__tilesetDefUid":d["tilesetDefUid"],"__tilesetRelPath":ts.map(|v|v["relPath"].clone()),"iid":iid(),"levelId":uid,"layerDefUid":d["uid"],"pxOffsetX":0,"pxOffsetY":0,"visible":true,"optionalRules":[],"intGridCsv":if d["type"]=="IntGrid"{vec![json!(0);count as usize]}else{vec![]},"autoLayerTiles":[],"seed":0,"overrideTilesetUid":null,"gridTiles":[],"entityInstances":[]}));}
  for layer in &layers { if layer["__type"] == "IntGrid" { let iid = layer["iid"].as_str().expect("new layer IID"); p.grid_presence.insert(iid.into(), GridPresence::empty()); } }
  level["layerInstances"]=json!(layers);let fields=p.json["defs"]["levelFields"].as_array().cloned().unwrap_or_default();level["fieldInstances"]=json!(fields.iter().map(|d|p.make_field_instance(d)).collect::<Result<Vec<_>>>()?);
  let levels=levels_mut(p,world)?;let key=LevelKey{world,level:levels.len()};levels.push(level);
@@ -463,7 +465,7 @@ impl Project {
                     let nh = layer_cell_extent(i64::from(height), remainder_y, g);
                     let count = nw
                         .checked_mul(nh)
-                        .filter(|n| *n <= 16_777_216)
+                        .filter(|n| *n <= MAX_LAYER_CELLS)
                         .ok_or_else(|| invalid("resized grid too large"))?;
                     if layer["__type"] == "IntGrid" {
                         let old = layer["intGridCsv"]
@@ -1472,7 +1474,7 @@ impl Project {
                         let nh = layer_cell_extent(ph, layer["pxOffsetY"].as_i64().unwrap_or(0), g);
                         let cells = nw
                             .checked_mul(nh)
-                            .filter(|n| *n <= 16_777_216)
+                            .filter(|n| *n <= MAX_LAYER_CELLS)
                             .ok_or_else(|| invalid("grid allocation too large"))?;
                         match layer["__type"].as_str() {
                             Some("IntGrid") => {
@@ -1574,7 +1576,7 @@ if let Some(iid) = layer["iid"].as_str() {
         grid_presence.remove(iid);
     }
 }
-if kind=="IntGrid"{let count=layer["__cWid"].as_u64().unwrap_or(0).checked_mul(layer["__cHei"].as_u64().unwrap_or(0)).filter(|n|*n<=16_777_216).ok_or_else(||invalid("IntGrid allocation too large"))?;layer["intGridCsv"]=json!(vec![0;count as usize]);}else{layer["intGridCsv"]=json!([]);}layer["__type"]=json!(kind);layer["autoLayerTiles"]=json!([]);}}}
+if kind=="IntGrid"{let count=layer["__cWid"].as_u64().unwrap_or(0).checked_mul(layer["__cHei"].as_u64().unwrap_or(0)).filter(|n|*n<=MAX_LAYER_CELLS as u64).ok_or_else(||invalid("IntGrid allocation too large"))?;layer["intGridCsv"]=json!(vec![0;count as usize]);}else{layer["intGridCsv"]=json!([]);}layer["__type"]=json!(kind);layer["autoLayerTiles"]=json!([]);}}}
  p.grid_presence = grid_presence;
  let def=p.json["defs"]["layers"].as_array_mut().expect("found layers").iter_mut().find(|d|d["uid"]==uid).expect("found definition");def["type"]=json!(kind);def["__type"]=json!(kind);if kind=="Tiles"||kind=="Entities"{def["autoRuleGroups"]=json!([]);def["autoSourceLayerDefUid"]=Value::Null;}
 if kind=="IntGrid"&&def["intGridValues"].as_array().is_none_or(|vs|vs.is_empty()){def["intGridValues"]=json!([{"value":1,"identifier":null,"color":"#000000","tile":null,"groupUid":0}]);}

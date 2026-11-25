@@ -1676,6 +1676,59 @@ fn a_late_level_failure_keeps_previous_png_and_simplified_exports() {
 }
 
 #[test]
+fn invalid_tiled_dimensions_keep_previous_outputs_in_both_formats() {
+    use ldtk_core::exports::TiledFormat;
+
+    let dir = tempfile::tempdir().unwrap();
+    let mut previous = Project::new();
+    let first = previous.level_keys()[0];
+    previous.resize_level(first, 32, 32, 0, 0).unwrap();
+    previous.add_layer("Solid", "IntGrid", 16).unwrap();
+    let second = previous.add_level(None, "Later", 32, 32).unwrap();
+
+    for (format, name) in [(TiledFormat::Tmx, "tmx"), (TiledFormat::Tmj, "tmj")] {
+        let output = dir.path().join(name);
+        let outputs = previous
+            .export_tiled_format_with_report_progress(&output, format, |_, _| {})
+            .unwrap()
+            .outputs;
+        let old: Vec<_> = outputs.iter().map(|path| fs::read(path).unwrap()).collect();
+        for (field, invalid) in [
+            ("__cWid", -1),
+            ("__cWid", i64::MAX),
+            ("__cHei", 8_388_609),
+            ("pxWid", 0),
+        ] {
+            let mut project = previous.clone();
+            assert!(project.paint_int_grid(first, 0, 0, 0, 1).unwrap());
+            if field == "pxWid" {
+                project.level_mut(second).unwrap()[field] = json!(invalid);
+            } else {
+                project.layer_mut(second, 0).unwrap()[field] = json!(invalid);
+            }
+            let mut progress = Vec::new();
+            let error = project
+                .export_tiled_format_with_report_progress(&output, format, |done, total| {
+                    progress.push((done, total))
+                })
+                .unwrap_err();
+            assert!(
+                matches!(&error, ldtk_core::Error::Invalid(message) if message.contains("Later") && message.contains("dimensions")),
+                "{error}"
+            );
+            if field != "pxWid" {
+                assert!(error.to_string().contains("Solid"), "{error}");
+            }
+            assert_eq!(progress, [(0, 2), (1, 2)]);
+            for (file, original) in outputs.iter().zip(&old) {
+                assert_eq!(&fs::read(file).unwrap(), original, "{}", file.display());
+            }
+            assert_eq!(fs::read_dir(&output).unwrap().count(), outputs.len());
+        }
+    }
+}
+
+#[test]
 fn png_export_preserves_files_created_after_outputs_were_staged() {
     let dir = tempfile::tempdir().unwrap();
     let previous = dir.path().join("Level_0.png");
