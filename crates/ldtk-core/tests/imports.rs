@@ -37,6 +37,125 @@ fn ogmo_import_maps_legend_offsets_tiles_and_fields() {
     assert_eq!(p.json["bgColor"], "#123456");
 }
 #[test]
+fn ogmo_keeps_cell_rows_and_flips_when_layer_offsets_change_the_destination_stride() {
+    use ldtk_core::exports::TiledFormat;
+
+    let directory = tempfile::tempdir().unwrap();
+    let base = directory.path();
+    let levels = base.join("levels");
+    fs::create_dir(&levels).unwrap();
+    image::RgbaImage::new(64, 16)
+        .save(base.join("atlas.png"))
+        .unwrap();
+    let source = base.join("game.ogmo");
+    fs::write(&source, json!({
+        "ogmoVersion":"3.4.0", "levelPaths":["levels"],
+        "tilesets":[{"label":"Atlas","path":"atlas.png","tileWidth":16,"tileHeight":16}],
+        "layers":[
+            {"name":"Walls","definition":"grid","legend":{"empty":"#00000000","solid":"#FF00FFFF"}},
+            {"name":"Terrain","definition":"tile","defaultTileset":"Atlas"}
+        ]
+    }).to_string()).unwrap();
+    for (name, tile_data, grid_data) in [
+        (
+            "flat",
+            json!({"data":[-1,1,-1,2,-1,3]}),
+            json!({"grid":["solid","empty","empty","empty","solid","empty"]}),
+        ),
+        (
+            "rows",
+            json!({"data2D":[[-1,1],[2,-1,3]]}),
+            json!({"grid2D":[["solid"],["empty","solid"]]}),
+        ),
+    ] {
+        let mut terrain = json!({
+            "name":"Terrain","gridCellsX":3,"offsetX":-6,"tileFlags2D":[[0,4],[2,0,6]]
+        });
+        terrain
+            .as_object_mut()
+            .unwrap()
+            .extend(tile_data.as_object().unwrap().clone());
+        let mut walls = json!({"name":"Walls","gridCellsX":3,"offsetX":-6});
+        walls
+            .as_object_mut()
+            .unwrap()
+            .extend(grid_data.as_object().unwrap().clone());
+        fs::write(
+            levels.join(format!("{name}.json")),
+            json!({
+                "width":64,"height":32,"offsetX":-10,"layers":[terrain,walls]
+            })
+            .to_string(),
+        )
+        .unwrap();
+    }
+    let mut imported = Project::import_ogmo(source).unwrap();
+    let path = base.join("game.ldtk");
+    imported.save(&path).unwrap();
+    let project = Project::load(&path).unwrap();
+    for key in project.level_keys() {
+        let level = project.level(key).unwrap();
+        let layers = level["layerInstances"].as_array().unwrap();
+        let terrain = layers
+            .iter()
+            .find(|l| l["__identifier"] == "Terrain")
+            .unwrap();
+        let walls = layers
+            .iter()
+            .find(|l| l["__identifier"] == "Walls")
+            .unwrap();
+        assert_eq!(terrain["__pxTotalOffsetX"], -16);
+        assert_eq!(terrain["__cWid"], 5);
+        assert_eq!(walls["intGridCsv"], json!([1, 0, 0, 0, 0, 0, 1, 0, 0, 0]));
+        let cells: Vec<_> = terrain["gridTiles"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|tile| json!([tile["px"], tile["f"], tile["d"]]))
+            .collect();
+        assert_eq!(
+            json!(cells),
+            json!([[[16, 0], 1, [1]], [[0, 16], 2, [5]], [[32, 16], 3, [7]]])
+        );
+    }
+    let output = base.join("tiled");
+    let exported = project
+        .export_tiled_format_with_report_progress(&output, TiledFormat::Tmj, |_, _| {})
+        .unwrap();
+    let maps: Vec<_> = exported
+        .outputs
+        .iter()
+        .filter(|path| path.extension().is_some_and(|ext| ext == "tmj"))
+        .collect();
+    assert_eq!(maps.len(), 2);
+    for path in maps {
+        let map: serde_json::Value = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
+        let layer = map["layers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|layer| layer["name"] == "Terrain")
+            .unwrap();
+        assert_eq!(layer["offsetx"], -16);
+        assert_eq!(
+            layer["data"],
+            json!([
+                0,
+                2 | (1_u32 << 31),
+                0,
+                0,
+                0,
+                3 | (1_u32 << 30),
+                0,
+                4 | (3_u32 << 30),
+                0,
+                0
+            ])
+        );
+    }
+}
+
+#[test]
 fn old_ogmo_versions_and_nonsquare_grids_are_rejected() {
     let t = tempfile::tempdir().unwrap();
     let path = t.path().join("x.ogmo");

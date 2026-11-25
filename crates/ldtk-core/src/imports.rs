@@ -1,6 +1,7 @@
 //! Ogmo 3.3+ importer, preserving upstream's grid/rotation limitations.
 use crate::exports::load_image_rgba;
 use crate::project::{absolute, read_json};
+use crate::workflow::{MAX_LAYER_CELLS, layer_cell_extent};
 use crate::{Error, Project, Result};
 use serde_json::{Value, json};
 use std::{
@@ -65,14 +66,45 @@ fn grid(v: &Value, fallback: i64) -> Result<i64> {
     }
     Ok(x)
 }
-fn flat(v: &Value, one: &str, two: &str) -> Vec<Value> {
-    if let Some(a) = v[one].as_array() {
-        a.clone()
-    } else {
-        arr(&v[two])
+enum OgmoCells<'a> {
+    Flat(&'a [Value], usize),
+    Rows(&'a [Value]),
+}
+
+impl<'a> OgmoCells<'a> {
+    fn new(layer: &'a Value, flat: &str, rows: &str, width: usize) -> Self {
+        match layer[flat].as_array() {
+            Some(cells) => Self::Flat(cells, width),
+            None => Self::Rows(arr(&layer[rows])),
+        }
+    }
+
+    fn cells(&self) -> impl Iterator<Item = ([usize; 2], &'a Value)> {
+        let (flat, width, rows) = match *self {
+            Self::Flat(cells, width) => (cells, width, &[][..]),
+            Self::Rows(rows) => (&[][..], 1, rows),
+        };
+        let flat = flat
             .iter()
-            .flat_map(|r| arr(r).iter().cloned())
-            .collect()
+            .enumerate()
+            .map(move |(i, cell)| ([i % width, i / width], cell));
+        let rows = rows.iter().enumerate().flat_map(|(y, row)| {
+            arr(row)
+                .iter()
+                .enumerate()
+                .map(move |(x, cell)| ([x, y], cell))
+        });
+        flat.chain(rows)
+    }
+
+    fn get(&self, x: usize, y: usize) -> Option<&'a Value> {
+        match *self {
+            Self::Flat(cells, width) if x < width => {
+                cells.get(y.checked_mul(width)?.checked_add(x)?)
+            }
+            Self::Flat(..) => None,
+            Self::Rows(rows) => arr(rows.get(y)?).get(x),
+        }
     }
 }
 fn walk(dir: &Path, out: &mut BTreeSet<PathBuf>) -> Result<()> {
@@ -336,6 +368,16 @@ impl Project {
                 }
                 _ => continue,
             };
+            let [Some(width), Some(height)] = ["width", "height"].map(|field| {
+                input[field]
+                    .as_i64()
+                    .filter(|n| (1..=i64::from(i32::MAX)).contains(n))
+            }) else {
+                return Err(Error::Invalid(format!(
+                    "invalid Ogmo level dimensions in {}",
+                    file.display()
+                )));
+            };
             let mut level = template.clone();
             let level_uid = uid(&mut p);
             level["uid"] = json!(level_uid);
@@ -353,23 +395,48 @@ impl Project {
             let mut instances = Vec::new();
             for d in &defs {
                 let grid = n(d, "gridSize");
-                let cw = (n(&input, "width") + grid - 1) / grid;
-                let ch = (n(&input, "height") + grid - 1) / grid;
                 let data = arr(&input["layers"])
                     .iter()
                     .find(|l| clean_identifier(s(l, "name")) == s(d, "identifier"))
-                    .cloned()
-                    .unwrap_or_else(|| json!({}));
-                let ox = n(&input, "offsetX") + n(&data, "offsetX");
-                let oy = n(&input, "offsetY") + n(&data, "offsetY");
+                    .unwrap_or(&Value::Null);
+                let [Some(ox), Some(oy)] = ["offsetX", "offsetY"].map(|field| {
+                    n(&input, field)
+                        .checked_add(n(data, field))
+                        .and_then(|n| i32::try_from(n).ok())
+                        .map(i64::from)
+                }) else {
+                    return Err(Error::Invalid(format!(
+                        "invalid Ogmo layer offset in {}",
+                        file.display()
+                    )));
+                };
+                let cw = layer_cell_extent(width, ox, grid);
+                let ch = layer_cell_extent(height, oy, grid);
+                if cw > MAX_LAYER_CELLS || ch > MAX_LAYER_CELLS || cw * ch > MAX_LAYER_CELLS {
+                    return Err(Error::Invalid(format!(
+                        "Ogmo layer dimensions exceed the cell limit in {}",
+                        file.display()
+                    )));
+                }
+                let (cw, ch) = (cw as usize, ch as usize);
+                // The incoming row stride is independent of the offset-adjusted layer width.
+                let source_width = data["gridCellsX"]
+                    .as_u64()
+                    .and_then(|n| usize::try_from(n).ok())
+                    .filter(|&n| n > 0)
+                    .unwrap_or_else(|| layer_cell_extent(width, 0, grid) as usize);
                 let mut li = json!({"__identifier":d["identifier"],"__type":d["type"],"__cWid":cw,"__cHei":ch,"__gridSize":grid,"__opacity":d["displayOpacity"],"__pxTotalOffsetX":ox,"__pxTotalOffsetY":oy,"__tilesetDefUid":null,"__tilesetRelPath":null,"iid":iid(),"levelId":level_uid,"layerDefUid":d["uid"],"pxOffsetX":ox,"pxOffsetY":oy,"visible":true,"optionalRules":[],"intGridCsv":[],"autoLayerTiles":[],"seed":0,"overrideTilesetUid":null,"gridTiles":[],"entityInstances":[]});
                 match s(d, "type") {
                     "IntGrid" => {
                         let map = legends.get(&n(d, "uid")).unwrap();
-                        let input_values = flat(&data, "grid", "grid2D");
-                        let mut csv = vec![0i64; (cw * ch) as usize];
+                        let input_values = OgmoCells::new(data, "grid", "grid2D", source_width);
+                        let mut csv = vec![0i64; cw * ch];
                         let mut presence = crate::grid_presence::GridPresence::empty();
-                        for (i, v) in input_values.iter().enumerate().take(csv.len()) {
+                        for ([x, y], v) in input_values.cells() {
+                            if x >= cw || y >= ch {
+                                continue;
+                            }
+                            let i = x + y * cw;
                             let key = v
                                 .as_str()
                                 .map(str::to_owned)
@@ -402,10 +469,11 @@ impl Project {
                             if d["tilesetDefUid"] != id {
                                 li["overrideTilesetUid"] = json!(id);
                             }
-                            let flags = flat(&data, "tileFlags", "tileFlags2D");
+                            let flags =
+                                OgmoCells::new(data, "tileFlags", "tileFlags2D", source_width);
                             let rotations = flags
-                                .iter()
-                                .filter(|f| f.as_i64().is_some_and(|f| f & 1 != 0))
+                                .cells()
+                                .filter(|(_, f)| f.as_i64().is_some_and(|f| f & 1 != 0))
                                 .count();
                             if rotations > 0 {
                                 warnings.push(format!("Found {rotations} unsupported Ogmo tile rotations in {}: rotations ignored",s(d,"identifier")));
@@ -415,16 +483,17 @@ impl Project {
                             let spacing = n(td, "spacing");
                             let padding = n(td, "padding");
                             let mut tiles = Vec::new();
-                            for (i, t) in flat(&data, "data", "data2D").iter().enumerate() {
+                            let input_tiles = OgmoCells::new(data, "data", "data2D", source_width);
+                            for ([x, y], t) in input_tiles.cells() {
                                 let tid = t.as_i64().unwrap_or(-1);
-                                if tid < 0 {
+                                if tid < 0 || x >= cw || y >= ch {
                                     continue;
                                 }
-                                let f = flags.get(i).and_then(Value::as_i64).unwrap_or(0);
+                                let f = flags.get(x, y).and_then(Value::as_i64).unwrap_or(0);
                                 let flips = ((f >> 2) & 1) | (f & 2);
                                 let row = if cols == 0 { 0 } else { tid / cols };
                                 let col = tid - row * cols;
-                                tiles.push(json!({"px":[(i as i64%cw)*grid,(i as i64/cw)*grid],"src":[padding+col*(size+spacing),padding+row*(size+spacing)],"f":flips,"t":tid,"d":[i],"a":1}));
+                                tiles.push(json!({"px":[x as i64*grid,y as i64*grid],"src":[padding+col*(size+spacing),padding+row*(size+spacing)],"f":flips,"t":tid,"d":[x+y*cw],"a":1}));
                             }
                             li["gridTiles"] = json!(tiles);
                         }
