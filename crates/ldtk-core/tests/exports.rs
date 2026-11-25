@@ -1504,6 +1504,30 @@ fn intgrid_png_uses_first_palette_match_and_preserves_transparent_cells() {
 }
 
 #[test]
+fn intgrid_png_rejects_invalid_dimensions_without_replacing_existing_exports() {
+    let mut p = project();
+    let dir = tempfile::tempdir().unwrap();
+    let files = p.export_png(dir.path()).unwrap();
+    let previous: Vec<_> = files.iter().map(|file| fs::read(file).unwrap()).collect();
+
+    for (columns, rows) in [((1_i64 << 32) + 1, 1), (2, -1), (16_384, 16_385)] {
+        let layer = &mut p.json["levels"][0]["layerInstances"][0];
+        layer["__cWid"] = json!(columns);
+        layer["__cHei"] = json!(rows);
+        layer["intGridCsv"] = json!([257]);
+        let error = p.export_png(dir.path()).unwrap_err().to_string();
+        assert!(
+            error.contains("IntGrid") && error.contains("Solid"),
+            "{error}"
+        );
+        for (file, original) in files.iter().zip(&previous) {
+            assert_eq!(&fs::read(file).unwrap(), original, "{}", file.display());
+        }
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), files.len());
+    }
+}
+
+#[test]
 fn gamemaker_matches_original_experimental_room_schema() {
     let p = project();
     let t = tempfile::tempdir().unwrap();

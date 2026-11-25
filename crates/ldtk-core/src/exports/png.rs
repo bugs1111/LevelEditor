@@ -543,7 +543,7 @@ impl<'a> PngRenderer<'a> {
                 }
             }
             if typ == "IntGrid" && options.mode != PngExportMode::OneImagePerLevel {
-                let img = intgrid_image(li, def);
+                let img = intgrid_image(li, def)?;
                 batch.add(dir.join(format!("{file}-int.png")), &encode_png(&img)?)?;
             }
         }
@@ -654,7 +654,14 @@ impl<'a> PngRenderer<'a> {
         Ok((img, false))
     }
 }
-fn intgrid_image(layer: &Value, def: &Value) -> RgbaImage {
+fn intgrid_image(layer: &Value, def: &Value) -> Result<RgbaImage> {
+    let (columns, rows) = (n(layer, "__cWid"), n(layer, "__cHei"));
+    let (width, height) = checked_image_dimensions(columns, rows).ok_or_else(|| {
+        Error::Invalid(format!(
+            "invalid IntGrid export image dimensions for layer {}: {columns} × {rows}",
+            s(layer, "__identifier")
+        ))
+    })?;
     let mut colors = std::collections::HashMap::new();
     for entry in arr(&def["intGridValues"]) {
         colors
@@ -662,8 +669,6 @@ fn intgrid_image(layer: &Value, def: &Value) -> RgbaImage {
             .or_insert_with(|| color(s(entry, "color")));
     }
     let cells = arr(&layer["intGridCsv"]);
-    let width = n(layer, "__cWid").max(0) as u32;
-    let height = n(layer, "__cHei").max(0) as u32;
     let mut image = RgbaImage::new(width, height);
     for (index, pixel) in image.pixels_mut().enumerate() {
         let value = cells.get(index).and_then(Value::as_i64).unwrap_or(0);
@@ -671,13 +676,17 @@ fn intgrid_image(layer: &Value, def: &Value) -> RgbaImage {
             *pixel = *color;
         }
     }
-    image
+    Ok(image)
 }
 
 fn dimensions(l: &Value) -> Result<(u32, u32)> {
-    let (w, h) = (n(l, "pxWid"), n(l, "pxHei"));
-    if w <= 0 || h <= 0 || w.checked_mul(h).is_none_or(|area| area > 268_435_456) {
-        return Err(Error::Invalid("invalid export image dimensions".into()));
+    checked_image_dimensions(n(l, "pxWid"), n(l, "pxHei"))
+        .ok_or_else(|| Error::Invalid("invalid export image dimensions".into()))
+}
+
+fn checked_image_dimensions(width: i64, height: i64) -> Option<(u32, u32)> {
+    if width <= 0 || height <= 0 || width.checked_mul(height)? > 268_435_456 {
+        return None;
     }
-    Ok((w as u32, h as u32))
+    Some((width as u32, height as u32))
 }
