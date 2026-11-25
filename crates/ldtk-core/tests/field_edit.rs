@@ -855,3 +855,64 @@ fn resolved_entity_diagnostics_agree_with_detailed_field_errors() {
     assert!(errors(&p, reference).is_empty());
     assert!(!has_errors(&p));
 }
+
+#[test]
+fn batched_reference_diagnostics_follow_an_external_target_through_undo() {
+    let mut p = Project::new();
+    p.add_layer("Actors", "Entities", 16).unwrap();
+    let actor = p.add_entity_def("Actor", 16, 16).unwrap();
+    let fields = ["FirstTarget", "SecondTarget"].map(|name| {
+        let field = p
+            .add_field_definition(Some(actor), name, "EntityRef", false)
+            .unwrap();
+        p.update_field_definition(field, &json!({"canBeNull":false}))
+            .unwrap();
+        field
+    });
+    let other_world = p.add_world("Other").unwrap();
+    let source = p.level_keys()[0];
+    let target = p
+        .add_level(Some(other_world), "Destination", 256, 256)
+        .unwrap();
+    p.add_entity(source, 0, actor, 8, 8).unwrap();
+    p.add_entity(target, 0, actor, 8, 8).unwrap();
+    let source_iid = p.layer(source, 0).unwrap()["entityInstances"][0]["iid"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let target_iid = p.layer(target, 0).unwrap()["entityInstances"][0]["iid"].clone();
+    for field in fields {
+        p.set_field_value(
+            source,
+            Some(&source_iid),
+            field,
+            json!({"entityIid":target_iid}),
+        )
+        .unwrap();
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("References.ldtk");
+    p.set_external_levels(true).unwrap();
+    p.save(&path).unwrap();
+    let mut p = Project::load(path).unwrap();
+    assert_eq!(p.external_levels.len(), 2);
+
+    let has_errors = |p: &Project| {
+        let entity = p.entity_by_iid(&source_iid).unwrap().entity;
+        let definition = &p.json["defs"]["entities"][0];
+        let mut check = p.entity_field_validator();
+        let result = check(entity, definition);
+        assert_eq!(result, check(entity, definition));
+        assert_eq!(result, p.entity_has_field_value_errors(entity, definition));
+        result
+    };
+    assert!(!has_errors(&p));
+
+    let mut history = ldtk_core::History::default();
+    history.begin_project(&p);
+    assert!(p.remove_entity(target, 0, 0).unwrap());
+    assert!(history.commit(&p));
+    assert!(has_errors(&p));
+    assert!(history.undo(&mut p));
+    assert!(!has_errors(&p));
+}

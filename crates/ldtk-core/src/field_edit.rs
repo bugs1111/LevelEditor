@@ -826,12 +826,51 @@ impl Project {
             .find(|f| f["defUid"] == uid)
             .ok_or_else(|| invalid("field instance not found"))?;
         Ok(self
-            .field_value_diagnostics(d, field, entity.map(|_| owner))
+            .field_value_diagnostics(d, field, entity.map(|_| owner), |iid| {
+                self.entity_by_iid(iid).map(|found| found.entity)
+            })
             .collect())
     }
 
     /// Check an entity and its definition when the caller has already resolved both.
     pub fn entity_has_field_value_errors(&self, entity: &Value, definition: &Value) -> bool {
+        self.entity_has_field_value_errors_with(entity, definition, |iid| {
+            self.entity_by_iid(iid).map(|found| found.entity)
+        })
+    }
+
+    /// Reuse reference target lookups while validating a batch in its current project snapshot.
+    pub fn entity_field_validator(&self) -> impl FnMut(&Value, &Value) -> bool + '_ {
+        let mut targets = self
+            .iter_entities()
+            .filter_map(|found| Some((found.entity["iid"].as_str()?, found.entity)));
+        let mut seen = HashMap::new();
+        let mut first_reference = true;
+        move |entity, definition| {
+            self.entity_has_field_value_errors_with(entity, definition, |iid| {
+                if std::mem::take(&mut first_reference) {
+                    return self.entity_by_iid(iid).map(|found| found.entity);
+                }
+                if let Some(&entity) = seen.get(iid) {
+                    return Some(entity);
+                }
+                for (key, entity) in targets.by_ref() {
+                    seen.entry(key).or_insert(entity);
+                    if key == iid {
+                        return Some(entity);
+                    }
+                }
+                None
+            })
+        }
+    }
+
+    fn entity_has_field_value_errors_with<'a>(
+        &'a self,
+        entity: &'a Value,
+        definition: &'a Value,
+        mut target: impl FnMut(&str) -> Option<&'a Value>,
+    ) -> bool {
         let definitions = definition["fieldDefs"]
             .as_array()
             .map(Vec::as_slice)
@@ -849,18 +888,19 @@ impl Project {
                     .find(|d| d["uid"] == uid)
                     .or_else(|| field_definitions(self).find(|d| d["uid"] == uid))
                     .is_some_and(|d| {
-                        self.field_value_diagnostics(d, field, Some(entity))
+                        self.field_value_diagnostics(d, field, Some(entity), &mut target)
                             .next()
                             .is_some()
                     })
             })
     }
 
-    fn field_value_diagnostics<'a>(
+    fn field_value_diagnostics<'a, 'target: 'a>(
         &'a self,
         d: &'a Value,
         field: &'a Value,
         entity: Option<&'a Value>,
+        mut reference_target: impl FnMut(&str) -> Option<&'target Value> + 'a,
     ) -> impl Iterator<Item = String> + 'a {
         let array = array(d);
         let value = &field["__value"];
@@ -898,50 +938,40 @@ impl Project {
                         .is_ok_and(|p| p.exists());
                     (!exists).then(|| "File not found".to_owned())
                 } else if kind == "EntityRef" {
-                    let target = value["entityIid"]
-                        .as_str()
-                        .and_then(|id| self.entity_by_iid(id));
+                    let target = value["entityIid"].as_str().and_then(&mut reference_target);
                     match target {
                         None => Some("Lost reference!".to_owned()),
-                        Some(found) => {
-                            let target = found.entity;
-                            match d["allowedRefs"].as_str().unwrap_or("Any") {
-                                "OnlySame"
-                                    if entity.is_some_and(|owner| {
-                                        owner["defUid"] != target["defUid"]
-                                    }) =>
-                                {
-                                    Some(format!(
-                                        "Invalid ref type {}",
-                                        target["__identifier"].as_str().unwrap_or("")
-                                    ))
-                                }
-                                "OnlySpecificEntity"
-                                    if target["defUid"] != d["allowedRefsEntityUid"] =>
-                                {
-                                    Some(format!(
-                                        "Invalid ref type {}",
-                                        target["__identifier"].as_str().unwrap_or("")
-                                    ))
-                                }
-                                "OnlyTags" => {
-                                    let target_tags = self
-                                        .definition(
-                                            "entities",
-                                            target["defUid"].as_i64().unwrap_or(-1),
-                                        )
-                                        .and_then(|def| def["tags"].as_array());
-                                    let allowed =
-                                        d["allowedRefTags"].as_array().is_some_and(|tags| {
-                                            target_tags.is_some_and(|target| {
-                                                tags.iter().any(|tag| target.contains(tag))
-                                            })
-                                        });
-                                    (!allowed).then(|| "Invalid ref tags".into())
-                                }
-                                _ => None,
+                        Some(target) => match d["allowedRefs"].as_str().unwrap_or("Any") {
+                            "OnlySame"
+                                if entity
+                                    .is_some_and(|owner| owner["defUid"] != target["defUid"]) =>
+                            {
+                                Some(format!(
+                                    "Invalid ref type {}",
+                                    target["__identifier"].as_str().unwrap_or("")
+                                ))
                             }
-                        }
+                            "OnlySpecificEntity"
+                                if target["defUid"] != d["allowedRefsEntityUid"] =>
+                            {
+                                Some(format!(
+                                    "Invalid ref type {}",
+                                    target["__identifier"].as_str().unwrap_or("")
+                                ))
+                            }
+                            "OnlyTags" => {
+                                let target_tags = self
+                                    .definition("entities", target["defUid"].as_i64().unwrap_or(-1))
+                                    .and_then(|def| def["tags"].as_array());
+                                let allowed = d["allowedRefTags"].as_array().is_some_and(|tags| {
+                                    target_tags.is_some_and(|target| {
+                                        tags.iter().any(|tag| target.contains(tag))
+                                    })
+                                });
+                                (!allowed).then(|| "Invalid ref tags".into())
+                            }
+                            _ => None,
+                        },
                     }
                 } else {
                     None

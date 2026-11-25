@@ -104,19 +104,30 @@ impl Project {
     }
 
     pub fn entity_by_iid(&self, iid: &str) -> Option<EntityMatch<'_>> {
-        self.iter_level_keys().find_map(|level| {
-            let layers = self.level(level)?["layerInstances"].as_array()?;
-            layers.iter().enumerate().find_map(|(layer_index, layer)| {
-                let entities = layer["entityInstances"].as_array()?;
-                let (entity_index, entity) =
-                    entities.iter().enumerate().find(|(_, e)| e["iid"] == iid)?;
-                Some(EntityMatch {
-                    level,
-                    layer_index,
-                    entity_index,
-                    entity,
+        self.iter_entities()
+            .find(|found| found.entity["iid"] == iid)
+    }
+
+    pub(crate) fn iter_entities(&self) -> impl Iterator<Item = EntityMatch<'_>> {
+        self.iter_level_keys().flat_map(|level| {
+            self.level(level)
+                .and_then(|level| level["layerInstances"].as_array())
+                .into_iter()
+                .flatten()
+                .enumerate()
+                .flat_map(move |(layer_index, layer)| {
+                    layer["entityInstances"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .enumerate()
+                        .map(move |(entity_index, entity)| EntityMatch {
+                            level,
+                            layer_index,
+                            entity_index,
+                            entity,
+                        })
                 })
-            })
         })
     }
 

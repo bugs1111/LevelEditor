@@ -180,30 +180,29 @@ enum EntityErrorKind {
     Tag,
     Field,
 }
-fn entity_error_kind(
+fn entity_error(
     project: &Project,
     layer: &Value,
     entity: &Value,
-    def: &Value,
-) -> Option<EntityErrorKind> {
-    if layer["layerDefUid"]
-        .as_i64()
-        .and_then(|uid| project.layer_def(uid))
-        .is_some_and(|layer_def| !library::entity_allowed(def, layer_def))
-    {
-        return Some(EntityErrorKind::Tag);
-    }
-    project
-        .entity_has_field_value_errors(entity, def)
-        .then_some(EntityErrorKind::Field)
-}
-fn entity_error(project: &Project, layer: &Value, entity: &Value) -> Option<EntityError> {
+    check_fields: impl FnOnce(&Value, &Value) -> bool,
+) -> Option<EntityError> {
     let def = project.json["defs"]["entities"]
         .as_array()?
         .iter()
         .find(|def| def["uid"] == entity["defUid"])?;
+    let kind = if layer["layerDefUid"]
+        .as_i64()
+        .and_then(|uid| project.layer_def(uid))
+        .is_some_and(|layer_def| !library::entity_allowed(def, layer_def))
+    {
+        EntityErrorKind::Tag
+    } else if check_fields(entity, def) {
+        EntityErrorKind::Field
+    } else {
+        return None;
+    };
     Some(EntityError {
-        kind: entity_error_kind(project, layer, entity, def)?,
+        kind,
         layer_uid: layer["layerDefUid"].as_i64()?,
         iid: entity["iid"].as_str()?.into(),
         name: def["identifier"].as_str()?.into(),
@@ -226,6 +225,7 @@ fn advance_error_scan(
         return true;
     };
     let mut exhausted = false;
+    let mut check_fields = project.entity_field_validator();
     while scan.layer < layers.len() {
         let layer = &layers[scan.layer];
         let entities = layer["entityInstances"]
@@ -241,7 +241,7 @@ fn advance_error_scan(
         if exhausted {
             return false;
         }
-        if let Some(error) = entity_error(project, layer, entity) {
+        if let Some(error) = entity_error(project, layer, entity, &mut check_fields) {
             scan.candidate = Some(error);
             // Level.getFirstError breaks only the inner loop: each later error layer
             // replaces the previous candidate, with its first erroneous entity.
@@ -496,7 +496,10 @@ impl EditorApp {
             && let Some(entity) = layer["entityInstances"]
                 .as_array()
                 .and_then(|entities| entities.iter().find(|e| e["iid"] == error.iid))
-            && entity_error(project, layer, entity).is_some()
+            && entity_error(project, layer, entity, |entity, def| {
+                project.entity_has_field_value_errors(entity, def)
+            })
+            .is_some()
         {
             let inspected = self.panel == Some(Panel::Entity)
                 && self.layer == layer_index
