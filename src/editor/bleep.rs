@@ -274,8 +274,24 @@ fn error_scan_id(project: &Project, key: LevelKey) -> Option<egui::Id> {
     Some(id().with("errors").with(identity(project, key)?))
 }
 
+fn error_scan_clock() -> egui::Id {
+    id().with("error-scan-deadline")
+}
+
 pub(super) fn reset_error_scans(ctx: &egui::Context) {
-    ctx.data_mut(|data| data.remove_by_type::<ErrorScan>());
+    ctx.data_mut(|data| {
+        data.remove_by_type::<ErrorScan>();
+        data.remove::<f64>(error_scan_clock());
+    });
+}
+
+fn repaint_for_error_scan(ctx: &egui::Context, remaining: f64) {
+    let delay = std::time::Duration::from_secs_f64(remaining);
+    let predicted = ctx.input(|input| input.predicted_dt);
+    // egui subtracts its predicted frame time. Avoid waking early just to recheck the deadline.
+    ctx.request_repaint_after(
+        delay + std::time::Duration::try_from_secs_f32(predicted).unwrap_or_default(),
+    );
 }
 
 fn update_level_errors(ctx: &egui::Context, project: &Project, key: LevelKey) -> Option<egui::Id> {
@@ -285,7 +301,7 @@ fn update_level_errors(ctx: &egui::Context, project: &Project, key: LevelKey) ->
         .unwrap_or_default();
     let now = ctx.input(|input| input.time);
     if !scan.running && now < scan.next_scan {
-        ctx.request_repaint_after(std::time::Duration::from_secs_f64(scan.next_scan - now));
+        repaint_for_error_scan(ctx, scan.next_scan - now);
         return Some(state_id);
     }
     let frame = ctx.cumulative_frame_nr();
@@ -310,8 +326,15 @@ fn update_level_errors(ctx: &egui::Context, project: &Project, key: LevelKey) ->
         scan.running = false;
         scan.completed_frame = Some(frame);
         scan.result = scan.candidate.take();
-        scan.next_scan = now + 0.7;
-        ctx.request_repaint_after(std::time::Duration::from_secs_f64(0.7));
+        // Share the next wake-up across levels, including ones whose scan took extra frames.
+        scan.next_scan = ctx.data_mut(|data| {
+            let deadline = data.get_temp_mut_or_insert_with(error_scan_clock(), || now + 0.7);
+            if *deadline <= now {
+                *deadline = now + 0.7;
+            }
+            *deadline
+        });
+        repaint_for_error_scan(ctx, scan.next_scan - now);
     } else {
         ctx.request_repaint();
     }
@@ -1226,6 +1249,32 @@ mod tests {
             .set_field_value(KEY, Some(&iid), field, json!({"cx":4,"cy":2}))
             .unwrap();
         assert_eq!(check(project, 2.), None);
+    }
+
+    #[test]
+    fn visible_levels_share_the_next_error_scan_deadline() {
+        let (mut app, ctx) = fixture();
+        let project = app.project.as_mut().unwrap();
+        let other = project.add_level(None, "Other", 256, 256).unwrap();
+        let deadline = |key, time| {
+            let _ = ctx.run(
+                egui::RawInput {
+                    time: Some(time),
+                    ..Default::default()
+                },
+                |ctx| {
+                    update_level_errors(ctx, project, key).unwrap();
+                },
+            );
+            ctx.data(|data| {
+                data.get_temp::<ErrorScan>(error_scan_id(project, key).unwrap())
+                    .unwrap()
+                    .next_scan
+            })
+        };
+        let first = deadline(KEY, 0.);
+        assert_eq!(deadline(other, 0.1), first);
+        assert!(deadline(KEY, first) > first);
     }
 
     #[test]
