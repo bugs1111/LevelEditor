@@ -1572,6 +1572,32 @@ fn a_late_level_failure_keeps_previous_png_and_simplified_exports() {
 }
 
 #[test]
+fn png_export_preserves_files_created_after_outputs_were_staged() {
+    let dir = tempfile::tempdir().unwrap();
+    let previous = dir.path().join("Level_0.png");
+    let new = dir.path().join("New.png");
+    let collision = dir.path().join("Collision.png");
+    fs::write(&previous, b"previous export").unwrap();
+    let mut project = project();
+    project.add_level(None, "New", 32, 16).unwrap();
+    project.add_level(None, "Collision", 32, 16).unwrap();
+    project.json["imageExportMode"] = json!("OneImagePerLevel");
+
+    let result = project.export_png_with_progress(dir.path(), |done, total| {
+        if total == 3 && done == total {
+            assert!(!new.exists() && !collision.exists());
+            fs::write(&collision, b"another writer's file").unwrap();
+        }
+    });
+
+    assert!(fs::read(&collision).is_ok_and(|bytes| bytes == b"another writer's file"));
+    assert_eq!(fs::read(previous).unwrap(), b"previous export");
+    assert!(!new.exists());
+    assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 2);
+    assert!(matches!(result, Err(ldtk_core::Error::FilesChanged(paths)) if paths == [collision]));
+}
+
+#[test]
 fn repeated_png_filenames_across_levels_are_rejected_before_publication() {
     let mut p = project();
     p.add_level(None, "Second", 32, 16).unwrap();

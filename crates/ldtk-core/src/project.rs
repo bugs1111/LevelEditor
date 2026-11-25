@@ -1714,9 +1714,17 @@ impl Write for StagingWriter<'_> {
 #[derive(Default)]
 pub(crate) struct StagedSave {
     files: Vec<StagedFile>,
+    protect_new_files: bool,
 }
 
 impl StagedSave {
+    pub(crate) fn for_exports() -> Self {
+        Self {
+            protect_new_files: true,
+            ..Self::default()
+        }
+    }
+
     pub(crate) fn targets(&self) -> impl Iterator<Item = &Path> {
         self.files.iter().map(|file| file.target.as_path())
     }
@@ -1736,7 +1744,17 @@ impl StagedSave {
         parts: &[&[u8]],
         preserve_identical: bool,
     ) -> Result<()> {
-        let mut existing = open_existing_file(&target)?;
+        let existing = open_existing_file(&target)?;
+        self.stage_parts(target, parts, preserve_identical, existing)
+    }
+
+    fn stage_parts(
+        &mut self,
+        target: PathBuf,
+        parts: &[&[u8]],
+        preserve_identical: bool,
+        mut existing: Option<fs::File>,
+    ) -> Result<()> {
         if preserve_identical
             && let Some(file) = existing.as_mut()
             && fs::symlink_metadata(&target).is_ok_and(|metadata| metadata.is_file())
@@ -1760,8 +1778,8 @@ impl StagedSave {
         self.files.push(StagedFile {
             target,
             staged,
+            create_new: self.protect_new_files && original.is_none(),
             original,
-            create_new: false,
         });
         Ok(())
     }
@@ -1782,6 +1800,8 @@ impl StagedSave {
         target: PathBuf,
         write: impl FnOnce(&mut BufWriter<StagingWriter<'_>>) -> io::Result<()>,
     ) -> Result<()> {
+        // Record the destination before serialization can spill to disk.
+        let mut existing = open_existing_file(&target)?;
         let mut buffer = BufWriter::with_capacity(
             EXPORT_BUFFER_SIZE,
             StagingWriter {
@@ -1798,7 +1818,7 @@ impl StagedSave {
         let pending = pending.expect("export writer returned without panicking");
         let Some((mut file, staged)) = writer.spilled else {
             // Small outputs fit entirely in the buffer and can use the byte comparison path.
-            return self.add(target, &pending, true);
+            return self.stage_parts(target, &[&pending], true, existing);
         };
         let prepared = (|| {
             let write_error = |source| Error::Io {
@@ -1806,7 +1826,6 @@ impl StagedSave {
                 source,
             };
             file.write_all(&pending).map_err(write_error)?;
-            let mut existing = open_existing_file(&target)?;
             let permissions = existing
                 .as_ref()
                 .and_then(|file| file.metadata().ok())
@@ -1834,8 +1853,8 @@ impl StagedSave {
         self.files.push(StagedFile {
             target,
             staged,
+            create_new: self.protect_new_files && original.is_none(),
             original,
-            create_new: false,
         });
         Ok(())
     }
@@ -2204,6 +2223,28 @@ mod save_transaction_tests {
             staged.publish().unwrap();
             assert_eq!(fs::read(&target).unwrap(), bytes);
             assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1);
+        }
+    }
+
+    #[test]
+    fn export_writers_preserve_files_created_during_serialization() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("map.json");
+        for len in [32, EXPORT_BUFFER_SIZE + 1] {
+            let mut staged = StagedSave::for_exports();
+            staged
+                .add_writer(target.clone(), |writer| {
+                    writer.write_all(&vec![b'a'; len])?;
+                    fs::write(&target, b"appeared during serialization")
+                })
+                .unwrap();
+            let result = staged.publish();
+            assert!(fs::read(&target).is_ok_and(|bytes| bytes == b"appeared during serialization"));
+            assert!(
+                matches!(result, Err(Error::FilesChanged(paths)) if paths == std::slice::from_ref(&target))
+            );
+            assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1);
+            fs::remove_file(&target).unwrap();
         }
     }
 

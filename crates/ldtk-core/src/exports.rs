@@ -61,7 +61,7 @@ impl<'a> ExportBatch<'a> {
         Self {
             project,
             seen: IndexSet::new(),
-            staged: StagedSave::default(),
+            staged: StagedSave::for_exports(),
         }
     }
 
