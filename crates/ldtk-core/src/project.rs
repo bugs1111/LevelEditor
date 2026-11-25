@@ -2,7 +2,8 @@ use crate::grid_presence::GridPresences;
 use crate::{Error, Result};
 use serde_json::Value;
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    cell::OnceCell,
+    collections::{BTreeMap, BTreeSet, HashSet},
     fs,
     io::{self, BufRead, BufReader, BufWriter, Read, Seek, Write},
     ops::Index,
@@ -2955,7 +2956,62 @@ fn collect_configured_export(
         }
     }
 }
+#[derive(Default)]
+struct ExportFilesToKeep<'a> {
+    paths: HashSet<&'a Path>,
+    canonical_paths: OnceCell<HashSet<PathBuf>>,
+    #[cfg(unix)]
+    file_ids: OnceCell<HashSet<(u64, u64)>>,
+}
+
+impl ExportFilesToKeep<'_> {
+    fn contains(&self, path: &Path) -> bool {
+        if self.paths.contains(path) {
+            return true;
+        }
+        if self.paths.is_empty() {
+            return false;
+        }
+        // Only build the alias lookups when an otherwise stale export is found.
+        #[cfg(unix)]
+        if file_identity(path).is_some_and(|id| {
+            self.file_ids
+                .get_or_init(|| {
+                    self.paths
+                        .iter()
+                        .filter_map(|path| file_identity(path))
+                        .collect()
+                })
+                .contains(&id)
+        }) {
+            return true;
+        }
+        fs::canonicalize(path).is_ok_and(|canonical| {
+            self.canonical_paths
+                .get_or_init(|| {
+                    self.paths
+                        .iter()
+                        .filter_map(|path| fs::canonicalize(path).ok())
+                        .collect()
+                })
+                .contains(&canonical)
+        })
+    }
+}
+
 fn prune_managed_exports(dir: &Path, keep: &[PathBuf], extensions: &[&str]) -> Result<()> {
+    let keep = ExportFilesToKeep {
+        paths: keep.iter().map(PathBuf::as_path).collect(),
+        ..Default::default()
+    };
+    prune_export_directory(dir, &keep, extensions)
+}
+
+fn prune_export_directory(
+    dir: &Path,
+    keep: &ExportFilesToKeep<'_>,
+    extensions: &[&str],
+) -> Result<()> {
     // Check the project-associated directory before entering a managed export folder.
     for path in dir.parent().into_iter().chain([dir]) {
         match fs::symlink_metadata(path) {
@@ -2991,14 +3047,13 @@ fn prune_managed_exports(dir: &Path, keep: &[PathBuf], extensions: &[&str]) -> R
             source,
         })?;
         if kind.is_dir() {
-            prune_managed_exports(&path, keep, extensions)?;
+            prune_export_directory(&path, keep, extensions)?;
         } else if kind.is_file()
-            && !keep.contains(&path)
-            && !keep.iter().any(|live| same_existing_file(&path, live))
             && path
                 .extension()
                 .and_then(|s| s.to_str())
                 .is_some_and(|ext| extensions.contains(&ext))
+            && !keep.contains(&path)
         {
             fs::remove_file(&path).map_err(|source| Error::Io { path, source })?;
         }

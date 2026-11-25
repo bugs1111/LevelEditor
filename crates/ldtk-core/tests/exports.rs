@@ -2219,6 +2219,28 @@ fn configured_exports_retire_stale_generated_files_and_preserve_unrelated_files(
 
 #[cfg(unix)]
 #[test]
+fn configured_export_cleanup_preserves_hard_links_to_live_outputs() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("game.ldtk");
+    let output = dir.path().join("game/png");
+    let mut project = project();
+    project.json["imageExportMode"] = json!("OneImagePerLevel");
+    let first = project.save_with_exports(&path).unwrap();
+    assert!(first.export_errors.is_empty());
+    let live = output.join("Level_0.png");
+    let alias = output.join("copy.png");
+    let stale = output.join("stale.png");
+    fs::hard_link(&live, &alias).unwrap();
+    fs::write(&stale, b"stale file").unwrap();
+
+    let second = project.save_with_exports(&path).unwrap();
+    assert!(second.export_errors.is_empty());
+    assert_eq!(fs::read(&alias).unwrap(), fs::read(&live).unwrap());
+    assert!(!stale.exists());
+}
+
+#[cfg(unix)]
+#[test]
 fn configured_export_cleanup_preserves_contents_of_linked_output_directory() {
     let dir = tempfile::tempdir().unwrap();
     let project_path = dir.path().join("game.ldtk");
