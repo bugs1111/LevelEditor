@@ -60,15 +60,20 @@ elif name == "security list-keychains -s":
 elif name == "security find-identity":
     print('  1) ' + 'A' * 40 + ' "Developer ID Application: Fixture (FIXTURE123)"')
 elif name == "codesign sign":
-    assert "security list-keychains -s" in Path(os.environ["NOTARY_TEST_LOG"]).read_text().splitlines()
+    calls = Path(os.environ["NOTARY_TEST_LOG"]).read_text().splitlines()
+    assert "security list-keychains -s" in calls
     assert "--timestamp" in args
     assert args[args.index("--options") + 1] == "runtime"
+    if os.environ.get("NOTARY_TEST_SIGN_ERROR"):
+        sys.exit(os.environ["NOTARY_TEST_SIGN_ERROR"])
+    if calls.count("codesign sign") <= int(os.environ.get("NOTARY_TEST_TIMESTAMP_FAILURES", "0")):
+        sys.exit("Level Editor.app: A timestamp was expected but was not found.")
 elif name == "xcrun notarytool submit":
     assert "--wait" in args
     print(json.dumps({"id": "fixture-id", "status": os.environ["NOTARY_TEST_STATUS"]}))
 ''')
         fake.chmod(0o755)
-        for name in ("security", "codesign", "ditto", "xcrun"):
+        for name in ("security", "codesign", "ditto", "xcrun", "sleep"):
             (self.tools / name).symlink_to(fake)
 
     def run_script(self):
@@ -93,6 +98,33 @@ elif name == "xcrun notarytool submit":
         self.assertIn("xcrun notarytool log", calls)
         self.assertNotIn("xcrun stapler staple", calls)
         self.assertEqual(calls[-1], "security delete-keychain")
+
+    def test_timestamp_failure_retries_signing_before_submitting(self):
+        self.env["NOTARY_TEST_TIMESTAMP_FAILURES"] = "2"
+        result = self.run_script()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        calls = self.log.read_text().splitlines()
+        self.assertEqual(calls.count("codesign sign"), 3)
+        self.assertEqual(calls.count("sleep"), 2)
+        self.assertEqual(calls.count("xcrun notarytool submit"), 1)
+        self.assertLess(calls.index("codesign verify"), calls.index("xcrun notarytool submit"))
+
+    def test_persistent_timestamp_failure_stops_before_submission(self):
+        self.env["NOTARY_TEST_TIMESTAMP_FAILURES"] = "3"
+        result = self.run_script()
+        self.assertNotEqual(result.returncode, 0)
+        calls = self.log.read_text().splitlines()
+        self.assertEqual(calls.count("codesign sign"), 3)
+        self.assertNotIn("xcrun notarytool submit", calls)
+
+    def test_other_signing_failure_stops_without_retry(self):
+        self.env["NOTARY_TEST_SIGN_ERROR"] = "Level Editor.app: no identity found"
+        result = self.run_script()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("no identity found", result.stderr)
+        calls = self.log.read_text().splitlines()
+        self.assertEqual(calls.count("codesign sign"), 1)
+        self.assertNotIn("xcrun notarytool submit", calls)
 
     def test_missing_secret_stops_before_signing(self):
         del self.env["APPLE_NOTARY_PASSWORD"]
