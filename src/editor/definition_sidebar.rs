@@ -1,4 +1,5 @@
 use super::*;
+use crate::app::chrome::ActionTooltip as _;
 use std::collections::BTreeMap;
 
 // Row controls can edit the project. Snapshot the display data without copying rules or atlas caches.
@@ -89,7 +90,7 @@ impl EditorApp {
                     orange(ui, "⊞", egui::vec2(width, 41.))
                 };
                 if create
-                    .on_hover_text(locale::tr(ui, "Create definition"))
+                    .action_tooltip(locale::tr(ui, "Create definition"))
                     .clicked()
                 {
                     if panel == Panel::Layers {

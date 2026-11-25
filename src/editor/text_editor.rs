@@ -1,5 +1,6 @@
 //! Native counterpart of the source TextEditor dialog.
 use super::*;
+use crate::app::chrome::ActionTooltip as _;
 use egui::text::{CCursor, CCursorRange, LayoutJob};
 use std::{
     path::Path,
@@ -444,7 +445,7 @@ pub(super) fn show_with_header(
                                 egui::vec2(44., 42.),
                                 egui::Button::image(icon).fill(Color32::from_rgb(121, 17, 5)),
                             )
-                            .on_hover_text(locale::tr(ui, "Clear"));
+                            .action_tooltip(locale::tr(ui, "Clear"));
                             if clear.clicked() {
                                 editor.draft.clear();
                                 close = true;
@@ -640,7 +641,7 @@ pub(super) fn log_editor(ui: &mut egui::Ui, path: &Path) {
                         .fit_to_exact_size(Vec2::splat(16.)),
                 ),
             )
-            .on_hover_text(locale::tr(ui, "View logs"))
+            .action_tooltip(locale::tr(ui, "View logs"))
             .clicked()
         })
         .inner;

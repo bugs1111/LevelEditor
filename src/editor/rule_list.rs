@@ -1,4 +1,5 @@
 use super::*;
+use crate::app::chrome::ActionTooltip as _;
 use crate::app::panels::rule_detail::{
     RuleAtlas, RuleCellStyle, RuleOptions, rule_has_unknown_conditions,
 };
@@ -39,7 +40,7 @@ fn toggle(
     egui::Image::new(symbol)
         .tint(tint)
         .paint_at(ui, Rect::from_center_size(rect.center(), Vec2::splat(18.)));
-    response.on_hover_text(locale::tr(ui, tip))
+    response.action_tooltip(locale::tr(ui, tip))
 }
 
 fn rule_drag(ui: &mut egui::Ui, width: f32, height: f32) -> egui::Response {
@@ -377,7 +378,7 @@ impl EditorApp {
                                 ))
                                 .tint(Color32::from_white_alpha((255. * opacity) as u8))
                                 .paint_at(ui, rect.shrink(1.));
-                                if response.on_hover_text(locale::tr(ui, tip)).clicked() {
+                                if response.action_tooltip(locale::tr(ui, tip)).clicked() {
                                     self.insert_rule(
                                         view.uid,
                                         insertion.group,
@@ -488,7 +489,7 @@ impl EditorApp {
                     [94., 40.],
                     SOURCE_ORANGE,
                 )
-                .on_hover_text(locale::tr(
+                .action_tooltip(locale::tr(
                     ui,
                     "Change the random seed of the current layer.",
                 ))
@@ -510,7 +511,7 @@ impl EditorApp {
                         ui.visuals_mut().override_text_color =
                             Some(Color32::from_rgb(120, 131, 157));
                         source_controls::checkbox(ui, &mut self.render_auto, "Render")
-                            .on_hover_text(locale::tr(
+                            .action_tooltip(locale::tr(
                                 ui,
                                 "Show or hide generated auto-layer tiles (Shift-R).",
                             ));
@@ -825,7 +826,7 @@ impl EditorApp {
                         );
                         self.paint_group_biomes(ui, view, group, rect, required);
                         if response
-                            .on_hover_text(locale::tr(ui, "Assign biome enum"))
+                            .action_tooltip(locale::tr(ui, "Assign biome enum"))
                             .clicked()
                         {
                             let frame = ui.ctx().cumulative_frame_nr();
@@ -845,7 +846,7 @@ impl EditorApp {
                             [27., GROUP_HEIGHT],
                             SOURCE_ORANGE,
                         )
-                        .on_hover_text(locale::tr(ui, "Add rule"))
+                        .action_tooltip(locale::tr(ui, "Add rule"))
                         .clicked();
                     }
                     let menu = compact_button(
@@ -1409,7 +1410,7 @@ impl EditorApp {
                                 let scale = if chance { 100. } else { 1. };
                                 let mut value = rule[key].as_f64().unwrap_or(1.) * scale;
                                 if rule_number(ui, &mut value, chance)
-                                    .on_hover_text(locale::tr(
+                                    .action_tooltip(locale::tr(
                                         ui,
                                         if chance {
                                             "Random probability (%)"
@@ -1429,7 +1430,7 @@ impl EditorApp {
                                 Color32::from_rgb(0, 157, 255),
                                 RuleFlag::Icon(egui::include_image!("../../assets/icons/stop.svg")),
                             )
-                            .on_hover_text(locale::tr(ui, "Stop on match"))
+                            .action_tooltip(locale::tr(ui, "Stop on match"))
                             .clicked()
                             {
                                 patch["breakOnMatch"] = json!(rule["breakOnMatch"] != true);
@@ -1444,7 +1445,7 @@ impl EditorApp {
                                     Color32::from_rgb(207, 221, 64),
                                     RuleFlag::Text(label),
                                 )
-                                .on_hover_text(locale::tr(
+                                .action_tooltip(locale::tr(
                                     ui,
                                     if key == "flipX" {
                                         "Horizontal symmetry"
@@ -1484,7 +1485,7 @@ impl EditorApp {
                                     "../../assets/icons/offset.svg"
                                 )),
                             )
-                            .on_hover_text(locale::tr(ui, "Randomize position"));
+                            .action_tooltip(locale::tr(ui, "Randomize position"));
                             if offsets.clicked() {
                                 self.set_anchored_rule_options(
                                     ui.ctx(),
@@ -1519,7 +1520,7 @@ impl EditorApp {
                             );
                             let modulo = modulo
                                 .on_hover_cursor(egui::CursorIcon::PointingHand)
-                                .on_hover_text(locale::tr(ui, "Modulo and checkerboard options"));
+                                .action_tooltip(locale::tr(ui, "Modulo and checkerboard options"));
                             if modulo.clicked() {
                                 self.set_anchored_rule_options(
                                     ui.ctx(),
@@ -1537,7 +1538,7 @@ impl EditorApp {
                                 Color32::from_rgb(207, 221, 64),
                                 RuleFlag::Text("P"),
                             )
-                            .on_hover_text(locale::tr(
+                            .action_tooltip(locale::tr(
                                 ui,
                                 "Perlin filter. Right-click to customize.",
                             ));

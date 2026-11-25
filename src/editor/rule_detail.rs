@@ -1,4 +1,5 @@
 use super::*;
+use crate::app::chrome::ActionTooltip as _;
 
 #[path = "rule_value_palette.rs"]
 mod rule_value_palette;
@@ -343,7 +344,7 @@ fn offset_icon(
             )
         })
         .inner;
-    button.on_hover_text(locale::tr(ui, label))
+    button.action_tooltip(locale::tr(ui, label))
 }
 
 const MODULO_FIELDS: [&str; 4] = ["xModulo", "yModulo", "xOffset", "yOffset"];
@@ -695,7 +696,7 @@ impl EditorApp {
                                     ui.selectable_value(&mut stamp, true, locale::tr(ui, "Rectangles of tiles"));
                                 });
                             if guided {
-                                mode.response.on_hover_text(locale::tr(ui, "Individual tiles randomly picks from the selected tiles. Rectangles of tiles places a whole rectangle in each matching cell."));
+                                mode.response.action_tooltip(locale::tr(ui, "Individual tiles randomly picks from the selected tiles. Rectangles of tiles places a whole rectangle in each matching cell."));
                             }
                         },
                     );
@@ -732,7 +733,7 @@ impl EditorApp {
                                     remove = Some(index);
                                 }
                                 if guided {
-                                    r.on_hover_text(locale::tr(ui, "Choose tiles by clicking or dragging in the tileset."));
+                                    r.action_tooltip(locale::tr(ui, "Choose tiles by clicking or dragging in the tileset."));
                                 }
                             }
                             if stamp && !outputs.is_empty() {
@@ -743,7 +744,7 @@ impl EditorApp {
                                             [49., 49.],
                                             egui::Button::new("+"),
                                         )
-                                        .on_hover_text(locale::tr(ui, "Choose a rectangle"))
+                                        .action_tooltip(locale::tr(ui, "Choose a rectangle"))
                                     })
                                     .inner
                                     .clicked()
@@ -757,7 +758,7 @@ impl EditorApp {
                                 );
                                 ui.painter()
                                     .rect_filled(rect, 2., Color32::from_rgb(27, 30, 37));
-                                if can_pick && space.on_hover_text(locale::tr(ui, "Choose tile(s)")).clicked() {
+                                if can_pick && space.action_tooltip(locale::tr(ui, "Choose tile(s)")).clicked() {
                                     draft.output_pick = Some(0);
                                 }
                             }
@@ -954,7 +955,7 @@ impl EditorApp {
                                     }
                                 });
                             if guided {
-                                menu.response.on_hover_text(locale::tr(ui, "Choose the IntGrid value used when inspecting a cell outside the layer bounds. The default skips rules that need to read outside the level."));
+                                menu.response.action_tooltip(locale::tr(ui, "Choose the IntGrid value used when inspecting a cell outside the layer bounds. The default skips rules that need to read outside the level."));
                             }
                         },
                     );
@@ -1460,7 +1461,7 @@ impl EditorApp {
                         ui.add_sized([120., 30.], egui::Label::new(
                             RichText::new(locale::tr(ui, "Checkboard mode")).size(13.333),
                         ));
-                        ui.add_sized([28., 30.], egui::Label::new("?")).on_hover_text(
+                        ui.add_sized([28., 30.], egui::Label::new("?")).action_tooltip(
                             locale::tr(ui, "Enabling this will alternate the resulting tiles like a checkboard."),
                         );
                         ui.add_space(8.);

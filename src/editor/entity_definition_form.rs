@@ -1,4 +1,5 @@
 use super::*;
+use crate::app::chrome::ActionTooltip as _;
 
 impl EditorApp {
     pub(super) fn source_entity_form(&mut self, ui: &mut egui::Ui, height: f32) {
@@ -637,7 +638,7 @@ impl EditorApp {
                 ui.add_space(4.);
                 let end = locale::tr(ui, "when max is reached.");
                 ui.add(egui::Label::new(RichText::new(end).weak()).truncate())
-                    .on_hover_text(end);
+                    .action_tooltip(end);
             });
         });
         if settings_next != settings_open {

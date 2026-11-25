@@ -1,4 +1,5 @@
 use super::*;
+use crate::app::chrome::ActionTooltip as _;
 
 const MISSING_BACKGROUND: Color32 = Color32::from_rgb(0x79, 0x11, 0x05);
 
@@ -55,7 +56,7 @@ fn source_icon(
         )
     })
     .inner
-    .on_hover_text(locale::tr(ui, caption))
+    .action_tooltip(locale::tr(ui, caption))
     .clicked()
 }
 

@@ -1,4 +1,5 @@
 use super::*;
+use crate::app::chrome::ActionTooltip as _;
 use std::collections::BTreeMap;
 #[derive(Clone)]
 struct Wizard {
@@ -457,7 +458,7 @@ impl EditorApp {
                     }
                 }
             }
-            response.on_hover_text(locale::tr(ui, fragment.name));
+            response.action_tooltip(locale::tr(ui, fragment.name));
         }
         let important = Rect::from_min_size(grid.min, egui::vec2(6. * stride, grid.height()));
         ui.painter().rect_stroke(

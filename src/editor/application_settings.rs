@@ -1,5 +1,6 @@
 //! Application settings, following the upstream EditAppSettings dialog.
 use super::*;
+use crate::app::chrome::ActionTooltip as _;
 use source_controls::{
     FormSelectAppearance, form_heading as heading, form_row as row, form_select,
 };
@@ -335,7 +336,7 @@ impl EditorApp {
                 row(ui,"Try to use best GPU","Try to use best GPU",right_width, |ui| { checkbox(ui,&values,&mut patch,"useBestGPU"); ui.label(locale::tr(ui, "(Recommended)")); });
                 row(ui,"Auto update","nativeAutoDownloadUpdates",right_width, |ui| {
                     let response = ui.scope(|ui| checkbox(ui,&values,&mut patch,"autoInstallUpdates")).response;
-                    response.on_hover_text(locale::tr(ui, "Automatically download updates on supported native platforms. Installation still requires confirmation."));
+                    response.action_tooltip(locale::tr(ui, "Automatically download updates on supported native platforms. Installation still requires confirmation."));
                     ui.label(locale::tr(ui, "(Recommended)"));
                     if source_controls::small_button(ui, "Check for updates").clicked() { self.open_updater(ui.ctx()); }
                 });
@@ -349,7 +350,7 @@ impl EditorApp {
                             ui.spacing_mut().button_padding = egui::vec2(4.,2.);
                             if source_controls::add_sized_button(ui,[30.,30.],egui::Button::image(
                                 egui::Image::new(egui::include_image!("../../assets/icons/locate.svg")).fit_to_exact_size(Vec2::splat(16.))))
-                                .on_hover_text(locale::tr(ui, "Locate log file")).clicked()
+                                .action_tooltip(locale::tr(ui, "Locate log file")).clicked()
                                 && let Err(error)=home_files::locate(&path,true) { self.status=error.to_string(); self.status_error=true; }
                         });
                     } else { ui.label(locale::tr(ui, "No log file in this session")); }
@@ -362,7 +363,7 @@ impl EditorApp {
                         project.is_some() && command.is_some(),
                         egui::Button::new(locale::tr(ui, "Copy MCP configuration")),
                     );
-                    if response.on_disabled_hover_text(locale::tr(ui, "Open a saved project to copy its MCP configuration.")).clicked()
+                    if response.disabled_action_tooltip(locale::tr(ui, "Open a saved project to copy its MCP configuration.")).clicked()
                         && let (Some(project), Some(command)) = (project, command)
                     {
                         let config = json!({"mcpServers":{(env!("CARGO_PKG_NAME")):{"command":command,"args":["--mcp",project]}}});

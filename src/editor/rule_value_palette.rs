@@ -334,7 +334,7 @@ impl EditorApp {
         let button = ui
             .interact(hit, ui.id().with("rule-values-layout"), Sense::click())
             .on_hover_cursor(egui::CursorIcon::PointingHand)
-            .on_hover_text(locale::tr(ui, "Value palette layout"));
+            .action_tooltip(locale::tr(ui, "Value palette layout"));
         ui.painter().rect_filled(
             hit,
             2.,

@@ -1,4 +1,5 @@
 use super::*;
+use crate::app::chrome::ActionTooltip as _;
 use std::collections::BTreeMap;
 const STANDARD: [u32; 32] = [
     0xbe4a2f, 0xd77643, 0xead4aa, 0xe4a672, 0xb86f50, 0x733e39, 0x3e2731, 0xa22633, 0xe43b44,
@@ -772,7 +773,7 @@ fn color_picker(
                                     theme::LIGHT
                                 }),
                             )
-                            .on_hover_text(locale::tr(ui, "Copy color"))
+                            .action_tooltip(locale::tr(ui, "Copy color"))
                             .clicked()
                             {
                                 ui.ctx().copy_text(format!("#{}", hex(draft.rgb)));
@@ -806,7 +807,7 @@ fn color_picker(
                                     }),
                                 ),
                             )
-                            .on_hover_text(locale::tr(ui, "Paste color"))
+                            .action_tooltip(locale::tr(ui, "Paste color"))
                             .clicked()
                             {
                                 read_clipboard(ui.ctx(), id, &mut draft, true);
@@ -823,7 +824,7 @@ fn color_picker(
                                     )
                                     .fill(Color32::from_rgb(121, 17, 5)),
                                 )
-                                .on_hover_text(locale::tr(ui, "Remove color"))
+                                .action_tooltip(locale::tr(ui, "Remove color"))
                                 .clicked()
                             {
                                 draft.nullified = true;

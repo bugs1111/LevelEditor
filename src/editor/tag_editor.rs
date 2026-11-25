@@ -1,5 +1,6 @@
 //! Shared editor for LDtk definition tags.
 use super::*;
+use crate::app::chrome::ActionTooltip as _;
 
 #[derive(Clone, Copy)]
 pub(super) enum Field<'a> {
@@ -82,7 +83,7 @@ fn tag_action(
     response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label));
     response
         .on_hover_cursor(egui::CursorIcon::PointingHand)
-        .on_hover_text(label)
+        .action_tooltip(label)
 }
 
 pub(super) fn show(

@@ -1,4 +1,5 @@
 use super::*;
+use crate::app::chrome::ActionTooltip as _;
 
 const HELP: Color32 = Color32::from_rgb(121, 221, 138);
 const HELP_DARK: Color32 = Color32::from_rgb(60, 97, 72);
@@ -322,7 +323,7 @@ impl EditorApp {
             let import_label = locale::tr(ui, "Import");
             let import_width = 47. + ui.fonts_mut(|fonts| fonts.layout_no_wrap(import_label.into(), import_font, Color32::WHITE).size().x);
             let flexible=(ui.available_width()-import_width-41.-if fullscreen {41.+2.} else {0.}-8.)/3.;
-            if button(ui,flexible,egui::include_image!("../../assets/icons/tutorial.svg"),"Examples",Color32::from_rgb(73,141,85)).on_hover_text(locale::tr(ui, "These examples showcase various functionalities from LDtk editor, including auto-layer rules and entities.")).clicked() { hide = !hide; }
+            if button(ui,flexible,egui::include_image!("../../assets/icons/tutorial.svg"),"Examples",Color32::from_rgb(73,141,85)).action_tooltip(locale::tr(ui, "These examples showcase various functionalities from LDtk editor, including auto-layer rules and entities.")).clicked() { hide = !hide; }
             if button(ui,flexible,egui::include_image!("../../assets/icons/new.svg"),"New",Color32::from_rgb(227,77,0)).clicked() { action=Some(Action::New); }
             if button(ui,flexible,egui::include_image!("../../assets/icons/open.svg"),"Load",Color32::from_rgb(227,77,0)).clicked() { action=Some(Action::Browse); }
             let import=button(ui,import_width,egui::include_image!("../../assets/icons/open.svg"),"Import",theme::LIGHT);
@@ -337,8 +338,8 @@ impl EditorApp {
                         ui.close();
                     }
                 });
-            if button(ui,41.,egui::include_image!("../../assets/icons/settings.svg"),"",theme::LIGHT).on_hover_text(locale::tr(ui, "Application settings")).clicked() { self.show_panel(Some(Panel::Settings)); }
-            if fullscreen && button(ui,41.,egui::include_image!("../../assets/icons/exit.svg"),"",theme::DARK).on_hover_text(locale::tr(ui, "Close app")).clicked() { action=Some(Action::Quit); }
+            if button(ui,41.,egui::include_image!("../../assets/icons/settings.svg"),"",theme::LIGHT).action_tooltip(locale::tr(ui, "Application settings")).clicked() { self.show_panel(Some(Panel::Settings)); }
+            if fullscreen && button(ui,41.,egui::include_image!("../../assets/icons/exit.svg"),"",theme::DARK).action_tooltip(locale::tr(ui, "Close app")).clicked() { action=Some(Action::Quit); }
         });
         if !hide {
             self.home_samples(ctx, &mut ui, &mut hide, &mut action);
@@ -432,7 +433,7 @@ impl EditorApp {
             let clear = ui
                 .interact(rect, search_id.with("clear"), Sense::click())
                 .on_hover_cursor(egui::CursorIcon::PointingHand)
-                .on_hover_text(locale::tr(&ui, "Clear"));
+                .action_tooltip(locale::tr(&ui, "Clear"));
             if clear.clicked() {
                 search.clear();
                 ctx.request_repaint();

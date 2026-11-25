@@ -1,4 +1,5 @@
 use super::*;
+use crate::app::chrome::ActionTooltip as _;
 
 fn source_field_number(raw: &str, kind: &str) -> Value {
     raw.trim()
@@ -626,7 +627,7 @@ impl EditorApp {
                                 egui::vec2(42., 35.),
                                 egui::Button::image(image).fill(theme::LIGHT),
                             )
-                            .on_hover_text(locale::tr(ui, "Clear default value"))
+                            .action_tooltip(locale::tr(ui, "Clear default value"))
                             .clicked()
                             {
                                 tile_default_edit = Some(Value::Null);
@@ -1045,7 +1046,7 @@ impl EditorApp {
                                 }),
                         );
                         ui_commit::track_editor(ui.ctx(), &response);
-                        response.on_hover_text(locale::tr(ui, "Display scale (%)"));
+                        response.action_tooltip(locale::tr(ui, "Display scale (%)"));
                         if percent != before {
                             patch["editorDisplayScale"] = json!(percent.round() / 100.);
                         }

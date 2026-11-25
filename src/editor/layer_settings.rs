@@ -2,6 +2,7 @@
 use super::source_controls::{FormSelectAppearance, TilesetChoice, tileset_picker};
 use super::world_level_panel::form_text_input;
 use super::*;
+use crate::app::chrome::ActionTooltip as _;
 
 #[path = "intgrid_settings.rs"]
 mod intgrid_settings;
@@ -130,7 +131,7 @@ fn reset_layer_color(ui: &mut egui::Ui, patch: &mut Value, key: &str) {
     );
     let label = locale::tr(ui, "Reset assigned color");
     response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label));
-    if response.on_hover_text(label).clicked() {
+    if response.action_tooltip(label).clicked() {
         patch[key] = Value::Null;
     }
 }
@@ -910,7 +911,7 @@ fn auto_layer_blockers(
                             [27., 26.],
                             egui::Button::image(image).fill(SOURCE_ORANGE),
                         )
-                        .on_hover_text(locale::tr(ui, "Remove blocker"))
+                        .action_tooltip(locale::tr(ui, "Remove blocker"))
                         .clicked()
                         {
                             remove = Some(blocker);

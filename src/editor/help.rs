@@ -1,4 +1,5 @@
 use super::*;
+use crate::app::chrome::ActionTooltip as _;
 
 struct ChangelogEntry {
     version: &'static str,
@@ -713,7 +714,7 @@ impl EditorApp {
                         )
                         .fill(orange),
                     )
-                    .on_hover_text(locale::tr(ui, "All updates"));
+                    .action_tooltip(locale::tr(ui, "All updates"));
                 egui::Popup::menu(&others)
                     .align(egui::RectAlign::BOTTOM_END)
                     .frame(panels::source_controls::context_menu_frame(ui.style()).inner_margin(6))

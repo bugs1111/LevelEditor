@@ -67,7 +67,7 @@ fn icon_button(
                 .fill(fill)
                 .corner_radius(2.),
         )
-        .on_hover_text(locale::tr(ui, tip))
+        .action_tooltip(locale::tr(ui, tip))
     })
     .inner
 }
@@ -495,7 +495,7 @@ impl EditorApp {
             egui::vec2(47., 32.),
             egui::Button::new("⋮").fill(Color32::from_black_alpha(22)),
         )
-        .on_hover_text(locale::tr(ui, "Group options"));
+        .action_tooltip(locale::tr(ui, "Group options"));
         egui::Popup::menu(&menu)
             .align(egui::RectAlign::BOTTOM_END)
             .frame(source_controls::context_menu_frame(ui.style()))

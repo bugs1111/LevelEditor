@@ -1,4 +1,5 @@
 use super::*;
+use crate::app::chrome::ActionTooltip as _;
 use ldtk_core::clipboard::{ClipboardData, ClipboardKind};
 use std::sync::Arc;
 
@@ -702,7 +703,7 @@ impl EditorApp {
                         },
                     );
                 }
-                if response.on_hover_text(locale::tr(ui, label)).clicked() {
+                if response.action_tooltip(locale::tr(ui, label)).clicked() {
                     match action {
                         Action::Copy => self.clipboard_copy(ui.ctx(), &target, false),
                         Action::Cut => self.clipboard_copy(ui.ctx(), &target, true),

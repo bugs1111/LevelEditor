@@ -32,6 +32,7 @@ use super::ui_fields::{
     form_with_label_width, scalar_editor, tags,
 };
 use super::*;
+use crate::app::chrome::ActionTooltip as _;
 use definition_clipboard::ClipTarget;
 use serde_json::json;
 const TILESET_MIN_LABEL_WIDTH: f32 = 110.;
@@ -2324,7 +2325,7 @@ impl EditorApp {
             return (!tile.is_null()).then_some(Value::Null);
         }
         let opened = preview
-            .on_hover_text(locale::tr(
+            .action_tooltip(locale::tr(
                 ui,
                 if clear_on_secondary {
                     "Left-click to pick a tile or right-click to remove it."

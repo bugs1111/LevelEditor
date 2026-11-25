@@ -1,4 +1,5 @@
 use super::*;
+use crate::app::chrome::ActionTooltip as _;
 use serde_json::json;
 
 fn point_coordinates(value: &Value) -> Option<String> {
@@ -60,7 +61,7 @@ pub(super) fn array_field_add(ui: &mut egui::Ui, tooltip: &str) -> egui::Respons
             )
         })
         .inner
-        .on_hover_text(locale::tr(ui, tooltip))
+        .action_tooltip(locale::tr(ui, tooltip))
 }
 
 pub(super) fn array_field_remove(ui: &mut egui::Ui) -> egui::Response {
@@ -85,7 +86,7 @@ pub(super) fn array_field_remove(ui: &mut egui::Ui) -> egui::Response {
         )
     })
     .inner
-    .on_hover_text(locale::tr(ui, "Remove array value"))
+    .action_tooltip(locale::tr(ui, "Remove array value"))
 }
 
 fn reference_alert_button(
@@ -1200,7 +1201,7 @@ impl EditorApp {
                             )
                             .frame_when_inactive(false),
                         )
-                        .on_hover_text(locale::tr(ui, "Clear field value"));
+                        .action_tooltip(locale::tr(ui, "Clear field value"));
                     if response.clicked() {
                         edit = Some(ui_fields::FieldEdit::Value(Value::Null));
                     }
@@ -1276,7 +1277,7 @@ impl EditorApp {
                             )
                             .fill(Color32::from_rgb(227, 77, 0)),
                         )
-                        .on_hover_text(locale::tr(ui, "Pick from canvas"));
+                        .action_tooltip(locale::tr(ui, "Pick from canvas"));
                         pick_rect = Some(response.rect);
                         if response.clicked() {
                             requested = request;
@@ -1293,7 +1294,7 @@ impl EditorApp {
                                 .fit_to_exact_size(Vec2::splat(16.)),
                             ),
                         )
-                        .on_hover_text(locale::tr(ui, "Clear field value"));
+                        .action_tooltip(locale::tr(ui, "Clear field value"));
                         if response.clicked() {
                             edit = Some(if array {
                                 ui_fields::FieldEdit::Array(ldtk_core::FieldArrayEdit::Reset {

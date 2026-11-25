@@ -1,5 +1,6 @@
 //! Source EditProject form.
 use super::*;
+use crate::app::chrome::ActionTooltip as _;
 
 #[path = "name_pattern.rs"]
 mod name_pattern;
@@ -64,7 +65,7 @@ fn project_locate_button(ui: &mut egui::Ui, is_file: bool) -> bool {
         )
     })
     .inner
-    .on_hover_text(locale::tr(
+    .action_tooltip(locale::tr(
         ui,
         if is_file {
             "Locate file"
@@ -227,7 +228,7 @@ impl EditorApp {
                     egui::include_image!("../../assets/icons/rename.svg"),
                     "RENAME PROJECT",
                 )
-                .on_hover_text(locale::tr(ui, "RENAME PROJECT"))
+                .action_tooltip(locale::tr(ui, "RENAME PROJECT"))
                 .clicked()
                 && let Some(path) = &path
             {
@@ -253,7 +254,7 @@ impl EditorApp {
                     )
                 })
                 .inner
-                .on_hover_text(locale::tr(ui, "Locate project file"))
+                .action_tooltip(locale::tr(ui, "Locate project file"))
                 .clicked()
                 && let Some(path) = &path
             {
@@ -482,7 +483,7 @@ impl EditorApp {
                             )
                         })
                         .inner
-                        .on_hover_text(locale::tr(ui, "Reset destination folder to default"))
+                        .action_tooltip(locale::tr(ui, "Reset destination folder to default"))
                         .clicked()
                 {
                     patch["backupRelPath"] = Value::Null;
@@ -1041,7 +1042,7 @@ impl EditorApp {
                 )
             })
             .inner
-            .on_hover_text(add_label);
+            .action_tooltip(add_label);
         add.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, add_label));
         if add.clicked() {
             commands.push(json!({"when":"Manual","command":""}));
@@ -1419,6 +1420,46 @@ mod tests {
             assert!(label(&out, "S").is_some());
             assert_eq!(label(&out, "SHIFT").is_some(), save_as);
         }
+    }
+
+    #[test]
+    fn project_rename_uses_the_shared_action_tooltip() {
+        let (mut app, ctx) = editor();
+        let dir = tempfile::tempdir().unwrap();
+        app.project.as_mut().unwrap().path = Some(dir.path().join("Example.ldtk"));
+        ctx.style_mut(|style| {
+            style.interaction.tooltip_delay = 0.;
+            style.animation_time = 0.;
+        });
+        let before = frame(&mut app, &ctx, vec![]);
+        let button = label(&before, "RENAME PROJECT").unwrap();
+        frame(
+            &mut app,
+            &ctx,
+            vec![egui::Event::PointerMoved(button.center())],
+        );
+        let _ = frame(&mut app, &ctx, vec![]);
+        let hovered = frame(&mut app, &ctx, vec![]);
+        let tooltip = hovered
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Text(text)
+                    if text.galley.text() == "RENAME PROJECT" && !button.contains(text.pos) =>
+                {
+                    Some(Rect::from_min_size(text.pos, text.galley.size()))
+                }
+                _ => None,
+            })
+            .expect("rename tooltip should appear");
+        let is_green = |shape: &egui::Shape| {
+            matches!(shape, egui::Shape::Rect(rect)
+                if rect.rect.contains_rect(tooltip) && rect.fill == Color32::from_rgb(60, 97, 72))
+        };
+        assert!(hovered.shapes.iter().any(|shape| match &shape.shape {
+            egui::Shape::Vec(children) => children.iter().any(is_green),
+            shape => is_green(shape),
+        }));
     }
 
     #[test]

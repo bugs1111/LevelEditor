@@ -1,5 +1,6 @@
 //! The image picker shared by tilesets and level backgrounds.
 use super::*;
+use crate::app::chrome::ActionTooltip as _;
 
 const IMAGE_BUTTON_HEIGHT: f32 = 32.;
 
@@ -96,7 +97,7 @@ fn icon_button(
         [30., IMAGE_BUTTON_HEIGHT],
         egui::Button::image(egui::Image::new(icon).fit_to_exact_size(Vec2::splat(16.))).fill(fill),
     )
-    .on_hover_text(locale::tr(ui, label))
+    .action_tooltip(locale::tr(ui, label))
 }
 
 impl EditorApp {

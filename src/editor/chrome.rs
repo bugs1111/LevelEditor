@@ -321,13 +321,37 @@ pub(super) fn source_tooltip(response: &egui::Response, text: &str, keys: &[&str
     if !response.hovered() || !response.enabled() {
         return;
     }
+    show_source_tooltip(response, locale::tr_ctx(&response.ctx, text), keys, right);
+}
+
+pub(super) trait ActionTooltip {
+    fn action_tooltip(self, text: impl AsRef<str>) -> Self;
+    fn disabled_action_tooltip(self, text: impl AsRef<str>) -> Self;
+}
+
+impl ActionTooltip for egui::Response {
+    fn action_tooltip(self, text: impl AsRef<str>) -> Self {
+        if self.enabled() && egui::Tooltip::should_show_tooltip(&self, false) {
+            show_source_tooltip(&self, text.as_ref(), &[], false);
+        }
+        self
+    }
+
+    fn disabled_action_tooltip(self, text: impl AsRef<str>) -> Self {
+        if !self.enabled() && egui::Tooltip::should_show_tooltip(&self, false) {
+            show_source_tooltip(&self, text.as_ref(), &[], false);
+        }
+        self
+    }
+}
+
+fn show_source_tooltip(response: &egui::Response, text: &str, keys: &[&str], right: bool) {
     let tooltip = source_tooltip_popup(
         response,
         right.then_some(egui::emath::RectAlign::RIGHT_START),
         egui::Margin::symmetric(18, 12),
     );
     tooltip.show(|ui| {
-        let text = locale::tr(ui, text);
         let (heading, body) = text
             .strip_prefix("**")
             .and_then(|text| text.split_once("**"))

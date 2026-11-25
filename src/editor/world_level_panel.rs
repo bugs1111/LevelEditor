@@ -1,6 +1,7 @@
 //! Source WorldPanel and LevelInstancePanel forms.
 use super::source_controls::edit_text;
 use super::*;
+use crate::app::chrome::ActionTooltip as _;
 
 const WORLD_LABEL_WIDTH: f32 = 110.;
 const LEVEL_LABEL_WIDTH: f32 = 102.;
@@ -38,7 +39,7 @@ fn icon_button(
         egui::Button::image(image.into().fit_to_exact_size(egui::vec2(16., 16.))).fill(fill);
     ui.scope(|ui| {
         ui.spacing_mut().button_padding = egui::vec2(4., 2.);
-        source_controls::add_sized_button(ui, size, button).on_hover_text(locale::tr(ui, help))
+        source_controls::add_sized_button(ui, size, button).action_tooltip(locale::tr(ui, help))
     })
     .inner
 }
@@ -114,7 +115,7 @@ fn background_position_controls(
                 let label = egui::Label::new(RichText::new(help).size(12.)).truncate();
                 show_advanced = ui
                     .add(source_controls::underlined_link(label))
-                    .on_hover_text(help)
+                    .action_tooltip(help)
                     .clicked();
             }
         }
@@ -581,7 +582,7 @@ impl EditorApp {
                     None,
                     LEVEL_ACTION_ORANGE,
                 )
-                .on_hover_text(locale::tr(ui, "Create a new world"))
+                .action_tooltip(locale::tr(ui, "Create a new world"))
                 .clicked()
                 {
                     self.create_form_world();
@@ -593,7 +594,7 @@ impl EditorApp {
                     None,
                     LEVEL_ACTION_RED,
                 )
-                .on_hover_text(locale::tr(ui, "Delete current world"))
+                .action_tooltip(locale::tr(ui, "Delete current world"))
                 .clicked()
                     && let Some(world) = current_world
                 {
@@ -636,7 +637,7 @@ impl EditorApp {
                             None,
                             LEVEL_ACTION_ORANGE,
                         )
-                        .on_hover_text(locale::tr(ui, "Duplicate current level"))
+                        .action_tooltip(locale::tr(ui, "Duplicate current level"))
                         .clicked()
                             && let Some(key) = self.selected
                         {
@@ -652,7 +653,7 @@ impl EditorApp {
                             None,
                             LEVEL_ACTION_RED,
                         )
-                        .on_hover_text(locale::tr(ui, "Delete current level"))
+                        .action_tooltip(locale::tr(ui, "Delete current level"))
                         .clicked()
                             && let Some(key) = self.selected
                         {

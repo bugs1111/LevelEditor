@@ -1,4 +1,5 @@
 use super::*;
+use crate::app::chrome::ActionTooltip as _;
 use serde_json::json;
 
 #[path = "enum_picker.rs"]
@@ -517,7 +518,7 @@ fn file_path_editor(
                         .stroke(Stroke::NONE)
                         .corner_radius(2.),
                 )
-                .on_hover_text(locale::tr(ui, tooltip))
+                .action_tooltip(locale::tr(ui, tooltip))
                 .clicked()
             };
             if path_text.is_some() {
@@ -1216,7 +1217,7 @@ fn instance_scalar_editor(
                     )
                     .frame(false),
                 )
-                .on_hover_text(locale::tr(ui, "Reset to default"))
+                .action_tooltip(locale::tr(ui, "Reset to default"))
                 .clicked()
         {
             changed = Some(Value::Null);

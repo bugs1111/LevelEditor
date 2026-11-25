@@ -1,4 +1,5 @@
 use super::*;
+use crate::app::chrome::ActionTooltip as _;
 use std::{
     collections::HashMap,
     path::Path,
@@ -197,7 +198,7 @@ impl EditorApp {
                     .fill(theme::LIGHT),
                 )
             };
-            let button = button(ui).on_hover_text(locale::tr(ui, "Backups"));
+            let button = button(ui).action_tooltip(locale::tr(ui, "Backups"));
             button.widget_info(|| {
                 egui::WidgetInfo::labeled(egui::WidgetType::Button, true, locale::tr(ui, "Backups"))
             });

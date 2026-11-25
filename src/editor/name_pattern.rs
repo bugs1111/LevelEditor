@@ -436,7 +436,7 @@ pub(super) fn show(
             .fit_to_exact_size(Vec2::splat(17.));
         let button =
             source_controls::add_sized_button(ui, [add_width, 31.], egui::Button::image(plus))
-                .on_hover_text(locale::tr(ui, "Add a variable"));
+                .action_tooltip(locale::tr(ui, "Add a variable"));
         if has_choices {
             add = variable_menu(
                 &button,

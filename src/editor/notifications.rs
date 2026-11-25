@@ -1,4 +1,5 @@
 use super::*;
+use crate::app::chrome::ActionTooltip as _;
 use std::time::Duration;
 
 pub(super) const SAVED_PROJECT_TITLE: &str = "Saved project";
@@ -422,7 +423,7 @@ impl EditorApp {
                         if button.clicked() {
                             self.show_panel(None);
                         }
-                    } else if button.on_hover_text(locale::tr(ui, "All project auto-layers need to be updated to adapt to your latest changes.")).clicked() {
+                    } else if button.action_tooltip(locale::tr(ui, "All project auto-layers need to be updated to adapt to your latest changes.")).clicked() {
                         self.start_auto_layer_rebuild(ctx);
                     }
                 });
