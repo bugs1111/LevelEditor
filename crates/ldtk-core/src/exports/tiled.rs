@@ -114,6 +114,10 @@ fn tiled_layer_size(layer: &Value) -> Option<[usize; 2]> {
     (width.checked_mul(height)? <= MAX_LAYER_CELLS).then_some([width as usize, height as usize])
 }
 
+fn tiled_layer_offset(layer: &Value) -> [i64; 2] {
+    ["__pxTotalOffsetX", "__pxTotalOffsetY"].map(|field| n(layer, field))
+}
+
 #[derive(Default)]
 struct TiledGids {
     atlases: BTreeMap<i64, u32>,
@@ -605,11 +609,14 @@ impl Project {
             let def = self.layer_def(n(li, "layerDefUid")).unwrap_or(li);
             let typ = s(li, "__type");
             let opacity = num(def, "displayOpacity", 1.);
+            let offset = tiled_layer_offset(li);
             if typ == "Entities" {
                 let mut layer = format!(
-                    "<objectgroup id=\"{layer_id}\" name=\"{}\">",
+                    "<objectgroup id=\"{layer_id}\" name=\"{}\"",
                     xml(s(li, "__identifier"))
                 );
+                write_tmx_offset(&mut layer, offset);
+                layer.push('>');
                 layer_id += 1;
                 for e in arr(&li["entityInstances"]) {
                     let ed = self.definition("entities", n(e, "defUid")).unwrap_or(e);
@@ -645,7 +652,15 @@ impl Project {
                 let values = intgrid_gids(cells, cw * ch, palette);
                 let name = intgrid_name(li);
                 let mut layer = TmxLayer::default();
-                write_tmx_layer(&mut layer, layer_id, &name, [cw, ch], opacity, values);
+                write_tmx_layer(
+                    &mut layer,
+                    layer_id,
+                    &name,
+                    [cw, ch],
+                    opacity,
+                    offset,
+                    values,
+                );
                 layers.push(layer);
                 layer_id += 1;
             }
@@ -659,10 +674,18 @@ impl Project {
                         &name,
                         [cw, ch],
                         opacity,
+                        offset,
                         data.into_iter(),
                     ),
                     TileStack::Sparse(mut data) => {
-                        write_tmx_layer_start(&mut layer.text, layer_id, &name, [cw, ch], opacity);
+                        write_tmx_layer_start(
+                            &mut layer.text,
+                            layer_id,
+                            &name,
+                            [cw, ch],
+                            opacity,
+                            offset,
+                        );
                         write_sparse_stack(&mut layer, &mut data, area);
                         layer.text.push_str("</data></layer>");
                     }
@@ -950,9 +973,10 @@ fn write_tmx_layer(
     name: &str,
     size: [usize; 2],
     opacity: f64,
+    offset: [i64; 2],
     data: impl Iterator<Item = u32>,
 ) {
-    write_tmx_layer_start(&mut out.text, id, name, size, opacity);
+    write_tmx_layer_start(&mut out.text, id, name, size, opacity, offset);
     let start = out.text.len();
     let reserve = (size[0] * size[1] * 2).min(EMPTY_TILE_BLOCK_BYTES);
     out.text.reserve_exact(reserve + "</data></layer>".len());
@@ -980,9 +1004,28 @@ fn write_tmx_layer(
     out.text.push_str("</data></layer>");
 }
 
-fn write_tmx_layer_start(out: &mut String, id: i32, name: &str, [w, h]: [usize; 2], opacity: f64) {
-    write!(out, "<layer id=\"{id}\" name=\"{}\" width=\"{w}\" height=\"{h}\" opacity=\"{opacity}\"><data encoding=\"csv\">", xml(name))
-        .expect("writing to a String is infallible");
+fn write_tmx_layer_start(
+    out: &mut String,
+    id: i32,
+    name: &str,
+    [w, h]: [usize; 2],
+    opacity: f64,
+    offset: [i64; 2],
+) {
+    write!(
+        out,
+        "<layer id=\"{id}\" name=\"{}\" width=\"{w}\" height=\"{h}\" opacity=\"{opacity}\"",
+        xml(name)
+    )
+    .expect("writing to a String is infallible");
+    write_tmx_offset(out, offset);
+    out.push_str("><data encoding=\"csv\">");
+}
+
+fn write_tmx_offset(out: &mut String, [x, y]: [i64; 2]) {
+    if [x, y] != [0; 2] {
+        write!(out, " offsetx=\"{x}\" offsety=\"{y}\"").expect("writing to a String is infallible");
+    }
 }
 
 enum TileStack {

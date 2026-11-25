@@ -1,6 +1,6 @@
 use super::{
     EntityRect, TileStack, TiledGids, TiledMap, TiledPaths, arr, field_text, for_each_entity_field,
-    intgrid_gids, intgrid_name, n, num, s, tiled_tile_layers,
+    intgrid_gids, intgrid_name, n, num, s, tiled_layer_offset, tiled_tile_layers,
 };
 use crate::Project;
 use serde::Serialize;
@@ -11,19 +11,33 @@ use std::sync::LazyLock;
 
 use super::super::CSV_BYTE_TEXT;
 
+fn write_layer_header(
+    writer: &mut impl Write,
+    mut header: Value,
+    [x, y]: [i64; 2],
+) -> io::Result<()> {
+    if [x, y] != [0; 2] {
+        header["offsetx"] = x.into();
+        header["offsety"] = y.into();
+    }
+    let encoded = serde_json::to_vec(&header)?;
+    writer.write_all(&encoded[..encoded.len() - 1])
+}
+
 fn write_tile_layer(
     writer: &mut impl Write,
     id: usize,
     name: &str,
     [width, height]: [usize; 2],
     opacity: f64,
+    offset: [i64; 2],
     nonzero: impl IntoIterator<Item = (usize, u32)>,
 ) -> io::Result<()> {
-    let header = serde_json::to_vec(&json!({
+    let header = json!({
         "id":id,"type":"tilelayer","name":name,"x":0,"y":0,"visible":true,
         "width":width,"height":height,"opacity":opacity
-    }))?;
-    writer.write_all(&header[..header.len() - 1])?;
+    });
+    write_layer_header(writer, header, offset)?;
     writer.write_all(b",\"data\":[")?;
     let area = width * height;
     let mut cursor = 0;
@@ -136,15 +150,16 @@ impl Project {
             let layer_uid = n(li, "layerDefUid");
             let def = self.layer_def(layer_uid).unwrap_or(li);
             let opacity = num(def, "displayOpacity", 1.);
+            let offset = tiled_layer_offset(li);
             let name = s(li, "__identifier");
             let typ = s(li, "__type");
             if typ == "Entities" {
                 let id = next_layer(writer, &mut layer_id)?;
-                let header = serde_json::to_vec(&json!({
+                let header = json!({
                     "id":id,"type":"objectgroup","name":name,"x":0,"y":0,
                     "visible":true,"opacity":opacity,"draworder":"topdown"
-                }))?;
-                writer.write_all(&header[..header.len() - 1])?;
+                });
+                write_layer_header(writer, header, offset)?;
                 writer.write_all(b",\"objects\":[")?;
                 let mut properties = Vec::new();
                 for (index, entity) in arr(&li["entityInstances"]).iter().enumerate() {
@@ -209,6 +224,7 @@ impl Project {
                     &intgrid_name(li),
                     size,
                     opacity,
+                    offset,
                     nonzero_gids(intgrid_gids(cells, area, palette)),
                 )?;
             }
@@ -221,11 +237,12 @@ impl Project {
                         &name,
                         size,
                         opacity,
+                        offset,
                         nonzero_gids(data.into_iter()),
                     )?,
                     TileStack::Sparse(mut data) => {
                         data.sort_unstable_by_key(|&(coord, _)| coord);
-                        write_tile_layer(writer, id, &name, size, opacity, data)?;
+                        write_tile_layer(writer, id, &name, size, opacity, offset, data)?;
                     }
                 }
             }

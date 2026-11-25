@@ -2282,6 +2282,85 @@ fn tiled_entity_fields_match_source_point_tile_string_and_pivot_conversions() {
     assert!(xml.contains("name=\"text\" value=\"a\nb\""));
 }
 #[test]
+fn tiled_layer_offsets_preserve_entity_and_tile_positions_in_both_formats() {
+    use ldtk_core::exports::TiledFormat;
+
+    let dir = tempfile::tempdir().unwrap();
+    let mut project = Project::new();
+    let key = project.level_keys()[0];
+    project.resize_level(key, 512, 256, 0, 0).unwrap();
+    let ground = project.add_layer("Ground", "Tiles", 16).unwrap();
+    let solid = project.add_layer("Solid", "IntGrid", 16).unwrap();
+    let actors = project.add_layer("Actors", "Entities", 16).unwrap();
+    let offsets = [(actors, [15, -3]), (solid, [4, 8]), (ground, [-7, 11])];
+    for (index, (definition, [x, y])) in offsets.into_iter().enumerate() {
+        let layer = project.layer_mut(key, index).unwrap();
+        layer["pxOffsetX"] = json!(3);
+        layer["pxOffsetY"] = json!(-2);
+        project
+            .update_layer_properties(definition, &json!({"pxOffsetX":x-3,"pxOffsetY":y+2}))
+            .unwrap();
+    }
+    let actor = project.add_entity_def("Actor", 16, 16).unwrap();
+    project.add_entity(key, 0, actor, 24, 40).unwrap();
+    project.paint_int_grid(key, 1, 0, 0, 1).unwrap();
+    let atlas = project
+        .add_tileset(std::path::Path::new("atlas.png"), 16, 32, 16)
+        .unwrap();
+    project.assign_tileset(ground, atlas).unwrap();
+    project.layer_mut(key, 2).unwrap()["gridTiles"] = json!([
+        {"px":[16,16],"t":0,"f":0}, {"px":[16,16],"t":1,"f":0}
+    ]);
+
+    project.export_tiled(dir.path()).unwrap();
+    let xml = fs::read_to_string(dir.path().join("Level_0.tmx")).unwrap();
+    project
+        .export_tiled_format_with_report_progress(dir.path(), TiledFormat::Tmj, |_, _| {})
+        .unwrap();
+    let map: Value =
+        serde_json::from_slice(&fs::read(dir.path().join("Level_0.tmj")).unwrap()).unwrap();
+    let layers = map["layers"].as_array().unwrap();
+    let layer = |name: &str| layers.iter().find(|layer| layer["name"] == name).unwrap();
+    for (name, [x, y]) in [
+        ("Actors", [15, -3]),
+        ("Solid", [4, 8]),
+        ("Ground_1", [-7, 11]),
+        ("Ground_2", [-7, 11]),
+    ] {
+        let name_attr = format!("name=\"{name}\"");
+        let header = xml
+            .split('<')
+            .find(|part| {
+                (part.starts_with("layer ") || part.starts_with("objectgroup "))
+                    && part.contains(&name_attr)
+            })
+            .unwrap()
+            .split_once('>')
+            .unwrap()
+            .0;
+        assert!(
+            header.contains(&format!("offsetx=\"{x}\"")),
+            "{name} {header}"
+        );
+        assert!(
+            header.contains(&format!("offsety=\"{y}\"")),
+            "{name} {header}"
+        );
+        assert_eq!(layer(name)["offsetx"], x, "{name}");
+        assert_eq!(layer(name)["offsety"], y, "{name}");
+    }
+    assert_eq!(layer("Ground_1")["data"][33], 1);
+    assert_eq!(layer("Ground_2")["data"][33], 2);
+    assert_eq!(layer("Solid")["data"][0], 3);
+    assert!(xml.contains("type=\"Actor\" x=\"24\" y=\"40\""));
+    let object = &layer("Actors")["objects"][0];
+    assert_eq!(object["x"], 24);
+    assert_eq!(object["y"], 40);
+    assert_eq!(object["properties"][0]["value"], 24);
+    assert_eq!(object["properties"][1]["value"], 40);
+}
+
+#[test]
 fn tiled_entity_bounds_use_resized_dimensions_and_keep_the_anchor() {
     use ldtk_core::exports::TiledFormat;
 
