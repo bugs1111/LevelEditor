@@ -189,8 +189,18 @@ impl EditorApp {
             .map(ldtk_core::FilesystemSnapshot::changed_resource_files)
             .unwrap_or_default()
     }
-    fn resource_failure(&mut self, path: PathBuf, uids: Vec<i64>, error: String) {
-        self.status = format!("Could not reload {}: {error}", path.display());
+    fn resource_failure(
+        &mut self,
+        ctx: &egui::Context,
+        path: PathBuf,
+        uids: Vec<i64>,
+        error: String,
+    ) {
+        self.status = locale::format_ctx(
+            ctx,
+            "Could not reload {path}: {error}",
+            &[("path", &path.to_string_lossy()), ("error", &error)],
+        );
         self.status_error = true;
         // Original backup inspection does not offer to relink missing files.
         if !path.exists() && self.project.as_ref().is_some_and(Project::is_backup) {
@@ -229,7 +239,11 @@ impl EditorApp {
         let old = clean(old);
         let new = clean(new);
         if !new.is_file() {
-            self.status = format!("The selected file does not exist: {}", new.display());
+            self.status = locale::format_ctx(
+                ctx,
+                "The selected file does not exist: {path}",
+                &[("path", &new.to_string_lossy())],
+            );
             self.status_error = true;
             return false;
         }
@@ -334,7 +348,7 @@ impl EditorApp {
             match changed {
                 Ok(true) => self.external_enum_reloads.push_back(path),
                 Ok(false) => (),
-                Err(error) => self.resource_failure(path, Vec::new(), error.to_string()),
+                Err(error) => self.resource_failure(ctx, path, Vec::new(), error.to_string()),
             }
         }
         self.pump_resources(ctx);
@@ -392,7 +406,7 @@ impl EditorApp {
             if self.begin_enum_sync(ctx, path.clone()) {
                 self.ignore_resource(&path);
             } else {
-                self.resource_failure(path, Vec::new(), self.status.clone());
+                self.resource_failure(ctx, path, Vec::new(), self.status.clone());
             }
         }
         // Keep the files shown in the open dialog stable until the user responds.
@@ -507,7 +521,7 @@ impl EditorApp {
             .collect::<Vec<_>>();
         for (path, error) in failed {
             let uids = self.resource_checks.remove(&path).unwrap_or_default();
-            self.resource_failure(path, uids, error);
+            self.resource_failure(ctx, path, uids, error);
         }
         if !self.resource_checks.is_empty() {
             ctx.request_repaint_after(std::time::Duration::from_millis(20));
@@ -524,14 +538,15 @@ impl EditorApp {
             let mut cancel = false;
             let modal = egui::Modal::new(id).show(ctx, |ui| {
                 ui.set_width(560.0);
-                ui.heading("The selected file has a different name");
-                ui.label(
+                ui.heading(locale::tr(ui, "The selected file has a different name"));
+                ui.label(locale::tr(
+                    ui,
                     "Selecting a different file may change your project. Is this the correct file?",
-                );
+                ));
                 ui.monospace(new.display().to_string());
                 ui.horizontal(|ui| {
-                    apply = ui.button("Use selected file").clicked();
-                    cancel = ui.button("Cancel").clicked();
+                    apply = ui.button(locale::tr(ui, "Use selected file")).clicked();
+                    cancel = ui.button(locale::tr(ui, "Cancel")).clicked();
                 });
             });
             if apply || cancel || modal.should_close() {
@@ -550,13 +565,17 @@ impl EditorApp {
             .unwrap_or_else(|| path.display().to_string());
         let title = if missing { "FILE NOT FOUND!" } else { "ERROR" };
         let message = if missing {
-            "The following file cannot be found anymore:".to_owned()
+            locale::tr_ctx(ctx, "The following file cannot be found anymore:").to_owned()
         } else {
             let filename = path
                 .file_name()
                 .unwrap_or(path.as_os_str())
                 .to_string_lossy();
-            format!("Couldn't read file: {filename}")
+            locale::format_ctx(
+                ctx,
+                "Couldn't read file: {filename}",
+                &[("filename", &filename)],
+            )
         };
         let (action, dismiss) = if missing {
             ("LOCATE THE FILE", "FIX THAT LATER")
@@ -608,7 +627,7 @@ impl EditorApp {
                                     ui.label(body(relative.as_str()).strong());
                                 });
                             ui.add_space(14.);
-                            ui.label(body("What do you want to do?"));
+                            ui.label(body(locale::tr(ui, "What do you want to do?")));
                         }
                         ui.add_space(16.);
                         ui.horizontal(|ui| {
@@ -633,7 +652,8 @@ impl EditorApp {
         } else if modal.inner.0 && !missing {
             self.retry_resource(ctx, &path);
         } else if modal.inner.0 {
-            let mut dialog = FileDialog::new().set_title("Locate the missing resource");
+            let mut dialog =
+                FileDialog::new().set_title(locale::tr_ctx(ctx, "Locate the missing resource"));
             if let Some(parent) = path
                 .parent()
                 .filter(|p| p.is_dir())
@@ -642,7 +662,7 @@ impl EditorApp {
                 dialog = dialog.set_directory(parent);
             }
             if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
-                dialog = dialog.add_filter("Original file type", &[ext]);
+                dialog = dialog.add_filter(locale::tr_ctx(ctx, "Original file type"), &[ext]);
             }
             if let Some(new) = dialog.pick_file() {
                 if new.file_stem() != path.file_stem() {
@@ -831,6 +851,107 @@ mod missing_tests {
         output.shapes.iter().any(
             |shape| matches!(&shape.shape, egui::Shape::Text(shape) if shape.galley.text() == text),
         )
+    }
+
+    #[test]
+    fn chinese_resource_prompt_and_relocation_keep_original_file_names() {
+        let directory = tempfile::tempdir().unwrap();
+        let old = directory.path().join("Original Atlas.png");
+        let replacement = directory.path().join("Moved Atlas.png");
+        image::RgbaImage::new(32, 32).save(&replacement).unwrap();
+        let mut project = Project::new();
+        project.path = Some(directory.path().join("Map.ldtk"));
+        let uid = project.add_tileset(&old, 16, 32, 32).unwrap();
+        let mut app = EditorApp::empty();
+        app.settings.value["language"] = json!("zh-CN");
+        app.set_project(project);
+        let ctx = egui::Context::default();
+        theme::configure(&ctx);
+        dialog_frame(&mut app, &ctx, vec![]);
+        app.changed_resources(&ctx, vec![old.clone()]);
+        pump_until(&mut app, &ctx, |app| !app.resource_missing.is_empty());
+        dialog_frame(&mut app, &ctx, vec![]);
+        let missing = dialog_frame(&mut app, &ctx, vec![]);
+        for text in [
+            "找不到文件",
+            "找不到以下文件",
+            "Original Atlas.png",
+            "定位文件",
+            "稍后处理",
+        ] {
+            assert!(visible_text(&missing, text), "missing label {text}");
+        }
+
+        let id = egui::Id::new(("resource-relocation", &old));
+        ctx.data_mut(|data| data.insert_temp(id, replacement.clone()));
+        dialog_frame(&mut app, &ctx, vec![]);
+        let confirm = dialog_frame(&mut app, &ctx, vec![]);
+        for text in [
+            "所选文件的名称不同",
+            "选择不同的文件可能会更改工程。确定使用这个文件吗？",
+            "取消",
+        ] {
+            assert!(visible_text(&confirm, text), "missing label {text}");
+        }
+        assert!(visible_text(&confirm, &replacement.to_string_lossy()));
+        let pos = confirm
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) if text.galley.text() == "使用所选文件" => {
+                    Some(text.pos + text.galley.size() * 0.5)
+                }
+                _ => None,
+            })
+            .unwrap();
+        for pressed in [true, false] {
+            dialog_frame(
+                &mut app,
+                &ctx,
+                vec![
+                    egui::Event::PointerMoved(pos),
+                    egui::Event::PointerButton {
+                        pos,
+                        pressed,
+                        button: egui::PointerButton::Primary,
+                        modifiers: Default::default(),
+                    },
+                ],
+            );
+        }
+        assert!(app.resource_missing.is_empty() && app.dirty);
+        assert_eq!(
+            app.project.as_ref().unwrap().tileset(uid).unwrap()["relPath"],
+            "Moved Atlas.png"
+        );
+    }
+
+    #[test]
+    fn chinese_unreadable_resource_prompt_shows_the_file_and_localized_actions() {
+        let directory = tempfile::tempdir().unwrap();
+        let atlas = directory.path().join("Broken Atlas.png");
+        std::fs::write(&atlas, b"invalid PNG").unwrap();
+        let mut project = Project::new();
+        project.path = Some(directory.path().join("Map.ldtk"));
+        project.add_tileset(&atlas, 16, 32, 32).unwrap();
+        let mut app = EditorApp::empty();
+        app.settings.value["language"] = json!("zh-CN");
+        app.set_project(project);
+        let ctx = egui::Context::default();
+        theme::configure(&ctx);
+        dialog_frame(&mut app, &ctx, vec![]);
+        app.changed_resources(&ctx, vec![atlas.clone()]);
+        pump_until(&mut app, &ctx, |app| !app.resource_missing.is_empty());
+        dialog_frame(&mut app, &ctx, vec![]);
+        let output = dialog_frame(&mut app, &ctx, vec![]);
+        for text in ["错误", "无法读取文件「Broken Atlas.png」", "重试", "忽略"] {
+            assert!(visible_text(&output, text), "missing label {text}");
+        }
+        assert!(
+            app.status
+                .starts_with(&format!("无法重新加载 {}", atlas.display()))
+        );
+        assert!(app.status.contains(&app.resource_missing[0].2));
     }
 
     #[test]
