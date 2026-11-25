@@ -2763,15 +2763,15 @@ impl Project {
                 |done, total| progress(SaveStage::ExportSimplified, done, total),
                 &mut report.export_diagnostics,
             );
-            collect_configured_export(&mut report, &simple, &["json", "csv", "png"], wrap(outputs));
-            collect_configured_export(&mut report, &png, &["png"], wrap(Ok(vec![])));
-        } else {
-            collect_configured_export(
+            if collect_configured_export(
                 &mut report,
                 &simple,
                 &["json", "csv", "png"],
-                wrap(Ok(vec![])),
-            );
+                wrap(outputs),
+            ) {
+                collect_configured_export(&mut report, &png, &["png"], wrap(Ok(vec![])));
+            }
+        } else {
             let outputs = if self.json["imageExportMode"]
                 .as_str()
                 .is_some_and(|mode| mode != "None")
@@ -2784,7 +2784,14 @@ impl Project {
             } else {
                 Ok(vec![])
             };
-            collect_configured_export(&mut report, &png, &["png"], wrap(outputs));
+            if collect_configured_export(&mut report, &png, &["png"], wrap(outputs)) {
+                collect_configured_export(
+                    &mut report,
+                    &simple,
+                    &["json", "csv", "png"],
+                    wrap(Ok(vec![])),
+                );
+            }
         }
         let output = if self.json["exportTiled"] == true {
             self.export_tiled_with_report_progress(&tiled, |done, total| {
@@ -2926,12 +2933,13 @@ impl Project {
     }
 }
 
+/// Return whether the requested output set was published, independently of cleanup.
 fn collect_configured_export(
     report: &mut SaveReport,
     dir: &Path,
     extensions: &[&str],
     result: Result<crate::exports::ExportReport>,
-) {
+) -> bool {
     match result {
         Ok(output) => {
             if let Err(error) = prune_managed_exports(dir, &output.outputs, extensions) {
@@ -2939,8 +2947,12 @@ fn collect_configured_export(
             }
             report.outputs.extend(output.outputs);
             report.export_errors.extend(output.warnings);
+            true
         }
-        Err(error) => report.export_errors.push(error.to_string()),
+        Err(error) => {
+            report.export_errors.push(error.to_string());
+            false
+        }
     }
 }
 fn prune_managed_exports(dir: &Path, keep: &[PathBuf], extensions: &[&str]) -> Result<()> {

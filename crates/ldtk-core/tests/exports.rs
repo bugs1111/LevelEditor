@@ -2120,6 +2120,78 @@ fn gamemaker_reexport_preserves_identical_files_and_replaces_changed_rooms() {
 }
 
 #[test]
+fn switching_to_simplified_preserves_png_exports_until_success() {
+    check_configured_export_switch(false);
+}
+
+#[test]
+fn switching_to_png_preserves_simplified_exports_until_success() {
+    check_configured_export_switch(true);
+}
+
+fn check_configured_export_switch(from_simplified: bool) {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("game.ldtk");
+    let output = path.with_extension("");
+    let mut project = project();
+    project.add_level(None, "Second", 32, 32).unwrap();
+    project.json["imageExportMode"] = json!("OneImagePerLevel");
+    project.json["simplifiedExport"] = json!(from_simplified);
+    let previous = project.save_with_exports(&path).unwrap();
+    assert!(previous.export_errors.is_empty());
+    let previous_files: Vec<_> = previous
+        .outputs
+        .into_iter()
+        .filter(|file| file != &path)
+        .map(|file| {
+            let bytes = fs::read(&file).unwrap();
+            (file, bytes)
+        })
+        .collect();
+    assert!(previous_files.len() >= 2);
+
+    let (first_output, blocked_output) = if from_simplified {
+        ("png/Level_0.png", "png/Second.png")
+    } else {
+        (
+            "simplified/Level_0/data.json",
+            "simplified/Second/data.json",
+        )
+    };
+    let first_output = output.join(first_output);
+    let blocked_output = output.join(blocked_output);
+    fs::create_dir_all(&blocked_output).unwrap();
+    project.json["simplifiedExport"] = json!(!from_simplified);
+
+    let failed = project.save_with_exports(&path).unwrap();
+    assert!(!failed.export_errors.is_empty());
+    assert_eq!(failed.outputs, std::slice::from_ref(&path));
+    assert_eq!(
+        Project::load(&path).unwrap().json["simplifiedExport"],
+        !from_simplified
+    );
+    assert!(!first_output.exists());
+    for (file, bytes) in &previous_files {
+        assert!(
+            fs::read(file).is_ok_and(|actual| &actual == bytes),
+            "{}",
+            file.display()
+        );
+    }
+
+    fs::remove_dir(&blocked_output).unwrap();
+    let retried = project.save_with_exports(&path).unwrap();
+    assert!(
+        retried.export_errors.is_empty(),
+        "{:?}",
+        retried.export_errors
+    );
+    assert!(retried.outputs.contains(&first_output) && retried.outputs.contains(&blocked_output));
+    assert!(first_output.is_file() && blocked_output.is_file());
+    assert!(previous_files.iter().all(|(file, _)| !file.exists()));
+}
+
+#[test]
 fn configured_exports_retire_stale_generated_files_and_preserve_unrelated_files() {
     let mut p = project();
     p.json["imageExportMode"] = json!("OneImagePerLayer");
