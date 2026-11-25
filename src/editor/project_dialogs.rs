@@ -747,6 +747,13 @@ mod tests {
         }
     }
 
+    fn block_before_save_commands(app: &mut EditorApp, ctx: &egui::Context) {
+        assert!(app.hook_flow.is_some() && app.saving.is_none());
+        frame(app, ctx, vec![]);
+        let trust = frame(app, ctx, vec![]);
+        click(app, ctx, label(&trust, "Block project commands").center());
+    }
+
     #[test]
     fn saving_in_application_directory_waits_for_the_users_choice() {
         let executable = std::env::current_exe().unwrap();
@@ -1221,6 +1228,75 @@ mod tests {
     }
 
     #[test]
+    fn save_rechecks_the_document_after_waiting_for_before_save_commands() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("Map.ldtk");
+        let mut project = Project::new();
+        project.save(&path).unwrap();
+        let mut app = EditorApp::empty();
+        app.set_project(project);
+        let project = app.project.as_mut().unwrap();
+        project.json["defaultLevelBgColor"] = "#112233".into();
+        project.json["customCommands"] = json!([{"when":"BeforeSave","command":"echo pending"}]);
+        app.dirty = true;
+        let ctx = egui::Context::default();
+        theme::configure(&ctx);
+        frame(&mut app, &ctx, vec![]);
+        app.save(false);
+        assert!(app.hook_flow.is_some() && app.saving.is_none());
+
+        let mut outside = Project::load(&path).unwrap();
+        outside.json["defaultLevelBgColor"] = "#445566".into();
+        outside.save(&path).unwrap();
+        let external_bytes = std::fs::read(&path).unwrap();
+        block_before_save_commands(&mut app, &ctx);
+        wait_for_save(&mut app, &ctx);
+        assert_eq!(app.external_changes, Some(vec![path.clone()]));
+        assert!(app.dirty && app.save_failure.is_none());
+        assert_eq!(
+            app.project.as_ref().unwrap().json["defaultLevelBgColor"],
+            "#112233"
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), external_bytes);
+    }
+
+    #[test]
+    fn save_as_rechecks_external_levels_at_the_destination() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("Destination.ldtk");
+        let mut destination = Project::new();
+        let key = destination.level_keys()[0];
+        destination.set_external_levels(true).unwrap();
+        destination.save(&path).unwrap();
+        let root_bytes = std::fs::read(&path).unwrap();
+        let relative = destination.json["levels"][key.level]["externalRelPath"]
+            .as_str()
+            .unwrap();
+        let level_path = dir.path().join(relative);
+        let mut outside_bytes = std::fs::read(&level_path).unwrap();
+        outside_bytes.push(b'\n');
+
+        let mut draft = Project::new();
+        draft.json["customCommands"] = json!([{"when":"BeforeSave","command":"echo pending"}]);
+        let mut app = EditorApp::empty();
+        app.set_project(draft);
+        app.dirty = true;
+        let ctx = egui::Context::default();
+        theme::configure(&ctx);
+        frame(&mut app, &ctx, vec![]);
+        app.save_to(&ctx, path.clone());
+        assert!(app.hook_flow.is_some() && app.saving.is_none());
+        std::fs::write(&level_path, &outside_bytes).unwrap();
+        block_before_save_commands(&mut app, &ctx);
+        let failed = wait_for_save(&mut app, &ctx);
+        label(&failed, "RETRY");
+        assert!(app.dirty && app.external_changes.is_none());
+        assert!(app.project.as_ref().unwrap().path.is_none());
+        assert_eq!(std::fs::read(path).unwrap(), root_bytes);
+        assert_eq!(std::fs::read(level_path).unwrap(), outside_bytes);
+    }
+
+    #[test]
     fn disconnected_save_worker_opens_recovery_and_retries_unsaved_edits() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("Map.ldtk");
@@ -1315,7 +1391,7 @@ mod tests {
         app.dirty = true;
         let ctx = egui::Context::default();
         theme::configure(&ctx);
-        app.save_async_at(destination.clone());
+        app.save_async_at(destination.clone(), None);
         let failed = wait_for_save(&mut app, &ctx);
         label(&failed, "ERROR DURING PROJECT SAVING");
         label(&failed, "SAVE AS...");
@@ -1356,7 +1432,7 @@ mod tests {
         app.dirty = true;
         let ctx = egui::Context::default();
         theme::configure(&ctx);
-        app.save_async_at(path.clone());
+        app.save_async_at(path.clone(), None);
         let retry = label(&wait_for_save(&mut app, &ctx), "RETRY");
         std::fs::remove_file(blocker).unwrap();
         click(&mut app, &ctx, retry.center());

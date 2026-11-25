@@ -358,7 +358,7 @@ mod tests {
         }
         assert!(app.assets.loaded_image_paths().any(|file| file == files[0]));
 
-        app.save_async_at(path.clone());
+        app.save_async_at(path.clone(), None);
         let deadline = Instant::now() + std::time::Duration::from_secs(5);
         while app.saving.is_some() {
             assert!(Instant::now() < deadline, "project save must finish");

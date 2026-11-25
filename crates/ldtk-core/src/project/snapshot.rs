@@ -10,12 +10,27 @@ use std::{
 };
 
 /// A content snapshot, independent of the mutable project, for filesystem watchers.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct FilesystemSnapshot {
     pub(super) files: BTreeMap<PathBuf, Option<u64>>,
     pub(super) loaded_external_paths: Option<(PathBuf, Vec<String>)>,
 }
 impl FilesystemSnapshot {
+    /// Capture the destination document and its registered external levels.
+    /// An absent destination is tracked so a later creation is detected.
+    pub fn for_save_destination(path: &Path) -> Result<Self> {
+        let path = absolute(path)?;
+        let mut snapshot = Self::default();
+        snapshot.refresh_file(&path)?;
+        let levels = super::previous_external_paths(&path);
+        let parent = path.parent().expect("absolute project path");
+        for level in &levels {
+            snapshot.refresh_file(&absolute(&parent.join(level))?)?;
+        }
+        snapshot.loaded_external_paths = Some((path, levels));
+        Ok(snapshot)
+    }
+
     pub fn refresh_file(&mut self, path: &Path) -> Result<()> {
         self.files.insert(path.to_owned(), file_fingerprint(path)?);
         if self

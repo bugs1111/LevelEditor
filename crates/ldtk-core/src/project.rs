@@ -581,7 +581,27 @@ impl Project {
                 external.push((key, rel, target));
             }
         }
+        let watched_retired = if verified_snapshot.is_some() {
+            retired
+                .iter()
+                .map(|rel| absolute(&base.join(rel)))
+                .collect::<Result<BTreeSet<_>>>()?
+        } else {
+            BTreeSet::new()
+        };
+        let verify_documents = || -> Result<()> {
+            if let Some(snapshot) = verified_snapshot {
+                let changed = snapshot.changed_files_matching(|path| {
+                    paths.contains(path) || watched_retired.contains(path)
+                })?;
+                if !changed.is_empty() {
+                    return Err(Error::FilesChanged(changed));
+                }
+            }
+            Ok(())
+        };
         if make_backup && candidate.json["backupOnSave"].as_bool().unwrap_or(false) {
+            verify_documents()?;
             candidate.path = Some(path.clone());
             candidate.backup_with_progress(None, &mut |done, total, label| {
                 progress(SaveStage::Backup, done, total, label);
@@ -678,6 +698,7 @@ impl Project {
         }
         // The main document is prepared first but published after all referenced files.
         staged.files.push(root);
+        verify_documents()?;
         staged.publish()?;
         self.external_levels = candidate.external_levels;
         self.json = candidate.json;
@@ -1813,6 +1834,48 @@ mod save_transaction_tests {
     use serde_json::json;
 
     #[test]
+    fn guarded_save_does_not_retire_a_level_changed_during_staging() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("world.ldtk");
+        let mut project = Project::new();
+        let kept = project.level_keys()[0];
+        let removed = project.add_level(None, "Removed", 32, 32).unwrap();
+        project.set_external_levels(true).unwrap();
+        project.save(&path).unwrap();
+        let before = fs::read(&path).unwrap();
+        let removed_path = dir.path().join(
+            project.level_stub(removed).unwrap()["externalRelPath"]
+                .as_str()
+                .unwrap(),
+        );
+        let mut outside = fs::read(&removed_path).unwrap();
+        outside.push(b'\n');
+        let (mut edited, snapshot) = Project::load_with_snapshot(&path).unwrap();
+        edited.remove_level(removed).unwrap();
+        edited.level_mut(kept).unwrap()["bgColor"] = json!("#112233");
+        let mut replaced = false;
+        let result = edited.save_document_with_progress(
+            &path,
+            false,
+            Some(&snapshot),
+            None,
+            &mut |stage, done, total, _| {
+                if stage == SaveStage::PrepareLevels && total > 0 && done == total {
+                    fs::write(&removed_path, &outside).unwrap();
+                    replaced = true;
+                }
+            },
+        );
+        assert!(replaced);
+        assert!(
+            matches!(result, Err(Error::FilesChanged(paths)) if paths == [removed_path.clone()])
+        );
+        assert_eq!(fs::read(&path).unwrap(), before);
+        assert_eq!(fs::read(removed_path).unwrap(), outside);
+        assert_eq!(edited.level_mut(kept).unwrap()["bgColor"], "#112233");
+    }
+
+    #[test]
     fn reopening_a_save_checks_the_disk_bytes_of_reused_external_levels() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("world.ldtk");
@@ -1849,7 +1912,7 @@ mod save_transaction_tests {
     }
 
     #[test]
-    fn save_and_reload_detects_same_size_changes_to_untouched_levels_during_save() {
+    fn save_and_reload_detects_same_size_changes_to_untouched_levels_after_publish() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("world.ldtk");
         let mut project = Project::new();
@@ -1879,7 +1942,7 @@ mod save_transaction_tests {
                 Some(&snapshot),
                 Some(&mut published),
                 &mut |stage, done, _, _| {
-                    if stage == SaveStage::WriteProject && done == 0 {
+                    if stage == SaveStage::WriteProject && done == 1 {
                         fs::write(&target, &changed).unwrap();
                     }
                 },
@@ -2415,9 +2478,19 @@ impl Project {
     pub fn save_with_labeled_operation_progress(
         &mut self,
         path: impl AsRef<Path>,
+        progress: impl FnMut(SaveStage, usize, usize, Option<&str>),
+    ) -> Result<SaveReport> {
+        self.save_with_snapshot_and_progress(path, None, progress)
+    }
+
+    /// Save with progress, checking watched destinations just before publishing them.
+    pub fn save_with_snapshot_and_progress(
+        &mut self,
+        path: impl AsRef<Path>,
+        snapshot: Option<&FilesystemSnapshot>,
         mut progress: impl FnMut(SaveStage, usize, usize, Option<&str>),
     ) -> Result<SaveReport> {
-        self.save_document_with_progress(path, true, None, None, &mut progress)?;
+        self.save_document_with_progress(path, true, snapshot, None, &mut progress)?;
         Ok(
             self.configured_exports_report_progress(&mut |stage, done, total| {
                 progress(stage, done, total, None);
@@ -2545,14 +2618,7 @@ impl Project {
     ) -> Result<()> {
         let changed = snapshot.changed_files()?;
         if !changed.is_empty() {
-            return Err(Error::Invalid(format!(
-                "files changed outside the editor: {}",
-                changed
-                    .iter()
-                    .map(|p| p.display().to_string())
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            )));
+            return Err(Error::FilesChanged(changed));
         }
         self.save_document_with_progress(
             path,

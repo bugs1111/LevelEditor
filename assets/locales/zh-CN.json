@@ -1101,6 +1101,7 @@
   "Text suffix": "文字后缀",
   "The center of this PATTERN is where your TILE(s) will be rendered (). Paint the pattern to describe in which context the tile(s) should be displayed:": "图块会绘制在匹配图案的中心。为图案中的格子设置条件，指定何时绘制图块。",
   "The current layer settings prevent its rules to work.": "当前图层的设置使自动规则无法运行。",
+  "The destination file changed during saving.": "目标文件在保存期间发生了变化。",
   "The destination file may have changed.": "目标文件可能已发生变化。",
   "The file operation was interrupted.": "文件操作已中断。",
   "The project file is no longer in {path}. Save to this path anyway?": "项目文件已不在 {path}。仍要保存到此路径吗？",

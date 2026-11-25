@@ -45,6 +45,8 @@ pub enum Error {
     },
     #[error("Invalid LDtk data: {0}")]
     Invalid(String),
+    #[error("files changed outside the editor: {}", .0.iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join(", "))]
+    FilesChanged(Vec<std::path::PathBuf>),
     #[error("Unsupported operation: {0}")]
     Unsupported(String),
 }

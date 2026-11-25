@@ -138,7 +138,7 @@ impl EditorApp {
         true
     }
 
-    fn fail_save(&mut self, path: PathBuf, reason: SaveWriteFailure) {
+    pub(super) fn fail_save(&mut self, path: PathBuf, reason: SaveWriteFailure) {
         let status = match &reason {
             SaveWriteFailure::DirectoryConflict => {
                 format!(
@@ -315,10 +315,27 @@ impl EditorApp {
                         hooks::Continuation::AfterSave(saved_name),
                     );
                 }
+                Ok(Err(ldtk_core::Error::FilesChanged(paths)))
+                    if self.save_attempt.as_ref().is_some_and(|attempt| {
+                        self.project
+                            .as_ref()
+                            .and_then(|project| project.path.as_ref())
+                            == Some(attempt)
+                    }) =>
+                {
+                    self.clear_save_progress();
+                    self.external_changes = Some(paths);
+                    self.status = "Project files changed outside LDtk".into();
+                    self.status_error = true;
+                }
                 Ok(Err(e)) => {
                     if let Some(path) = self.save_attempt.take() {
                         let folder = path.with_extension("");
                         let reason = match &e {
+                            ldtk_core::Error::FilesChanged(_) => SaveWriteFailure::Io(
+                                locale::tr_ctx(ctx, "The destination file changed during saving.")
+                                    .into(),
+                            ),
                             ldtk_core::Error::Io { path: failed, .. }
                                 if failed.starts_with(&folder) && save_folder_conflicts(&path) =>
                             {
@@ -1046,7 +1063,7 @@ mod creation_tests {
         let mut app = EditorApp::empty();
         app.set_project(Project::new());
         app.last_chance = Some(("Identifier style changed".into(), Instant::now()));
-        app.save_async_at(path.clone());
+        app.save_async_at(path.clone(), None);
         assert!(app.last_chance.is_none());
 
         let until = Instant::now() + std::time::Duration::from_secs(5);
@@ -1100,7 +1117,7 @@ mod creation_tests {
         level["bgRelPath"] = "missing.png".into();
         level["bgPos"] = "Unscaled".into();
         app.set_project(project);
-        app.save_async_at(directory.path().join("Game.ldtk"));
+        app.save_async_at(directory.path().join("Game.ldtk"), None);
 
         let until = Instant::now() + std::time::Duration::from_secs(5);
         while app.saving.is_some() && Instant::now() < until {

@@ -1002,7 +1002,26 @@ impl EditorApp {
             ctx.request_repaint();
             return;
         }
-        self.queue_project_hooks(ctx, "BeforeSave", hooks::Continuation::Save(path));
+        let opened_path = self
+            .project
+            .as_ref()
+            .and_then(|project| project.path.as_ref());
+        let baseline = self
+            .file_snapshot
+            .as_ref()
+            .filter(|_| opened_path == Some(&path) && !resources::is_missing_file(&path));
+        let snapshot = match baseline {
+            Some(snapshot) => Ok(snapshot.clone()),
+            None => ldtk_core::FilesystemSnapshot::for_save_destination(&path),
+        };
+        match snapshot {
+            Ok(snapshot) => self.queue_project_hooks(
+                ctx,
+                "BeforeSave",
+                hooks::Continuation::Save(path, snapshot),
+            ),
+            Err(error) => self.fail_save(path, services::SaveWriteFailure::Io(error.to_string())),
+        }
     }
 
     fn canvas_input(&mut self, ctx: &egui::Context, rect: Rect, response: &egui::Response) {
@@ -3093,7 +3112,7 @@ mod tests {
             "source flag delays both targets"
         );
         let path = temp.path().join("Deferred.ldtk");
-        app.save_async_at(path.clone());
+        app.save_async_at(path.clone(), None);
         app.saving
             .as_ref()
             .unwrap()
@@ -3279,7 +3298,7 @@ mod tests {
             let expected = if copy { vec![32, 64] } else { vec![64] };
             if copy {
                 let path = temp.path().join("copy.ldtk");
-                app.save_async_at(path.clone());
+                app.save_async_at(path.clone(), None);
                 app.saving
                     .take()
                     .unwrap()

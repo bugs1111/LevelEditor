@@ -3,7 +3,7 @@ use std::collections::VecDeque;
 
 pub(super) enum Continuation {
     None,
-    Save(PathBuf),
+    Save(PathBuf, ldtk_core::FilesystemSnapshot),
     AfterSave(Option<String>),
 }
 pub(super) struct HookFlow {
@@ -71,7 +71,7 @@ impl EditorApp {
     fn hook_continuation(&mut self, ctx: &egui::Context, continuation: Continuation) {
         match continuation {
             Continuation::None => {}
-            Continuation::Save(path) => self.save_async_at(path),
+            Continuation::Save(path, snapshot) => self.save_async_at(path, Some(snapshot)),
             Continuation::AfterSave(saved_name) => {
                 if let Some(name) = saved_name {
                     self.report_saved_project(name);
@@ -150,7 +150,11 @@ impl EditorApp {
         }
     }
 
-    pub(super) fn save_async_at(&mut self, path: PathBuf) {
+    pub(super) fn save_async_at(
+        &mut self,
+        path: PathBuf,
+        snapshot: Option<ldtk_core::FilesystemSnapshot>,
+    ) {
         if !self.settle_deferred_auto_paint() {
             return;
         }
@@ -182,15 +186,19 @@ impl EditorApp {
                 })
                 .collect::<Vec<_>>();
             let result = project
-                .save_with_labeled_operation_progress(&path, |stage, done, total, label| {
-                    progress
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner())
-                        .record(stage, done, total, label, &names);
-                    if let Some(ctx) = &repaint {
-                        ctx.request_repaint();
-                    }
-                })
+                .save_with_snapshot_and_progress(
+                    &path,
+                    snapshot.as_ref(),
+                    |stage, done, total, label| {
+                        progress
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .record(stage, done, total, label, &names);
+                        if let Some(ctx) = &repaint {
+                            ctx.request_repaint();
+                        }
+                    },
+                )
                 .map(|report| services::SavedProject { project, report });
             let _ = tx.send(result);
             if let Some(ctx) = repaint {

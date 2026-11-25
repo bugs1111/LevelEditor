@@ -1854,7 +1854,7 @@ fn point_array_canvas_pick_retains_offset_parallax_geometry_and_editor_length_di
 
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("PointPath.ldtk");
-    f.app.save_async_at(path.clone());
+    f.app.save_async_at(path.clone(), None);
     f.app
         .saving
         .take()
