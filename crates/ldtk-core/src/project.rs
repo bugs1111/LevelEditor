@@ -405,7 +405,7 @@ impl Project {
         self.save_document(path, true)
     }
     fn save_document(&mut self, path: impl AsRef<Path>, make_backup: bool) -> Result<()> {
-        self.save_document_with_progress(path, make_backup, None, None, &mut |_, _, _, _| {})
+        self.save_document_with_progress(path, make_backup, None, None, None, &mut |_, _, _, _| {})
     }
     fn save_document_with_progress(
         &mut self,
@@ -413,6 +413,7 @@ impl Project {
         make_backup: bool,
         verified_snapshot: Option<&FilesystemSnapshot>,
         mut published: Option<&mut PublishedDocuments>,
+        mut saved_snapshot: Option<&mut FilesystemSnapshot>,
         progress: &mut impl FnMut(SaveStage, usize, usize, Option<&str>),
     ) -> Result<()> {
         validate_project(&self.json)?;
@@ -632,6 +633,16 @@ impl Project {
             encode_with_style(&candidate.json, minify, style)?
         };
         let root = StagedFile::final_replacement(path.clone(), &root_bytes)?;
+        if let Some(snapshot) = saved_snapshot.as_deref_mut() {
+            snapshot.record_document(path.clone(), Some(bytes_fingerprint(&root_bytes)));
+            snapshot.loaded_external_paths = Some((
+                path.clone(),
+                external
+                    .iter()
+                    .map(|(_, relative, _)| relative.clone())
+                    .collect(),
+            ));
+        }
         if let Some(saved) = published.as_deref_mut() {
             saved.root = root_bytes;
         } else {
@@ -672,27 +683,32 @@ impl Project {
                 Some((bytes, fingerprint)) => (bytes, Some(fingerprint)),
                 None => (Some(encode_with_style(level, minify, style)?), None),
             };
-            if current_version {
-                let parsed = bytes.is_none() && cached.is_some_and(|file| file.parsed);
+            if current_version || saved_snapshot.is_some() {
                 let (length, fingerprint) = if let Some(cached) = cached {
                     (cached.length, cached.bytes)
                 } else {
                     let bytes = bytes.as_deref().expect("serialized level");
                     (bytes.len(), bytes_fingerprint(bytes))
                 };
-                fingerprints.insert(
-                    target.clone(),
-                    ExternalLevelFingerprint {
-                        length,
-                        bytes: fingerprint,
-                        parsed,
-                        level: revision.map_or_else(Weak::new, Arc::downgrade),
-                    },
-                );
-                if parsed && let Some(saved) = published.as_deref_mut() {
-                    saved
-                        .reusable_levels
-                        .insert(target.clone(), (Arc::clone(document), length, fingerprint));
+                if let Some(snapshot) = saved_snapshot.as_deref_mut() {
+                    snapshot.record_document(target.clone(), Some(fingerprint));
+                }
+                if current_version {
+                    let parsed = bytes.is_none() && cached.is_some_and(|file| file.parsed);
+                    fingerprints.insert(
+                        target.clone(),
+                        ExternalLevelFingerprint {
+                            length,
+                            bytes: fingerprint,
+                            parsed,
+                            level: revision.map_or_else(Weak::new, Arc::downgrade),
+                        },
+                    );
+                    if parsed && let Some(saved) = published.as_deref_mut() {
+                        saved
+                            .reusable_levels
+                            .insert(target.clone(), (Arc::clone(document), length, fingerprint));
+                    }
                 }
             }
             if let Some(bytes) = bytes {
@@ -1869,6 +1885,7 @@ mod save_transaction_tests {
             false,
             Some(&snapshot),
             None,
+            None,
             &mut |stage, done, total, _| {
                 if stage == SaveStage::PrepareLevels && total > 0 && done == total {
                     fs::write(&removed_path, &outside).unwrap();
@@ -1951,6 +1968,7 @@ mod save_transaction_tests {
                 false,
                 Some(&snapshot),
                 Some(&mut published),
+                None,
                 &mut |stage, done, _, _| {
                     if stage == SaveStage::WriteProject && done == 1 {
                         fs::write(&target, &changed).unwrap();
@@ -2436,6 +2454,8 @@ fn backup_timestamp() -> String {
 
 #[derive(Clone, Debug, Default)]
 pub struct SaveReport {
+    /// Fingerprints of the documents published by the save, before configured exports.
+    pub document_snapshot: Option<FilesystemSnapshot>,
     pub outputs: Vec<PathBuf>,
     pub export_errors: Vec<String>,
     /// Resource problems to log separately from the success or failure of an export.
@@ -2500,12 +2520,20 @@ impl Project {
         snapshot: Option<&FilesystemSnapshot>,
         mut progress: impl FnMut(SaveStage, usize, usize, Option<&str>),
     ) -> Result<SaveReport> {
-        self.save_document_with_progress(path, true, snapshot, None, &mut progress)?;
-        Ok(
-            self.configured_exports_report_progress(&mut |stage, done, total| {
-                progress(stage, done, total, None);
-            }),
-        )
+        let mut document_snapshot = FilesystemSnapshot::default();
+        self.save_document_with_progress(
+            path,
+            true,
+            snapshot,
+            None,
+            Some(&mut document_snapshot),
+            &mut progress,
+        )?;
+        let mut report = self.configured_exports_report_progress(&mut |stage, done, total| {
+            progress(stage, done, total, None);
+        });
+        report.document_snapshot = Some(document_snapshot);
+        Ok(report)
     }
     pub fn configured_exports_report(&self) -> SaveReport {
         self.configured_exports_report_progress(&mut |_, _, _| {})
@@ -2635,6 +2663,7 @@ impl Project {
             true,
             Some(snapshot),
             published,
+            None,
             &mut |_, _, _, _| {},
         )
     }

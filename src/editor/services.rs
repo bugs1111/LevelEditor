@@ -292,19 +292,24 @@ impl EditorApp {
         }
         if let Some(result) = poll_worker(&mut self.saving) {
             match result {
-                Ok(Ok(saved)) => {
+                Ok(Ok(mut saved)) => {
                     for diagnostic in &saved.report.export_diagnostics {
                         app_log::record(ctx, self.settings.path.as_deref(), diagnostic, true);
                     }
-                    let changed_resources = self.changed_resource_files();
+                    let mut snapshot = saved.report.document_snapshot.take();
+                    if let Some(current) = &mut snapshot {
+                        if let Some(previous) = self.file_snapshot.take() {
+                            current.carry_resource_watches(previous);
+                        }
+                        saved
+                            .project
+                            .refresh_resource_watches(current, &Default::default());
+                    }
                     self.discard_unused_images(&saved.project);
                     self.project = Some(saved.project);
                     self.dirty = false;
                     self.history.clear_modified_levels();
-                    self.file_snapshot = self
-                        .project
-                        .as_ref()
-                        .and_then(|p| p.filesystem_snapshot().ok());
+                    self.file_snapshot = snapshot;
                     let saved_name = self
                         .project
                         .as_ref()
@@ -326,6 +331,7 @@ impl EditorApp {
                     } else {
                         self.save_attempt = None;
                     }
+                    let changed_resources = self.changed_resource_files();
                     if !changed_resources.is_empty() {
                         self.changed_resources(ctx, changed_resources);
                     }
@@ -1131,6 +1137,71 @@ mod creation_tests {
             assert!(app.exporting_progress.is_none());
             assert_eq!(app.status_error, failed);
         }
+    }
+
+    #[test]
+    fn completed_save_detects_external_edits_before_the_result_is_installed() {
+        check_saved_document_watches(false);
+    }
+
+    #[test]
+    fn completed_save_keeps_document_watches_with_unreadable_artwork() {
+        check_saved_document_watches(true);
+    }
+
+    fn check_saved_document_watches(unreadable_artwork: bool) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("Map.ldtk");
+        let artwork = dir.path().join("Atlas.png");
+        std::fs::write(&artwork, b"original artwork").unwrap();
+        let mut project = Project::new();
+        project.add_tileset(&artwork, 16, 16, 16).unwrap();
+        project.set_external_levels(true).unwrap();
+        project.save(&path).unwrap();
+        let external = dir
+            .path()
+            .join(project.external_levels.keys().next().unwrap());
+
+        let ctx = egui::Context::default();
+        let mut app = EditorApp::empty();
+        app.set_project(project);
+        app.project.as_mut().unwrap().json["defaultLevelBgColor"] = "#112233".into();
+        app.dirty = true;
+        app.save_async_at(path.clone(), app.file_snapshot.clone());
+        let saved = app
+            .saving
+            .take()
+            .unwrap()
+            .recv_timeout(std::time::Duration::from_secs(15))
+            .unwrap()
+            .unwrap();
+
+        if unreadable_artwork {
+            std::fs::remove_file(&artwork).unwrap();
+            std::fs::create_dir(&artwork).unwrap();
+        }
+        for document in [&path, &external] {
+            let mut bytes = std::fs::read(document).unwrap();
+            bytes.push(b'\n');
+            std::fs::write(document, bytes).unwrap();
+        }
+        let (sender, receiver) = mpsc::channel();
+        assert!(sender.send(Ok(saved)).is_ok());
+        app.saving = Some(receiver);
+        app.poll_services(&ctx);
+
+        assert!(!app.dirty, "the editor's save did finish");
+        assert_eq!(
+            app.project.as_ref().unwrap().json["defaultLevelBgColor"],
+            "#112233"
+        );
+        let mut changed = vec![path.clone(), external];
+        changed.sort();
+        assert_eq!(app.changed_document_files(), changed);
+        app.clear_save_progress();
+        app.save_document(&ctx, path);
+        assert!(app.saving.is_none());
+        assert_eq!(app.external_changes, Some(changed));
     }
 
     #[test]

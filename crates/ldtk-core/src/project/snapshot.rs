@@ -75,6 +75,15 @@ impl FilesystemSnapshot {
         Ok(())
     }
 
+    /// Preserve existing resource fingerprints while accepting a new document baseline.
+    pub fn carry_resource_watches(&mut self, previous: Self) {
+        for (path, fingerprint) in previous.files {
+            if !previous.documents.contains(&path) && !self.is_document(&path) {
+                self.files.entry(path).or_insert(fingerprint);
+            }
+        }
+    }
+
     /// Check readable resources independently so an unreadable one cannot mask another.
     pub fn changed_resource_files(&self) -> Vec<PathBuf> {
         self.files

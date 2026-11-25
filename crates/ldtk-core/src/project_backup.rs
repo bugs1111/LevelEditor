@@ -598,6 +598,7 @@ impl Project {
         for level in candidate.external_levels.values_mut() {
             rewrite_moved_resources(level, &old_dir, &new_dir, base)?;
         }
+        let mut document_snapshot = FilesystemSnapshot::default();
         let publish = (|| -> Result<()> {
             if old_dir.exists() {
                 copy_tree(&old_dir, &new_dir)?;
@@ -605,7 +606,14 @@ impl Project {
             if old_meta.exists() {
                 copy_tree(&old_meta, &new_meta)?;
             }
-            candidate.save_document(&target, false)
+            candidate.save_document_with_progress(
+                &target,
+                false,
+                None,
+                None,
+                Some(&mut document_snapshot),
+                &mut |_, _, _, _| {},
+            )
         })();
         if let Err(error) = publish {
             let _ = fs::remove_dir_all(&new_dir);
@@ -614,6 +622,7 @@ impl Project {
             return Err(error);
         }
         let mut report = candidate.configured_exports_report();
+        report.document_snapshot = Some(document_snapshot);
         match fs::remove_file(&old) {
             Ok(()) => {
                 if old_dir.exists()
