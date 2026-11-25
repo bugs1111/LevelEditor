@@ -1849,6 +1849,76 @@ fn tiles_png_project() -> Project {
 }
 
 #[test]
+fn png_clips_tiles_at_layer_instance_bounds() {
+    use ldtk_core::exports::{PngExportMode, PngExportOptions};
+
+    let directory = tempfile::tempdir().unwrap();
+    let mut project = tiles_png_project();
+    project.path = Some(directory.path().join("map.ldtk"));
+    let level = project.level_keys()[0];
+    project.layer_mut(level, 0).unwrap()["gridTiles"] = json!([]);
+    let uid = project.json["defs"]["layers"][0]["uid"].as_i64().unwrap();
+    let atlas = project
+        .add_tileset(std::path::Path::new("atlas.png"), 16, 16, 16)
+        .unwrap();
+    project.assign_tileset(uid, atlas).unwrap();
+    let solid = image::Rgba([12, 34, 56, 255]);
+    image::RgbaImage::from_pixel(16, 16, solid)
+        .save(directory.path().join("atlas.png"))
+        .unwrap();
+    let definition = &mut project.json["defs"]["layers"][0];
+    definition["pxOffsetX"] = json!(3);
+    definition["pxOffsetY"] = json!(-2);
+    let layer = project.layer_mut(level, 0).unwrap();
+    layer["pxOffsetX"] = json!(5);
+    layer["pxOffsetY"] = json!(6);
+    layer["__pxTotalOffsetX"] = json!(8);
+    layer["__pxTotalOffsetY"] = json!(4);
+    layer["gridTiles"] = json!([
+        {"px":[0,0], "src":[0,0], "t":0, "f":0, "d":[0]},
+        {"px":[48,32], "src":[0,0], "t":0, "f":3, "d":[11]},
+    ]);
+
+    for mode in [
+        PngExportMode::OneImagePerLevel,
+        PngExportMode::LayersAndLevels,
+    ] {
+        let files = project
+            .export_png_with_options(
+                directory.path().join(format!("{mode:?}")),
+                &PngExportOptions {
+                    mode,
+                    include_background: false,
+                    file_pattern: None,
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            files.len(),
+            if mode == PngExportMode::OneImagePerLevel {
+                1
+            } else {
+                2
+            }
+        );
+        for file in files {
+            let image = image::open(&file).unwrap().into_rgba8();
+            assert_eq!(image.dimensions(), (64, 48));
+            for (x, y, pixel) in image.enumerate_pixels() {
+                let expected = if ((8..24).contains(&x) && (4..20).contains(&y))
+                    || ((56..59).contains(&x) && (36..42).contains(&y))
+                {
+                    solid
+                } else {
+                    image::Rgba([0; 4])
+                };
+                assert_eq!(*pixel, expected, "{file:?} at {x},{y}");
+            }
+        }
+    }
+}
+
+#[test]
 fn png_exports_follow_tileset_switches_and_reload_changed_files() {
     let dir = tempfile::tempdir().unwrap();
     let mut p = tiles_png_project();

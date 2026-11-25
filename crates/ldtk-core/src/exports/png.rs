@@ -48,13 +48,6 @@ pub fn background_image_layout(
     (scale, crop)
 }
 
-fn blend_pixel(target: &mut RgbaImage, x: i64, y: i64, c: Rgba<u8>, alpha: f64) {
-    if x < 0 || y < 0 || x >= target.width() as i64 || y >= target.height() as i64 {
-        return;
-    }
-    blend_rgba(target.get_pixel_mut(x as u32, y as u32), c, alpha);
-}
-
 fn blend_rgba(d: &mut Rgba<u8>, c: Rgba<u8>, alpha: f64) {
     let a = c[3] as f64 / 255.0 * alpha.clamp(0., 1.);
     if a == 0. {
@@ -103,11 +96,8 @@ fn composite(target: &mut RgbaImage, source: &RgbaImage, alpha: f64, premultipli
     }
 }
 
-fn tile_fits(image: &RgbaImage, [x, y]: [i64; 2], size: i64) -> bool {
-    x >= 0
-        && y >= 0
-        && x <= i64::from(image.width()) - size
-        && y <= i64::from(image.height()) - size
+fn tile_fits([width, height]: [i64; 2], [x, y]: [i64; 2], size: i64) -> bool {
+    x >= 0 && y >= 0 && x <= width - size && y <= height - size
 }
 
 fn opaque_atlas_tile(atlas: &RgbaImage, [x, y]: [i64; 2], size: i64) -> bool {
@@ -589,6 +579,12 @@ impl<'a> PngRenderer<'a> {
             Err(error) => return Err(error),
         };
         let size = n(td, "tileGridSize").max(1);
+        // The layer mask uses the instance offset. Tile positions use the total offset.
+        let clip = [(w, "pxOffsetX"), (h, "pxOffsetY")].map(|(extent, field)| {
+            let extent = i64::from(extent);
+            extent.saturating_sub(n(li, field)).clamp(0, extent)
+        });
+        let atlas_extent = [i64::from(atlas.width()), i64::from(atlas.height())];
         let alpha = num(def, "displayOpacity", 1.);
         let ox = n(li, "__pxTotalOffsetX");
         let oy = n(li, "__pxTotalOffsetY");
@@ -626,24 +622,30 @@ impl<'a> PngRenderer<'a> {
             let sy = src[1].as_i64().unwrap_or(0);
             let tile_alpha = alpha * num(t, "a", 1.);
             if tile_alpha >= 1.
-                && tile_fits(&img, [tx, ty], size)
+                && tile_fits(clip, [tx, ty], size)
                 && *opaque.entry([sx, sy]).or_insert_with(|| {
-                    tile_fits(atlas, [sx, sy], size) && opaque_atlas_tile(atlas, [sx, sy], size)
+                    tile_fits(atlas_extent, [sx, sy], size)
+                        && opaque_atlas_tile(atlas, [sx, sy], size)
                 })
             {
                 copy_opaque_tile(&mut img, atlas, [tx, ty], [sx, sy], size, f);
                 continue;
             }
-            for y in 0..size {
-                for x in 0..size {
+            let visible = |origin: i64, extent: i64| {
+                origin.saturating_neg().max(0)..extent.saturating_sub(origin).min(size)
+            };
+            let x_range = visible(tx, clip[0]);
+            if x_range.is_empty() {
+                continue;
+            }
+            for y in visible(ty, clip[1]) {
+                for x in x_range.clone() {
                     let ax = sx + if f & 1 != 0 { size - 1 - x } else { x };
                     let ay = sy + if f & 2 != 0 { size - 1 - y } else { y };
                     if ax >= 0 && ay >= 0 && ax < atlas.width() as i64 && ay < atlas.height() as i64
                     {
-                        blend_pixel(
-                            &mut img,
-                            tx + x,
-                            ty + y,
+                        blend_rgba(
+                            img.get_pixel_mut((tx + x) as u32, (ty + y) as u32),
                             *atlas.get_pixel(ax as u32, ay as u32),
                             tile_alpha,
                         );
