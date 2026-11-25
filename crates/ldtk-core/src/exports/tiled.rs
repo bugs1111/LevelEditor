@@ -423,7 +423,9 @@ impl Project {
                         let (header, layers) = self.tiled_map_xml(l, grid, &gids);
                         let mut parts = Vec::with_capacity(layers.len() + 3);
                         parts.extend([header.as_bytes(), tilesets.as_bytes()]);
-                        parts.extend(layers.iter().map(String::as_bytes));
+                        for layer in &layers {
+                            layer.append_parts(&mut parts);
+                        }
                         parts.push(b"</map>");
                         batch.add_parts(path, &parts)?;
                     }
@@ -457,7 +459,7 @@ impl Project {
         l: &Value,
         grid: i64,
         gids: &BTreeMap<i64, u32>,
-    ) -> (String, Vec<String>) {
+    ) -> (String, Vec<TmxLayer>) {
         let mut layers = Vec::new();
         let mut layer_id = 1;
         let object_id = 1;
@@ -490,7 +492,10 @@ impl Project {
                     layer.push_str("</properties></object>");
                 }
                 layer.push_str("</objectgroup>");
-                layers.push(layer);
+                layers.push(TmxLayer {
+                    text: layer,
+                    ..Default::default()
+                });
                 continue;
             }
             if typ == "IntGrid" {
@@ -498,14 +503,14 @@ impl Project {
                 let cells = arr(&li["intGridCsv"]);
                 let values = intgrid_gids(cells, cw * ch, base);
                 let name = intgrid_name(li);
-                let mut layer = String::new();
+                let mut layer = TmxLayer::default();
                 write_tmx_layer(&mut layer, layer_id, &name, [cw, ch], opacity, values);
                 layers.push(layer);
                 layer_id += 1;
             }
             let area = cw * ch;
             for (name, data) in tiled_tile_layers(li, def, [cw, ch], grid, gids) {
-                let mut layer = String::new();
+                let mut layer = TmxLayer::default();
                 match data {
                     TileStack::Dense(data) => write_tmx_layer(
                         &mut layer,
@@ -516,13 +521,9 @@ impl Project {
                         data.into_iter(),
                     ),
                     TileStack::Sparse(mut data) => {
-                        write_tmx_layer_start(&mut layer, layer_id, &name, [cw, ch], opacity);
-                        let extra_digits: usize =
-                            data.iter().map(|&(_, gid)| gid.ilog10() as usize).sum();
-                        // Every cell contributes a digit and a separator before trimming.
-                        layer.reserve_exact(area * 2 + extra_digits + "</data></layer>".len());
+                        write_tmx_layer_start(&mut layer.text, layer_id, &name, [cw, ch], opacity);
                         write_sparse_stack(&mut layer, &mut data, area);
-                        layer.push_str("</data></layer>");
+                        layer.text.push_str("</data></layer>");
                     }
                 }
                 layers.push(layer);
@@ -713,17 +714,59 @@ fn tiled_tile_layers<'a>(
         })
 }
 
+const EMPTY_TILE_BLOCK_BYTES: usize = 64 * 1024;
+static EMPTY_TILE_BLOCK: LazyLock<String> =
+    LazyLock::new(|| "0,".repeat(EMPTY_TILE_BLOCK_BYTES / 2));
+
+#[derive(Default)]
+struct TmxLayer {
+    text: String,
+    // Insertion offsets in the layer text and byte lengths of long empty runs.
+    empty_runs: Vec<(usize, usize)>,
+}
+
+impl TmxLayer {
+    fn push_empty_tiles(&mut self, count: usize, trailing_comma: bool) {
+        if count == 0 {
+            return;
+        }
+        let bytes = count * 2 - usize::from(!trailing_comma);
+        if count >= 4096 {
+            self.empty_runs.push((self.text.len(), bytes));
+        } else {
+            self.text.push_str(&EMPTY_TILE_BLOCK[..bytes]);
+        }
+    }
+
+    fn append_parts<'a>(&'a self, parts: &mut Vec<&'a [u8]>) {
+        let text = self.text.as_bytes();
+        let mut start = 0;
+        for &(offset, bytes) in &self.empty_runs {
+            parts.push(&text[start..offset]);
+            let block = EMPTY_TILE_BLOCK.as_bytes();
+            parts.extend(std::iter::repeat_n(block, bytes / block.len()));
+            let tail = bytes % block.len();
+            if tail != 0 {
+                parts.push(&block[..tail]);
+            }
+            start = offset;
+        }
+        parts.push(&text[start..]);
+    }
+}
+
 fn write_tmx_layer(
-    out: &mut String,
+    out: &mut TmxLayer,
     id: i32,
     name: &str,
     size: [usize; 2],
     opacity: f64,
     data: impl Iterator<Item = u32>,
 ) {
-    write_tmx_layer_start(out, id, name, size, opacity);
-    let start = out.len();
-    out.reserve_exact(size[0] * size[1] * 2 + "</data></layer>".len());
+    write_tmx_layer_start(&mut out.text, id, name, size, opacity);
+    let start = out.text.len();
+    let reserve = (size[0] * size[1] * 2).min(EMPTY_TILE_BLOCK_BYTES);
+    out.text.reserve_exact(reserve + "</data></layer>".len());
     let numbers = &*CSV_BYTE_TEXT;
     let mut empty = 0;
     for value in data {
@@ -732,21 +775,20 @@ fn write_tmx_layer(
             continue;
         }
         if empty > 0 {
-            write_empty_tiles(out, std::mem::take(&mut empty));
+            out.push_empty_tiles(std::mem::take(&mut empty), true);
         }
         if let Some(text) = numbers.get(value as usize) {
-            out.push_str(text);
+            out.text.push_str(text);
         } else {
-            write!(out, "{value},").expect("writing to a String is infallible");
+            write!(out.text, "{value},").expect("writing to a String is infallible");
         }
     }
     if empty > 0 {
-        write_empty_tiles(out, empty);
+        out.push_empty_tiles(empty, false);
+    } else if out.text.len() > start {
+        out.text.pop();
     }
-    if out.len() > start {
-        out.pop();
-    }
-    out.push_str("</data></layer>");
+    out.text.push_str("</data></layer>");
 }
 
 fn write_tmx_layer_start(out: &mut String, id: i32, name: &str, [w, h]: [usize; 2], opacity: f64) {
@@ -788,26 +830,17 @@ impl TileStack {
     }
 }
 
-fn write_sparse_stack(out: &mut String, cells: &mut [(usize, u32)], area: usize) {
+fn write_sparse_stack(out: &mut TmxLayer, cells: &mut [(usize, u32)], area: usize) {
     cells.sort_unstable_by_key(|&(coord, _)| coord);
     let mut cursor = 0;
     for &(coord, gid) in cells.iter() {
-        write_empty_tiles(out, coord - cursor);
-        write!(out, "{gid},").expect("writing to a String is infallible");
+        out.push_empty_tiles(coord - cursor, true);
+        write!(out.text, "{gid},").expect("writing to a String is infallible");
         cursor = coord + 1;
     }
-    write_empty_tiles(out, area - cursor);
-    if area != 0 {
-        out.pop();
+    if cursor < area {
+        out.push_empty_tiles(area - cursor, false);
+    } else if area != 0 {
+        out.text.pop();
     }
-}
-
-fn write_empty_tiles(out: &mut String, mut count: usize) {
-    const CHUNK: usize = 4096;
-    static EMPTY: LazyLock<String> = LazyLock::new(|| "0,".repeat(CHUNK));
-    while count >= CHUNK {
-        out.push_str(&EMPTY);
-        count -= CHUNK;
-    }
-    out.push_str(&EMPTY[..count * 2]);
 }

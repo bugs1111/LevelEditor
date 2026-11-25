@@ -1079,6 +1079,67 @@ fn benchmark_deep_tiled_stacks_export() {
 }
 
 #[test]
+fn sparse_tmx_preserves_csv_boundaries_and_does_not_replace_identical_output() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut project = Project::new();
+    let key = project.level_keys()[0];
+    let (width, height) = (128, 512);
+    let area = width * height;
+    project
+        .resize_level(key, width * 16, height * 16, 0, 0)
+        .unwrap();
+    let ground = project.add_layer("Ground", "Tiles", 16).unwrap();
+    let atlas = project
+        .add_tileset(std::path::Path::new("atlas.png"), 16, 32, 16)
+        .unwrap();
+    project.assign_tileset(ground, atlas).unwrap();
+    let tile = |index, id| json!({"px":[index % width * 16,index / width * 16],"t":id});
+    project.layer_mut(key, 0).unwrap()["gridTiles"] = json!([
+        tile(4096, 0),
+        tile(area - 2, 0),
+        tile(area - 1, 0),
+        tile(4096, 1),
+        tile(area - 2, 1),
+        tile(area - 1, 1),
+        tile(4096, 0),
+        tile(area - 2, 0)
+    ]);
+    let output = dir.path().join("tiled");
+    let files = project.export_tiled(&output).unwrap();
+    let path = output.join("Level_0.tmx");
+    let xml = fs::read_to_string(&path).unwrap();
+    assert!(xml.contains("nextlayerid=\"4\""));
+    let layers: Vec<_> = xml
+        .split("<data encoding=\"csv\">")
+        .skip(1)
+        .map(|data| data.split_once("</data>").unwrap().0)
+        .collect();
+    assert_eq!(layers.len(), 3);
+    for (layer, data) in layers.into_iter().enumerate() {
+        assert!(
+            data.split(',')
+                .eq((0..area).map(|index| match (layer, index) {
+                    (0 | 2, 4096) => "1",
+                    (1, 4096) => "2",
+                    (0 | 2, i) if i == area - 2 => "1",
+                    (0, i) if i == area - 1 => "1",
+                    (1, i) if i >= area - 2 => "2",
+                    _ => "0",
+                }))
+        );
+    }
+    let earlier = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(946_684_800);
+    fs::File::options()
+        .write(true)
+        .open(&path)
+        .unwrap()
+        .set_modified(earlier)
+        .unwrap();
+    assert_eq!(project.export_tiled(&output).unwrap(), files);
+    assert_eq!(fs::metadata(path).unwrap().modified().unwrap(), earlier);
+}
+
+#[test]
 fn csv_and_simplified_preserve_source_schema_and_byte_csv() {
     let p = project();
     let t = tempfile::tempdir().unwrap();
