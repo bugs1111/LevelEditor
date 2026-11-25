@@ -93,7 +93,12 @@ class ReleasePackageTests(unittest.TestCase):
         self.assertEqual(set(manifest["targets"]), release.TARGETS)
         self.assertEqual({entry["asset"] for entry in manifest["targets"].values()},
                          {path.name for path in output.glob("level-editor-v*.zip")})
-        self.assertEqual(list(output.glob("ldtk-rs-*")), [])
+        self.assertEqual(
+            {path.name for path in output.iterdir() if path.is_file()},
+            {"level-editor-updates.json"}
+            | {f"target-{target}.json" for target in release.TARGETS}
+            | {release.archive_name(target) for target in release.TARGETS},
+        )
 
     def test_universal_bundle_accepts_only_architectures_in_its_slices(self):
         executable = self.make_bundle()

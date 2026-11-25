@@ -9,7 +9,7 @@
 - Mac 本地分支 `rust-port` 跟踪 `origin/main`；交接核对时 HEAD 和本地 `origin/main` 都指向上述提交。没有为本交接查询远端服务器的更新状态。
 - `22e2aa8` 包含前面的 UI 修正；`d80d33d` 又包含最新 Home 搜索框修正。不要只拿到 `22e2aa8` 就开始比较搜索框。
 - 源码工作区已核对干净；本交接文档是随后新增的文件，尚未提交或推送。带上另附的 ZIP，避免 Linux 只拉源码而漏掉交接文档及本地证据。
-- 应用显示名是 **LevelEditor**；Rust crate／可执行文件仍叫 `ldtk-rs`，配置目录和更新包内部标识为兼容旧安装而保留旧命名。
+- 当前应用显示名是 **Level Editor**，Rust crate 和可执行文件名为 `level-editor`。此交接中的构建与测试命令已同步使用当前名称。
 
 全 Rust 原生桌面程序：`eframe/egui + wgpu + ldtk-core`，不依赖 Electron、WebView 或 Haxe 运行时。参考源码只用于对照／语料测试。
 
@@ -71,8 +71,8 @@ Rust 工具链按主机架构安装到当前用户的 `~/.cargo` 和 `~/.rustup`
 `just build -t win|mac|linux -m debug|release` 是用户要求的 **Mac 主机交叉编译入口**，脚本明确拒绝 Linux 主机。在 Linux 上原生构建用：
 
 ```sh
-scripts/cargo build --bin ldtk-rs --locked
-scripts/cargo build --release --bin ldtk-rs --locked
+scripts/cargo build --bin level-editor --locked
+scripts/cargo build --release --bin level-editor --locked
 ```
 
 ## 4. 已完成且应保留的行为
@@ -91,7 +91,7 @@ scripts/cargo build --release --bin ldtk-rs --locked
 | Home | 示例关闭按钮、顶排按钮宽度与对齐、卡片／滚动条、搜索与最近列表间距、最近列表行高与整行菜单按钮、路径分段及末级目录粗体、缺失路径样式已修正。 |
 | 最新搜索框 | `d80d33d`：灰色 `Search...`、白色输入与光标、16px 圆角、1px 描边、聚焦黄色边线及 4px 橙色光晕；图标／文字偏移计入边框。筛选测试通过。仅改 Home 局部样式。 |
 
-产品显示名称已改为 LevelEditor。macOS 本地打包输出为 `dist/LevelEditor.app`；自动更新 ZIP 内部仍保留旧 `LDtk Rust.app` 根路径，因为已安装旧更新器只接受该格式。不要仅为了清理旧命名就破坏兼容性；ARM／Intel 打包回归已覆盖。
+当前 macOS 本地打包输出为 `dist/Level Editor.app`。发布 ZIP 的应用包路径也采用当前名称。旧版用户的一次性手动更新步骤见 [发布与更新](../../README.md#发布与更新)。
 
 Linux 字体需要单独核对：Mac 使用系统 Arial／Arial Bold；Linux 找不到 `src/theme.rs` 指定的 Arial 文件时会回退内置 RobotoCondensed，字宽和换行可能不同。中文与符号字体也使用各平台可用回退。先确认加载的字体及 DPI，再调整布局，不要靠随意改字号掩盖字体差异。
 
@@ -161,9 +161,9 @@ xvfb-run -a -s '-screen 0 1600x1000x24' \
 三项 GPU 测试单独执行，每条必须确实执行 1 项、0 failed、0 ignored：
 
 ```sh
-scripts/cargo test --bin ldtk-rs --locked canvas::blur::gpu_tests::gaussian_composites_original_layer_then_blurs_on_gpu -- --ignored --exact --nocapture --test-threads=1
-scripts/cargo test --bin ldtk-rs --locked canvas::outline::tests::field_outline_uses_two_sixty_sample_passes_and_reuses_cached_flow -- --ignored --exact --nocapture --test-threads=1
-scripts/cargo test --bin ldtk-rs --locked app::gpu_surface_tests::surface_error_submits_pending_uploads_without_a_present -- --ignored --exact --nocapture --test-threads=1
+scripts/cargo test --bin level-editor --locked canvas::blur::gpu_tests::gaussian_composites_original_layer_then_blurs_on_gpu -- --ignored --exact --nocapture --test-threads=1
+scripts/cargo test --bin level-editor --locked canvas::outline::tests::field_outline_uses_two_sixty_sample_passes_and_reuses_cached_flow -- --ignored --exact --nocapture --test-threads=1
+scripts/cargo test --bin level-editor --locked app::gpu_surface_tests::surface_error_submits_pending_uploads_without_a_present -- --ignored --exact --nocapture --test-threads=1
 ```
 
 ## 8. Home 高内存修复与验收边界

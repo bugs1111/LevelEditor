@@ -20,8 +20,8 @@
 复现最终渲染检查：
 
 ```sh
-scripts/cargo test --release --bin ldtk-rs canvas:: --locked --offline -- --ignored --nocapture --test-threads=1
-scripts/cargo build --release --bin ldtk-rs --example native_smoke --locked --offline
+scripts/cargo test --release --bin level-editor canvas:: --locked --offline -- --ignored --nocapture --test-threads=1
+scripts/cargo build --release --bin level-editor --example native_smoke --locked --offline
 scripts/package-macos
 scripts/verify-macos-bundle
 ```

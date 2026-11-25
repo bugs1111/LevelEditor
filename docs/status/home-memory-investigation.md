@@ -27,7 +27,7 @@ The later `vmmap -summary` snapshot reported a 2.7 GiB physical footprint, inclu
 
 ## Controls and their limits
 
-An actual release `ldtk-rs` process, without the harness's continuous repaint request, measured 197,024 KiB at 3 s and 197,104 KiB at 7 s. Its graphics snapshot contained 4,528 KiB of `IOAccelerator (graphics)` memory and seven `IOSurface` regions. This process was inspected through `ps`/`vmmap`; its OS window was not captured, so it is not a visual acceptance result. Logs: `.tools/home-rss-idle-samples.json`, `.tools/home-rss-idle-vmmap.log`.
+An actual release `level-editor` process, without the harness's continuous repaint request, measured 197,024 KiB at 3 s and 197,104 KiB at 7 s. Its graphics snapshot contained 4,528 KiB of `IOAccelerator (graphics)` memory and seven `IOSurface` regions. This process was inspected through `ps`/`vmmap`; its OS window was not captured, so it is not a visual acceptance result. Logs: `.tools/home-rss-idle-samples.json`, `.tools/home-rss-idle-vmmap.log`.
 
 A temporary copy of the full native harness used the actual Cargo dependency/features and `app::native_gpu_config`, with optional blank-UI and GPU-wait branches. Its dependency fingerprints matched the original for eframe, wgpu, egui_extras, and objc2. During these later approximately 120-update/s runs, normal Home captured at 257,424 KiB, blank UI at 177,632 KiB, and Home with GPU wait at 238,128 KiB. All three were already in the lower-memory regime; this does **not** establish GPU wait as a remedy for the earlier regime. Logs: `.tools/home-rss-exact-{app,blank,wait}.log`; samples: `.tools/home-rss-exact-results.json`. Temporary probe resources used a symlinked manifest root, producing one recent-folder tint difference; the byte-identical original/copy controls avoid that build difference.
 
@@ -53,7 +53,7 @@ ps -p PID -o rss=,vsz=,etime=
 vmmap -summary PID
 ```
 
-The byte-identical control was copied with Python `shutil.copy2` to `/private/tmp/ldtk-rss-renamed/original/native_smoke`, then launched with the same environment and working directory. Hashes and paths are recorded in `.tools/home-rss-path-recheck-results.json`.
+Using the current product name in the example path, the byte-identical control was copied with Python `shutil.copy2` to `/private/tmp/level-editor-rss-renamed/original/native_smoke`, then launched with the same environment and working directory. Hashes and paths are recorded in `.tools/home-rss-path-recheck-results.json`.
 
 The own-PID helper was built and invoked as follows; `activate` first unhides the target, then requests activation. The recorded `isActive` result, rather than the request alone, determines whether activation succeeded.
 
@@ -105,7 +105,7 @@ The production change is limited to `app::native_gpu_config` and the existing ca
 The regression `app::gpu_surface_tests::surface_error_submits_pending_uploads_without_a_present` performs actual GPU readback through the production error callback. It failed before the fix with `[0,0,0,0]` instead of the queued `[1,2,3,4]`, and passed after the fix. Polling without submission did not make the failing test pass. The default SkipFrame result is asserted. Run explicitly with a GPU:
 
 ```sh
-scripts/cargo test --bin ldtk-rs gpu_surface_tests::surface_error_submits_pending_uploads_without_a_present \
+scripts/cargo test --bin level-editor gpu_surface_tests::surface_error_submits_pending_uploads_without_a_present \
   --locked -- --ignored --nocapture --test-threads=1
 ```
 

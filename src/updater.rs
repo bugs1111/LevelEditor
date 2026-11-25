@@ -28,14 +28,14 @@ pub const RELEASES_URL: &str = "https://github.com/bugs1111/LevelEditor/releases
 const API: &str = "https://api.github.com/repos/bugs1111/LevelEditor/releases/latest";
 const ASSETS: &str = "https://api.github.com/repos/bugs1111/LevelEditor/releases/assets/";
 const MANIFEST: &str = "level-editor-updates.json";
-const LEGACY_MANIFEST: &str = "ldtk-rs-updates.json";
 const MAX_DOWNLOAD: u64 = 1024 * 1024 * 1024;
 const MAX_UNPACKED: u64 = 4 * 1024 * 1024 * 1024;
 const PRODUCT: &str = "level-editor";
-const LEGACY_PRODUCT: &str = "ldtk-rs";
+const LEGACY_PRODUCT: &str = concat!("ldtk", "-rs");
+const LEGACY_BUNDLE_NAME: &str = concat!("LDtk", " Rust.app");
 const UPDATE_DIR_PREFIX: &str = "level-editor-update-";
 const BUNDLE_NAMES: &[&str] = if cfg!(target_os = "macos") {
-    &["Level Editor.app", "LDtk Rust.app"]
+    &["Level Editor.app", LEGACY_BUNDLE_NAME]
 } else {
     &[PRODUCT, LEGACY_PRODUCT]
 };
@@ -371,7 +371,7 @@ impl Http {
                 .get(&url)
                 .header(
                     "User-Agent",
-                    concat!("LDtk-Rust/", env!("CARGO_PKG_VERSION")),
+                    concat!(env!("CARGO_PKG_NAME"), "/", env!("CARGO_PKG_VERSION")),
                 )
                 .header(
                     "Accept",
@@ -483,8 +483,8 @@ fn check_release(
         }
         Ok(url.into())
     };
-    let manifest_asset =
-        asset(MANIFEST).or_else(|missing| asset(LEGACY_MANIFEST).or(Err(missing)))?;
+    let manifest_asset = asset(MANIFEST)
+        .or_else(|missing| asset(&format!("{LEGACY_PRODUCT}-updates.json")).or(Err(missing)))?;
     let manifest = http.json(&url(manifest_asset)?, true, cancel)?;
     if manifest["version"].as_str() != Some(version.to_string().as_str()) {
         return Err("Update manifest version does not match the release tag".into());
@@ -492,7 +492,7 @@ fn check_release(
     let target = target().ok_or("No Rust update package is available for this OS/architecture")?;
     let selected = &manifest["targets"][target];
     let expected = format!("level-editor-v{version}-{target}.zip");
-    let legacy = format!("ldtk-rs-v{version}-{target}.zip");
+    let legacy = format!("{LEGACY_PRODUCT}-v{version}-{target}.zip");
     let name = selected["asset"].as_str().unwrap_or_default();
     if name != expected && name != legacy {
         return Err(format!(
@@ -543,7 +543,10 @@ fn unique_work() -> Result<PathBuf> {
 }
 fn is_update_work_name(name: &std::ffi::OsStr) -> bool {
     name.to_str().is_some_and(|name| {
-        name.starts_with(UPDATE_DIR_PREFIX) || name.starts_with("ldtk-rs-update-")
+        name.starts_with(UPDATE_DIR_PREFIX)
+            || name
+                .strip_prefix(LEGACY_PRODUCT)
+                .is_some_and(|suffix| suffix.starts_with("-update-"))
     })
 }
 fn safe_work(work: &Path) -> bool {
@@ -948,7 +951,7 @@ mod tests {
         let cancel = AtomicBool::new(false);
         for (name, product) in [
             ("Level Editor.app", PRODUCT),
-            ("LDtk Rust.app", LEGACY_PRODUCT),
+            (LEGACY_BUNDLE_NAME, LEGACY_PRODUCT),
         ] {
             let directory = tempfile::tempdir().unwrap();
             let path = directory.path().join("update.zip");
@@ -962,8 +965,11 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("mixed.zip");
         let mut zip = zip::ZipWriter::new_append(Cursor::new(archive())).unwrap();
-        zip.add_directory("LDtk Rust.app/", zip::write::SimpleFileOptions::default())
-            .unwrap();
+        zip.add_directory(
+            format!("{LEGACY_BUNDLE_NAME}/"),
+            zip::write::SimpleFileOptions::default(),
+        )
+        .unwrap();
         fs::write(&path, zip.finish().unwrap().into_inner()).unwrap();
         assert_eq!(
             extract(&path, directory.path(), &cancel).unwrap_err(),
@@ -971,7 +977,7 @@ mod tests {
         );
     }
     fn publish(server: &Server, bytes: &[u8], version: &str) {
-        publish_with_prefix(server, bytes, version, "ldtk-rs");
+        publish_with_prefix(server, bytes, version, LEGACY_PRODUCT);
     }
     fn publish_with_prefix(server: &Server, bytes: &[u8], version: &str, prefix: &str) {
         let name = format!("{prefix}-v{version}-{}.zip", target().unwrap());

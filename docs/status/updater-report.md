@@ -6,7 +6,7 @@ The native flow follows the original `App.hx` update entry: background check, av
 
 ## Release contract
 
-New releases publish `level-editor-updates.json`. The updater also reads `ldtk-rs-updates.json` from older releases.
+New releases publish `level-editor-updates.json`. The updater also recognizes the manifest name used by earlier releases.
 
 ```json
 {
@@ -21,7 +21,7 @@ New releases publish `level-editor-updates.json`. The updater also reads `ldtk-r
 }
 ```
 
-Other supported target keys are `x86_64-apple-darwin`, `x86_64-pc-windows-msvc` and `x86_64-unknown-linux-gnu`. macOS ZIPs contain `LDtk Rust.app/`; Windows/Linux ZIPs contain `ldtk-rs/`. A packaged installation contains `{"product":"ldtk-rs","layout":1}` in `Contents/Resources/ldtk-rs-install.json` on macOS or `ldtk-rs-install.json` beside the other platforms' executable. Development/cargo binaries cannot replace their enclosing build directory.
+Other supported target keys are `x86_64-apple-darwin`, `x86_64-pc-windows-msvc` and `x86_64-unknown-linux-gnu`. macOS ZIPs contain `Level Editor.app/`. Windows and Linux ZIPs contain `level-editor/`. A packaged installation contains `{"product":"level-editor","layout":1}` in `Contents/Resources/level-editor-install.json` on macOS or `level-editor-install.json` beside the other platforms' executable. Development/cargo binaries cannot replace their enclosing build directory.
 
 GitHub's asset API URL with `Accept: application/octet-stream` supports private downloads. Authentication is read from `GH_TOKEN`/`GITHUB_TOKEN` or a password-masked session input. Tokens are not embedded, saved to settings, included in an install plan or printed to logs. Redirects are followed explicitly with automatic redirects disabled; Authorization is attached only to the original API origin and is dropped for object-storage redirects.
 

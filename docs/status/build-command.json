@@ -1,4 +1,5 @@
 {
+  "naming_note": "Paths, commands, and asset names use the current product name. Measurements and checksums describe the historical artifacts.",
   "date": "2026-11-17",
   "timezone": "Asia/Shanghai",
   "host": "aarch64-apple-darwin",
@@ -24,7 +25,7 @@
         "debug"
       ],
       "log": ".tools/app-settings-native/mac-debug-build.log",
-      "binary": "dist/mac/debug/ldtk-rs",
+      "binary": "dist/mac/debug/level-editor",
       "size": 107438392,
       "sha256": "f6af240a7fbfbab40373f68c542a3af7aa7ef800d128680a4c846fe45a800f8b",
       "format": "Mach-O 64-bit executable arm64",
@@ -44,7 +45,7 @@
         "release"
       ],
       "log": ".tools/app-settings-native/mac-release-build.log",
-      "binary": "dist/mac/release/ldtk-rs",
+      "binary": "dist/mac/release/level-editor",
       "size": 24551872,
       "sha256": "a97df137156582c024ed0ead2da18e52e041d428e27eae72e889267779fe7ef0",
       "format": "Mach-O 64-bit executable arm64",
@@ -64,7 +65,7 @@
         "debug"
       ],
       "log": ".tools/app-settings-native/win-debug-build.log",
-      "binary": "dist/win/debug/ldtk-rs.exe",
+      "binary": "dist/win/debug/level-editor.exe",
       "size": 450027609,
       "sha256": "d2a44fa91a8af773bda62ca6f92b42cfa6ed80a733af47359a5ad9fe21dc8cf5",
       "format": "PE32+ executable (console) x86-64, for MS Windows",
@@ -125,7 +126,7 @@
         "release"
       ],
       "log": ".tools/app-settings-native/win-release-build.log",
-      "binary": "dist/win/release/ldtk-rs.exe",
+      "binary": "dist/win/release/level-editor.exe",
       "size": 26764435,
       "sha256": "9ebc8591502bc2737aa7a47a22d9089fc841197ef5001e475e8b251001d645b3",
       "format": "PE32+ executable (console) x86-64 (stripped to external PDB), for MS Windows",
@@ -181,7 +182,7 @@
         "debug"
       ],
       "log": ".tools/app-settings-native/linux-debug-build.log",
-      "binary": "dist/linux/debug/ldtk-rs",
+      "binary": "dist/linux/debug/level-editor",
       "size": 482937600,
       "sha256": "8e57a789ad4b7d211c60cc112c00d21a4000bc1a14d80f3c6fe390492c8b824b",
       "format": "ELF 64-bit LSB pie executable, x86-64, version 1 (SYSV), dynamically linked, interpreter /lib64/ld-linux-x86-64.so.2, for GNU/Linux 2.0.0, with debug_info, not stripped",
@@ -209,7 +210,7 @@
         "release"
       ],
       "log": ".tools/app-settings-native/linux-release-build.log",
-      "binary": "dist/linux/release/ldtk-rs",
+      "binary": "dist/linux/release/level-editor",
       "size": 29196792,
       "sha256": "b09e47711c1f3f4444a53b343466750c45c15443c0fb54f1c9ff3f5d2ff8b0ba",
       "format": "ELF 64-bit LSB pie executable, x86-64, version 1 (SYSV), dynamically linked, interpreter /lib64/ld-linux-x86-64.so.2, for GNU/Linux 2.0.0, stripped",

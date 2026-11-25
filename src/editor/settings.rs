@@ -23,31 +23,49 @@ impl Default for Settings {
 }
 impl Settings {
     pub fn load() -> Self {
-        let root = std::env::var_os("LDTK_CONFIG_DIR")
-            .map(PathBuf::from)
-            .or_else(|| {
-                let legacy = std::env::var_os("HOME").map(|home| {
-                    let home = PathBuf::from(home);
-                    if cfg!(target_os = "macos") {
-                        home.join("Library/Application Support/LDtk Rust")
-                    } else {
-                        home.join(".config/ldtk-rust")
-                    }
-                });
-                if cfg!(windows)
-                    && !legacy
-                        .as_ref()
-                        .is_some_and(|p| p.join("settings.json").is_file())
-                    && let Some(appdata) = std::env::var_os("APPDATA")
-                {
-                    return Some(PathBuf::from(appdata).join("LDtk Rust"));
-                }
-                legacy
-            });
-        Self::load_at(root.map(|p| p.join("settings.json")))
+        if let Some(root) = std::env::var_os("LDTK_CONFIG_DIR") {
+            return Self::load_at(Some(PathBuf::from(root).join("settings.json")));
+        }
+        let home = std::env::var_os("HOME").map(PathBuf::from);
+        let appdata = std::env::var_os("APPDATA").map(PathBuf::from);
+        Self::load_default(home.as_deref(), appdata.as_deref())
+    }
+
+    fn load_default(home: Option<&Path>, appdata: Option<&Path>) -> Self {
+        const PREVIOUS_TITLE: &str = concat!("LDtk", " Rust");
+        const PREVIOUS_SLUG: &str = concat!("ldtk", "-rust");
+        let mac = cfg!(target_os = "macos");
+        let home_config = home.map(|path| {
+            path.join(if mac {
+                "Library/Application Support"
+            } else {
+                ".config"
+            })
+        });
+        let appdata = appdata.filter(|_| cfg!(windows));
+        let current = appdata
+            .or(home_config.as_deref())
+            .map(|root| root.join("level-editor/settings.json"));
+        let home_previous = home_config.as_ref().map(|root| {
+            root.join(if mac { PREVIOUS_TITLE } else { PREVIOUS_SLUG })
+                .join("settings.json")
+        });
+        // Earlier Windows installations prefer the home profile when it exists.
+        let previous = if let Some(appdata) = appdata
+            && !home_previous.as_deref().is_some_and(Path::is_file)
+        {
+            Some(appdata.join(PREVIOUS_TITLE).join("settings.json"))
+        } else {
+            home_previous
+        };
+        Self::load_with_fallback(current, previous.as_deref())
     }
 
     pub(super) fn load_at(path: Option<PathBuf>) -> Self {
+        Self::load_with_fallback(path, None)
+    }
+
+    fn load_with_fallback(path: Option<PathBuf>, previous: Option<&Path>) -> Self {
         let mut settings = Self {
             path,
             ..Self::default()
@@ -55,7 +73,15 @@ impl Settings {
         // A fresh profile follows the desktop. The saved value can override it below.
         settings.value["language"] = "system".into();
         if let Some(path) = &settings.path
-            && let Ok(bytes) = std::fs::read(path)
+            && let Ok(bytes) = std::fs::read(path).or_else(|error| {
+                if error.kind() == std::io::ErrorKind::NotFound
+                    && let Some(previous) = previous
+                {
+                    std::fs::read(previous)
+                } else {
+                    Err(error)
+                }
+            })
             && let Ok(value) = serde_json::from_slice::<Value>(&bytes)
             && let Some(object) = value.as_object()
         {
@@ -262,6 +288,42 @@ impl Settings {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn default_settings_load_the_previous_profile_and_save_under_level_editor() {
+        let directory = tempfile::tempdir().unwrap();
+        let home = directory.path().join("home");
+        let appdata = directory.path().join("appdata");
+        let config = if cfg!(target_os = "macos") {
+            home.join("Library/Application Support")
+        } else if cfg!(windows) {
+            appdata.clone()
+        } else {
+            home.join(".config")
+        };
+        let previous = config.join(if cfg!(any(target_os = "macos", windows)) {
+            concat!("LDtk", " Rust")
+        } else {
+            concat!("ldtk", "-rust")
+        });
+        let current = config.join("level-editor/settings.json");
+        std::fs::create_dir_all(&previous).unwrap();
+        let previous = previous.join("settings.json");
+        let original = br#"{"language":"zh-CN","grid":false,"recentProjects":["map.ldtk"]}"#;
+        std::fs::write(&previous, original).unwrap();
+
+        let mut settings = Settings::load_default(Some(&home), Some(&appdata));
+        assert_eq!(settings.path.as_deref(), Some(current.as_path()));
+        assert_eq!(settings.value["language"], "zh-CN");
+        assert_eq!(settings.value["recentProjects"], json!(["map.ldtk"]));
+        assert!(!settings.bool("grid"));
+        settings.value["grid"] = true.into();
+        settings.save().unwrap();
+        assert!(current.is_file());
+        assert_eq!(std::fs::read(previous).unwrap(), original);
+        assert!(Settings::load_default(Some(&home), Some(&appdata)).bool("grid"));
+    }
+
     #[test]
     fn settings_default_to_system_language_and_preserve_explicit_preferences() {
         use crate::app::locale::Language;
