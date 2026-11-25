@@ -2752,6 +2752,17 @@ impl Project {
         let simple = dir.join("simplified");
         let png = dir.join("png");
         let tiled = dir.join("tiled");
+        let referenced_files = OnceCell::new();
+        let is_referenced = |path: &Path| {
+            referenced_files
+                .get_or_init(|| self.resource_watch_paths().map(ExportFilesToKeep::new))
+                .as_ref()
+                .map(|files| files.contains(path))
+                .map_err(|error| Error::Invalid(error.to_string()))
+        };
+        let collect = |report: &mut SaveReport, dir: &Path, extensions: &[&str], result| {
+            collect_configured_export(report, dir, extensions, result, &is_referenced)
+        };
         let wrap = |result: Result<Vec<PathBuf>>| {
             result.map(|outputs| crate::exports::ExportReport {
                 outputs,
@@ -2764,13 +2775,8 @@ impl Project {
                 |done, total| progress(SaveStage::ExportSimplified, done, total),
                 &mut report.export_diagnostics,
             );
-            if collect_configured_export(
-                &mut report,
-                &simple,
-                &["json", "csv", "png"],
-                wrap(outputs),
-            ) {
-                collect_configured_export(&mut report, &png, &["png"], wrap(Ok(vec![])));
+            if collect(&mut report, &simple, &["json", "csv", "png"], wrap(outputs)) {
+                collect(&mut report, &png, &["png"], wrap(Ok(vec![])));
             }
         } else {
             let outputs = if self.json["imageExportMode"]
@@ -2785,8 +2791,8 @@ impl Project {
             } else {
                 Ok(vec![])
             };
-            if collect_configured_export(&mut report, &png, &["png"], wrap(outputs)) {
-                collect_configured_export(
+            if collect(&mut report, &png, &["png"], wrap(outputs)) {
+                collect(
                     &mut report,
                     &simple,
                     &["json", "csv", "png"],
@@ -2801,8 +2807,8 @@ impl Project {
         } else {
             wrap(Ok(vec![]))
         };
-        collect_configured_export(&mut report, &tiled, &["tmx", "world", "png"], output);
-        collect_configured_export(&mut report, &dir.join("gms2"), &["yy"], wrap(Ok(vec![])));
+        collect(&mut report, &tiled, &["tmx", "world", "png"], output);
+        collect(&mut report, &dir.join("gms2"), &["yy"], wrap(Ok(vec![])));
         report
     }
     /// Convert external level storage without changing any document values.
@@ -2940,10 +2946,12 @@ fn collect_configured_export(
     dir: &Path,
     extensions: &[&str],
     result: Result<crate::exports::ExportReport>,
+    is_referenced: &impl Fn(&Path) -> Result<bool>,
 ) -> bool {
     match result {
         Ok(output) => {
-            if let Err(error) = prune_managed_exports(dir, &output.outputs, extensions) {
+            let keep = ExportFilesToKeep::new(output.outputs.iter().cloned());
+            if let Err(error) = prune_export_directory(dir, &keep, extensions, is_referenced) {
                 report.export_errors.push(error.to_string());
             }
             report.outputs.extend(output.outputs);
@@ -2957,14 +2965,21 @@ fn collect_configured_export(
     }
 }
 #[derive(Default)]
-struct ExportFilesToKeep<'a> {
-    paths: HashSet<&'a Path>,
+struct ExportFilesToKeep {
+    paths: HashSet<PathBuf>,
     canonical_paths: OnceCell<HashSet<PathBuf>>,
     #[cfg(unix)]
     file_ids: OnceCell<HashSet<(u64, u64)>>,
 }
 
-impl ExportFilesToKeep<'_> {
+impl ExportFilesToKeep {
+    fn new(paths: impl IntoIterator<Item = PathBuf>) -> Self {
+        Self {
+            paths: paths.into_iter().collect(),
+            ..Default::default()
+        }
+    }
+
     fn contains(&self, path: &Path) -> bool {
         if self.paths.contains(path) {
             return true;
@@ -2999,18 +3014,11 @@ impl ExportFilesToKeep<'_> {
     }
 }
 
-fn prune_managed_exports(dir: &Path, keep: &[PathBuf], extensions: &[&str]) -> Result<()> {
-    let keep = ExportFilesToKeep {
-        paths: keep.iter().map(PathBuf::as_path).collect(),
-        ..Default::default()
-    };
-    prune_export_directory(dir, &keep, extensions)
-}
-
 fn prune_export_directory(
     dir: &Path,
-    keep: &ExportFilesToKeep<'_>,
+    keep: &ExportFilesToKeep,
     extensions: &[&str],
+    is_referenced: &impl Fn(&Path) -> Result<bool>,
 ) -> Result<()> {
     // Check the project-associated directory before entering a managed export folder.
     for path in dir.parent().into_iter().chain([dir]) {
@@ -3047,13 +3055,14 @@ fn prune_export_directory(
             source,
         })?;
         if kind.is_dir() {
-            prune_export_directory(&path, keep, extensions)?;
+            prune_export_directory(&path, keep, extensions, is_referenced)?;
         } else if kind.is_file()
             && path
                 .extension()
                 .and_then(|s| s.to_str())
                 .is_some_and(|ext| extensions.contains(&ext))
             && !keep.contains(&path)
+            && !is_referenced(&path)?
         {
             fs::remove_file(&path).map_err(|source| Error::Io { path, source })?;
         }

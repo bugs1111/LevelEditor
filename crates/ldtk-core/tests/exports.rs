@@ -2239,6 +2239,52 @@ fn configured_export_cleanup_preserves_hard_links_to_live_outputs() {
     assert!(!stale.exists());
 }
 
+#[test]
+fn configured_export_cleanup_keeps_resources_referenced_by_the_project() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("game.ldtk");
+    let png = directory.path().join("game/png");
+    let simple = directory.path().join("game/simplified");
+    fs::create_dir_all(&png).unwrap();
+    fs::create_dir_all(&simple).unwrap();
+    let atlas = png.join("Atlas.png");
+    let background = simple.join("Backdrop.png");
+    fs::write(&atlas, b"atlas resource").unwrap();
+    image::RgbaImage::from_pixel(32, 16, image::Rgba([8, 19, 29, 255]))
+        .save(&background)
+        .unwrap();
+    let background_bytes = fs::read(&background).unwrap();
+    let stale_png = png.join("old.png");
+    let stale_json = simple.join("old.json");
+    fs::write(&stale_png, b"outdated image").unwrap();
+    fs::write(&stale_json, b"outdated data").unwrap();
+
+    let mut project = project();
+    project.save(&path).unwrap();
+    project.add_tileset(&atlas, 16, 16, 16).unwrap();
+    let first = project.level_keys()[0];
+    project.level_mut(first).unwrap()["bgRelPath"] = json!("game/simplified/Backdrop.png");
+    project.set_external_levels(true).unwrap();
+    project.json["imageExportMode"] = json!("OneImagePerLevel");
+    let report = project.save_with_exports(&path).unwrap();
+
+    assert!(
+        report.export_errors.is_empty(),
+        "{:?}",
+        report.export_errors
+    );
+    assert!(report.outputs.contains(&png.join("Level_0.png")));
+    assert!(!report.outputs.contains(&atlas) && !report.outputs.contains(&background));
+    assert!(fs::read(&atlas).is_ok_and(|bytes| bytes == b"atlas resource"));
+    assert!(fs::read(&background).is_ok_and(|bytes| bytes == background_bytes));
+    assert!(!stale_png.exists() && !stale_json.exists());
+    let reopened = Project::load(&path).unwrap();
+    assert_eq!(
+        reopened.level(first).unwrap()["bgRelPath"],
+        "game/simplified/Backdrop.png"
+    );
+}
+
 #[cfg(unix)]
 #[test]
 fn configured_export_cleanup_preserves_contents_of_linked_output_directory() {

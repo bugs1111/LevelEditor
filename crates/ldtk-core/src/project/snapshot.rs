@@ -202,7 +202,7 @@ impl Project {
             .collect()
     }
 
-    fn resource_watch_paths(&self) -> Result<BTreeSet<PathBuf>> {
+    pub(super) fn resource_watch_paths(&self) -> Result<BTreeSet<PathBuf>> {
         let mut paths = self.saved_document_paths()?;
         if let Some(path) = &self.path {
             let base = path.parent().expect("absolute project path");
