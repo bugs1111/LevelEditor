@@ -107,6 +107,7 @@ macOS 应用包中的可执行文件是 `/Applications/Level Editor.app/Contents
    同一 IntGrid 图层可调用 `paint_int_grid_cells`，传入 `level_iid`、`layer_iid` 和 `cells`（每项含 `x`、`y`、`value`）。重复坐标以最后一个值为准，任何无效格子都会使整批失败。`changed_cells` 返回实际改变的格子数。
    手工瓦片图层可调用 `paint_tile_cells` 或 `erase_tile_cells`，同样传入两个 IID 和 `cells`。绘制项含 `x`、`y`、`tile_id`、`src_x`、`src_y` 和可选的 `flips`（默认 `0`）。绘制按输入顺序覆盖，擦除项只需 `x`、`y`，会移除该格的所有叠放瓦片。任何无效项都会使整批失败。
 3. 修改先保存在 MCP 进程内存中，调用 `save_project` 才会写入工程和外部关卡文件。保存前如果发现磁盘文件已更改，会保留会话中的修改并返回冲突。用 `reload_project` 读取磁盘版本，有未保存修改时必须显式传入 `discard_changes: true` 才会丢弃。退出会话会丢弃未保存修改。
+   如果保存返回 `reload_required: true`，文件已经写入。可用 `project_info` 查询状态，调用 `reload_project` 成功后即可继续读取和编辑关卡。
 4. 如果桌面编辑器同时打开了该工程，MCP 保存后可在外部修改提示中选择「从磁盘重新加载」查看结果。有未保存的桌面编辑时，编辑器会先询问是否保存。
 
 MCP 保存使用工程的备份设置，范围为 LDtk 项目文档及其外部关卡。工具列表和参数以客户端查询到的 MCP schema 为准。

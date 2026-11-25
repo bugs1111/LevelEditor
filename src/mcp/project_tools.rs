@@ -79,6 +79,16 @@ impl Session {
     ) -> Result<ToolPayload<'_>, String> {
         let value = match name {
             "project_info" => Ok(self.info()),
+            "reload_project" => {
+                if self.dirty && args.get("discard_changes") != Some(&Value::Bool(true)) {
+                    return Err("Unsaved changes. Save first or pass discard_changes=true.".into());
+                }
+                *self = Self::open(self.path.clone()).map_err(|error| error.to_string())?;
+                Ok(self.info())
+            }
+            _ if self.snapshot.is_none() => {
+                return Err("Call reload_project before using project tools again.".into());
+            }
             "get_definitions" => {
                 let defs = &self.project.json["defs"];
                 if defs.is_object() {
@@ -98,13 +108,6 @@ impl Session {
                 });
             }
             "save_project" => self.save(),
-            "reload_project" => {
-                if self.dirty && args.get("discard_changes") != Some(&Value::Bool(true)) {
-                    return Err("Unsaved changes. Save first or pass discard_changes=true.".into());
-                }
-                *self = Self::open(self.path.clone()).map_err(|error| error.to_string())?;
-                Ok(self.info())
-            }
             _ => self.edit(name, args),
         }?;
         Ok(ToolPayload::Owned(value))
@@ -116,7 +119,8 @@ impl Session {
             "iid":self.project.json["iid"],
             "json_version":self.project.json["jsonVersion"],
             "external_levels":self.project.json["externalLevels"],
-            "dirty":self.dirty
+            "dirty":self.dirty,
+            "reload_required":self.snapshot.is_none()
         })
     }
 
@@ -393,10 +397,7 @@ impl Session {
         if !self.dirty {
             return Ok(json!({"saved":false,"dirty":false}));
         }
-        let snapshot = self
-            .snapshot
-            .as_ref()
-            .ok_or("Reload the project before saving again.")?;
+        let snapshot = self.snapshot.as_ref().expect("validated save baseline");
         let reload = self
             .project
             .save_and_reload_if_unchanged(&self.path, snapshot)
@@ -457,5 +458,59 @@ fn in_bounds(value: &Value, dimensions: [&str; 2], x: i32, y: i32) -> Result<(),
         Err(format!(
             "Coordinates ({x}, {y}) are outside the requested bounds."
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn failed_post_save_reload_requires_recovery_before_project_tools() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("Map.ldtk");
+        let mut project = Project::new();
+        project.add_layer("Ground", "IntGrid", 16).unwrap();
+        let key = project.level_keys()[0];
+        project.paint_int_grid(key, 0, 0, 0, 1).unwrap();
+        project.save(&path).unwrap();
+        let level = project.level(key).unwrap();
+        let layer = project.layer(key, 0).unwrap();
+        let args = json!({
+            "level_iid":level["iid"], "layer_iid":layer["iid"], "x":0, "y":0, "value":0
+        });
+        let args = args.as_object().unwrap();
+        let document = std::fs::read(&path).unwrap();
+        let mut session = Session::open(path.clone()).unwrap();
+        // The core published the document but could not reacquire a filesystem snapshot.
+        session.snapshot = None;
+        let empty = Map::new();
+        for (tool, arguments) in [
+            ("get_layer", args),
+            ("paint_int_grid", args),
+            ("save_project", &empty),
+        ] {
+            let Err(error) = session.execute(tool, arguments) else {
+                panic!("{tool} should request a reload");
+            };
+            assert!(error.contains("reload_project"), "{tool}: {error}");
+        }
+        assert!(session.execute("project_info", &empty).is_ok());
+        assert_eq!(session.info()["reload_required"], true);
+        assert_eq!(session.info()["dirty"], false);
+        assert_eq!(std::fs::read(&path).unwrap(), document);
+
+        std::fs::write(&path, b"{").unwrap();
+        assert!(session.execute("reload_project", &empty).is_err());
+        assert_eq!(session.info()["reload_required"], true);
+        std::fs::write(&path, document).unwrap();
+
+        assert!(session.execute("reload_project", &empty).is_ok());
+        assert_eq!(session.info()["reload_required"], false);
+        assert!(session.execute("get_layer", args).is_ok());
+        assert!(session.execute("paint_int_grid", args).is_ok());
+        assert_eq!(session.info()["dirty"], true);
+        assert!(session.execute("save_project", &empty).is_ok());
+        assert_eq!(session.info()["dirty"], false);
     }
 }

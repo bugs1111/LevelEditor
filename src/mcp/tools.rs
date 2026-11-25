@@ -93,7 +93,7 @@ const fn edit(
 const TOOLS: &[Tool] = &[
     read(
         "project_info",
-        "Get the bound project's path, LDtk version and unsaved status.",
+        "Get the bound project's path, LDtk version, unsaved status and whether reload_project is required.",
         &[],
     ),
     read(
