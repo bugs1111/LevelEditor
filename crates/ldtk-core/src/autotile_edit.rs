@@ -82,27 +82,6 @@ fn validate_rule(rule: &Value) -> Result<()> {
             return Err(invalid("rule boolean property has incorrect type"));
         }
     }
-    for key in [
-        "size",
-        "xModulo",
-        "yModulo",
-        "xOffset",
-        "yOffset",
-        "tileXOffset",
-        "tileYOffset",
-        "tileRandomXMin",
-        "tileRandomXMax",
-        "tileRandomYMin",
-        "tileRandomYMax",
-        "perlinSeed",
-        "perlinOctaves",
-    ] {
-        if let Some(value) = rule.get(key)
-            && value.as_i64().is_none_or(|v| i32::try_from(v).is_err())
-        {
-            return Err(invalid("rule integer property has incorrect type or range"));
-        }
-    }
     for key in ["alpha", "chance", "pivotX", "pivotY"] {
         if let Some(value) = rule.get(key)
             && value.as_f64().is_none_or(|v| !(0.0..=1.0).contains(&v))
@@ -132,12 +111,6 @@ fn validate_rule(rule: &Value) -> Result<()> {
         && mode != "Vertical"
     {
         return Err(invalid("invalid auto-rule checker mode"));
-    }
-    if arr(&rule["pattern"])
-        .iter()
-        .any(|v| v.as_i64().is_none_or(|v| i32::try_from(v).is_err()))
-    {
-        return Err(invalid("pattern values must be integers"));
     }
     let rects = rule["tileRectsIds"]
         .as_array()

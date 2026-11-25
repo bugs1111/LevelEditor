@@ -275,6 +275,42 @@ fn invalid_rule_failure_is_atomic() {
 }
 
 #[test]
+fn extreme_rule_numbers_do_not_partially_apply_a_paint_edit() {
+    for patch in [
+        json!({"pattern":[i32::MIN]}),
+        json!({"xModulo":i64::from(u32::MAX)+2}),
+        json!({"tileRandomXMax":i32::MAX}),
+        json!({"tileRandomXMin":i32::MIN,"tileRandomXMax":i32::MAX}),
+        json!({"tileXOffset":i32::MAX}),
+        json!({"tileRectsIds":[[i64::from(u32::MAX)+3]]}),
+        json!({"tileRectsIds":[[i32::MAX]]}),
+    ] {
+        let (mut project, key) = fixture();
+        project.layer_mut(key, 0).unwrap()["__type"] = json!("IntGrid");
+        project.rebuild_auto_layers(key).unwrap();
+        let rule = &mut project.json["defs"]["layers"][0]["autoRuleGroups"][0]["rules"][0];
+        rule.as_object_mut()
+            .unwrap()
+            .extend(patch.as_object().unwrap().clone());
+        let before = project.json.clone();
+        assert!(project.paint_int_grid(key, 0, 1, 0, 1).is_err(), "{patch}");
+        assert_eq!(project.json, before, "{patch}");
+    }
+}
+
+#[test]
+fn extreme_modulo_offsets_keep_the_expected_rule_period() {
+    let (mut project, key) = fixture();
+    let rule = &mut project.json["defs"]["layers"][0]["autoRuleGroups"][0]["rules"][0];
+    rule["xOffset"] = json!(i32::MIN);
+    rule["xModulo"] = json!(3);
+    rule["yOffset"] = json!(i32::MIN);
+    project.rebuild_auto_layers(key).unwrap();
+    assert_eq!(tiles(&project, key).as_array().unwrap().len(), 1);
+    assert_eq!(tiles(&project, key)[0]["d"], json!([4, 4]));
+}
+
+#[test]
 fn late_auto_layer_failure_keeps_earlier_cache_and_source_cells() {
     let (mut p, key) = fixture();
     p.layer_mut(key, 0).unwrap()["__type"] = json!("IntGrid");

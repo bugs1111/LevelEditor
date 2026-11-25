@@ -446,6 +446,7 @@ struct Rule<'a> {
     json: &'a Value,
     pattern: Vec<i32>,
     rects: Vec<Vec<i32>>,
+    random_span: [i32; 2],
     size: i32,
     uid: i32,
     flip_x: bool,
@@ -453,11 +454,41 @@ struct Rule<'a> {
 }
 impl<'a> Rule<'a> {
     fn new(v: &'a Value) -> Result<Self> {
+        for key in [
+            "size",
+            "uid",
+            "xModulo",
+            "yModulo",
+            "xOffset",
+            "yOffset",
+            "tileXOffset",
+            "tileYOffset",
+            "tileRandomXMin",
+            "tileRandomXMax",
+            "tileRandomYMin",
+            "tileRandomYMax",
+            "perlinSeed",
+            "perlinOctaves",
+        ] {
+            if let Some(value) = v.get(key)
+                && value.as_i64().and_then(|n| i32::try_from(n).ok()).is_none()
+            {
+                return Err(Error::Invalid(format!(
+                    "invalid auto-layer rule integer {key}"
+                )));
+            }
+        }
         let size = int(v, "size", 3);
         let pattern = arr(&v["pattern"])
             .iter()
-            .map(|x| x.as_i64().unwrap_or(0) as i32)
-            .collect::<Vec<_>>();
+            .map(|value| {
+                value
+                    .as_i64()
+                    .and_then(|n| i32::try_from(n).ok())
+                    .filter(|&n| n != i32::MIN)
+                    .ok_or_else(|| Error::Invalid("invalid auto-layer pattern value".into()))
+            })
+            .collect::<Result<Vec<_>>>()?;
         if !(1..=MAX_PATTERN_SIZE).contains(&size)
             || size % 2 == 0
             || pattern.len() != (size * size) as usize
@@ -467,21 +498,35 @@ impl<'a> Rule<'a> {
         if int(v, "xModulo", 1) <= 0 || int(v, "yModulo", 1) <= 0 {
             return Err(Error::Invalid("auto-layer modulo must be positive".into()));
         }
-        for (min, max) in [
-            ("tileRandomXMin", "tileRandomXMax"),
-            ("tileRandomYMin", "tileRandomYMax"),
-        ] {
-            if int(v, min, 0) > int(v, max, 0) {
+        let random_span = |min, max| {
+            let span = i64::from(int(v, max, 0)) - i64::from(int(v, min, 0)) + 1;
+            if span <= 0 {
                 return Err(Error::Invalid(
                     "reversed auto-layer random offset range".into(),
                 ));
             }
-        }
+            i32::try_from(span)
+                .map_err(|_| Error::Invalid("auto-layer random offset range is too wide".into()))
+        };
+        let random_span = [
+            random_span("tileRandomXMin", "tileRandomXMax")?,
+            random_span("tileRandomYMin", "tileRandomYMax")?,
+        ];
+        let tile_id = |value: &Value| {
+            // Atlas remapping can leave a null hole in a stored stamp.
+            if value.is_null() {
+                return Ok(-1);
+            }
+            value
+                .as_i64()
+                .and_then(|id| i32::try_from(id).ok())
+                .ok_or_else(|| Error::Invalid("invalid auto-layer tile ID".into()))
+        };
         let rects = if v["tileIds"].is_array() {
             let ids = arr(&v["tileIds"])
                 .iter()
-                .map(|x| x.as_i64().unwrap_or(-1) as i32)
-                .collect::<Vec<_>>();
+                .map(tile_id)
+                .collect::<Result<Vec<_>>>()?;
             if v["tileMode"] == "Stamp" {
                 vec![ids]
             } else {
@@ -490,13 +535,8 @@ impl<'a> Rule<'a> {
         } else {
             arr(&v["tileRectsIds"])
                 .iter()
-                .map(|r| {
-                    arr(r)
-                        .iter()
-                        .map(|x| x.as_i64().unwrap_or(-1) as i32)
-                        .collect()
-                })
-                .collect()
+                .map(|r| arr(r).iter().map(tile_id).collect::<Result<Vec<_>>>())
+                .collect::<Result<Vec<_>>>()?
         };
         let sym_x = (0..size).all(|y| {
             (0..size).all(|x| {
@@ -512,6 +552,7 @@ impl<'a> Rule<'a> {
             json: v,
             pattern,
             rects,
+            random_span,
             size,
             uid: int(v, "uid", 0),
             flip_x: flag(v, "flipX", false) && !sym_x,
@@ -738,6 +779,7 @@ impl<'a> Engine<'a> {
         let padding = int(atlas, "padding", 0);
         if width < 0
             || height < 0
+            || width.checked_mul(height).is_none()
             || sw < 0
             || sh < 0
             || grid_size <= 0
@@ -746,8 +788,8 @@ impl<'a> Engine<'a> {
         {
             return Err(Error::Invalid("invalid auto-layer dimensions".into()));
         }
-        let atlas_width = ((int(atlas, "pxWid", 0) - 2 * padding) as f64
-            / (atlas_size + spacing) as f64)
+        let atlas_width = ((i64::from(int(atlas, "pxWid", 0)) - 2 * i64::from(padding)) as f64
+            / (i64::from(atlas_size) + i64::from(spacing)) as f64)
             .ceil() as i32;
         if atlas_width <= 0 {
             return Err(Error::Invalid("empty auto-layer tileset".into()));
@@ -980,8 +1022,8 @@ impl<'a> Engine<'a> {
             let j = r.json;
             let xm = int(j, "xModulo", 1);
             let ym = int(j, "yModulo", 1);
-            let x_offset = int(j, "xOffset", 0);
-            let y_offset = int(j, "yOffset", 0);
+            let x_offset = int(j, "xOffset", 0).rem_euclid(xm);
+            let y_offset = int(j, "yOffset", 0).rem_euclid(ym);
             let checker = match j["checker"].as_str().unwrap_or("None") {
                 _ if xm == 1 && ym == 1 => "None",
                 "Horizontal" if xm == 1 => "Vertical",
@@ -1069,26 +1111,25 @@ impl<'a> Engine<'a> {
         let right = rect.iter().map(|t| t % self.atlas_width).max().unwrap_or(0);
         let top = rect.iter().map(|t| t / self.atlas_width).min().unwrap_or(0);
         let bottom = rect.iter().map(|t| t / self.atlas_width).max().unwrap_or(0);
-        let dx = if flips & 1 == 0 { 1 } else { -1 };
-        let dy = if flips & 2 == 0 { 1 } else { -1 };
-        let rx = int(j, "tileRandomXMin", 0);
-        let ry = int(j, "tileRandomYMin", 0);
-        let ox = (int(j, "tileXOffset", 0)
-            + noise::random(
-                seed + flips as f64,
-                x,
-                y,
-                int(j, "tileRandomXMax", 0) - rx + 1,
-            )
-            + rx)
+        let dx = if flips & 1 == 0 { 1_i64 } else { -1_i64 };
+        let dy = if flips & 2 == 0 { 1_i64 } else { -1_i64 };
+        let [random_x, random_y] = r.random_span;
+        let ox = (i64::from(int(j, "tileXOffset", 0))
+            + i64::from(noise::random(seed + f64::from(flips), x, y, random_x))
+            + i64::from(int(j, "tileRandomXMin", 0)))
             * dx;
-        let oy = (int(j, "tileYOffset", 0)
-            + noise::random(seed + 1., x, y, int(j, "tileRandomYMax", 0) - ry + 1)
-            + ry)
+        let oy = (i64::from(int(j, "tileYOffset", 0))
+            + i64::from(noise::random(seed + 1., x, y, random_y))
+            + i64::from(int(j, "tileRandomYMin", 0)))
             * dy;
-        let tile_size = int(self.atlas, "tileGridSize", 16);
-        let padding = int(self.atlas, "padding", 0);
-        let spacing = int(self.atlas, "spacing", 0);
+        let padding = i64::from(int(self.atlas, "padding", 0));
+        let stride = i64::from(int(self.atlas, "tileGridSize", 16))
+            + i64::from(int(self.atlas, "spacing", 0));
+        let grid = i64::from(self.grid_size);
+        let coordinate = |value| {
+            i32::try_from(value)
+                .map_err(|_| Error::Invalid("auto-layer tile coordinate exceeds i32 range".into()))
+        };
         for &tid in rect {
             if tid < 0 {
                 return Err(Error::Invalid("negative auto-layer tile ID".into()));
@@ -1109,7 +1150,18 @@ impl<'a> Engine<'a> {
             } else {
                 0.
             };
-            out.push(json!({"px":[x*self.grid_size+sx as i32*dx+ox,y*self.grid_size+sy as i32*dy+oy],"src":[padding+tx*(tile_size+spacing),padding+ty*(tile_size+spacing)],"f":flips,"t":tid,"d":[r.uid,x+y*self.width],"a":number(float(j,"alpha",1.))}));
+            let px = [
+                coordinate(i64::from(x) * grid + i64::from(sx as i32) * dx + ox)?,
+                coordinate(i64::from(y) * grid + i64::from(sy as i32) * dy + oy)?,
+            ];
+            let src = [
+                coordinate(padding + i64::from(tx) * stride)?,
+                coordinate(padding + i64::from(ty) * stride)?,
+            ];
+            out.push(json!({
+                "px":px,"src":src,"f":flips,"t":tid,"d":[r.uid,x+y*self.width],
+                "a":number(float(j,"alpha",1.))
+            }));
         }
         Ok(())
     }
