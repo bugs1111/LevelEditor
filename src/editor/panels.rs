@@ -152,9 +152,16 @@ pub(super) enum IntGridRemoval {
 }
 
 fn collapsing(ui: &mut egui::Ui, title: &str, body: impl FnOnce(&mut egui::Ui)) {
-    egui::CollapsingHeader::new(locale::tr(ui, title))
-        .id_salt(title)
-        .show(ui, body);
+    let mut state = egui::collapsing_header::CollapsingState::load_with_default_open(
+        ui.ctx(),
+        ui.make_persistent_id(title),
+        false,
+    );
+    let open = panel_layout::section(ui, title, state.is_open(), |ui| {
+        egui::Frame::new().inner_margin(8).show(ui, body);
+    });
+    state.set_open(open);
+    state.store(ui.ctx());
 }
 
 fn tileset_tag_enum_picker(
@@ -1830,7 +1837,8 @@ impl EditorApp {
                         self.new_name.clear();
                     }
                 }
-                self.import_enum_menu(ui, "Import / sync external…");
+                let import = source_controls::button(ui, "Import / sync external…");
+                self.import_enum_menu(ui, &import);
             });
         }
         if let Some(mut def) = self.definition_picker(ui, "enums") {
@@ -3344,14 +3352,16 @@ fn remap_options(
             ldtk_core::TilesetRemap::Clear,
             locale::tr(ui, "Clear affected tiles"),
         );
-        ui.checkbox(
+        source_controls::checkbox(
+            ui,
             &mut options.allow_loss,
-            locale::tr(ui, "Allow removal of references that no longer fit"),
+            "Allow removal of references that no longer fit",
         );
         if overrides {
-            ui.checkbox(
+            source_controls::checkbox(
+                ui,
                 &mut options.clear_overrides,
-                locale::tr(ui, "Reset tileset overrides in all levels"),
+                "Reset tileset overrides in all levels",
             );
         }
     });

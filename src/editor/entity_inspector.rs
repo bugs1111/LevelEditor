@@ -1,6 +1,7 @@
 //! Source EntityInstanceEditor: a right-edge inspector, independent of modal panels.
 use super::tools::Gesture;
 use super::*;
+use panels::source_controls::small_button;
 
 fn state_id() -> egui::Id {
     egui::Id::new("entity-instance-inspector")
@@ -383,7 +384,7 @@ impl EditorApp {
                                 .desired_width((ui.available_width() - 75.).max(30.))
                                 .interactive(false),
                         );
-                        if ui.small_button(locale::tr(ui, "Copy IID")).clicked() {
+                        if small_button(ui, "Copy IID").clicked() {
                             ui.ctx().copy_text(iid.to_owned());
                         }
                     });
@@ -445,10 +446,7 @@ impl EditorApp {
                                 ui.label("×");
                             }
                         }
-                        if ui
-                            .small_button(locale::tr(ui, if cells { "cells" } else { "px" }))
-                            .clicked()
-                        {
+                        if small_button(ui, if cells { "cells" } else { "px" }).clicked() {
                             cells = !cells;
                             ui.ctx().data_mut(|data| data.insert_temp(unit_id, cells));
                         }
@@ -468,7 +466,7 @@ impl EditorApp {
                     if !refs.is_empty() {
                         ui.label(locale::tr(ui, "References to this entity"));
                         for (iid, label) in &refs {
-                            if ui.small_button(label).clicked() {
+                            if small_button(ui, RichText::new(label)).clicked() {
                                 self.follow_entity(iid);
                             }
                         }

@@ -183,13 +183,11 @@ impl EditorApp {
                     )
                 })
                 .inner;
-            if pick
-                .on_hover_text(current.as_ref().map_or_else(
-                    || locale::tr(ui, "Pick an image").into(),
-                    |path| path.display().to_string(),
-                ))
-                .clicked()
-            {
+            let pick = match &current {
+                Some(path) => pick.on_hover_text(path.display().to_string()),
+                None => pick.action_tooltip(locale::tr(ui, "Pick an image")),
+            };
+            if pick.clicked() {
                 let project_path = self.project.as_ref().and_then(|p| p.path.clone());
                 let mut dialog = FileDialog::new()
                     .add_filter("Images", &["png", "gif", "jpg", "jpeg", "aseprite", "ase"]);

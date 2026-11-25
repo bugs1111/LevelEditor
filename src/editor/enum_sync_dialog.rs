@@ -499,9 +499,8 @@ impl EditorApp {
         }
         Some(path)
     }
-    pub(super) fn import_enum_menu(&mut self, ui: &mut egui::Ui, label: &str) {
-        let button = ui.button(label);
-        egui::Popup::menu(&button)
+    pub(super) fn import_enum_menu(&mut self, ui: &mut egui::Ui, button: &egui::Response) {
+        egui::Popup::menu(button)
             .frame(source_controls::context_menu_frame(ui.style()))
             .show(|ui| {
                 for (label, key, extension) in [

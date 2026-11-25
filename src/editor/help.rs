@@ -178,7 +178,7 @@ fn video_card(
         );
     }
     response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Link, true, title));
-    response.on_hover_text(title)
+    response.action_tooltip(title)
 }
 
 enum HelpKey<'a> {

@@ -319,7 +319,7 @@ fn source_text(
     ui.data_mut(|d| d.insert_temp(id, (original, draft.clone())));
     commit.then_some(draft)
 }
-fn section(
+pub(super) fn section(
     ui: &mut egui::Ui,
     title: impl Into<egui::WidgetText>,
     mut open: bool,
@@ -370,6 +370,14 @@ fn section(
                 (rect.width() - 24.).max(0.),
                 FontId::new(17.333, egui::FontFamily::Name("panel-title".into())),
             );
+            response.widget_info(|| {
+                egui::WidgetInfo::selected(
+                    egui::WidgetType::CollapsingHeader,
+                    response.enabled(),
+                    open,
+                    title.text(),
+                )
+            });
             ui.painter().galley(
                 rect.left_center() + egui::vec2(24., -title.size().y / 2.),
                 title,

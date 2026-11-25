@@ -441,7 +441,7 @@ impl EditorApp {
                 } else {
                     "[Default dir]"
                 };
-                if source_controls::add_sized_button(
+                let directory_button = source_controls::add_sized_button(
                     ui,
                     [width, 33.],
                     egui::Button::new(
@@ -451,10 +451,14 @@ impl EditorApp {
                     )
                     .fill(theme::LIGHT)
                     .truncate(),
-                )
-                .on_hover_text(custom.unwrap_or_else(|| locale::tr(ui, "Project backup folder")))
-                .clicked()
-                {
+                );
+                let directory_button = match custom {
+                    Some(path) => directory_button.on_hover_text(path),
+                    None => {
+                        directory_button.action_tooltip(locale::tr(ui, "Project backup folder"))
+                    }
+                };
+                if directory_button.clicked() {
                     let mut dialog = FileDialog::new();
                     if let Some(dir) = directory.clone().filter(|dir| dir.is_dir()).or_else(|| {
                         path.as_ref()

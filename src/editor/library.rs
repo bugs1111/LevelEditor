@@ -1286,7 +1286,7 @@ impl EditorApp {
                 let path = canvas::asset_path(project, path);
                 if let Some(error) = self.assets.errors.get(&path).cloned() {
                     ui.colored_label(Color32::LIGHT_RED, error);
-                    if ui.button(locale::tr(ui, "Reload atlas")).clicked() {
+                    if panels::source_controls::button(ui, "Reload atlas").clicked() {
                         self.assets.invalidate(&path);
                     }
                     return false;

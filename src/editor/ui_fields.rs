@@ -230,6 +230,7 @@ pub(super) fn property_value(
     widget: &Widget,
     current: &Value,
 ) -> Option<Value> {
+    use super::panels::source_controls;
     let mut current = current.clone();
     let changed = match widget {
         Widget::Text => {
@@ -256,7 +257,7 @@ pub(super) fn property_value(
             ui.horizontal(|ui| {
                 let optional = numeric_optional(key);
                 let mut enabled = !current.is_null();
-                if optional && ui.checkbox(&mut enabled, "").changed() {
+                if optional && source_controls::checkbox(ui, &mut enabled, "").changed() {
                     current = if enabled { json!(v) } else { Value::Null };
                     c = true;
                 }
@@ -281,7 +282,7 @@ pub(super) fn property_value(
             ui.horizontal(|ui| {
                 let optional = numeric_optional(key);
                 let mut enabled = !current.is_null();
-                if optional && ui.checkbox(&mut enabled, "").changed() {
+                if optional && source_controls::checkbox(ui, &mut enabled, "").changed() {
                     current = if enabled { json!(v) } else { Value::Null };
                     c = true;
                 }
@@ -303,7 +304,7 @@ pub(super) fn property_value(
         }
         Widget::Bool => {
             let mut v = current.as_bool().unwrap_or(false);
-            let c = ui.checkbox(&mut v, "").changed();
+            let c = source_controls::checkbox(ui, &mut v, "").changed();
             if c {
                 current = json!(v);
             }
@@ -593,9 +594,11 @@ fn file_path_editor(
             response.widget_info(|| {
                 egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), filename)
             });
-            let response = response
-                .on_hover_cursor(egui::CursorIcon::PointingHand)
-                .on_hover_text(path_text.unwrap_or_else(|| locale::tr(ui, "Choose…")));
+            let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
+            let response = match path_text {
+                Some(path) => response.on_hover_text(path),
+                None => response.action_tooltip(locale::tr(ui, "Choose…")),
+            };
             if response.clicked() {
                 response.surrender_focus();
                 return true;
@@ -666,7 +669,7 @@ fn scalar_editor_inner(
     let nullable = null_toggle && definition["canBeNull"].as_bool().unwrap_or(false);
     if nullable {
         let mut is_null = current.is_null();
-        if ui.checkbox(&mut is_null, "Use null").changed() {
+        if panels::source_controls::checkbox(ui, &mut is_null, "Use null").changed() {
             return Some(if is_null {
                 Value::Null
             } else {
@@ -1376,6 +1379,27 @@ impl FieldEdit {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn optional_numeric_fields_use_the_shared_checkbox() {
+        let ctx = egui::Context::default();
+        theme::configure(&ctx);
+        let output = ctx.run(egui::RawInput::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                for (key, widget) in [("min", Widget::Int(0, 10)), ("max", Widget::Float(0., 10.))]
+                {
+                    assert!(property_value(ui, key, &widget, &Value::Null).is_none());
+                }
+            });
+        });
+        let checkboxes = output.shapes.iter().filter(|shape| {
+            matches!(&shape.shape, egui::Shape::Rect(rect)
+                if rect.fill == Color32::WHITE
+                    && rect.rect.size() == Vec2::splat(panels::source_controls::CHECKBOX_WIDTH))
+        });
+        assert_eq!(checkboxes.count(), 2);
+    }
+
     const LEVEL: LevelKey = LevelKey {
         world: None,
         level: 0,

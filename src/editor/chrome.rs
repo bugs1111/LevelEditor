@@ -1667,11 +1667,10 @@ impl EditorApp {
                 let ui = &mut frame.content_ui;
                 ui.spacing_mut().item_spacing = egui::vec2(0., 1.);
                 ui.set_width(34.);
-                canvas_option_heading(ui, "Visuals", Color32::from_rgb(101, 148, 255))
-                .on_hover_ui(|ui| {
+                let visuals = canvas_option_heading(ui, "Visuals", Color32::from_rgb(101, 148, 255));
+                if egui::Tooltip::should_show_tooltip(&visuals, false) {
                     let cache = self.assets.stats();
-                    ui.set_max_width(ui.spacing().tooltip_width);
-                    ui.label(locale::format(
+                    let details = locale::format(
                         ui,
                         "{zoom}% · {cells} visible cells · {cpu} ms CPU\n{textures} textures · {memory} MiB · {pending} pending",
                         &[
@@ -1682,8 +1681,9 @@ impl EditorApp {
                             ("memory", &format!("{:.1}", cache.bytes as f64 / 1_048_576.0)),
                             ("pending", &cache.pending.to_string()),
                         ],
-                    ));
-                });
+                    );
+                    show_source_tooltip(&visuals, &details, &[], true);
+                }
                 for (source, enabled, tip, keys, action) in [
                     (
                         egui::include_image!("../../assets/icons/zen.svg"),

@@ -64,6 +64,7 @@ impl EditorApp {
                 ui.add_space(if compact { 3. } else { 2. });
             }
             ui.horizontal(|ui| {
+                let entity_add_width = 165.;
                 ui.spacing_mut().item_spacing.x = 2.;
                 let create = if compact || panel == Panel::Enums {
                     let size = if compact {
@@ -83,7 +84,7 @@ impl EditorApp {
                     )
                 } else {
                     let width = if panel == Panel::Entities {
-                        165.
+                        entity_add_width
                     } else {
                         ui.available_width()
                     };
@@ -102,33 +103,25 @@ impl EditorApp {
                     }
                 }
                 if panel == Panel::Entities {
-                    ui.scope(|ui| {
-                        ui.spacing_mut().interact_size.y = 41.;
-                        ui.spacing_mut().button_padding = egui::vec2(6., 10.);
-                        ui.visuals_mut().widgets.inactive.weak_bg_fill = SOURCE_ORANGE;
-                        ui.visuals_mut().widgets.inactive.bg_fill = SOURCE_ORANGE;
-                        let button = ui
-                            .button(RichText::new(locale::tr(ui, "PRESETS")).color(Color32::WHITE));
-                        egui::Popup::menu(&button)
-                            .frame(source_controls::context_menu_frame(ui.style()))
-                            .show(|ui| {
-                                for (label, circle) in
-                                    [("Rectangle region", false), ("Circle region", true)]
-                                {
-                                    if source_controls::context_menu_item(ui, label).clicked() {
-                                        self.source_create_definition("entities", Some(circle));
-                                        ui.close();
-                                    }
+                    let preset_width = width - entity_add_width - ui.spacing().item_spacing.x;
+                    let button = orange(ui, "PRESETS", egui::vec2(preset_width, 41.));
+                    egui::Popup::menu(&button)
+                        .frame(source_controls::context_menu_frame(ui.style()))
+                        .show(|ui| {
+                            for (label, circle) in
+                                [("Rectangle region", false), ("Circle region", true)]
+                            {
+                                if source_controls::context_menu_item(ui, label).clicked() {
+                                    self.source_create_definition("entities", Some(circle));
+                                    ui.close();
                                 }
-                            });
-                    });
+                            }
+                        });
                 } else if panel == Panel::Enums {
                     ui.scope(|ui| {
-                        ui.spacing_mut().interact_size = egui::vec2(70., 43.);
-                        ui.spacing_mut().button_padding = egui::vec2(8., 6.);
-                        ui.visuals_mut().widgets.inactive.weak_bg_fill = SOURCE_ORANGE;
-                        ui.visuals_mut().widgets.inactive.bg_fill = SOURCE_ORANGE;
-                        self.import_enum_menu(ui, locale::tr(ui, "IMPORT"));
+                        ui.spacing_mut().button_padding.x = 8.;
+                        let button = orange(ui, "IMPORT", egui::vec2(70., 43.));
+                        self.import_enum_menu(ui, &button);
                     });
                 }
             });
