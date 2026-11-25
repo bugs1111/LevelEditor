@@ -117,6 +117,11 @@ struct PublishedDocuments {
     reusable_levels: BTreeMap<PathBuf, (Arc<Value>, usize, u64)>,
 }
 
+enum SaveVerification<'a> {
+    DocumentDestinations(&'a FilesystemSnapshot),
+    AllWatchedFiles(&'a FilesystemSnapshot),
+}
+
 fn external_level_save_settings(root: &Value) -> [&Value; 3] {
     ["jsonStyle", "minifyJson", "flags"].map(|key| &root[key])
 }
@@ -228,7 +233,7 @@ impl Project {
 
     /// Bind the watch baseline to the parsed documents and track resources even if unavailable.
     pub fn load_with_snapshot(path: impl AsRef<Path>) -> Result<(Self, FilesystemSnapshot)> {
-        Self::load_snapshot_with_documents(path.as_ref(), None)
+        Self::load_snapshot_with_documents(path.as_ref(), None, None)
     }
 
     /// Record the exact bytes parsed for the project and its external levels.
@@ -242,13 +247,22 @@ impl Project {
     fn load_snapshot_with_documents(
         path: &Path,
         published: Option<PublishedDocuments>,
+        previous: Option<&FilesystemSnapshot>,
     ) -> Result<(Self, FilesystemSnapshot)> {
         let (project, mut snapshot) = Self::read_document_snapshot(path, |_, _| {}, published)?;
-        project.watch_available_resources(&mut snapshot);
-        if !snapshot.changed_files()?.is_empty() {
-            return Err(Error::Invalid(
-                "Project files changed during reload. Try reloading again.".into(),
-            ));
+        if let Some(previous) = previous {
+            snapshot.carry_resource_watches(previous);
+            project.refresh_resource_watches(&mut snapshot, &BTreeSet::new());
+        } else {
+            project.watch_available_resources(&mut snapshot);
+        }
+        let changed = snapshot.changed_files()?;
+        if !changed.is_empty() {
+            return Err(if previous.is_some() {
+                Error::FilesChanged(changed)
+            } else {
+                Error::Invalid("Project files changed during reload. Try reloading again.".into())
+            });
         }
         Ok((project, snapshot))
     }
@@ -411,12 +425,17 @@ impl Project {
         &mut self,
         path: impl AsRef<Path>,
         make_backup: bool,
-        verified_snapshot: Option<&FilesystemSnapshot>,
+        verification: Option<SaveVerification<'_>>,
         mut published: Option<&mut PublishedDocuments>,
         mut saved_snapshot: Option<&mut FilesystemSnapshot>,
         progress: &mut impl FnMut(SaveStage, usize, usize, Option<&str>),
     ) -> Result<()> {
         validate_project(&self.json)?;
+        let (verified_snapshot, verify_all_files) = match verification {
+            Some(SaveVerification::DocumentDestinations(snapshot)) => (Some(snapshot), false),
+            Some(SaveVerification::AllWatchedFiles(snapshot)) => (Some(snapshot), true),
+            None => (None, false),
+        };
         let path = absolute(path.as_ref())?;
         let base = path
             .parent()
@@ -631,10 +650,10 @@ impl Project {
                 return Err(Error::FilesChanged(occupied));
             }
         }
-        let verify_documents = || -> Result<()> {
+        let verify_files = || -> Result<()> {
             if let Some(snapshot) = verified_snapshot {
                 let changed = snapshot.changed_files_matching(|path| {
-                    paths.contains(path) || watched_retired.contains(path)
+                    verify_all_files || paths.contains(path) || watched_retired.contains(path)
                 })?;
                 if !changed.is_empty() {
                     return Err(Error::FilesChanged(changed));
@@ -643,7 +662,7 @@ impl Project {
             Ok(())
         };
         if make_backup && candidate.json["backupOnSave"].as_bool().unwrap_or(false) {
-            verify_documents()?;
+            verify_files()?;
             candidate.path = Some(path.clone());
             candidate.backup_with_progress(None, &mut |done, total, label| {
                 progress(SaveStage::Backup, done, total, label);
@@ -758,7 +777,7 @@ impl Project {
         }
         // The main document is prepared first but published after all referenced files.
         staged.files.push(root);
-        verify_documents()?;
+        verify_files()?;
         staged.publish()?;
         self.external_levels = candidate.external_levels;
         self.json = candidate.json;
@@ -1927,6 +1946,59 @@ mod save_transaction_tests {
     use serde_json::json;
 
     #[test]
+    fn guarded_save_detects_resource_edits_during_staging() {
+        check_resource_edit_during_guarded_save(SaveStage::PrepareLevels);
+    }
+
+    #[test]
+    fn reopening_a_guarded_save_detects_resource_edits_after_publication() {
+        check_resource_edit_during_guarded_save(SaveStage::WriteProject);
+    }
+
+    fn check_resource_edit_during_guarded_save(change_stage: SaveStage) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("Map.ldtk");
+        let atlas = dir.path().join("Atlas.png");
+        fs::write(&atlas, b"before").unwrap();
+        let mut project = Project::new();
+        project.add_tileset(&atlas, 16, 16, 16).unwrap();
+        project.set_external_levels(true).unwrap();
+        project.save(&path).unwrap();
+        let before = fs::read(&path).unwrap();
+        let (mut project, snapshot) = Project::load_with_snapshot(&path).unwrap();
+        project.json["defaultLevelBgColor"] = json!("#123456");
+
+        let mut published = PublishedDocuments::default();
+        let result = project.save_document_with_progress(
+            &path,
+            false,
+            Some(SaveVerification::AllWatchedFiles(&snapshot)),
+            Some(&mut published),
+            None,
+            &mut |stage, done, total, _| {
+                if stage == change_stage && total > 0 && done == total {
+                    fs::write(&atlas, b"edited").unwrap();
+                }
+            },
+        );
+
+        assert_eq!(fs::read(&atlas).unwrap(), b"edited");
+        if change_stage == SaveStage::PrepareLevels {
+            assert!(matches!(result, Err(Error::FilesChanged(paths)) if paths == [atlas]));
+            assert_eq!(fs::read(&path).unwrap(), before);
+        } else {
+            result.unwrap();
+            assert_eq!(
+                Project::load(&path).unwrap().json["defaultLevelBgColor"],
+                "#123456"
+            );
+            let reopened =
+                Project::load_snapshot_with_documents(&path, Some(published), Some(&snapshot));
+            assert!(matches!(reopened, Err(Error::FilesChanged(paths)) if paths == [atlas]));
+        }
+    }
+
+    #[test]
     fn guarded_save_preserves_a_new_output_path_created_during_staging() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("Map.ldtk");
@@ -1945,7 +2017,7 @@ mod save_transaction_tests {
         let result = project.save_document_with_progress(
             &path,
             false,
-            Some(&snapshot),
+            Some(SaveVerification::DocumentDestinations(&snapshot)),
             None,
             None,
             &mut |stage, done, total, _| {
@@ -1988,7 +2060,7 @@ mod save_transaction_tests {
         let result = edited.save_document_with_progress(
             &path,
             false,
-            Some(&snapshot),
+            Some(SaveVerification::DocumentDestinations(&snapshot)),
             None,
             None,
             &mut |stage, done, total, _| {
@@ -2033,7 +2105,7 @@ mod save_transaction_tests {
         let mut bytes = fs::read(target).unwrap();
         bytes.push(b'\n');
         fs::write(target, bytes).unwrap();
-        let error = Project::load_snapshot_with_documents(&path, Some(published))
+        let error = Project::load_snapshot_with_documents(&path, Some(published), None)
             .err()
             .expect("changed reused level must fail reload");
         assert!(
@@ -2071,7 +2143,7 @@ mod save_transaction_tests {
             .save_document_with_progress(
                 &path,
                 false,
-                Some(&snapshot),
+                Some(SaveVerification::AllWatchedFiles(&snapshot)),
                 Some(&mut published),
                 None,
                 &mut |stage, done, _, _| {
@@ -2082,7 +2154,7 @@ mod save_transaction_tests {
             )
             .unwrap();
         assert_eq!(fs::read_to_string(&target).unwrap(), changed);
-        let error = Project::load_snapshot_with_documents(&path, Some(published))
+        let error = Project::load_snapshot_with_documents(&path, Some(published), None)
             .err()
             .expect("changed untouched level must fail reload");
         assert!(
@@ -2645,7 +2717,7 @@ impl Project {
         self.save_document_with_progress(
             path,
             true,
-            snapshot,
+            snapshot.map(SaveVerification::DocumentDestinations),
             None,
             Some(&mut document_snapshot),
             &mut progress,
@@ -2762,10 +2834,12 @@ impl Project {
         self.save_if_unchanged_capturing_documents(path, snapshot, Some(&mut published))?;
         let path = self.path.as_deref().expect("published document path");
         Ok(
-            Self::load_snapshot_with_documents(path, Some(published)).map(|(project, snapshot)| {
-                *self = project;
-                snapshot
-            }),
+            Self::load_snapshot_with_documents(path, Some(published), Some(snapshot)).map(
+                |(project, snapshot)| {
+                    *self = project;
+                    snapshot
+                },
+            ),
         )
     }
 
@@ -2782,7 +2856,7 @@ impl Project {
         self.save_document_with_progress(
             path,
             true,
-            Some(snapshot),
+            Some(SaveVerification::AllWatchedFiles(snapshot)),
             published,
             None,
             &mut |_, _, _, _| {},

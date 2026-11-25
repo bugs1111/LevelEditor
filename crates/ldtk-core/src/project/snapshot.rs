@@ -106,10 +106,10 @@ impl FilesystemSnapshot {
     }
 
     /// Preserve existing resource fingerprints while accepting a new document baseline.
-    pub fn carry_resource_watches(&mut self, previous: Self) {
-        for (path, fingerprint) in previous.files {
-            if !previous.documents.contains(&path) && !self.is_document(&path) {
-                self.files.entry(path).or_insert(fingerprint);
+    pub fn carry_resource_watches(&mut self, previous: &Self) {
+        for (path, fingerprint) in &previous.files {
+            if !previous.is_document(path) && !self.is_document(path) {
+                self.files.entry(path.clone()).or_insert(*fingerprint);
             }
         }
     }

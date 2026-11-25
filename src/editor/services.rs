@@ -298,7 +298,7 @@ impl EditorApp {
                     }
                     let mut snapshot = saved.report.document_snapshot.take();
                     if let Some(current) = &mut snapshot {
-                        if let Some(previous) = self.file_snapshot.take() {
+                        if let Some(previous) = self.file_snapshot.as_ref() {
                             current.carry_resource_watches(previous);
                         }
                         saved
