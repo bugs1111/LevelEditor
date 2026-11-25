@@ -30,6 +30,20 @@ pub(super) enum SaveFailure {
 pub(super) enum SaveWriteFailure {
     DirectoryConflict,
     Io(String),
+    Interrupted,
+}
+
+pub(super) const SAVE_INTERRUPTED: &str =
+    "Saving was interrupted before completion could be confirmed.";
+
+fn poll_worker<T>(worker: &mut Option<mpsc::Receiver<T>>) -> Option<Result<T, mpsc::RecvError>> {
+    let result = match worker.as_ref()?.try_recv() {
+        Ok(result) => Ok(result),
+        Err(mpsc::TryRecvError::Empty) => return None,
+        Err(mpsc::TryRecvError::Disconnected) => Err(mpsc::RecvError),
+    };
+    *worker = None;
+    Some(result)
 }
 
 fn save_folder_conflicts(path: &Path) -> bool {
@@ -125,8 +139,7 @@ impl EditorApp {
     }
 
     fn fail_save(&mut self, path: PathBuf, reason: SaveWriteFailure) {
-        self.clear_save_progress();
-        self.status = match &reason {
+        let status = match &reason {
             SaveWriteFailure::DirectoryConflict => {
                 format!(
                     "Save failed: {} occupies the project folder path",
@@ -134,10 +147,17 @@ impl EditorApp {
                 )
             }
             SaveWriteFailure::Io(error) => format!("Save failed: {error}"),
+            SaveWriteFailure::Interrupted => SAVE_INTERRUPTED.into(),
         };
+        self.report_save_error(status);
+        self.save_failure = Some(SaveFailure::Write { path, reason });
+    }
+
+    fn report_save_error(&mut self, status: String) {
+        self.clear_save_progress();
+        self.status = status;
         self.status_error = true;
         self.report_saving_failed();
-        self.save_failure = Some(SaveFailure::Write { path, reason });
     }
 
     pub(super) fn create_project_async(&mut self, ctx: &egui::Context, path: PathBuf) {
@@ -184,10 +204,9 @@ impl EditorApp {
         if self.loading.is_none() {
             self.loading_progress = None;
         }
-        if let Some(result) = self.loading.as_ref().and_then(|rx| rx.try_recv().ok()) {
-            self.loading = None;
+        if let Some(result) = poll_worker(&mut self.loading) {
             match result {
-                Ok(loaded) => {
+                Ok(Ok(loaded)) => {
                     let read_only = loaded.project.is_backup();
                     if self.loading_progress.is_some() {
                         ctx.request_repaint();
@@ -223,7 +242,7 @@ impl EditorApp {
                         self.status_error = true;
                     }
                 }
-                Err(error) => {
+                Ok(Err(error)) => {
                     self.loading_progress = None;
                     self.status = match error {
                         LoadFailure::MissingProject(path) => {
@@ -234,12 +253,16 @@ impl EditorApp {
                     };
                     self.status_error = true;
                 }
+                Err(_) => {
+                    self.loading_progress = None;
+                    self.status = "The project operation was interrupted.".into();
+                    self.status_error = true;
+                }
             }
         }
-        if let Some(result) = self.saving.as_ref().and_then(|rx| rx.try_recv().ok()) {
-            self.saving = None;
+        if let Some(result) = poll_worker(&mut self.saving) {
             match result {
-                Ok(saved) => {
+                Ok(Ok(saved)) => {
                     for diagnostic in &saved.report.export_diagnostics {
                         app_log::record(ctx, self.settings.path.as_deref(), diagnostic, true);
                     }
@@ -292,7 +315,7 @@ impl EditorApp {
                         hooks::Continuation::AfterSave(saved_name),
                     );
                 }
-                Err(e) => {
+                Ok(Err(e)) => {
                     if let Some(path) = self.save_attempt.take() {
                         let folder = path.with_extension("");
                         let reason = match &e {
@@ -305,20 +328,23 @@ impl EditorApp {
                         };
                         self.fail_save(path, reason);
                     } else {
-                        self.clear_save_progress();
-                        self.status = format!("Save failed: {e}");
-                        self.status_error = true;
-                        self.report_saving_failed();
+                        self.report_save_error(format!("Save failed: {e}"));
+                    }
+                }
+                Err(_) => {
+                    if let Some(path) = self.save_attempt.take() {
+                        self.fail_save(path, SaveWriteFailure::Interrupted);
+                    } else {
+                        self.report_save_error("The file operation was interrupted.".into());
                     }
                 }
             }
         }
         self.animate_save_progress(ctx, Instant::now());
-        if let Some(result) = self.exporting.as_ref().and_then(|rx| rx.try_recv().ok()) {
-            self.exporting = None;
+        if let Some(result) = poll_worker(&mut self.exporting) {
             self.exporting_progress = None;
             match result {
-                Ok(report) => {
+                Ok(Ok(report)) => {
                     self.status = format!(
                         "Exported {} files{}",
                         report.outputs.len(),
@@ -330,8 +356,12 @@ impl EditorApp {
                     );
                     self.status_error = !report.warnings.is_empty();
                 }
-                Err(e) => {
+                Ok(Err(e)) => {
                     self.status = format!("Export failed: {e}");
+                    self.status_error = true;
+                }
+                Err(_) => {
+                    self.status = "Export was interrupted.".into();
                     self.status_error = true;
                 }
             }
@@ -733,6 +763,48 @@ mod creation_tests {
             app.poll_services(ctx);
         }
         assert!(app.loading.is_none());
+    }
+
+    #[test]
+    fn disconnected_open_export_and_rename_workers_release_the_editor() {
+        let ctx = egui::Context::default();
+        let mut app = EditorApp::empty();
+        app.set_project(Project::new());
+        app.dirty = true;
+        let document = app.project.as_ref().unwrap().json.clone();
+
+        let (open_sender, open_job) = mpsc::channel();
+        app.loading = Some(open_job);
+        app.loading_progress = Some(Arc::new(Mutex::new(Some((0, 1)))));
+        app.poll_services(&ctx);
+        assert!(app.is_busy());
+        drop(open_sender);
+        app.poll_services(&ctx);
+        assert!(!app.is_busy());
+        assert!(app.loading_progress.is_none() && app.status_error);
+        assert_eq!(app.status, "The project operation was interrupted.");
+
+        let (export_sender, export_job) = mpsc::channel();
+        app.exporting = Some(export_job);
+        app.exporting_progress = Some(Arc::new(Mutex::new(Some((0, 1)))));
+        app.poll_services(&ctx);
+        assert!(app.is_busy());
+        drop(export_sender);
+        app.poll_services(&ctx);
+        assert!(!app.is_busy());
+        assert!(app.exporting_progress.is_none() && app.status_error);
+        assert_eq!(app.status, "Export was interrupted.");
+
+        let (rename_sender, rename_job) = mpsc::channel();
+        app.saving = Some(rename_job);
+        drop(rename_sender);
+        app.poll_services(&ctx);
+        assert!(!app.is_busy());
+        assert!(app.save_failure.is_none() && app.status_error);
+        assert_eq!(app.status, "The file operation was interrupted.");
+
+        assert!(app.dirty);
+        assert_eq!(app.project.as_ref().unwrap().json, document);
     }
 
     #[test]

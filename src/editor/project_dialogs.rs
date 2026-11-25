@@ -416,17 +416,26 @@ impl EditorApp {
             Cancel,
         }
 
-        let message = match &self.save_failure {
+        let (message, detail) = match &self.save_failure {
             Some(services::SaveFailure::Write { path, reason }) => match reason {
-                services::SaveWriteFailure::DirectoryConflict => locale::format_ctx(
-                    ctx,
-                    "I need to create a folder named \"{name}\", but there is a file with the exact same name there.",
-                    &[(
-                        "name",
-                        &path.file_stem().unwrap_or_default().to_string_lossy(),
-                    )],
+                services::SaveWriteFailure::DirectoryConflict => (
+                    locale::format_ctx(
+                        ctx,
+                        "I need to create a folder named \"{name}\", but there is a file with the exact same name there.",
+                        &[(
+                            "name",
+                            &path.file_stem().unwrap_or_default().to_string_lossy(),
+                        )],
+                    ),
+                    "The project was NOT saved properly!",
                 ),
-                services::SaveWriteFailure::Io(message) => message.clone(),
+                services::SaveWriteFailure::Io(message) => {
+                    (message.clone(), "The project was NOT saved properly!")
+                }
+                services::SaveWriteFailure::Interrupted => (
+                    locale::tr_ctx(ctx, services::SAVE_INTERRUPTED).into(),
+                    "The destination file may have changed.",
+                ),
             },
             Some(services::SaveFailure::MissingTarget(_)) => {
                 self.show_missing_save_target(ctx);
@@ -458,7 +467,7 @@ impl EditorApp {
                             |text: &str| RichText::new(text).size(14.667).color(Color32::WHITE);
                         save_warning(ui, width, message);
                         ui.add_space(13.);
-                        ui.label(body(locale::tr(ui, "The project was NOT saved properly!")));
+                        ui.label(body(locale::tr(ui, detail)));
                         ui.add_space(16.);
                         let size = egui::vec2(width, 35.);
                         let mut choice = None;
@@ -1209,6 +1218,48 @@ mod tests {
                 if rect.fill == Color32::from_rgb(39, 63, 47)
                     && rect.rect.top() == 140. && rect.rect.height() == 27.15625)
         }));
+    }
+
+    #[test]
+    fn disconnected_save_worker_opens_recovery_and_retries_unsaved_edits() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("Map.ldtk");
+        let mut project = Project::new();
+        let key = project.level_keys()[0];
+        project.save(&path).unwrap();
+        let original = std::fs::read(&path).unwrap();
+
+        let mut app = EditorApp::empty();
+        app.set_project(project);
+        app.project.as_mut().unwrap().level_mut(key).unwrap()["identifier"] = "Edited".into();
+        app.dirty = true;
+        app.settings.value["language"] = "zh-CN".into();
+        let ctx = egui::Context::default();
+        theme::configure(&ctx);
+        let (sender, job) = std::sync::mpsc::channel();
+        app.saving = Some(job);
+        app.save_attempt = Some(path.clone());
+        app.saving_progress = Some(Arc::new(Mutex::new(save_progress::SaveProgress::default())));
+        frame(&mut app, &ctx, vec![]);
+        assert!(app.saving.is_some());
+        assert!(app.save_failure.is_none());
+        drop(sender);
+
+        frame(&mut app, &ctx, vec![]);
+        let failed = frame(&mut app, &ctx, vec![]);
+        assert!(app.saving.is_none() && app.saving_progress.is_none());
+        assert!(app.save_failure.is_some() && app.dirty);
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+        label(&failed, "保存已中断，无法确认是否完成。");
+        label(&failed, "目标文件可能已发生变化。");
+        let retry = label(&failed, "重试");
+        click(&mut app, &ctx, retry.center());
+        wait_for_save(&mut app, &ctx);
+        assert!(!app.dirty && !app.status_error);
+        assert_eq!(
+            Project::load(&path).unwrap().level(key).unwrap()["identifier"],
+            "Edited"
+        );
     }
 
     #[test]
