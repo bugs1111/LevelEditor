@@ -313,11 +313,21 @@ mod tests {
     use super::*;
 
     fn frame(app: &mut EditorApp, ctx: &egui::Context, events: Vec<egui::Event>) {
+        frame_at(app, ctx, None, events);
+    }
+
+    fn frame_at(
+        app: &mut EditorApp,
+        ctx: &egui::Context,
+        time: Option<f64>,
+        events: Vec<egui::Event>,
+    ) {
         let input = egui::RawInput {
             screen_rect: Some(Rect::from_min_size(
                 egui::Pos2::ZERO,
                 egui::vec2(1440., 900.),
             )),
+            time,
             focused: true,
             modifiers: events
                 .iter()
@@ -530,6 +540,26 @@ mod tests {
         );
         near_zoom_anchor(&app.viewport, center_after_pan);
         assert_ne!(app.viewport.zoom, zoom_after_pan);
+    }
+
+    #[test]
+    fn long_space_hold_does_not_fit_the_camera() {
+        let (mut app, ctx) = camera_editor(1.);
+        app.viewport.center = [80., 64.];
+        app.viewport.zoom = 0.4;
+        let start = ctx.input(|input| input.time) + 0.1;
+        let space = |pressed| egui::Event::Key {
+            key: Key::Space,
+            physical_key: Some(Key::Space),
+            pressed,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        };
+        frame_at(&mut app, &ctx, Some(start), vec![space(true)]);
+        frame_at(&mut app, &ctx, Some(start + 0.25), vec![space(false)]);
+        assert!(!app.camera_motion.is_active());
+        assert_eq!(app.viewport.center, [80., 64.]);
+        near(app.viewport.zoom, 0.4);
     }
 
     #[test]

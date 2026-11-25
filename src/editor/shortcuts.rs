@@ -930,7 +930,7 @@ impl EditorApp {
             return;
         }
         let focus = ctx.wants_keyboard_input();
-        let events = ctx.input(|i| i.events.clone());
+        let (input_time, events) = ctx.input(|i| (i.time, i.events.clone()));
         for event in events {
             if !focus {
                 match &event {
@@ -966,12 +966,12 @@ impl EditorApp {
             };
             if key == Key::Space && !focus && !modifiers.any() {
                 if pressed {
-                    self.space_pressed = Some(Instant::now());
+                    self.space_pressed = Some(input_time);
                     self.space_dragged = false;
                 } else if self
                     .space_pressed
                     .take()
-                    .is_some_and(|t| t.elapsed().as_secs_f32() <= 0.2)
+                    .is_some_and(|pressed_at| input_time - pressed_at <= 0.2)
                 {
                     self.space_fit_pending = true;
                 }

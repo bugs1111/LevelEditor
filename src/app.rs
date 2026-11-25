@@ -360,7 +360,7 @@ pub struct EditorApp {
     search_focus: bool,
     search_show_all: bool,
     search_entries: Option<search::SearchIndex>,
-    space_pressed: Option<Instant>,
+    space_pressed: Option<f64>,
     space_dragged: bool,
     space_fit_pending: bool,
     camera_drag: Option<tools::CameraDrag>,
