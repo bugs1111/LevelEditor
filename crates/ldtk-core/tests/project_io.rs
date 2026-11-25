@@ -1189,6 +1189,38 @@ fn external_level_rename_updates_owned_document_name_on_save() {
     assert!(t.path().join("map/Renamed.ldtkl").exists());
     assert!(!t.path().join("map/Level_0.ldtkl").exists());
 }
+
+#[test]
+fn guarded_case_only_level_rename_does_not_replace_a_distinct_link() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("Map.ldtk");
+    let mut project = Project::new();
+    project.set_external_levels(true).unwrap();
+    project.save(&path).unwrap();
+    let previous = dir.path().join("Map/Level_0.ldtkl");
+    let target = dir.path().join("Map/level_0.ldtkl");
+    let (mut project, snapshot) = Project::load_with_snapshot(&path).unwrap();
+    let first = project.level_keys()[0];
+    project.level_mut(first).unwrap()["identifier"] = json!("level_0");
+
+    // On case-sensitive volumes, the two directory entries may share an inode.
+    if !target.exists() && fs::hard_link(&previous, &target).is_ok() {
+        let result = project.save_if_unchanged(&path, &snapshot);
+        assert!(
+            matches!(result, Err(ldtk_core::Error::FilesChanged(paths)) if paths == [target.clone()])
+        );
+        assert_eq!(fs::read(&target).unwrap(), fs::read(&previous).unwrap());
+        fs::remove_file(&target).unwrap();
+    }
+    project.save_if_unchanged(&path, &snapshot).unwrap();
+    let saved = Project::load(&path).unwrap();
+    assert_eq!(
+        saved.json["levels"][0]["externalRelPath"],
+        "Map/level_0.ldtkl"
+    );
+    assert!(target.is_file());
+}
+
 #[test]
 fn backup_restore_can_recreate_a_missing_original_project() {
     let t = tempfile::tempdir().unwrap();

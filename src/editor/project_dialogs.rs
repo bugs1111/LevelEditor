@@ -882,6 +882,55 @@ mod tests {
     }
 
     #[test]
+    fn saving_a_new_level_requires_its_own_confirmation_for_an_existing_file() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("Map.ldtk");
+        let mut project = Project::new();
+        project.set_external_levels(true).unwrap();
+        project.save(&path).unwrap();
+        let (project, snapshot) = Project::load_with_snapshot(&path).unwrap();
+        let mut app = EditorApp::empty();
+        app.install_project(project, Some(snapshot));
+        app.project
+            .as_mut()
+            .unwrap()
+            .add_level(None, "Next", 48, 48)
+            .unwrap();
+        app.dirty = true;
+        let ctx = egui::Context::default();
+        theme::configure(&ctx);
+
+        let mut outside = Project::load(&path).unwrap();
+        outside.add_level(None, "Next", 32, 32).unwrap();
+        outside.save(&path).unwrap();
+        let target = directory.path().join("Map/Next.ldtkl");
+        let outside_bytes = std::fs::read(&target).unwrap();
+        let outside_root = std::fs::read(&path).unwrap();
+
+        app.save_document(&ctx, path.clone());
+        let conflicts = app.external_changes.as_ref().unwrap();
+        assert!(conflicts.contains(&path) && !conflicts.contains(&target));
+        keep_my_version(&mut app, &ctx);
+        app.save_document(&ctx, path.clone());
+        wait_for_save(&mut app, &ctx);
+
+        assert!(std::fs::read(&target).is_ok_and(|bytes| bytes == outside_bytes));
+        assert!(std::fs::read(&path).is_ok_and(|bytes| bytes == outside_root));
+        assert_eq!(
+            app.external_changes.as_deref(),
+            Some(std::slice::from_ref(&target))
+        );
+        assert!(app.dirty);
+
+        keep_my_version(&mut app, &ctx);
+        app.save_document(&ctx, path.clone());
+        wait_for_save(&mut app, &ctx);
+        assert!(!app.dirty);
+        let saved = Project::load(&path).unwrap();
+        assert_eq!(saved.level(saved.level_keys()[1]).unwrap()["pxWid"], 48);
+    }
+
+    #[test]
     fn saving_in_application_directory_waits_for_the_users_choice() {
         let directory = tempfile::tempdir().unwrap();
         let executable = directory.path().join("level-editor");

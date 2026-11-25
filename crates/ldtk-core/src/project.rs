@@ -600,6 +600,39 @@ impl Project {
         } else {
             BTreeSet::new()
         };
+        let mut new_level_paths = BTreeSet::new();
+        if let Some(snapshot) = verified_snapshot {
+            let mut occupied = Vec::new();
+            for (_, _, target) in &external {
+                if snapshot.is_document(target)
+                    && snapshot.files.get(target).is_some_and(Option::is_some)
+                {
+                    continue;
+                }
+                match fs::symlink_metadata(target) {
+                    Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                        new_level_paths.insert(target.clone());
+                    }
+                    Ok(metadata)
+                        if metadata.is_file()
+                            && watched_retired.iter().any(|previous| {
+                                snapshot.is_document(previous)
+                                    && !paths.contains(previous)
+                                    && is_case_only_rename_target(previous, target)
+                            }) => {}
+                    Ok(_) => occupied.push(target.clone()),
+                    Err(source) => {
+                        return Err(Error::Io {
+                            path: target.clone(),
+                            source,
+                        });
+                    }
+                }
+            }
+            if !occupied.is_empty() {
+                return Err(Error::FilesChanged(occupied));
+            }
+        }
         let verify_documents = || -> Result<()> {
             if let Some(snapshot) = verified_snapshot {
                 let changed = snapshot.changed_files_matching(|path| {
@@ -715,7 +748,11 @@ impl Project {
                 if target.starts_with(&document_dir) {
                     ensure_parent_directory(&target)?;
                 }
-                staged.add(target, &bytes, preserve_identical_levels)?;
+                if new_level_paths.contains(&target) {
+                    staged.add_new_document(target, &bytes)?;
+                } else {
+                    staged.add(target, &bytes, preserve_identical_levels)?;
+                }
             }
         }
         if total > 0 {
@@ -1504,6 +1541,7 @@ struct StagedFile {
     target: PathBuf,
     staged: TemporaryFile,
     original: Option<TemporaryFile>,
+    create_new: bool,
 }
 
 impl StagedFile {
@@ -1532,6 +1570,29 @@ impl StagedFile {
             target,
             staged,
             original: None,
+            create_new: false,
+        })
+    }
+
+    fn publish(&self) -> Result<()> {
+        let result = if self.create_new {
+            tempfile::TempPath::try_from_path(&self.staged.0).and_then(|staged| {
+                staged
+                    .persist_noclobber(&self.target)
+                    .map_err(|error| error.error)
+            })
+        } else {
+            fs::rename(&self.staged.0, &self.target)
+        };
+        result.map_err(|source| {
+            if self.create_new && source.kind() == io::ErrorKind::AlreadyExists {
+                Error::FilesChanged(vec![self.target.clone()])
+            } else {
+                Error::Io {
+                    path: self.target.clone(),
+                    source,
+                }
+            }
         })
     }
 }
@@ -1679,6 +1740,18 @@ impl StagedSave {
             target,
             staged,
             original,
+            create_new: false,
+        });
+        Ok(())
+    }
+
+    fn add_new_document(&mut self, target: PathBuf, bytes: &[u8]) -> Result<()> {
+        let staged = stage_file(&target, bytes, None)?;
+        self.files.push(StagedFile {
+            target,
+            staged,
+            original: None,
+            create_new: true,
         });
         Ok(())
     }
@@ -1741,17 +1814,14 @@ impl StagedSave {
             target,
             staged,
             original,
+            create_new: false,
         });
         Ok(())
     }
 
     pub(crate) fn publish(self) -> Result<()> {
         for (index, file) in self.files.iter().enumerate() {
-            if let Err(source) = fs::rename(&file.staged.0, &file.target) {
-                let failure = Error::Io {
-                    path: file.target.clone(),
-                    source,
-                };
+            if let Err(failure) = file.publish() {
                 let mut rollback_errors = Vec::new();
                 for file in self.files[..index].iter().rev() {
                     let rollback = match &file.original {
@@ -1858,6 +1928,44 @@ pub(crate) fn atomic_save(outputs: Vec<(PathBuf, Vec<u8>)>) -> Result<()> {
 mod save_transaction_tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn guarded_save_preserves_a_new_output_path_created_during_staging() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("Map.ldtk");
+        let mut project = Project::new();
+        project.set_external_levels(true).unwrap();
+        project.save(&path).unwrap();
+        let before = fs::read(&path).unwrap();
+        let existing = dir.path().join("Map/Level_0.ldtkl");
+        let previous_level = fs::read(&existing).unwrap();
+        let (mut project, snapshot) = Project::load_with_snapshot(&path).unwrap();
+        let first = project.level_keys()[0];
+        project.level_mut(first).unwrap()["bgColor"] = json!("#123456");
+        project.add_level(None, "Next", 48, 48).unwrap();
+        let target = dir.path().join("Map/Next.ldtkl");
+        let mut created = false;
+        let result = project.save_document_with_progress(
+            &path,
+            false,
+            Some(&snapshot),
+            None,
+            None,
+            &mut |stage, done, total, _| {
+                if stage == SaveStage::PrepareLevels && total > 0 && done == total {
+                    fs::write(&target, b"other writer's level").unwrap();
+                    created = true;
+                }
+            },
+        );
+
+        assert!(created);
+        assert!(fs::read(&target).is_ok_and(|bytes| bytes == b"other writer's level"));
+        assert_eq!(fs::read(&path).unwrap(), before);
+        assert_eq!(fs::read(existing).unwrap(), previous_level);
+        assert!(matches!(result, Err(Error::FilesChanged(paths)) if paths == [target]));
+        assert_eq!(project.level_keys().len(), 2);
+    }
 
     #[test]
     fn guarded_save_does_not_retire_a_level_changed_during_staging() {
@@ -2417,6 +2525,22 @@ fn same_existing_file(a: &Path, b: &Path) -> bool {
         .zip(fs::canonicalize(b).ok())
         .is_some_and(|(a, b)| a == b)
 }
+
+fn is_case_only_rename_target(previous: &Path, target: &Path) -> bool {
+    let (Some(previous_name), Some(target_name), Some(parent)) =
+        (previous.file_name(), target.file_name(), target.parent())
+    else {
+        return false;
+    };
+    previous.parent() == Some(parent)
+        && previous_name.eq_ignore_ascii_case(target_name)
+        && same_existing_file(previous, target)
+        // Distinct entries can share an inode on a case-sensitive filesystem.
+        && fs::read_dir(parent).is_ok_and(|mut entries| {
+            entries.all(|entry| entry.is_ok_and(|entry| entry.file_name() != target_name))
+        })
+}
+
 #[cfg(unix)]
 fn file_identity(path: &Path) -> Option<(u64, u64)> {
     use std::os::unix::fs::MetadataExt;
