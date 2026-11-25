@@ -15,13 +15,15 @@ fn file_status(
     path: &std::path::Path,
     checksum: &str,
 ) -> FileStatus {
+    const INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
     let id = ui.make_persistent_id(("enum-source-file-status", path));
     if let Some((checked, known_checksum, status)) = ui
         .ctx()
         .data(|data| data.get_temp::<(Instant, String, FileStatus)>(id))
-        && checked.elapsed() < std::time::Duration::from_secs(1)
         && known_checksum == checksum
+        && let Some(remaining) = INTERVAL.checked_sub(checked.elapsed())
     {
+        ui.ctx().request_repaint_after(remaining);
         return status;
     }
     // The panel renders every frame. Only hash a source at the status refresh interval.
@@ -32,8 +34,7 @@ fn file_status(
     };
     ui.ctx()
         .data_mut(|data| data.insert_temp(id, (Instant::now(), checksum.to_owned(), status)));
-    ui.ctx()
-        .request_repaint_after(std::time::Duration::from_secs(1));
+    ui.ctx().request_repaint_after(INTERVAL);
     status
 }
 

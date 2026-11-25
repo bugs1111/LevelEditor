@@ -1,4 +1,5 @@
 use super::*;
+use std::time::Duration;
 
 pub(super) const SAVED_PROJECT_TITLE: &str = "Saved project";
 
@@ -469,12 +470,13 @@ impl EditorApp {
                 ctx.request_repaint_after(std::time::Duration::from_millis(16));
             }
         }
-        if self
-            .last_chance
-            .as_ref()
-            .is_some_and(|(_, since)| since.elapsed().as_secs_f32() > 20.0)
-        {
-            self.last_chance = None;
+        if let Some((_, since)) = &self.last_chance {
+            let remaining = Duration::from_secs(20).saturating_sub(since.elapsed());
+            if remaining.is_zero() {
+                self.last_chance = None;
+            } else {
+                ctx.request_repaint_after(remaining);
+            }
         }
         if let Some((label, _)) = &self.last_chance {
             let mut restore = false;
@@ -510,7 +512,6 @@ impl EditorApp {
                         Color32::from_rgb(227, 77, 0),
                     );
                 });
-            ctx.request_repaint_after(std::time::Duration::from_millis(100));
             if restore {
                 self.restore_last_chance();
             }
@@ -577,15 +578,18 @@ impl EditorApp {
                         });
                 });
         }
-        self.paint_canvas_notices(ctx, Instant::now());
+        let now = Instant::now();
+        self.paint_canvas_notices(ctx, now);
         let id = egui::Id::new("last-notification");
-        let mut toast = ctx
-            .data_mut(|d| d.get_temp::<(String, Instant)>(id))
-            .unwrap_or_else(|| (self.status.clone(), Instant::now()));
-        if toast.0 != self.status {
-            toast = (self.status.clone(), Instant::now());
-            ctx.data_mut(|d| d.insert_temp(id, toast.clone()));
-        }
+        let remaining = ctx.data_mut(|data| {
+            let (message, since) =
+                data.get_temp_mut_or_insert_with(id, || (self.status.clone(), now));
+            if *message != self.status {
+                message.clone_from(&self.status);
+                *since = now;
+            }
+            Duration::from_secs(4).saturating_sub(now.saturating_duration_since(*since))
+        });
         let resize_notice = self.status == "Level resized"
             && self
                 .canvas_notices
@@ -596,10 +600,13 @@ impl EditorApp {
             && self.status != SAVED_PROJECT_TITLE
             && !self.status.starts_with("Save failed: ")
             && !resize_notice
-            && (self.status_error || toast.1.elapsed().as_secs_f32() < 4.0)
+            && (self.status_error || !remaining.is_zero())
             && !self.status.starts_with("Project opened.")
             && !self.status.starts_with("Open a project")
         {
+            if !self.status_error {
+                ctx.request_repaint_after(remaining);
+            }
             egui::Area::new(egui::Id::new("notification"))
                 .fixed_pos(rect.left_bottom() + egui::vec2(44.0, -48.0))
                 .order(egui::Order::Foreground)
@@ -821,6 +828,29 @@ mod tests {
         assert_eq!(amber.bottom(), 772.);
         assert!((amber.top() - red.bottom() - 8.).abs() < 0.01);
         assert!(red.height() < amber.height());
+    }
+
+    #[test]
+    fn status_notification_schedules_its_expiration_without_input() {
+        let mut app = EditorApp::empty();
+        app.status = "Project settings changed".into();
+        let ctx = egui::Context::default();
+        theme::configure(&ctx);
+        ctx.style_mut(|style| style.animation_time = 0.);
+        let screen = Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1440., 900.));
+        for _ in 0..3 {
+            let _ = ctx.run(Default::default(), |ctx| {
+                app.canvas_notifications(ctx, screen)
+            });
+        }
+        let output = ctx.run(Default::default(), |ctx| {
+            app.canvas_notifications(ctx, screen)
+        });
+        let delay = output.viewport_output[&egui::ViewportId::ROOT].repaint_delay;
+        assert!(
+            !delay.is_zero() && delay <= std::time::Duration::from_secs(4),
+            "{delay:?}"
+        );
     }
 
     #[test]

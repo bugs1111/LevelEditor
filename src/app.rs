@@ -1652,14 +1652,6 @@ impl EditorApp {
             self.published_window_title = title.clone();
             ctx.send_viewport_cmd(egui::ViewportCommand::Title(title));
         }
-        // Keep idle polling alive while input, animations and background jobs can wake us sooner.
-        let foreground =
-            ctx.input(|input| input.focused && input.viewport().minimized != Some(true));
-        ctx.request_repaint_after(std::time::Duration::from_millis(if foreground {
-            83
-        } else {
-            500
-        }));
         self.frame_time = frame
             .info()
             .cpu_usage

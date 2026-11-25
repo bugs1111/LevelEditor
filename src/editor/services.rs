@@ -426,7 +426,15 @@ impl EditorApp {
             ctx.request_repaint_after(std::time::Duration::from_millis(30));
         }
         self.pump_resources(ctx);
-        if self.last_file_check.elapsed() > std::time::Duration::from_secs(2)
+        self.poll_external_files(ctx);
+    }
+
+    fn poll_external_files(&mut self, ctx: &egui::Context) {
+        if self.project.is_none() || self.file_snapshot.is_none() {
+            return;
+        }
+        const INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
+        if self.last_file_check.elapsed() >= INTERVAL
             && !self.is_busy()
             && self.pending.is_none()
             && !self.stroke
@@ -441,6 +449,13 @@ impl EditorApp {
                 self.changed_resources(ctx, paths);
             }
         }
+        let remaining = INTERVAL.saturating_sub(self.last_file_check.elapsed());
+        // A pending edit can defer polling past its deadline. Retry on the next interval.
+        ctx.request_repaint_after(if remaining.is_zero() {
+            INTERVAL
+        } else {
+            remaining
+        });
     }
 
     pub(super) fn start_auto_layer_rebuild(&mut self, ctx: &egui::Context) {
@@ -1137,6 +1152,26 @@ mod creation_tests {
         assert!(app.details && app.render_auto);
         assert_eq!(app.settings.value["showDetails"], true);
         assert!(app.quick_notification.is_none());
+    }
+
+    #[test]
+    fn watched_project_schedules_its_next_file_check() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("Map.ldtk");
+        let mut project = Project::new();
+        project.save(&path).unwrap();
+        let mut app = EditorApp::empty();
+        app.set_project(project);
+        let ctx = egui::Context::default();
+        for _ in 0..3 {
+            let _ = ctx.run(Default::default(), |ctx| app.poll_services(ctx));
+        }
+        let output = ctx.run(Default::default(), |ctx| app.poll_services(ctx));
+        let delay = output.viewport_output[&egui::ViewportId::ROOT].repaint_delay;
+        assert!(
+            !delay.is_zero() && delay <= std::time::Duration::from_secs(2),
+            "{delay:?}"
+        );
     }
 
     #[test]
