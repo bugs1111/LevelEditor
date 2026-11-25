@@ -555,6 +555,15 @@ impl Project {
     }
     /// Publish the renamed project before deleting any source file.
     pub fn rename_project(&mut self, new_stem: &str) -> Result<SaveReport> {
+        self.rename_project_with_snapshot(new_stem, None)
+    }
+
+    /// Reject changes to the source documents recorded when the project was opened.
+    pub fn rename_project_with_snapshot(
+        &mut self,
+        new_stem: &str,
+        snapshot: Option<&FilesystemSnapshot>,
+    ) -> Result<SaveReport> {
         if self.is_backup() {
             return Err(Error::Unsupported(
                 "restore a backup before renaming the project".into(),
@@ -593,13 +602,29 @@ impl Project {
                 )));
             }
         }
+        let captured;
+        let snapshot = if let Some(snapshot) = snapshot {
+            snapshot
+        } else {
+            captured = FilesystemSnapshot::for_save_destination(&old)?;
+            &captured
+        };
+        let verify_source = || {
+            let changed = snapshot.changed_files_matching(|path| snapshot.is_document(path))?;
+            if changed.is_empty() {
+                Ok(())
+            } else {
+                Err(Error::FilesChanged(changed))
+            }
+        };
+        verify_source()?;
         let mut candidate = self.clone();
         rewrite_moved_resources(&mut candidate.json, &old_dir, &new_dir, base)?;
         for level in candidate.external_levels.values_mut() {
             rewrite_moved_resources(level, &old_dir, &new_dir, base)?;
         }
         let mut document_snapshot = FilesystemSnapshot::default();
-        let publish = (|| -> Result<()> {
+        let publish = (|| -> Result<SaveReport> {
             if old_dir.exists() {
                 copy_tree(&old_dir, &new_dir)?;
             }
@@ -613,15 +638,20 @@ impl Project {
                 None,
                 Some(&mut document_snapshot),
                 &mut |_, _, _, _| {},
-            )
+            )?;
+            let report = candidate.configured_exports_report();
+            verify_source()?;
+            Ok(report)
         })();
-        if let Err(error) = publish {
-            let _ = fs::remove_dir_all(&new_dir);
-            let _ = fs::remove_file(&new_meta);
-            let _ = fs::remove_file(&target);
-            return Err(error);
-        }
-        let mut report = candidate.configured_exports_report();
+        let mut report = match publish {
+            Ok(report) => report,
+            Err(error) => {
+                let _ = fs::remove_dir_all(&new_dir);
+                let _ = fs::remove_file(&new_meta);
+                let _ = fs::remove_file(&target);
+                return Err(error);
+            }
+        };
         report.document_snapshot = Some(document_snapshot);
         match fs::remove_file(&old) {
             Ok(()) => {

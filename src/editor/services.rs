@@ -352,7 +352,7 @@ impl EditorApp {
                     );
                 }
                 Ok(Err(ldtk_core::Error::FilesChanged(paths)))
-                    if self.save_attempt.as_ref().is_some_and(|attempt| {
+                    if self.save_attempt.as_ref().is_none_or(|attempt| {
                         self.project
                             .as_ref()
                             .and_then(|project| project.path.as_ref())
@@ -659,13 +659,14 @@ impl EditorApp {
         let Some(mut project) = self.project.clone() else {
             return;
         };
+        let snapshot = self.file_snapshot.clone();
         let (tx, rx) = mpsc::channel();
         self.saving = Some(rx);
         self.status = "Renaming project…".into();
         let ctx = ctx.clone();
         std::thread::spawn(move || {
             let result = project
-                .rename_project(&name)
+                .rename_project_with_snapshot(&name, snapshot.as_ref())
                 .map(|report| SavedProject { project, report });
             let _ = tx.send(result);
             ctx.request_repaint();
@@ -904,6 +905,54 @@ mod creation_tests {
 
         assert!(app.dirty);
         assert_eq!(app.project.as_ref().unwrap().json, document);
+    }
+
+    #[test]
+    fn renaming_preserves_source_documents_edited_outside_the_editor() {
+        let ctx = egui::Context::default();
+        for edit_external_level in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("Map.ldtk");
+            let mut project = Project::new();
+            project.set_external_levels(true).unwrap();
+            project.save(&path).unwrap();
+            let changed_path = if edit_external_level {
+                dir.path()
+                    .join(project.external_levels.keys().next().unwrap())
+            } else {
+                path.clone()
+            };
+            let mut app = EditorApp::empty();
+            let loaded = load_project(path.clone(), |_, _| {}).unwrap();
+            app.install_project(loaded.project, loaded.snapshot);
+            let mut changed_bytes = std::fs::read(&changed_path).unwrap();
+            changed_bytes.push(b'\n');
+            std::fs::write(&changed_path, &changed_bytes).unwrap();
+
+            app.rename_async(&ctx, "Renamed".into());
+            let result = app
+                .saving
+                .take()
+                .unwrap()
+                .recv_timeout(std::time::Duration::from_secs(15))
+                .unwrap();
+            let (sender, receiver) = mpsc::channel();
+            assert!(sender.send(result).is_ok());
+            app.saving = Some(receiver);
+            app.poll_services(&ctx);
+
+            assert!(
+                std::fs::read(&changed_path).is_ok_and(|bytes| bytes == changed_bytes),
+                "renaming must preserve the edited source document"
+            );
+            assert_eq!(
+                app.external_changes.as_deref(),
+                Some(std::slice::from_ref(&changed_path))
+            );
+            assert_eq!(app.project.as_ref().unwrap().path.as_ref(), Some(&path));
+            assert!(!dir.path().join("Renamed.ldtk").exists());
+            assert!(!dir.path().join("Renamed").exists());
+        }
     }
 
     #[test]
