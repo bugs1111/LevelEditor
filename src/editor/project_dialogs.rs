@@ -765,6 +765,122 @@ mod tests {
         click(app, ctx, label(&trust, "Block project commands").center());
     }
 
+    fn keep_my_version(app: &mut EditorApp, ctx: &egui::Context) {
+        frame(app, ctx, vec![]);
+        let dialog = frame(app, ctx, vec![]);
+        click(app, ctx, label(&dialog, "Keep my version").center());
+    }
+
+    #[test]
+    fn keep_my_version_only_accepts_the_listed_document_changes() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("Map.ldtk");
+        let mut project = Project::new();
+        project.set_external_levels(true).unwrap();
+        project.save(&path).unwrap();
+        let external = directory
+            .path()
+            .join(project.external_levels.keys().next().unwrap());
+        let (project, snapshot) = Project::load_with_snapshot(&path).unwrap();
+        let mut app = EditorApp::empty();
+        app.install_project(project, Some(snapshot));
+        let ctx = egui::Context::default();
+        theme::configure(&ctx);
+
+        std::fs::write(&path, b"external root edit").unwrap();
+        app.save_document(&ctx, path.clone());
+        assert_eq!(
+            app.external_changes.as_deref(),
+            Some(std::slice::from_ref(&path))
+        );
+        std::fs::write(&external, b"later external level edit").unwrap();
+        app.changed_resources(&ctx, vec![external.clone()]);
+        assert_eq!(
+            app.external_changes.as_deref(),
+            Some(std::slice::from_ref(&path))
+        );
+        keep_my_version(&mut app, &ctx);
+
+        assert_eq!(
+            app.changed_document_files(),
+            std::slice::from_ref(&external)
+        );
+        assert!(app.dirty);
+        app.save_document(&ctx, path);
+        assert_eq!(
+            app.external_changes.as_deref(),
+            Some(std::slice::from_ref(&external))
+        );
+        assert!(app.saving.is_none());
+    }
+
+    #[test]
+    fn keep_my_version_preserves_document_watches_when_artwork_is_unreadable() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("Map.ldtk");
+        let artwork = directory.path().join("Atlas.png");
+        std::fs::write(&artwork, b"artwork").unwrap();
+        let mut project = Project::new();
+        project.add_tileset(&artwork, 16, 16, 16).unwrap();
+        project.save(&path).unwrap();
+        let (project, snapshot) = Project::load_with_snapshot(&path).unwrap();
+        let mut app = EditorApp::empty();
+        app.install_project(project, Some(snapshot));
+        let ctx = egui::Context::default();
+        theme::configure(&ctx);
+
+        std::fs::remove_file(&artwork).unwrap();
+        std::fs::create_dir(&artwork).unwrap();
+        std::fs::write(&path, b"first external edit").unwrap();
+        app.save_document(&ctx, path.clone());
+        keep_my_version(&mut app, &ctx);
+        assert!(app.dirty && app.external_changes.is_none());
+
+        std::fs::remove_dir(&artwork).unwrap();
+        std::fs::write(&artwork, b"updated artwork").unwrap();
+        assert_eq!(app.changed_resource_files(), std::slice::from_ref(&artwork));
+        std::fs::write(&path, b"second external edit").unwrap();
+        assert_eq!(app.changed_document_files(), std::slice::from_ref(&path));
+        app.save_document(&ctx, path.clone());
+        assert_eq!(
+            app.external_changes.as_deref(),
+            Some(std::slice::from_ref(&path))
+        );
+        assert!(app.saving.is_none());
+    }
+
+    #[test]
+    fn keep_my_version_leaves_unopened_external_levels_on_disk() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("Map.ldtk");
+        let mut project = Project::new();
+        project.set_external_levels(true).unwrap();
+        project.save(&path).unwrap();
+        let (project, snapshot) = Project::load_with_snapshot(&path).unwrap();
+        let mut app = EditorApp::empty();
+        app.install_project(project, Some(snapshot));
+        let ctx = egui::Context::default();
+        theme::configure(&ctx);
+
+        let mut outside = Project::load(&path).unwrap();
+        let new = outside.add_level(None, "External", 32, 32).unwrap();
+        outside.save(&path).unwrap();
+        let extra = directory.path().join(
+            outside.json["levels"][new.level]["externalRelPath"]
+                .as_str()
+                .unwrap(),
+        );
+        let added_bytes = std::fs::read(&extra).unwrap();
+        app.save_document(&ctx, path.clone());
+        keep_my_version(&mut app, &ctx);
+        app.save_document(&ctx, path.clone());
+        wait_for_save(&mut app, &ctx);
+
+        assert!(!app.dirty && !app.status_error);
+        assert_eq!(Project::load(&path).unwrap().level_keys().len(), 1);
+        assert!(std::fs::read(extra).is_ok_and(|bytes| bytes == added_bytes));
+    }
+
     #[test]
     fn saving_in_application_directory_waits_for_the_users_choice() {
         let directory = tempfile::tempdir().unwrap();

@@ -744,12 +744,22 @@ impl EditorApp {
                         self.request(ctx, Action::Open(path));
                     }
                     if ui.button(locale::tr(ui, "Keep my version")).clicked() {
-                        self.external_changes = None;
-                        self.file_snapshot = self
-                            .project
-                            .as_ref()
-                            .and_then(|p| p.filesystem_snapshot().ok());
-                        self.dirty = true;
+                        match self
+                            .file_snapshot
+                            .get_or_insert_with(Default::default)
+                            .acknowledge_document_changes(&paths)
+                        {
+                            Ok(()) => {
+                                let remaining = self.changed_document_files();
+                                self.external_changes =
+                                    (!remaining.is_empty()).then_some(remaining);
+                                self.dirty = true;
+                            }
+                            Err(error) => {
+                                self.status = error.to_string();
+                                self.status_error = true;
+                            }
+                        }
                     }
                 });
             });

@@ -395,7 +395,10 @@ impl EditorApp {
                 self.resource_failure(path, Vec::new(), self.status.clone());
             }
         }
-        self.external_changes = (!conflicts.is_empty()).then_some(conflicts);
+        // Keep the files shown in the open dialog stable until the user responds.
+        if self.external_changes.is_none() && !conflicts.is_empty() {
+            self.external_changes = Some(conflicts);
+        }
         self.pump_resources(ctx);
     }
     pub(super) fn pump_resources(&mut self, ctx: &egui::Context) {

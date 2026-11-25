@@ -767,6 +767,7 @@ impl EditorApp {
         self.atlas_selection = None;
         self.preview_tile = None;
         self.file_snapshot = snapshot;
+        self.external_changes = None;
         if let Some(project) = &self.project
             && let Some(path) = &project.path
         {
@@ -890,6 +891,7 @@ impl EditorApp {
                     self.finish_settings_dialog(ctx);
                 }
                 self.project = None;
+                self.external_changes = None;
                 self.suggest_backups = false;
                 self.quick_notification = None;
                 self.canvas_notices.clear();

@@ -67,6 +67,18 @@ impl FilesystemSnapshot {
         self.documents.contains(path)
     }
 
+    /// Accept the listed document contents while retaining the loaded manifest and other watches.
+    pub fn acknowledge_document_changes(&mut self, paths: &[PathBuf]) -> Result<()> {
+        let fingerprints = paths
+            .iter()
+            .map(|path| Ok((path.clone(), file_fingerprint(path)?)))
+            .collect::<Result<Vec<_>>>()?;
+        for (path, fingerprint) in fingerprints {
+            self.record_document(path, fingerprint);
+        }
+        Ok(())
+    }
+
     pub fn refresh_resource_file(&mut self, path: &Path) -> Result<()> {
         let path = absolute(path)?;
         if !self.is_document(&path) {
