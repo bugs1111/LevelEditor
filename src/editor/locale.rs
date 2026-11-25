@@ -17,13 +17,17 @@ impl Language {
         }
     }
 
-    fn translate(self, text: &str) -> &str {
+    pub(super) fn translate(self, text: &str) -> &str {
         if self == Self::SimplifiedChinese
             && let Some(translated) = CHINESE.get(text)
         {
             return translated;
         }
         text
+    }
+
+    pub(super) fn format(self, text: &str, values: &[(&str, &str)]) -> String {
+        format_translated(self.translate(text), values)
     }
 }
 
@@ -147,7 +151,10 @@ pub(super) fn tr<'a>(ui: &egui::Ui, text: &'a str) -> &'a str {
 }
 
 pub(super) fn format_ctx(ctx: &egui::Context, text: &str, values: &[(&str, &str)]) -> String {
-    let mut rest = tr_ctx(ctx, text);
+    format_translated(tr_ctx(ctx, text), values)
+}
+
+fn format_translated(mut rest: &str, values: &[(&str, &str)]) -> String {
     let mut result = String::with_capacity(rest.len());
     while let Some((prefix, placeholder)) = rest.split_once('{') {
         let Some((name, suffix)) = placeholder.split_once('}') else {

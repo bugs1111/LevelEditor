@@ -1674,7 +1674,10 @@ impl Drop for EditorApp {
         if std::thread::panicking() && self.crash.is_none() {
             let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 self.capture_crash(
-                    "Native runtime panicked outside the editor update".into(),
+                    self.settings
+                        .language()
+                        .translate("Native runtime panicked outside the editor update")
+                        .into(),
                     self.crash_fallback(),
                 )
             }));
@@ -1710,7 +1713,11 @@ impl eframe::App for EditorApp {
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         if self.crash.is_some() {
             egui::CentralPanel::default().show(ctx, |ui| {
-                ui.label("LDtk encountered an unexpected error.");
+                ui.label(
+                    self.settings
+                        .language()
+                        .translate("The editor encountered an unexpected error"),
+                );
             });
             self.crash_dialog(ctx);
             return;
@@ -1722,7 +1729,12 @@ impl eframe::App for EditorApp {
                 .downcast_ref::<String>()
                 .cloned()
                 .or_else(|| error.downcast_ref::<&str>().map(|s| s.to_string()))
-                .unwrap_or_else(|| "Unexpected native error".into());
+                .unwrap_or_else(|| {
+                    self.settings
+                        .language()
+                        .translate("Unexpected native error")
+                        .into()
+                });
             self.capture_crash(message, self.crash_fallback());
             ctx.request_repaint();
         }

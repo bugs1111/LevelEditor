@@ -39,9 +39,14 @@ impl EditorApp {
         self.history = History::default();
         self.ui_commit = ui_commit::UiCommit::default();
         self.world_context = world_context::WorldContext::default();
+        let language = self.settings.language();
         let mut report = message;
         if let Some(error) = auto_error {
-            report.push_str(&format!("\n\nDeferred paint was rolled back: {error}"));
+            report.push_str("\n\n");
+            report.push_str(&language.format(
+                "Deferred paint was rolled back: {error}",
+                &[("error", &error)],
+            ));
         }
         let mut recovery = None;
         if needs_recovery && let Some(project) = &self.project {
@@ -56,7 +61,13 @@ impl EditorApp {
                     self.settings.remember(&path, level_uid);
                     recovery = Some(path);
                 }
-                Err(error) => report.push_str(&format!("\n\nRecovery failed: {error}")),
+                Err(error) => {
+                    report.push_str("\n\n");
+                    report.push_str(
+                        &language
+                            .format("Recovery failed: {error}", &[("error", &error.to_string())]),
+                    );
+                }
             }
         }
         self.status = "The editor encountered an unexpected error".into();
@@ -70,28 +81,30 @@ impl EditorApp {
         };
         let mut close = false;
         let mut keep = false;
+        let language = self.settings.language();
+        let tr = |text| language.translate(text);
         egui::Modal::new(egui::Id::new("crash-recovery")).show(ctx, |ui| {
             ui.set_width(600.0);
-            ui.heading("The editor encountered an unexpected error");
+            ui.heading(tr("The editor encountered an unexpected error"));
             egui::ScrollArea::vertical().max_height(220.0).show(ui, |ui| {
                 ui.monospace(message);
             });
             ui.separator();
             if let Some(path) = recovery {
-                ui.label("Your current work was saved in this recovery project:");
+                ui.label(tr("Your current work was saved in this recovery project:"));
                 ui.monospace(path.display().to_string());
-                if ui.button("Copy recovery path").clicked() {
+                if ui.button(tr("Copy recovery path")).clicked() {
                     ctx.copy_text(path.to_string_lossy().into_owned());
                 }
             } else if self.dirty {
-                ui.label("A recovery file could not be written. Your project is still in memory.");
+                ui.label(tr("A recovery file could not be written. Your project is still in memory."));
             } else {
-                ui.label("There were no unsaved edits to recover.");
+                ui.label(tr("There were no unsaved edits to recover."));
             }
-            ui.label("Restarting is recommended. Keeping this window may encounter the same error; undo history has been reset.");
+            ui.label(tr("Restarting is recommended. Keeping this window may encounter the same error; undo history has been reset."));
             ui.horizontal(|ui| {
-                close = ui.button("Close app").clicked();
-                keep = ui.button("Keep window").clicked();
+                close = ui.button(tr("Close app")).clicked();
+                keep = ui.button(tr("Keep window")).clicked();
             });
         });
         if close {
@@ -108,6 +121,132 @@ impl EditorApp {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    fn recovery_frame(
+        app: &mut EditorApp,
+        ctx: &egui::Context,
+        events: Vec<egui::Event>,
+    ) -> egui::FullOutput {
+        ctx.run(
+            egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1100., 780.),
+                )),
+                focused: true,
+                events,
+                ..Default::default()
+            },
+            |ctx| eframe::App::update(app, ctx, &mut eframe::Frame::_new_kittest()),
+        )
+    }
+
+    fn visible_text(output: &egui::FullOutput, value: &str) -> Option<Rect> {
+        output.shapes.iter().find_map(|shape| match &shape.shape {
+            egui::Shape::Text(text) if text.galley.text() == value => {
+                Some(Rect::from_min_size(text.pos, text.galley.size()))
+            }
+            _ => None,
+        })
+    }
+
+    #[test]
+    fn chinese_crash_recovery_copies_the_exact_recovery_path() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut app = EditorApp::empty();
+        app.settings.value["language"] = json!("zh-CN");
+        app.project = Some(Project::new());
+        app.dirty = true;
+        let ctx = egui::Context::default();
+        theme::configure(&ctx);
+        locale::set(&ctx, app.settings.language());
+        app.capture_crash(
+            "raw panic details".into(),
+            directory.path().join("Recovery folder"),
+        );
+        let recovery = app
+            .crash
+            .as_ref()
+            .unwrap()
+            .1
+            .as_ref()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        recovery_frame(&mut app, &ctx, vec![]);
+        let dialog = recovery_frame(&mut app, &ctx, vec![]);
+
+        for label in [
+            "编辑器遇到意外错误",
+            "当前编辑已保存到以下恢复工程",
+            "raw panic details",
+            recovery.as_str(),
+            "退出应用",
+            "保留窗口",
+        ] {
+            assert!(
+                visible_text(&dialog, label).is_some(),
+                "missing label {label}"
+            );
+        }
+        let pos = visible_text(&dialog, "复制恢复路径").unwrap().center();
+        recovery_frame(
+            &mut app,
+            &ctx,
+            vec![
+                egui::Event::PointerMoved(pos),
+                egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: Default::default(),
+                },
+            ],
+        );
+        let clicked = recovery_frame(
+            &mut app,
+            &ctx,
+            vec![egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: Default::default(),
+            }],
+        );
+        assert!(clicked.platform_output.commands.iter().any(
+            |command| matches!(command, egui::OutputCommand::CopyText(text) if text == &recovery)
+        ));
+    }
+
+    #[test]
+    fn chinese_crash_recovery_distinguishes_failed_writes_from_clean_projects() {
+        let directory = tempfile::tempdir().unwrap();
+        let blocked = directory.path().join("not-a-directory");
+        std::fs::write(&blocked, "keep").unwrap();
+        for (dirty, expected) in [
+            (true, "无法写入恢复文件。工程仍保留在内存中。"),
+            (false, "没有需要恢复的未保存修改。"),
+        ] {
+            let mut app = EditorApp::empty();
+            app.settings.value["language"] = json!("zh-CN");
+            app.project = Some(Project::new());
+            app.dirty = dirty;
+            let ctx = egui::Context::default();
+            theme::configure(&ctx);
+            locale::set(&ctx, app.settings.language());
+            app.capture_crash("raw panic details".into(), blocked.clone());
+            recovery_frame(&mut app, &ctx, vec![]);
+            let dialog = recovery_frame(&mut app, &ctx, vec![]);
+            assert!(
+                visible_text(&dialog, expected).is_some(),
+                "missing label {expected}"
+            );
+            assert!(visible_text(&dialog, "复制恢复路径").is_none());
+            let (details, path) = app.crash.as_ref().unwrap();
+            assert!(path.is_none() && details.starts_with("raw panic details"));
+            assert_eq!(details.contains("恢复文件写入失败"), dirty);
+        }
+    }
 
     #[test]
     fn crash_saves_dirty_memory_registers_recovery_and_stops_interaction_once() {
