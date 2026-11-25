@@ -720,16 +720,22 @@ mod tests {
     }
 
     fn wait_for_save(app: &mut EditorApp, ctx: &egui::Context) -> egui::FullOutput {
-        let deadline = Instant::now() + std::time::Duration::from_secs(5);
-        while app.saving.is_some() && Instant::now() < deadline {
-            frame(app, ctx, vec![]);
-            std::thread::sleep(std::time::Duration::from_millis(5));
+        if let Some(pending) = app.saving.take() {
+            let result = pending
+                .recv_timeout(Duration::from_secs(15))
+                .expect("save worker should send its result");
+            // Deliver the worker's result through the normal frame update.
+            let (sender, ready) = std::sync::mpsc::channel();
+            assert!(sender.send(result).is_ok());
+            app.saving = Some(ready);
         }
+        let output = frame(app, ctx, vec![]);
         assert!(app.saving.is_none());
         if app.save_failure.is_some() {
-            frame(app, ctx, vec![]);
+            frame(app, ctx, vec![])
+        } else {
+            output
         }
-        frame(app, ctx, vec![])
     }
 
     #[test]

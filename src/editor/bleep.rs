@@ -225,7 +225,7 @@ fn entity_error(
     })
 }
 // The source's cached first error checks all layers, including hidden/offscreen ones.
-// Yield after each entity when the soft 1 ms budget is exhausted. A single diagnostic
+// Yield between entities when the soft 1 ms budget is exhausted. A single diagnostic
 // (including filesystem/reference lookup) and final candidate revalidation may exceed it.
 fn advance_error_scan(
     project: &Project,
@@ -240,6 +240,7 @@ fn advance_error_scan(
     else {
         return true;
     };
+    let mut exhausted = false;
     while scan.layer < layers.len() {
         let layer = &layers[scan.layer];
         let entities = layer["entityInstances"]
@@ -251,6 +252,10 @@ fn advance_error_scan(
             scan.entity = 0;
             continue;
         };
+        // A completed scan can publish without taking another frame.
+        if exhausted {
+            return false;
+        }
         if let Some(error) = entity_error(project, key, layer, entity) {
             scan.candidate = Some(error);
             // Level.getFirstError breaks only the inner loop: each later error layer
@@ -260,9 +265,7 @@ fn advance_error_scan(
         } else {
             scan.entity += 1;
         }
-        if started.elapsed() >= budget {
-            return false;
-        }
+        exhausted = started.elapsed() >= budget;
     }
     true
 }
@@ -1268,11 +1271,8 @@ mod tests {
         );
         assert!(ctx.data(|d| d.get_temp::<Queue>(id())).is_none());
         ctx.data_mut(|d| d.insert_temp(state_id, scan));
-        // Only the last layer's first entity remains. One frame examines it;
-        // a second completes the scan if the soft budget caused another yield.
-        for _ in 0..2 {
-            draw(&app, &ctx, 0.);
-        }
+        // The remaining entity is enough to complete the scan in this frame.
+        draw(&app, &ctx, 0.);
         assert!(ctx.data(|d| { !d.get_temp::<ErrorScan>(state_id).unwrap().running }));
         let queue = ctx
             .data(|d| d.get_temp::<Queue>(id()))
@@ -1282,7 +1282,7 @@ mod tests {
     }
 
     #[test]
-    fn zero_budget_yields_after_each_entity_and_resumes_without_losing_layer_order() {
+    fn zero_budget_yields_between_entities_and_finishes_after_the_last() {
         let (mut app, _) = fixture();
         let p = app.project.as_mut().unwrap();
         let uid = p.layer(KEY, 0).unwrap()["entityInstances"][0]["defUid"]
@@ -1290,8 +1290,10 @@ mod tests {
             .unwrap();
         p.add_entity(KEY, 0, uid, 48, 48).unwrap();
         p.add_entity(KEY, 0, uid, 64, 64).unwrap();
+        let empty = p.add_layer("Empty", "IntGrid", 16).unwrap();
+        p.reorder_layer(empty, 1).unwrap();
         let mut scan = ErrorScan::default();
-        for expected in 1..=3 {
+        for expected in 1..3 {
             assert!(!advance_error_scan(
                 p,
                 KEY,
@@ -1306,6 +1308,7 @@ mod tests {
             &mut scan,
             std::time::Duration::ZERO
         ));
+        assert_eq!(scan.layer, 2);
         assert!(scan.candidate.is_none());
     }
 }
