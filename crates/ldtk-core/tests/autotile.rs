@@ -1267,6 +1267,27 @@ fn tile_batch_restores_overwrites_removals_and_raised_tiles_on_auto_layer_error(
     let error = invalid.paint_tile_cells(key, 1, &edits).unwrap_err();
     assert!(error.to_string().contains("missing auto-layer tileset 999"));
     assert_eq!(invalid.json, before);
+    for (edit, flips) in &edits {
+        let [x, y] = edit.cell;
+        let error = invalid
+            .paint_tile_stacked(key, 1, x, y, edit.id, edit.src, *flips, false, edit.stack)
+            .unwrap_err();
+        assert!(error.to_string().contains("missing auto-layer tileset 999"));
+        assert_eq!(invalid.json, before);
+    }
+    for stack in [false, true] {
+        let error = invalid
+            .paint_tile_stacked(key, 1, 0, 0, 0, [0, 0], 0, true, stack)
+            .unwrap_err();
+        assert!(error.to_string().contains("missing auto-layer tileset 999"));
+        assert_eq!(invalid.json, before);
+    }
+    assert!(
+        !invalid
+            .paint_tile(key, 1, 2, 0, 0, [0, 0], 0, false)
+            .unwrap()
+    );
+    assert_eq!(invalid.json, before);
 
     assert_eq!(project.paint_tile_cells(key, 1, &edits).unwrap(), [0, 1, 2]);
     assert_eq!(project.json, sequential.json);

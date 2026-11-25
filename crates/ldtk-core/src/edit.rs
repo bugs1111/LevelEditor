@@ -370,22 +370,42 @@ impl Project {
         let layer = self
             .layer(key, layer_index)
             .ok_or_else(|| invalid("layer not found"))?;
-        let uid = layer["layerDefUid"].as_i64();
-        let killer = uid.is_some_and(|uid| self.tile_layer_blocks_auto(uid));
-        let old = killer.then(|| layer["gridTiles"].clone());
-        let changed =
-            self.paint_tile_inner(key, layer_index, x, y, tile_id, src, flips, erase, stack)?;
-        if changed
-            && killer
-            && let Some(uid) = uid
-            && let Err(error) =
-                self.update_auto_layers_after_paint(key, uid, &[[x, y, 1, 1]], deferred)
-        {
-            self.layer_mut(key, layer_index).expect("validated layer")["gridTiles"] =
-                old.expect("saved killer tiles");
-            return Err(error);
+        let blocks_auto = layer["layerDefUid"]
+            .as_i64()
+            .is_some_and(|uid| self.tile_layer_blocks_auto(uid));
+        if !blocks_auto {
+            return self.paint_tile_inner(
+                key,
+                layer_index,
+                x,
+                y,
+                tile_id,
+                src,
+                flips,
+                erase,
+                stack,
+            );
         }
-        Ok(changed)
+        // Share the rollback path with batches when an auto-layer update can fail.
+        if erase {
+            self.erase_tile_cells_stacked_with_deferred(
+                key,
+                layer_index,
+                &[[x, y]],
+                stack,
+                deferred,
+            )
+            .map(|changed| !changed.is_empty())
+        } else {
+            let edit = TilePaint {
+                cell: [x, y],
+                id: tile_id,
+                src,
+                stack,
+            };
+            self.paint_tile_cells_with_deferred(key, layer_index, &[edit], flips, deferred)
+                .map(|changed| !changed.is_empty())
+        }
     }
 
     fn tile_layer_blocks_auto(&self, uid: i64) -> bool {
