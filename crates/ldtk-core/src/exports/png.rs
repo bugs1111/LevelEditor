@@ -6,6 +6,7 @@ use image::{Rgba, RgbaImage};
 use serde_json::Value;
 use std::{
     collections::{HashMap, HashSet},
+    ops::Range,
     path::{Path, PathBuf},
 };
 
@@ -98,6 +99,24 @@ fn composite(target: &mut RgbaImage, source: &RgbaImage, alpha: f64, premultipli
 
 fn tile_fits([width, height]: [i64; 2], [x, y]: [i64; 2], size: i64) -> bool {
     x >= 0 && y >= 0 && x <= width - size && y <= height - size
+}
+
+fn visible_tile_pixels(
+    origin: i64,
+    clip: i64,
+    source: i64,
+    atlas: i64,
+    size: i64,
+    flipped: bool,
+) -> Range<i64> {
+    // Match the source and destination bounds in tile-local coordinates.
+    let source_range = if flipped {
+        source.saturating_add(size - atlas)..source.saturating_add(size)
+    } else {
+        source.saturating_neg()..atlas.saturating_sub(source)
+    };
+    origin.saturating_neg().max(source_range.start).max(0)
+        ..clip.saturating_sub(origin).min(source_range.end).min(size)
 }
 
 fn opaque_atlas_tile(atlas: &RgbaImage, [x, y]: [i64; 2], size: i64) -> bool {
@@ -614,9 +633,19 @@ impl<'a> PngRenderer<'a> {
         let mut opaque = HashMap::new();
         for t in values {
             let f = n(t, "f");
+            let flip_x = f & 1 != 0;
+            let flip_y = f & 2 != 0;
             let px = &t["px"];
-            let tx = px[0].as_i64().unwrap_or(0) + ox + x_offsets[(f & 1) as usize];
-            let ty = px[1].as_i64().unwrap_or(0) + oy + y_offsets[((f & 2) >> 1) as usize];
+            let position = |axis: usize, offset: i64, pivot: i64| {
+                let pixel = i128::from(px[axis].as_i64().unwrap_or(0));
+                i64::try_from(pixel + i128::from(offset) + i128::from(pivot)).ok()
+            };
+            let (Some(tx), Some(ty)) = (
+                position(0, ox, x_offsets[usize::from(flip_x)]),
+                position(1, oy, y_offsets[usize::from(flip_y)]),
+            ) else {
+                continue;
+            };
             let src = &t["src"];
             let sx = src[0].as_i64().unwrap_or(0);
             let sy = src[1].as_i64().unwrap_or(0);
@@ -631,25 +660,20 @@ impl<'a> PngRenderer<'a> {
                 copy_opaque_tile(&mut img, atlas, [tx, ty], [sx, sy], size, f);
                 continue;
             }
-            let visible = |origin: i64, extent: i64| {
-                origin.saturating_neg().max(0)..extent.saturating_sub(origin).min(size)
-            };
-            let x_range = visible(tx, clip[0]);
-            if x_range.is_empty() {
+            let x_range = visible_tile_pixels(tx, clip[0], sx, atlas_extent[0], size, flip_x);
+            let y_range = visible_tile_pixels(ty, clip[1], sy, atlas_extent[1], size, flip_y);
+            if x_range.is_empty() || y_range.is_empty() {
                 continue;
             }
-            for y in visible(ty, clip[1]) {
+            for y in y_range {
+                let ay = sy + if flip_y { size - 1 - y } else { y };
                 for x in x_range.clone() {
-                    let ax = sx + if f & 1 != 0 { size - 1 - x } else { x };
-                    let ay = sy + if f & 2 != 0 { size - 1 - y } else { y };
-                    if ax >= 0 && ay >= 0 && ax < atlas.width() as i64 && ay < atlas.height() as i64
-                    {
-                        blend_rgba(
-                            img.get_pixel_mut((tx + x) as u32, (ty + y) as u32),
-                            *atlas.get_pixel(ax as u32, ay as u32),
-                            tile_alpha,
-                        );
-                    }
+                    let ax = sx + if flip_x { size - 1 - x } else { x };
+                    blend_rgba(
+                        img.get_pixel_mut((tx + x) as u32, (ty + y) as u32),
+                        *atlas.get_pixel(ax as u32, ay as u32),
+                        tile_alpha,
+                    );
                 }
             }
         }

@@ -56,6 +56,55 @@ fn png_tile_flipped_at_the_atlas_and_canvas_edges() {
 }
 
 #[test]
+fn png_skips_tiles_with_overflowing_coordinates() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut project = Project::new();
+    let key = project.level_keys()[0];
+    project.path = Some(dir.path().join("map.ldtk"));
+    project.resize_level(key, 32, 16, 0, 0).unwrap();
+    let layer_uid = project.add_layer("Ground", "Tiles", 16).unwrap();
+    let atlas = project
+        .add_tileset(std::path::Path::new("atlas.png"), 16, 16, 16)
+        .unwrap();
+    project.assign_tileset(layer_uid, atlas).unwrap();
+    let color = image::Rgba([12, 34, 56, 255]);
+    image::RgbaImage::from_pixel(16, 16, color)
+        .save(dir.path().join("atlas.png"))
+        .unwrap();
+    project.json["exportLevelBg"] = json!(false);
+
+    for (name, offset, tiles) in [
+        (
+            "destination",
+            i64::MAX,
+            json!([
+                {"px":[-i64::MAX,0],"src":[0,0],"f":0},
+                {"px":[1,0],"src":[0,0],"f":0},
+            ]),
+        ),
+        (
+            "atlas",
+            0,
+            json!([
+                {"px":[0,0],"src":[0,0],"f":0},
+                {"px":[16,0],"src":[i64::MAX,i64::MAX],"f":3},
+                {"px":[16,0],"src":[i64::MIN,i64::MIN],"f":0},
+            ]),
+        ),
+    ] {
+        let layer = project.layer_mut(key, 0).unwrap();
+        layer["__pxTotalOffsetX"] = json!(offset);
+        layer["gridTiles"] = tiles;
+        let files = project.export_png(dir.path().join(name)).unwrap();
+        let image = image::open(&files[0]).unwrap().into_rgba8();
+        for (x, y, pixel) in image.enumerate_pixels() {
+            let expected = if x < 16 { color } else { image::Rgba([0; 4]) };
+            assert_eq!(*pixel, expected, "{name} at {x},{y}");
+        }
+    }
+}
+
+#[test]
 #[ignore = "manual PNG re-export performance and peak memory comparison"]
 fn benchmark_large_png_reexport() {
     use image::{Rgba, RgbaImage};
