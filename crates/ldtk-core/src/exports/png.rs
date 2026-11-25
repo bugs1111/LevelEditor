@@ -2,7 +2,7 @@ use super::{
     ExportBatch, arr, color, embedded_atlas, encode_png, load_image_rgba, n, num, s, safe_name,
 };
 use crate::{Error, LevelKey, Project, Result};
-use image::{Rgba, RgbaImage};
+use image::{Pixel, Rgba, RgbaImage};
 use serde_json::Value;
 use std::{
     collections::{HashMap, HashSet},
@@ -76,23 +76,66 @@ fn premultiply(image: &mut RgbaImage) {
     }
 }
 
-fn composite(target: &mut RgbaImage, source: &RgbaImage, alpha: f64, premultiplied: bool) {
-    if premultiplied {
-        for (dst, src) in target.pixels_mut().zip(source.pixels()) {
-            // The preview quantizes opacity before blending the 8-bit color channels.
-            let source_alpha = (f64::from(src[3]) * alpha) as u16;
-            let dest_weight = 255 - source_alpha;
-            for channel in 0..3 {
-                let color =
-                    u16::from(src[channel]) * source_alpha + u16::from(dst[channel]) * dest_weight;
-                dst[channel] = ((color + 127) / 255) as u8;
+struct PaintedArea {
+    start: [i64; 2],
+    end: [i64; 2],
+}
+
+impl PaintedArea {
+    const EMPTY: Self = Self {
+        start: [i64::MAX; 2],
+        end: [0; 2],
+    };
+
+    fn is_empty(&self) -> bool {
+        self.start[0] >= self.end[0]
+    }
+
+    fn include(&mut self, x: Range<i64>, y: Range<i64>) {
+        self.start[0] = self.start[0].min(x.start);
+        self.start[1] = self.start[1].min(y.start);
+        self.end[0] = self.end[0].max(x.end);
+        self.end[1] = self.end[1].max(y.end);
+    }
+}
+
+fn composite(
+    target: &mut RgbaImage,
+    source: &RgbaImage,
+    area: PaintedArea,
+    alpha: f64,
+    premultiplied: bool,
+) {
+    if area.is_empty() || alpha == 0. {
+        return;
+    }
+    debug_assert_eq!(target.dimensions(), source.dimensions());
+    let stride = target.width() as usize * 4;
+    let source = source.as_raw();
+    let target = target.as_flat_samples_mut().samples;
+    let [left, top] = area.start.map(|n| n as usize);
+    let [right, bottom] = area.end.map(|n| n as usize);
+    for y in top..bottom {
+        let row = y * stride;
+        let span = row + left * 4..row + right * 4;
+        let src = source[span.clone()].as_chunks::<4>().0;
+        let dst = target[span].as_chunks_mut::<4>().0;
+        if premultiplied {
+            for (dst, src) in dst.iter_mut().zip(src) {
+                // The preview quantizes opacity before blending the 8-bit color channels.
+                let source_alpha = (f64::from(src[3]) * alpha) as u16;
+                let dest_weight = 255 - source_alpha;
+                for channel in 0..3 {
+                    let color = u16::from(src[channel]) * source_alpha
+                        + u16::from(dst[channel]) * dest_weight;
+                    dst[channel] = ((color + 127) / 255) as u8;
+                }
+                dst[3] = (source_alpha + u16::from(dst[3]) * dest_weight / 255) as u8;
             }
-            dst[3] = (source_alpha + u16::from(dst[3]) * dest_weight / 255) as u8;
-        }
-    } else {
-        debug_assert_eq!(target.dimensions(), source.dimensions());
-        for (dst, src) in target.pixels_mut().zip(source.pixels()) {
-            blend_rgba(dst, *src, alpha);
+        } else {
+            for (dst, src) in dst.iter_mut().zip(src) {
+                blend_rgba(Rgba::from_slice_mut(dst), Rgba(*src), alpha);
+            }
         }
     }
 }
@@ -193,7 +236,7 @@ fn draw_unavailable_classic_atlas(
     layer: &Value,
     def: &Value,
     opacity: f64,
-) -> bool {
+) -> PaintedArea {
     let grid = def["gridSize"]
         .as_i64()
         .unwrap_or_else(|| n(layer, "__gridSize"))
@@ -201,7 +244,7 @@ fn draw_unavailable_classic_atlas(
     let width = i64::from(image.width()).saturating_sub(n(layer, "pxOffsetX"));
     let height = i64::from(image.height()).saturating_sub(n(layer, "pxOffsetY"));
     if width <= 0 || height <= 0 || opacity == 0. {
-        return false;
+        return PaintedArea::EMPTY;
     }
     let columns = 1 + (width - 1) / grid;
     let rows = 1 + (height - 1) / grid;
@@ -211,7 +254,7 @@ fn draw_unavailable_classic_atlas(
     let shift = (num(def, "tilePivotX", 0.) * grid as f64 - 0.5).ceil() as i64;
     let alpha = (255. * opacity) as u8;
     let mut visited = HashSet::new();
-    let mut painted = false;
+    let mut painted = PaintedArea::EMPTY;
     for tile in arr(&layer["gridTiles"]) {
         let [cx, cy] = classic_tile_cell(tile, columns, grid);
         if cx < 0 || cx >= columns || cy < 0 || cy >= rows || !visited.insert((cx, cy)) {
@@ -224,7 +267,7 @@ fn draw_unavailable_classic_atlas(
         if x_range.is_empty() || y_range.is_empty() {
             continue;
         }
-        painted = true;
+        painted.include(x_range.clone(), y_range.clone());
         for y in y_range {
             for x in x_range.clone() {
                 let red = unavailable_classic_tile_red(grid, x - left, y - top);
@@ -533,7 +576,7 @@ impl<'a> PngRenderer<'a> {
             if tiles {
                 let opacity = num(def, "displayOpacity", 1.).clamp(0., 1.);
                 let layer_file = options.mode != PngExportMode::OneImagePerLevel;
-                let (image, placeholder) =
+                let (image, area, placeholder) =
                     self.render_tile_layer(l, li, if layer_file { opacity } else { 1. })?;
                 if let Some(combined) = &mut combined {
                     if placeholder && opacity > 0. && !premultiplied {
@@ -545,7 +588,7 @@ impl<'a> PngRenderer<'a> {
                     } else {
                         1.
                     };
-                    composite(combined, &image, alpha, premultiplied);
+                    composite(combined, &image, area, alpha, premultiplied);
                 }
                 if layer_file {
                     batch.add(dir.join(format!("{file}.png")), &encode_png(&image)?)?;
@@ -579,7 +622,7 @@ impl<'a> PngRenderer<'a> {
         l: &Value,
         li: &Value,
         placeholder_opacity: f64,
-    ) -> Result<(RgbaImage, bool)> {
+    ) -> Result<(RgbaImage, PaintedArea, bool)> {
         let (w, h) = dimensions(l)?;
         let mut img = RgbaImage::new(w, h);
         let def = self.project.layer_def(n(li, "layerDefUid")).unwrap_or(li);
@@ -590,11 +633,11 @@ impl<'a> PngRenderer<'a> {
         let (td, atlas) = match self.tile_atlas(uid) {
             Ok(Some(atlas)) => atlas,
             _ if classic => {
-                let painted =
-                    draw_unavailable_classic_atlas(&mut img, li, def, placeholder_opacity);
-                return Ok((img, painted));
+                let area = draw_unavailable_classic_atlas(&mut img, li, def, placeholder_opacity);
+                let has_placeholder = !area.is_empty();
+                return Ok((img, area, has_placeholder));
             }
-            Ok(None) => return Ok((img, false)),
+            Ok(None) => return Ok((img, PaintedArea::EMPTY, false)),
             Err(error) => return Err(error),
         };
         let size = n(td, "tileGridSize").max(1);
@@ -631,6 +674,7 @@ impl<'a> PngRenderer<'a> {
         // Classic tiles use the X pivot for the grid offset on both axes.
         let y_offsets = offsets(if classic { pivot_x } else { pivot_y }, pivot_y);
         let mut opaque = HashMap::new();
+        let mut area = PaintedArea::EMPTY;
         for t in values {
             let f = n(t, "f");
             let flip_x = f & 1 != 0;
@@ -658,6 +702,7 @@ impl<'a> PngRenderer<'a> {
                 })
             {
                 copy_opaque_tile(&mut img, atlas, [tx, ty], [sx, sy], size, f);
+                area.include(tx..tx + size, ty..ty + size);
                 continue;
             }
             let x_range = visible_tile_pixels(tx, clip[0], sx, atlas_extent[0], size, flip_x);
@@ -665,6 +710,10 @@ impl<'a> PngRenderer<'a> {
             if x_range.is_empty() || y_range.is_empty() {
                 continue;
             }
+            area.include(
+                tx + x_range.start..tx + x_range.end,
+                ty + y_range.start..ty + y_range.end,
+            );
             for y in y_range {
                 let ay = sy + if flip_y { size - 1 - y } else { y };
                 for x in x_range.clone() {
@@ -677,7 +726,7 @@ impl<'a> PngRenderer<'a> {
                 }
             }
         }
-        Ok((img, false))
+        Ok((img, area, false))
     }
 }
 fn intgrid_image(layer: &Value, def: &Value) -> Result<RgbaImage> {
