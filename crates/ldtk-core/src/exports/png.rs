@@ -278,7 +278,7 @@ impl Project {
         progress: &mut impl FnMut(usize, usize),
         diagnostics: &mut Vec<String>,
     ) -> Result<Vec<PathBuf>> {
-        let mut batch = ExportBatch::default();
+        let mut batch = ExportBatch::new(self);
         let keys = self.level_keys();
         let total = keys.len();
         if total > 0 {
@@ -476,7 +476,7 @@ impl<'a> PngRenderer<'a> {
         options: &PngExportOptions,
         simple: bool,
         diagnostics: &mut Vec<String>,
-        batch: &mut ExportBatch,
+        batch: &mut ExportBatch<'_>,
     ) -> Result<()> {
         let project = self.project;
         let l = project

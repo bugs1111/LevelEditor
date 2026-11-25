@@ -10,7 +10,7 @@ pub use png::{
 };
 pub use tiled::TiledFormat;
 
-use crate::project::{StagedSave, StagingWriter};
+use crate::project::{ExportFilesToKeep, StagedSave, StagingWriter, absolute};
 use crate::{Error, Project, Result};
 use image::{GenericImage, Rgba, RgbaImage};
 use indexmap::{IndexMap, IndexSet};
@@ -50,13 +50,21 @@ fn safe_name(name: &str) -> Result<&str> {
         Ok(name)
     }
 }
-#[derive(Default)]
-struct ExportBatch {
+struct ExportBatch<'a> {
+    project: &'a Project,
     seen: IndexSet<PathBuf>,
     staged: StagedSave,
 }
 
-impl ExportBatch {
+impl<'a> ExportBatch<'a> {
+    fn new(project: &'a Project) -> Self {
+        Self {
+            project,
+            seen: IndexSet::new(),
+            staged: StagedSave::default(),
+        }
+    }
+
     fn add(&mut self, path: PathBuf, bytes: &[u8]) -> Result<()> {
         self.add_parts(path, &[bytes])
     }
@@ -92,6 +100,31 @@ impl ExportBatch {
     }
 
     fn publish(self) -> Result<Vec<PathBuf>> {
+        let mut referenced = None;
+        for path in self.staged.targets() {
+            match fs::symlink_metadata(path) {
+                Ok(_) => {}
+                Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+                Err(source) => {
+                    return Err(Error::Io {
+                        path: path.to_owned(),
+                        source,
+                    });
+                }
+            }
+            let files = match &referenced {
+                Some(files) => files,
+                None => referenced.insert(ExportFilesToKeep::new(
+                    self.project.referenced_file_paths()?,
+                )),
+            };
+            if files.contains(&absolute(path)?) {
+                return Err(Error::Invalid(format!(
+                    "export would overwrite a file referenced by the project: {}",
+                    path.display()
+                )));
+            }
+        }
         self.staged.publish()?;
         Ok(self.seen.into_iter().collect())
     }
@@ -161,7 +194,7 @@ impl Project {
         dir: impl AsRef<Path>,
         mut progress: impl FnMut(usize, usize),
     ) -> Result<Vec<PathBuf>> {
-        let mut batch = ExportBatch::default();
+        let mut batch = ExportBatch::new(self);
         self.stage_csv(dir.as_ref(), &mut batch, &mut progress)?;
         batch.publish()
     }
@@ -169,7 +202,7 @@ impl Project {
     fn stage_csv(
         &self,
         dir: &Path,
-        batch: &mut ExportBatch,
+        batch: &mut ExportBatch<'_>,
         mut progress: impl FnMut(usize, usize),
     ) -> Result<()> {
         let keys = self.level_keys();
@@ -239,7 +272,7 @@ impl Project {
         diagnostics: &mut Vec<String>,
     ) -> Result<Vec<PathBuf>> {
         let dir = dir.as_ref();
-        let mut batch = ExportBatch::default();
+        let mut batch = ExportBatch::new(self);
         let keys = self.level_keys();
         let count = keys.len();
         let total = count * 3;

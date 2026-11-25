@@ -70,7 +70,7 @@ impl Project {
         mut progress: impl FnMut(usize, usize),
     ) -> Result<Vec<PathBuf>> {
         let dir = dir.as_ref();
-        let mut batch = ExportBatch::default();
+        let mut batch = ExportBatch::new(self);
         for tileset in arr(&self.json["defs"]["tilesets"]) {
             let name = safe_name(s(tileset, "identifier"))?;
             let resource = json!({

@@ -288,7 +288,7 @@ impl Project {
     fn tiled_tilesets(
         &self,
         dir: &Path,
-        batch: &mut ExportBatch,
+        batch: &mut ExportBatch<'_>,
         format: TiledFormat,
     ) -> Result<(TiledTilesets, BTreeMap<i64, u32>)> {
         let base = self
@@ -379,7 +379,7 @@ impl Project {
         progress: &mut impl FnMut(usize, usize),
     ) -> Result<Vec<PathBuf>> {
         let dir = dir.as_ref();
-        let mut batch = ExportBatch::default();
+        let mut batch = ExportBatch::new(self);
         let defs = arr(&self.json["defs"]["layers"]);
         let mut sizes = defs.iter().map(|def| n(def, "gridSize"));
         let mut counts = HashMap::new();

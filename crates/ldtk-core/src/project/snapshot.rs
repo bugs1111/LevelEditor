@@ -202,19 +202,28 @@ impl Project {
             .collect()
     }
 
-    pub(super) fn resource_watch_paths(&self) -> Result<BTreeSet<PathBuf>> {
+    fn resource_watch_paths(&self) -> Result<BTreeSet<PathBuf>> {
+        if self.path.is_none() {
+            return Ok(BTreeSet::new());
+        }
+        self.referenced_file_paths()
+    }
+
+    pub(crate) fn referenced_file_paths(&self) -> Result<BTreeSet<PathBuf>> {
         let mut paths = self.saved_document_paths()?;
-        if let Some(path) = &self.path {
-            let base = path.parent().expect("absolute project path");
-            // Many layers and fields refer to the same asset.
-            let mut references = BTreeSet::new();
-            collect_resource_paths(&self.json, &mut references);
-            for level in self.external_levels.values() {
-                collect_resource_paths(level, &mut references);
-            }
-            for reference in references {
-                paths.insert(absolute(&base.join(reference))?);
-            }
+        let base = self
+            .path
+            .as_deref()
+            .and_then(Path::parent)
+            .unwrap_or(Path::new(""));
+        // Many layers and fields refer to the same asset.
+        let mut references = BTreeSet::new();
+        collect_resource_paths(&self.json, &mut references);
+        for level in self.external_levels.values() {
+            collect_resource_paths(level, &mut references);
+        }
+        for reference in references {
+            paths.insert(absolute(&base.join(reference))?);
         }
         Ok(paths)
     }

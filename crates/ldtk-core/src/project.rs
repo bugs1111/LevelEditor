@@ -1717,6 +1717,10 @@ pub(crate) struct StagedSave {
 }
 
 impl StagedSave {
+    pub(crate) fn targets(&self) -> impl Iterator<Item = &Path> {
+        self.files.iter().map(|file| file.target.as_path())
+    }
+
     pub(crate) fn add(
         &mut self,
         target: PathBuf,
@@ -2755,7 +2759,7 @@ impl Project {
         let referenced_files = OnceCell::new();
         let is_referenced = |path: &Path| {
             referenced_files
-                .get_or_init(|| self.resource_watch_paths().map(ExportFilesToKeep::new))
+                .get_or_init(|| self.referenced_file_paths().map(ExportFilesToKeep::new))
                 .as_ref()
                 .map(|files| files.contains(path))
                 .map_err(|error| Error::Invalid(error.to_string()))
@@ -2965,7 +2969,7 @@ fn collect_configured_export(
     }
 }
 #[derive(Default)]
-struct ExportFilesToKeep {
+pub(crate) struct ExportFilesToKeep {
     paths: HashSet<PathBuf>,
     canonical_paths: OnceCell<HashSet<PathBuf>>,
     #[cfg(unix)]
@@ -2973,14 +2977,14 @@ struct ExportFilesToKeep {
 }
 
 impl ExportFilesToKeep {
-    fn new(paths: impl IntoIterator<Item = PathBuf>) -> Self {
+    pub(crate) fn new(paths: impl IntoIterator<Item = PathBuf>) -> Self {
         Self {
             paths: paths.into_iter().collect(),
             ..Default::default()
         }
     }
 
-    fn contains(&self, path: &Path) -> bool {
+    pub(crate) fn contains(&self, path: &Path) -> bool {
         if self.paths.contains(path) {
             return true;
         }

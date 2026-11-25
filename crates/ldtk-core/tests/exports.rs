@@ -2285,6 +2285,65 @@ fn configured_export_cleanup_keeps_resources_referenced_by_the_project() {
     );
 }
 
+#[test]
+fn configured_export_collision_preserves_previous_outputs_and_referenced_assets() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("game.ldtk");
+    let output = directory.path().join("game/png");
+    let mut project = project();
+    project.json["imageExportMode"] = json!("OneImagePerLevel");
+    let first = project.save_with_exports(&path).unwrap();
+    assert!(first.export_errors.is_empty());
+    let previous = output.join("Level_0.png");
+    let previous_bytes = fs::read(&previous).unwrap();
+    let atlas = output.join("Second.png");
+    fs::write(&atlas, b"referenced atlas").unwrap();
+    project.add_tileset(&atlas, 16, 16, 16).unwrap();
+    project.add_level(None, "Second", 32, 32).unwrap();
+    project.json["defaultLevelBgColor"] = json!("#123456");
+
+    let report = project.save_with_exports(&path).unwrap();
+
+    assert!(fs::read(&atlas).is_ok_and(|bytes| bytes == b"referenced atlas"));
+    assert_eq!(fs::read(&previous).unwrap(), previous_bytes);
+    assert_eq!(report.outputs, std::slice::from_ref(&path));
+    assert!(
+        report
+            .export_errors
+            .iter()
+            .any(|error| error.contains("Second.png"))
+    );
+    assert_eq!(Project::load(&path).unwrap().level_keys().len(), 2);
+
+    project.json["pngFilePattern"] = json!("%level_name-alternate");
+    let report = project.save_with_exports(&path).unwrap();
+    assert!(
+        report.export_errors.is_empty(),
+        "{:?}",
+        report.export_errors
+    );
+    assert!(output.join("Second-alternate.png").is_file());
+    assert!(fs::read(&atlas).is_ok_and(|bytes| bytes == b"referenced atlas"));
+}
+
+#[test]
+fn manual_export_can_create_a_missing_referenced_file_and_reuse_identical_bytes() {
+    let directory = tempfile::tempdir().unwrap();
+    let output = directory.path().join("Level_0.png");
+    let mut project = project();
+    project.json["imageExportMode"] = json!("OneImagePerLevel");
+    project.add_tileset(&output, 16, 32, 16).unwrap();
+    let first = project.export_png(directory.path()).unwrap();
+    assert_eq!(first, std::slice::from_ref(&output));
+    let original = fs::read(&output).unwrap();
+    assert_eq!(project.export_png(directory.path()).unwrap(), first);
+
+    project.json["defaultLevelBgColor"] = json!("#123456");
+    let changed = project.export_png(directory.path());
+    assert!(changed.is_err());
+    assert_eq!(fs::read(output).unwrap(), original);
+}
+
 #[cfg(unix)]
 #[test]
 fn configured_export_cleanup_preserves_contents_of_linked_output_directory() {
