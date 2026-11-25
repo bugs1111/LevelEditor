@@ -987,6 +987,71 @@ fn batches_manual_tile_paint_and_erase_with_sequential_results() {
 }
 
 #[test]
+fn entity_edits_use_level_coordinates_on_offset_layers() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("Map.ldtk");
+    let mut project = Project::new();
+    let key = project.level_keys()[0];
+    let layer = project.add_layer("Actors", "Entities", 16).unwrap();
+    let entity = project.add_entity_def("Actor", 16, 16).unwrap();
+    project.layer_mut(key, 0).unwrap()["pxOffsetX"] = json!(-8);
+    project.layer_mut(key, 0).unwrap()["pxOffsetY"] = json!(8);
+    project
+        .update_layer_properties(layer, &json!({"pxOffsetX":24,"pxOffsetY":-16}))
+        .unwrap();
+    project.set_external_levels(true).unwrap();
+    project.save(&path).unwrap();
+    let target = json!({"level_iid":project.level(key).unwrap()["iid"], "layer_iid":project.layer(key, 0).unwrap()["iid"]});
+    let args = |extra: Value| {
+        let mut args = target.clone();
+        args.as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        args
+    };
+
+    let mut client = Client::start(&path);
+    client.initialize(PROTOCOL);
+    client.initialized();
+    let initial = client.tool("get_layer", target.clone());
+    assert_eq!(initial["layer"]["__pxTotalOffsetX"], 16);
+    assert_eq!(initial["layer"]["__pxTotalOffsetY"], -8);
+    let result = client.tool("add_entity", args(json!({"def_uid":entity,"x":12,"y":20})));
+    let iid = &result["entity_iid"];
+    assert!(iid.is_string());
+    assert_eq!(
+        client.tool("get_layer", target.clone())["layer"]["entityInstances"][0]["px"],
+        json!([-4, 28])
+    );
+    let destination = args(json!({"entity_iid":iid,"x":50,"y":40}));
+    assert_eq!(
+        client.tool("move_entity", destination.clone())["changed"],
+        true
+    );
+    assert_eq!(client.tool("save_project", json!({}))["saved"], true);
+    client.close();
+
+    let mut reopened = Client::start(&path);
+    reopened.initialize(PROTOCOL);
+    reopened.initialized();
+    let after_save = reopened.tool("get_layer", target.clone());
+    let saved = &after_save["layer"]["entityInstances"][0];
+    assert_eq!(&saved["iid"], iid);
+    assert_eq!(saved["px"], json!([34, 48]));
+    assert_eq!(
+        reopened.tool("move_entity", destination),
+        json!({"changed":false,"dirty":false})
+    );
+    assert_eq!(
+        reopened.call("move_entity", args(json!({"entity_iid":iid,"x":-1,"y":40})))["isError"],
+        true
+    );
+    assert_eq!(reopened.tool("get_layer", target), after_save);
+    assert_eq!(reopened.tool("save_project", json!({}))["saved"], false);
+    reopened.close();
+}
+
+#[test]
 fn unavailable_artwork_keeps_mcp_usable_and_watches_its_recovery() {
     let temp = tempfile::tempdir().unwrap();
     let path = copy_external_project(temp.path());

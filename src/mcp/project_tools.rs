@@ -274,9 +274,14 @@ impl Session {
                 let (x, y) = coordinates();
                 let level = self.project.level(key).expect("resolved level");
                 in_bounds(level, ["pxWid", "pxHei"], x, y)?;
-                let changed =
-                    self.project
-                        .add_entity(key, index, args["def_uid"].as_i64().unwrap(), x, y);
+                let position = layer_local_position(layer, x, y)?;
+                let changed = self.project.place_entity(
+                    key,
+                    index,
+                    args["def_uid"].as_i64().unwrap(),
+                    [x, y],
+                    position,
+                );
                 if matches!(changed, Ok(true)) {
                     let updated = self.project.layer(key, index).expect("resolved layer");
                     placed_iid = items(&updated["entityInstances"])
@@ -297,11 +302,12 @@ impl Session {
                     let (x, y) = coordinates();
                     let level = self.project.level(key).expect("resolved level");
                     in_bounds(level, ["pxWid", "pxHei"], x, y)?;
-                    if entity["px"] == json!([x, y]) {
+                    let [local_x, local_y] = layer_local_position(layer, x, y)?;
+                    if entity["px"] == json!([local_x, local_y]) {
                         Ok(false)
                     } else {
                         self.project
-                            .move_entity(key, index, entity_index, x, y)
+                            .move_entity(key, index, entity_index, local_x, local_y)
                             .map(|()| true)
                     }
                 }
@@ -471,6 +477,17 @@ fn tile_values(args: &Arguments) -> (i32, [i32; 2], i32) {
         [integer(args, "src_x"), integer(args, "src_y")],
         args.get("flips").and_then(Value::as_i64).unwrap_or(0) as i32,
     )
+}
+
+fn layer_local_position(layer: &Value, x: i32, y: i32) -> Result<[i32; 2], &'static str> {
+    let local = |coordinate: i32, field: &str| {
+        let offset = layer[field].as_i64().unwrap_or(0);
+        i64::from(coordinate)
+            .checked_sub(offset)
+            .and_then(|value| i32::try_from(value).ok())
+            .ok_or("Layer-local entity coordinates exceed the supported integer range.")
+    };
+    Ok([local(x, "__pxTotalOffsetX")?, local(y, "__pxTotalOffsetY")?])
 }
 
 fn in_bounds(value: &Value, dimensions: [&str; 2], x: i32, y: i32) -> Result<(), String> {
