@@ -181,6 +181,6 @@ scripts/cargo run --release --example native_smoke -- examples/topdown/Typical_T
 
 默认偏好目录为 macOS 的 `~/Library/Application Support/level-editor`、Windows 的 `%APPDATA%\level-editor` 和 Linux 的 `~/.config/level-editor`。新目录还没有设置文件时会读取旧偏好，下次保存设置时写入新目录。`LDTK_CONFIG_DIR` 可指定自定义目录。
 
-[v0.1.0 四平台下载](https://github.com/bugs1111/LevelEditor/releases/tag/v0.1.0)已发布。四平台原生 CI、发布包校验、真实私有更新源和 ARM macOS 下载包冷/热打开均已通过，具体结果与验收范围见[最终集成记录](docs/status/final-verification.md)。
+四平台安装包见 [GitHub 最新发布](https://github.com/bugs1111/LevelEditor/releases/latest)。早期的原生 CI、发布包校验、私有更新源和 ARM macOS 冷/热打开测试见[最终集成记录](docs/status/final-verification.md)。
 
 0.1.1 已修复取帧失败时 GPU 上传缓冲累积导致的 Home 高内存。四平台构建、GUI/GPU 与应用包的历史验证结果见 [0.1.1 包验收](docs/status/release-0.1.1-acceptance.json)及 [Home 内存调查](docs/status/home-memory-investigation.md)。

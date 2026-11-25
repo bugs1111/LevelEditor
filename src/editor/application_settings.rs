@@ -366,7 +366,7 @@ impl EditorApp {
                     if response.on_disabled_hover_text(locale::tr(ui, "Open a saved project to copy its MCP configuration.")).clicked()
                         && let (Some(project), Some(command)) = (project, command)
                     {
-                        let config = json!({"mcpServers":{"leveleditor":{"command":command,"args":["--mcp",project]}}});
+                        let config = json!({"mcpServers":{(env!("CARGO_PKG_NAME")):{"command":command,"args":["--mcp",project]}}});
                         ui.ctx().copy_text(serde_json::to_string_pretty(&config).expect("MCP configuration is JSON"));
                         self.status = "MCP configuration copied.".into();
                         self.status_error = false;
@@ -534,6 +534,43 @@ mod tests {
             frame(&mut app, &ctx, vec![]);
         }
         (app, ctx)
+    }
+
+    #[test]
+    fn copied_mcp_configuration_uses_the_level_editor_server_name() {
+        let (mut app, ctx) = setup();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("Sample Project.ldtk");
+        let project = app.project.as_mut().unwrap();
+        std::fs::write(&path, project.json.to_string()).unwrap();
+        project.path = Some(path.clone());
+
+        let output = frame(&mut app, &ctx, vec![]);
+        let pos = label(&output, "Copy MCP configuration");
+        let button = |pressed| egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        frame(
+            &mut app,
+            &ctx,
+            vec![egui::Event::PointerMoved(pos), button(true)],
+        );
+        let output = frame(&mut app, &ctx, vec![button(false)]);
+        let [egui::OutputCommand::CopyText(text)] = output.platform_output.commands.as_slice()
+        else {
+            panic!("Expected the copied MCP configuration");
+        };
+        let config: Value = serde_json::from_str(text).unwrap();
+        assert_eq!(
+            config,
+            json!({"mcpServers":{"level-editor":{
+                "command":std::env::current_exe().unwrap().to_str().unwrap(),
+                "args":["--mcp",path.to_str().unwrap()]
+            }}})
+        );
     }
 
     #[test]

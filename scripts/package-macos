@@ -19,7 +19,7 @@ case "$#" in
 esac
 bundle_parent=$(dirname -- "$bundle")
 mkdir -p "$bundle_parent"
-staging_dir=$(mktemp -d "$bundle_parent/.leveleditor-app.XXXXXX")
+staging_dir=$(mktemp -d "$bundle_parent/.level-editor-app.XXXXXX")
 staged_bundle="$staging_dir/Level Editor.app"
 previous_bundle="$staging_dir/previous.app"
 cleanup() {
