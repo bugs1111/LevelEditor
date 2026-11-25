@@ -796,3 +796,62 @@ fn editor_field_errors_report_missing_files_and_lost_references() {
         vec!["Lost reference!"]
     );
 }
+
+#[test]
+fn resolved_entity_diagnostics_agree_with_detailed_field_errors() {
+    let directory = tempfile::tempdir().unwrap();
+    let missing = directory.path().join("target.txt");
+    let mut p = Project::new();
+    p.add_layer("Actors", "Entities", 16).unwrap();
+    let actor = p.add_entity_def("Actor", 16, 16).unwrap();
+    let target = p.add_entity_def("Target", 16, 16).unwrap();
+    let points = p
+        .add_field_definition(Some(actor), "Points", "Point", true)
+        .unwrap();
+    let file = p
+        .add_field_definition(Some(actor), "File", "FilePath", false)
+        .unwrap();
+    let reference = p
+        .add_field_definition(Some(actor), "Target", "EntityRef", false)
+        .unwrap();
+    p.update_field_definition(points, &json!({"arrayMinLength":2,"canBeNull":false}))
+        .unwrap();
+    p.update_field_definition(
+        reference,
+        &json!({"allowedRefs":"OnlyTags","allowedRefTags":["Linkable"]}),
+    )
+    .unwrap();
+    p.add_entity(K, 0, actor, 8, 8).unwrap();
+    p.add_entity(K, 0, target, 24, 8).unwrap();
+    let entities = p.layer_mut(K, 0).unwrap()["entityInstances"]
+        .as_array_mut()
+        .unwrap();
+    let iid = entities[0]["iid"].as_str().unwrap().to_owned();
+    let target_iid = entities[1]["iid"].clone();
+    let fields = &mut entities[0]["fieldInstances"];
+    fields[0]["__value"] = json!([null]);
+    fields[1]["__value"] = json!(missing);
+    fields[2]["__value"] = json!({"entityIid":target_iid});
+    let has_errors = |p: &Project| {
+        let entity = p.entity_by_iid(&iid).unwrap().entity;
+        let definition = &p.json["defs"]["entities"][0];
+        p.entity_has_field_value_errors(entity, definition)
+    };
+    let errors = |p: &Project, uid| p.field_value_errors(K, Some(&iid), uid).unwrap();
+
+    assert!(has_errors(&p));
+    assert_eq!(errors(&p, points), ["Array too short", "Value required"]);
+    assert_eq!(errors(&p, file), ["File not found"]);
+    assert_eq!(errors(&p, reference), ["Invalid ref tags"]);
+
+    p.layer_mut(K, 0).unwrap()["entityInstances"][0]["fieldInstances"][0]["__value"] =
+        json!([{"cx":0,"cy":0},{"cx":1,"cy":1}]);
+    std::fs::write(&missing, "exists").unwrap();
+    assert!(errors(&p, points).is_empty());
+    assert!(errors(&p, file).is_empty());
+    assert!(has_errors(&p));
+
+    p.json["defs"]["entities"][1]["tags"] = json!(["Linkable"]);
+    assert!(errors(&p, reference).is_empty());
+    assert!(!has_errors(&p));
+}

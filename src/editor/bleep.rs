@@ -182,7 +182,6 @@ enum EntityErrorKind {
 }
 fn entity_error_kind(
     project: &Project,
-    key: LevelKey,
     layer: &Value,
     entity: &Value,
     def: &Value,
@@ -194,31 +193,17 @@ fn entity_error_kind(
     {
         return Some(EntityErrorKind::Tag);
     }
-    let iid = entity["iid"].as_str()?;
-    entity["fieldInstances"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(|field| field["defUid"].as_i64())
-        .any(|uid| {
-            project
-                .field_value_errors(key, Some(iid), uid)
-                .is_ok_and(|errors| !errors.is_empty())
-        })
+    project
+        .entity_has_field_value_errors(entity, def)
         .then_some(EntityErrorKind::Field)
 }
-fn entity_error(
-    project: &Project,
-    key: LevelKey,
-    layer: &Value,
-    entity: &Value,
-) -> Option<EntityError> {
+fn entity_error(project: &Project, layer: &Value, entity: &Value) -> Option<EntityError> {
     let def = project.json["defs"]["entities"]
         .as_array()?
         .iter()
         .find(|def| def["uid"] == entity["defUid"])?;
     Some(EntityError {
-        kind: entity_error_kind(project, key, layer, entity, def)?,
+        kind: entity_error_kind(project, layer, entity, def)?,
         layer_uid: layer["layerDefUid"].as_i64()?,
         iid: entity["iid"].as_str()?.into(),
         name: def["identifier"].as_str()?.into(),
@@ -256,7 +241,7 @@ fn advance_error_scan(
         if exhausted {
             return false;
         }
-        if let Some(error) = entity_error(project, key, layer, entity) {
+        if let Some(error) = entity_error(project, layer, entity) {
             scan.candidate = Some(error);
             // Level.getFirstError breaks only the inner loop: each later error layer
             // replaces the previous candidate, with its first erroneous entity.
@@ -511,7 +496,7 @@ impl EditorApp {
             && let Some(entity) = layer["entityInstances"]
                 .as_array()
                 .and_then(|entities| entities.iter().find(|e| e["iid"] == error.iid))
-            && entity_error(project, key, layer, entity).is_some()
+            && entity_error(project, layer, entity).is_some()
         {
             let inspected = self.panel == Some(Panel::Entity)
                 && self.layer == layer_index

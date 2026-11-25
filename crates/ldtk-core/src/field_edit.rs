@@ -34,24 +34,26 @@ fn array(d: &Value) -> bool {
             .is_some_and(|s| s.starts_with("Array<"))
     })
 }
-fn field_defs(p: &Project) -> Vec<Value> {
-    let mut all = p.json["defs"]["levelFields"]
+fn field_definitions(p: &Project) -> impl Iterator<Item = &Value> {
+    p.json["defs"]["levelFields"]
         .as_array()
-        .cloned()
-        .unwrap_or_default();
-    if let Some(entities) = p.json["defs"]["entities"].as_array() {
-        for e in entities {
-            if let Some(fields) = e["fieldDefs"].as_array() {
-                all.extend(fields.iter().cloned());
-            }
-        }
-    }
-    all
+        .into_iter()
+        .flatten()
+        .chain(
+            p.json["defs"]["entities"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .flat_map(|entity| entity["fieldDefs"].as_array().into_iter().flatten()),
+        )
+}
+fn field_defs(p: &Project) -> Vec<Value> {
+    field_definitions(p).cloned().collect()
 }
 fn field_def(p: &Project, uid: i64) -> Result<Value> {
-    field_defs(p)
-        .into_iter()
+    field_definitions(p)
         .find(|d| d["uid"] == uid)
+        .cloned()
         .ok_or_else(|| invalid("field definition not found"))
 }
 fn field_def_mut(p: &mut Project, uid: i64) -> Option<&mut Value> {
@@ -802,7 +804,9 @@ impl Project {
         entity: Option<&str>,
         uid: i64,
     ) -> Result<Vec<String>> {
-        let d = field_def(self, uid)?;
+        let d = field_definitions(self)
+            .find(|d| d["uid"] == uid)
+            .ok_or_else(|| invalid("field definition not found"))?;
         let level = self.level(key).ok_or_else(|| invalid("level not loaded"))?;
         let owner = if let Some(iid) = entity {
             level["layerInstances"]
@@ -821,94 +825,128 @@ impl Project {
             .flatten()
             .find(|f| f["defUid"] == uid)
             .ok_or_else(|| invalid("field instance not found"))?;
-        let values = if array(&d) {
-            field["__value"].as_array().cloned().unwrap_or_default()
+        Ok(self
+            .field_value_diagnostics(d, field, entity.map(|_| owner))
+            .collect())
+    }
+
+    /// Check an entity and its definition when the caller has already resolved both.
+    pub fn entity_has_field_value_errors(&self, entity: &Value, definition: &Value) -> bool {
+        let definitions = definition["fieldDefs"]
+            .as_array()
+            .map(Vec::as_slice)
+            .unwrap_or_default();
+        entity["fieldInstances"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .any(|field| {
+                let Some(uid) = field["defUid"].as_i64() else {
+                    return false;
+                };
+                definitions
+                    .iter()
+                    .find(|d| d["uid"] == uid)
+                    .or_else(|| field_definitions(self).find(|d| d["uid"] == uid))
+                    .is_some_and(|d| {
+                        self.field_value_diagnostics(d, field, Some(entity))
+                            .next()
+                            .is_some()
+                    })
+            })
+    }
+
+    fn field_value_diagnostics<'a>(
+        &'a self,
+        d: &'a Value,
+        field: &'a Value,
+        entity: Option<&'a Value>,
+    ) -> impl Iterator<Item = String> + 'a {
+        let array = array(d);
+        let value = &field["__value"];
+        let values = if array {
+            value.as_array().map(Vec::as_slice).unwrap_or_default()
         } else {
-            vec![field["__value"].clone()]
+            std::slice::from_ref(value)
         };
-        let mut errors = Vec::new();
-        if array(&d) {
-            if d["arrayMinLength"]
+        let too_short = array
+            && d["arrayMinLength"]
                 .as_u64()
-                .is_some_and(|n| values.len() < n as usize)
-            {
-                errors.push("Array too short".into());
-            }
-            if d["arrayMaxLength"]
+                .is_some_and(|n| values.len() < n as usize);
+        let too_long = array
+            && d["arrayMaxLength"]
                 .as_u64()
-                .is_some_and(|n| values.len() > n as usize)
-            {
-                errors.push("Array too long".into());
-            }
-        }
-        let kind = base(&d);
-        for value in &values {
-            let error = if value.is_null() {
-                if d["canBeNull"] != true
-                    && (matches!(kind, "Point" | "FilePath" | "EntityRef" | "Tile")
-                        || kind.contains("Enum."))
-                {
-                    Some("Value required".to_owned())
+                .is_some_and(|n| values.len() > n as usize);
+        let kind = base(d);
+        [(too_short, "Array too short"), (too_long, "Array too long")]
+            .into_iter()
+            .filter(|(invalid, _)| *invalid)
+            .map(|(_, message)| message.to_owned())
+            .chain(values.iter().filter_map(move |value| {
+                if value.is_null() {
+                    if d["canBeNull"] != true
+                        && (matches!(kind, "Point" | "FilePath" | "EntityRef" | "Tile")
+                            || kind.contains("Enum."))
+                    {
+                        Some("Value required".to_owned())
+                    } else {
+                        None
+                    }
+                } else if kind == "FilePath" {
+                    let exists = self
+                        .make_absolute_file_path(value.as_str().unwrap_or(""))
+                        .is_ok_and(|p| p.exists());
+                    (!exists).then(|| "File not found".to_owned())
+                } else if kind == "EntityRef" {
+                    let target = value["entityIid"]
+                        .as_str()
+                        .and_then(|id| self.entity_by_iid(id));
+                    match target {
+                        None => Some("Lost reference!".to_owned()),
+                        Some(found) => {
+                            let target = found.entity;
+                            match d["allowedRefs"].as_str().unwrap_or("Any") {
+                                "OnlySame"
+                                    if entity.is_some_and(|owner| {
+                                        owner["defUid"] != target["defUid"]
+                                    }) =>
+                                {
+                                    Some(format!(
+                                        "Invalid ref type {}",
+                                        target["__identifier"].as_str().unwrap_or("")
+                                    ))
+                                }
+                                "OnlySpecificEntity"
+                                    if target["defUid"] != d["allowedRefsEntityUid"] =>
+                                {
+                                    Some(format!(
+                                        "Invalid ref type {}",
+                                        target["__identifier"].as_str().unwrap_or("")
+                                    ))
+                                }
+                                "OnlyTags" => {
+                                    let target_tags = self
+                                        .definition(
+                                            "entities",
+                                            target["defUid"].as_i64().unwrap_or(-1),
+                                        )
+                                        .and_then(|def| def["tags"].as_array());
+                                    let allowed =
+                                        d["allowedRefTags"].as_array().is_some_and(|tags| {
+                                            target_tags.is_some_and(|target| {
+                                                tags.iter().any(|tag| target.contains(tag))
+                                            })
+                                        });
+                                    (!allowed).then(|| "Invalid ref tags".into())
+                                }
+                                _ => None,
+                            }
+                        }
+                    }
                 } else {
                     None
                 }
-            } else if kind == "FilePath" {
-                let exists = self
-                    .make_absolute_file_path(value.as_str().unwrap_or(""))
-                    .is_ok_and(|p| p.exists());
-                (!exists).then(|| "File not found".to_owned())
-            } else if kind == "EntityRef" {
-                let target = value["entityIid"]
-                    .as_str()
-                    .and_then(|id| self.entity_by_iid(id));
-                match target {
-                    None => Some("Lost reference!".to_owned()),
-                    Some(found) => {
-                        let target = found.entity;
-                        let target_def =
-                            self.definition("entities", target["defUid"].as_i64().unwrap_or(-1));
-                        match d["allowedRefs"].as_str().unwrap_or("Any") {
-                            "OnlySame"
-                                if entity.is_some() && owner["defUid"] != target["defUid"] =>
-                            {
-                                Some(format!(
-                                    "Invalid ref type {}",
-                                    target["__identifier"].as_str().unwrap_or("")
-                                ))
-                            }
-                            "OnlySpecificEntity"
-                                if target["defUid"] != d["allowedRefsEntityUid"] =>
-                            {
-                                Some(format!(
-                                    "Invalid ref type {}",
-                                    target["__identifier"].as_str().unwrap_or("")
-                                ))
-                            }
-                            "OnlyTags"
-                                if !d["allowedRefTags"].as_array().is_some_and(|tags| {
-                                    tags.iter().any(|tag| {
-                                        target_def.is_some_and(|def| {
-                                            def["tags"]
-                                                .as_array()
-                                                .is_some_and(|ts| ts.contains(tag))
-                                        })
-                                    })
-                                }) =>
-                            {
-                                Some("Invalid ref tags".into())
-                            }
-                            _ => None,
-                        }
-                    }
-                }
-            } else {
-                None
-            };
-            if let Some(error) = error {
-                errors.push(error);
-            }
-        }
-        Ok(errors)
+            }))
     }
 
     pub fn reset_field_value(
