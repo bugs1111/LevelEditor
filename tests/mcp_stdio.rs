@@ -760,6 +760,89 @@ fn inspects_worlds_edits_cells_and_entities_and_reopens_the_saved_project() {
 }
 
 #[test]
+fn reads_bounded_int_grid_regions_from_external_levels_and_sees_unsaved_edits() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("regions.ldtk");
+    let mut project = Project::new();
+    let key = project.level_keys()[0];
+    project.resize_level(key, 1600, 1280, 0, 0).unwrap();
+    project.add_layer("Actors", "Entities", 16).unwrap();
+    project.add_layer("Terrain", "IntGrid", 16).unwrap();
+    let definition = &mut project.json["defs"]["layers"][0];
+    assert_eq!(definition["identifier"], "Terrain");
+    definition["intGridValues"] = json!([{"value":257,"identifier":"Solid","color":"#FFFFFF"}]);
+    project.set_external_levels(true).unwrap();
+    project.save(&path).unwrap();
+    let level = project.level(key).unwrap();
+    let level_iid = &level["iid"];
+    let terrain = &level["layerInstances"][0]["iid"];
+    let actors = &level["layerInstances"][1]["iid"];
+
+    let mut client = Client::start(&path);
+    client.initialize(PROTOCOL);
+    client.initialized();
+    let tools = client.request("tools/list", json!({}));
+    let region_tool = tools["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|tool| tool["name"] == "get_int_grid_region")
+        .expect("the IntGrid region reader is discoverable");
+    assert_eq!(region_tool["annotations"]["readOnlyHint"], true);
+    assert_eq!(
+        region_tool["inputSchema"]["required"],
+        json!(["level_iid", "layer_iid", "x", "y", "width", "height"])
+    );
+    let region = |layer: &Value, x: i32, y: i32, width: i32, height: i32| json!({"level_iid":level_iid,"layer_iid":layer,"x":x,"y":y,"width":width,"height":height});
+    let selection = region(terrain, 97, 78, 3, 2);
+    assert_eq!(
+        client.tool("get_int_grid_region", selection.clone()),
+        json!({"x":97,"y":78,"width":3,"height":2,"values":[0,0,0,0,0,0]})
+    );
+    let full_page = client.tool("get_int_grid_region", region(terrain, 0, 0, 64, 64));
+    assert_eq!(full_page["values"].as_array().unwrap().len(), 4096);
+    for (args, message) in [
+        (region(terrain, 0, 0, 0, 1), "Invalid argument: width"),
+        (region(terrain, 0, 0, 65, 64), "4096"),
+        (region(terrain, -1, 0, 2, 1), "outside"),
+        (region(terrain, 99, 79, 2, 1), "outside"),
+        (region(terrain, i32::MAX, i32::MAX, 2, 2), "outside"),
+        (region(actors, 0, 0, 1, 1), "requires an IntGrid layer"),
+    ] {
+        let error = client.call("get_int_grid_region", args);
+        assert_eq!(error["isError"], true);
+        assert!(
+            error["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains(message),
+            "{error}"
+        );
+    }
+    assert_eq!(client.tool("project_info", json!({}))["dirty"], false);
+    assert_eq!(
+        client.tool(
+            "paint_int_grid_cells",
+            json!({
+                "level_iid":level_iid,"layer_iid":terrain,
+                "cells":[{"x":98,"y":78,"value":257},{"x":99,"y":79,"value":257}]
+            })
+        )["changed_cells"],
+        2
+    );
+    assert_eq!(
+        client.tool("get_int_grid_region", selection.clone())["values"],
+        json!([0, 257, 0, 0, 0, 257])
+    );
+    client.tool("reload_project", json!({"discard_changes":true}));
+    assert_eq!(
+        client.tool("get_int_grid_region", selection)["values"],
+        json!([0, 0, 0, 0, 0, 0])
+    );
+    client.close();
+}
+
+#[test]
 fn paints_int_grid_cells_atomically_and_matches_sequential_auto_layers() {
     let temp = tempfile::tempdir().unwrap();
     let source = sample_path("AutoLayers_3_Mosaic.ldtk");

@@ -1,3 +1,4 @@
+use super::tools::MAX_INT_GRID_REGION_CELLS;
 use ldtk_core::{FilesystemSnapshot, LevelKey, Project, TilePaint};
 use serde_json::{Map, Value, json};
 use std::{
@@ -16,6 +17,13 @@ pub(super) enum ToolPayload<'a> {
     Borrowed(&'a Value),
     Layer {
         layer: Option<&'a Value>,
+    },
+    IntGridRegion {
+        x: i32,
+        y: i32,
+        width: i32,
+        height: i32,
+        values: Vec<i64>,
     },
     Levels {
         levels: Vec<LevelSummary<'a>>,
@@ -107,6 +115,7 @@ impl Session {
                     layer: self.project.layer(key, layer),
                 });
             }
+            "get_int_grid_region" => return self.get_int_grid_region(args),
             "save_project" => self.save(),
             _ => self.edit(name, args),
         }?;
@@ -241,6 +250,61 @@ impl Session {
             .position(|layer| layer["iid"] == iid)
             .ok_or_else(|| format!("Layer IID not found: {iid}"))?;
         Ok((key, index))
+    }
+
+    fn get_int_grid_region(&self, args: &Arguments) -> Result<ToolPayload<'_>, String> {
+        let (key, index) = self.layer_key(args)?;
+        let layer = self.project.layer(key, index).expect("resolved layer");
+        if layer["__type"] != "IntGrid" {
+            return Err("Reading an IntGrid region requires an IntGrid layer.".into());
+        }
+        let [x, y, width, height] = ["x", "y", "width", "height"].map(|arg| integer(args, arg));
+        let count = width * height;
+        if count > MAX_INT_GRID_REGION_CELLS {
+            return Err(format!(
+                "An IntGrid region can contain at most {MAX_INT_GRID_REGION_CELLS} cells."
+            ));
+        }
+        let last = |start: i32, length: i32| {
+            start
+                .checked_add(length - 1)
+                .ok_or("Requested region is outside the layer bounds.")
+        };
+        let dimensions = ["__cWid", "__cHei"];
+        in_bounds(layer, dimensions, x, y)?;
+        in_bounds(layer, dimensions, last(x, width)?, last(y, height)?)?;
+        let dimension = |name| {
+            layer[name]
+                .as_i64()
+                .and_then(|n| usize::try_from(n).ok())
+                .ok_or("Invalid IntGrid layer dimensions.")
+        };
+        let columns = dimension("__cWid")?;
+        let rows = dimension("__cHei")?;
+        let csv = layer["intGridCsv"]
+            .as_array()
+            .ok_or("intGridCsv must be an array.")?;
+        if columns.checked_mul(rows) != Some(csv.len()) {
+            return Err("IntGrid cell count does not match layer dimensions.".into());
+        }
+        let mut values = Vec::with_capacity(count as usize);
+        let slice = x as usize..x as usize + width as usize;
+        for row in csv
+            .chunks_exact(columns)
+            .skip(y as usize)
+            .take(height as usize)
+        {
+            for cell in &row[slice.clone()] {
+                values.push(cell.as_i64().ok_or("Invalid IntGrid cell value.")?);
+            }
+        }
+        Ok(ToolPayload::IntGridRegion {
+            x,
+            y,
+            width,
+            height,
+            values,
+        })
     }
 
     fn edit(&mut self, name: &str, args: &Arguments) -> ToolResult {

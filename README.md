@@ -104,6 +104,7 @@ macOS 应用包中的可执行文件是 `/Applications/Level Editor.app/Contents
 1. 用 `project_info`、`get_definitions`、`list_worlds`、`list_levels` 了解项目，再用 `get_level` 和 `get_layer` 确认关卡、图层和实体的 IID。
 2. `paint_int_grid` 用图层网格坐标写入一个格子，值为 `0` 时清空。`paint_tile`、`erase_tile` 使用同样的网格坐标。`add_entity`、`move_entity` 使用相对于关卡原点的像素坐标，`remove_entity` 按实体 IID 删除。
    `get_layer` 返回 LDtk 原始数据，其中实体的 `px` 相对于图层原点。读取实体在关卡中的位置时，将 `px` 的两个分量分别加上图层的 `__pxTotalOffsetX` 和 `__pxTotalOffsetY`。
+   读取局部 IntGrid 可用 `get_int_grid_region`。传入 `level_iid`、`layer_iid`、从 0 开始的网格坐标 `x` 和 `y`，以及以格为单位的 `width` 和 `height`。每次最多读取 4096 格，`values` 从左到右、从上到下排列，包含会话内尚未保存的修改。
    同一 IntGrid 图层可调用 `paint_int_grid_cells`，传入 `level_iid`、`layer_iid` 和 `cells`（每项含 `x`、`y`、`value`）。重复坐标以最后一个值为准，任何无效格子都会使整批失败。`changed_cells` 返回实际改变的格子数。
    手工瓦片图层可调用 `paint_tile_cells` 或 `erase_tile_cells`，同样传入两个 IID 和 `cells`。绘制项含 `x`、`y`、`tile_id`、`src_x`、`src_y` 和可选的 `flips`（默认 `0`）。绘制按输入顺序覆盖，擦除项只需 `x`、`y`，会移除该格的所有叠放瓦片。任何无效项都会使整批失败。
 3. 修改先保存在 MCP 进程内存中，调用 `save_project` 才会写入工程和外部关卡文件。保存前如果发现磁盘文件已更改，会保留会话中的修改并返回冲突。用 `reload_project` 读取磁盘版本，有未保存修改时必须显式传入 `discard_changes: true` 才会丢弃。退出会话会丢弃未保存修改。

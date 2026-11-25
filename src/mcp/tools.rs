@@ -1,10 +1,13 @@
 use serde_json::{Map, Value, json};
 
+pub(super) const MAX_INT_GRID_REGION_CELLS: i32 = 4096;
+
 #[derive(Clone, Copy)]
 enum Kind {
     Iid,
     Int32,
     Int64,
+    GridRegionExtent,
     Bool,
     ObjectArray(&'static [Argument]),
 }
@@ -18,6 +21,9 @@ impl Argument {
             Kind::Iid => json!({"type":"string","minLength":1}),
             Kind::Int32 => json!({"type":"integer","minimum":i32::MIN,"maximum":i32::MAX}),
             Kind::Int64 => json!({"type":"integer","minimum":i64::MIN,"maximum":i64::MAX}),
+            Kind::GridRegionExtent => json!({
+                "type":"integer","minimum":1,"maximum":MAX_INT_GRID_REGION_CELLS
+            }),
             Kind::Bool => json!({"type":"boolean"}),
             Kind::ObjectArray(fields) => json!({"type":"array","items":object_schema(fields)}),
         }
@@ -29,6 +35,9 @@ impl Argument {
             Kind::Iid => value.as_str().is_some_and(|iid| !iid.is_empty()),
             Kind::Int32 => value.as_i64().is_some_and(|n| i32::try_from(n).is_ok()),
             Kind::Int64 => value.is_i64(),
+            Kind::GridRegionExtent => value
+                .as_i64()
+                .is_some_and(|n| (1..=i64::from(MAX_INT_GRID_REGION_CELLS)).contains(&n)),
             Kind::Bool => value.is_boolean(),
             Kind::ObjectArray(fields) => {
                 let array = value.as_array().ok_or_else(invalid)?;
@@ -120,6 +129,18 @@ const TOOLS: &[Tool] = &[
         "get_layer",
         "Read an LDtk layer instance, including its IntGrid, tiles or entities.",
         &[LEVEL, LAYER],
+    ),
+    read(
+        "get_int_grid_region",
+        "Read a rectangle of at most 4096 cells from one IntGrid layer. Use zero-based layer grid coordinates x and y and positive width and height in cells. Returns values left to right, top to bottom; 0 means empty. Includes unsaved edits in this session.",
+        &[
+            LEVEL,
+            LAYER,
+            X,
+            Y,
+            Argument("width", Kind::GridRegionExtent, true),
+            Argument("height", Kind::GridRegionExtent, true),
+        ],
     ),
     edit(
         "paint_int_grid",
