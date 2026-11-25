@@ -3,7 +3,6 @@ use serde_json::{Map, Value, json};
 use std::{
     cell::OnceCell,
     collections::{HashMap, HashSet},
-    fs,
     path::PathBuf,
 };
 
@@ -398,7 +397,6 @@ impl Session {
             .snapshot
             .as_ref()
             .ok_or("Reload the project before saving again.")?;
-        self.check_external_save_targets()?;
         let reload = self
             .project
             .save_and_reload_if_unchanged(&self.path, snapshot)
@@ -417,49 +415,6 @@ impl Session {
                 }))
             }
         }
-    }
-
-    fn check_external_save_targets(&self) -> Result<(), String> {
-        if self.project.json["externalLevels"] != true {
-            return Ok(());
-        }
-        let base = self.path.parent().expect("absolute project path");
-        let sources: HashSet<_> = self
-            .project
-            .external_levels
-            .keys()
-            .filter_map(|path| base.join(path).canonicalize().ok())
-            .collect();
-        // The core may rename legacy external level paths on save. An existing
-        // file at a derived destination must belong to the loaded project.
-        for (index, key) in self.project.iter_level_keys().enumerate() {
-            let level = self.project.level(key).expect("loaded level");
-            let relative = self
-                .project
-                .external_level_rel_path(&self.path, index, level)
-                .map_err(|_| "Unsafe external level identifier.")?;
-            let target = base.join(relative);
-            match fs::symlink_metadata(&target) {
-                Ok(_)
-                    if target
-                        .canonicalize()
-                        .is_ok_and(|path| sources.contains(&path)) => {}
-                Ok(_) => {
-                    return Err(format!(
-                        "External level destination is already in use: {}",
-                        target.display()
-                    ));
-                }
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                Err(error) => {
-                    return Err(format!(
-                        "Cannot inspect external level destination {}: {error}",
-                        target.display()
-                    ));
-                }
-            }
-        }
-        Ok(())
     }
 }
 

@@ -1228,20 +1228,52 @@ fn check_external_path_collision(indexed: bool) {
     fs::write(&path, &root_bytes).unwrap();
     let source_bytes = fs::read(&source).unwrap();
     let external: Value = serde_json::from_slice(&source_bytes).unwrap();
+    let target = json!({
+        "level_iid":root["levels"][0]["iid"], "layer_iid":external["layerInstances"][0]["iid"]
+    });
     let mut client = Client::start(&path);
     client.initialize(PROTOCOL);
     client.initialized();
-    assert_eq!(
-        client.tool("paint_int_grid", json!({
-            "level_iid":root["levels"][0]["iid"], "layer_iid":external["layerInstances"][0]["iid"],
-            "x":0, "y":0, "value":1
-        }))["changed"],
-        true
+    let mut paint = target.clone();
+    paint["x"] = json!(0);
+    paint["y"] = json!(0);
+    paint["value"] = json!(1);
+    assert_eq!(client.tool("paint_int_grid", paint)["changed"], true);
+    let conflict = client.call("save_project", json!({}));
+    assert_eq!(conflict["isError"], true);
+    assert!(
+        conflict["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains(normalized.file_name().unwrap().to_str().unwrap())
     );
-    assert_eq!(client.call("save_project", json!({}))["isError"], true);
     assert_eq!(fs::read(&normalized).unwrap(), unrelated);
     assert_eq!(fs::read(&source).unwrap(), source_bytes);
     assert_eq!(fs::read(&path).unwrap(), root_bytes);
     assert_eq!(client.tool("project_info", json!({}))["dirty"], true);
+    assert_eq!(
+        client.tool("get_layer", target.clone())["layer"]["intGridCsv"][0],
+        1
+    );
+
+    fs::remove_file(&normalized).unwrap();
+    assert_eq!(
+        client.tool("save_project", json!({})),
+        json!({"saved":true,"dirty":false})
+    );
+    assert_eq!(
+        client.tool("get_layer", target)["layer"]["intGridCsv"][0],
+        1
+    );
     client.close();
+    let saved: Value = serde_json::from_slice(&fs::read(&normalized).unwrap()).unwrap();
+    assert_eq!(saved["layerInstances"][0]["intGridCsv"][0], 1);
+    let root: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    assert_eq!(
+        root["levels"][0]["externalRelPath"],
+        format!(
+            "SeparateLevelFiles/{}",
+            normalized.file_name().unwrap().to_str().unwrap()
+        )
+    );
 }
