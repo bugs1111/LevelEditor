@@ -2956,8 +2956,26 @@ fn collect_configured_export(
     }
 }
 fn prune_managed_exports(dir: &Path, keep: &[PathBuf], extensions: &[&str]) -> Result<()> {
-    if !dir.exists() {
-        return Ok(());
+    // Check the project-associated directory before entering a managed export folder.
+    for path in dir.parent().into_iter().chain([dir]) {
+        match fs::symlink_metadata(path) {
+            Ok(metadata) if metadata.is_symlink() => return Ok(()),
+            Ok(_) => {}
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::NotFound | io::ErrorKind::NotADirectory
+                ) =>
+            {
+                return Ok(());
+            }
+            Err(source) => {
+                return Err(Error::Io {
+                    path: path.to_owned(),
+                    source,
+                });
+            }
+        }
     }
     for entry in fs::read_dir(dir).map_err(|source| Error::Io {
         path: dir.into(),

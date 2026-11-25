@@ -2217,6 +2217,56 @@ fn configured_exports_retire_stale_generated_files_and_preserve_unrelated_files(
     );
 }
 
+#[cfg(unix)]
+#[test]
+fn configured_export_cleanup_preserves_contents_of_linked_output_directory() {
+    let dir = tempfile::tempdir().unwrap();
+    let project_path = dir.path().join("game.ldtk");
+    let output = dir.path().join("game/png");
+    let shared = dir.path().join("shared");
+    fs::create_dir_all(output.parent().unwrap()).unwrap();
+    fs::create_dir(&shared).unwrap();
+    fs::write(shared.join("artwork.png"), b"linked artwork").unwrap();
+    std::os::unix::fs::symlink(&shared, &output).unwrap();
+
+    let mut project = project();
+    project.json["imageExportMode"] = json!("OneImagePerLevel");
+    let report = project.save_with_exports(&project_path).unwrap();
+    assert!(
+        report.export_errors.is_empty(),
+        "{:?}",
+        report.export_errors
+    );
+    assert!(report.outputs.contains(&output.join("Level_0.png")));
+    assert!(shared.join("Level_0.png").is_file());
+    assert!(fs::read(shared.join("artwork.png")).is_ok_and(|bytes| bytes == b"linked artwork"));
+    assert!(fs::symlink_metadata(&output).unwrap().is_symlink());
+}
+
+#[cfg(unix)]
+#[test]
+fn configured_export_cleanup_preserves_contents_beneath_linked_project_directory() {
+    let dir = tempfile::tempdir().unwrap();
+    let project_path = dir.path().join("game.ldtk");
+    let output = project_path.with_extension("");
+    let shared = dir.path().join("shared");
+    fs::create_dir_all(shared.join("png")).unwrap();
+    fs::write(shared.join("png/artwork.png"), b"linked artwork").unwrap();
+    std::os::unix::fs::symlink(&shared, &output).unwrap();
+
+    let mut project = project();
+    project.json["imageExportMode"] = json!("None");
+    let report = project.save_with_exports(&project_path).unwrap();
+    assert!(
+        report.export_errors.is_empty(),
+        "{:?}",
+        report.export_errors
+    );
+    assert_eq!(report.outputs, std::slice::from_ref(&project_path));
+    assert!(fs::read(shared.join("png/artwork.png")).is_ok_and(|bytes| bytes == b"linked artwork"));
+    assert!(fs::symlink_metadata(&output).unwrap().is_symlink());
+}
+
 #[test]
 #[ignore = "requires locally generated Aseprite indexed-color fixture"]
 fn preview_154_aseprite_indexed_image_matches_aseprite_png_export() {
