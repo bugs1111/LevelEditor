@@ -445,7 +445,7 @@ type AutoTilesByCell = BTreeMap<i32, Vec<AutoTile>>;
 struct Rule<'a> {
     json: &'a Value,
     pattern: Vec<i32>,
-    rects: Vec<Vec<i32>>,
+    rects: Vec<Vec<Option<i32>>>,
     random_span: [i32; 2],
     size: i32,
     uid: i32,
@@ -513,13 +513,15 @@ impl<'a> Rule<'a> {
             random_span("tileRandomYMin", "tileRandomYMax")?,
         ];
         let tile_id = |value: &Value| {
-            // Atlas remapping can leave a null hole in a stored stamp.
+            // Keep the empty slots created by atlas remapping when selecting a variant.
             if value.is_null() {
-                return Ok(-1);
+                return Ok(None);
             }
             value
                 .as_i64()
                 .and_then(|id| i32::try_from(id).ok())
+                .filter(|&id| id >= 0)
+                .map(Some)
                 .ok_or_else(|| Error::Invalid("invalid auto-layer tile ID".into()))
         };
         let rects = if v["tileIds"].is_array() {
@@ -1107,10 +1109,11 @@ impl<'a> Engine<'a> {
         let seed = self.seed as f64 + r.uid as f64;
         let rect =
             &r.rects[noise::random(seed + flips as f64, x, y, r.rects.len() as i32) as usize];
-        let left = rect.iter().map(|t| t % self.atlas_width).min().unwrap_or(0);
-        let right = rect.iter().map(|t| t % self.atlas_width).max().unwrap_or(0);
-        let top = rect.iter().map(|t| t / self.atlas_width).min().unwrap_or(0);
-        let bottom = rect.iter().map(|t| t / self.atlas_width).max().unwrap_or(0);
+        let ids = rect.iter().flatten().copied();
+        let left = ids.clone().map(|t| t % self.atlas_width).min().unwrap_or(0);
+        let right = ids.clone().map(|t| t % self.atlas_width).max().unwrap_or(0);
+        let top = ids.clone().map(|t| t / self.atlas_width).min().unwrap_or(0);
+        let bottom = ids.clone().map(|t| t / self.atlas_width).max().unwrap_or(0);
         let dx = if flips & 1 == 0 { 1_i64 } else { -1_i64 };
         let dy = if flips & 2 == 0 { 1_i64 } else { -1_i64 };
         let [random_x, random_y] = r.random_span;
@@ -1130,10 +1133,7 @@ impl<'a> Engine<'a> {
             i32::try_from(value)
                 .map_err(|_| Error::Invalid("auto-layer tile coordinate exceeds i32 range".into()))
         };
-        for &tid in rect {
-            if tid < 0 {
-                return Err(Error::Invalid("negative auto-layer tile ID".into()));
-            }
+        for tid in ids {
             let tx = tid % self.atlas_width;
             let ty = tid / self.atlas_width;
             let sx = if j["tileMode"] == "Stamp" {

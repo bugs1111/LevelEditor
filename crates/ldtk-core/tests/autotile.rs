@@ -881,8 +881,12 @@ fn editing_legacy_rule_tiles_migrates_old_tile_ids() {
     let (mut p, k) = fixture();
     let r = &mut p.json["defs"]["layers"][0]["autoRuleGroups"][0]["rules"][0];
     r.as_object_mut().unwrap().remove("tileRectsIds");
-    r["tileIds"] = json!([2]);
+    r["tileIds"] = json!([2, null]);
     p.update_auto_rule(1, 3, 4, &json!({"chance":0.9})).unwrap();
+    assert_eq!(
+        p.layer_def(1).unwrap()["autoRuleGroups"][0]["rules"][0]["tileRectsIds"],
+        json!([[2], [null]])
+    );
     p.update_auto_rule(1, 3, 4, &json!({"chance":1,"tileRectsIds":[[3]]}))
         .unwrap();
     assert!(
@@ -897,6 +901,9 @@ fn editing_legacy_rule_tiles_migrates_old_tile_ids() {
             .get("tileIds")
             .is_none()
     );
+    p.update_auto_rule(1, 3, 4, &json!({"tileRectsIds":[[null]]}))
+        .unwrap();
+    assert_eq!(tiles(&p, k), &json!([]));
 }
 
 #[test]

@@ -115,17 +115,8 @@ fn validate_rule(rule: &Value) -> Result<()> {
     let rects = rule["tileRectsIds"]
         .as_array()
         .ok_or_else(|| invalid("tileRectsIds must be an array"))?;
-    if rects.iter().any(|r| {
-        r.as_array().is_none_or(|tiles| {
-            tiles.is_empty()
-                || tiles
-                    .iter()
-                    .any(|t| t.as_i64().is_none_or(|n| n < 0 || n > i32::MAX as i64))
-        })
-    }) {
-        return Err(invalid(
-            "tile rectangles must contain nonnegative integer IDs",
-        ));
+    if rects.iter().any(|r| r.as_array().is_none_or(Vec::is_empty)) {
+        return Err(invalid("tile rectangles must be nonempty arrays"));
     }
     Ok(())
 }

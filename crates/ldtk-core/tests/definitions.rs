@@ -328,6 +328,15 @@ fn explicit_atlas_loss_policy_preserves_auto_stamp_holes_and_reports_discarded_d
     let ts = p.add_tileset(Path::new("atlas.png"), 16, 32, 32).unwrap();
     p.assign_tileset(source, ts).unwrap();
     p.json["defs"]["layers"][0]["autoRuleGroups"] = json!([{"uid":100,"active":true,"rules":[{"uid":101,"active":true,"size":1,"pattern":[1],"tileMode":"Stamp","tileRectsIds":[[0,1,2,3]],"chance":1}]}]);
+    let key = p.level_keys()[0];
+    p.paint_int_grid(key, 0, 1, 1, 1).unwrap();
+    assert_eq!(
+        p.layer(key, 0).unwrap()["autoLayerTiles"]
+            .as_array()
+            .unwrap()
+            .len(),
+        4
+    );
     let before = p.json.clone();
     assert!(
         p.update_tileset_definition(ts, &json!({"pxWid":16}))
@@ -346,6 +355,33 @@ fn explicit_atlas_loss_policy_preserves_auto_stamp_holes_and_reports_discarded_d
     assert_eq!(
         p.layer_def(source).unwrap()["autoRuleGroups"][0]["rules"][0]["tileRectsIds"],
         json!([[0, null, 1, null]])
+    );
+    p.update_auto_rule(source, 100, 101, &json!({"alpha":0.5}))
+        .unwrap();
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("Stamp.ldtk");
+    p.save(&path).unwrap();
+    let mut reopened = Project::load(&path).unwrap();
+    assert_eq!(
+        reopened.layer_def(source).unwrap()["autoRuleGroups"][0]["rules"][0]["tileRectsIds"],
+        json!([[0, null, 1, null]])
+    );
+    reopened.paint_int_grid(key, 0, 3, 3, 1).unwrap();
+    let tiles = reopened.layer(key, 0).unwrap()["autoLayerTiles"]
+        .as_array()
+        .unwrap();
+    let pixels: Vec<_> = tiles
+        .iter()
+        .map(|tile| json!([tile["t"], tile["src"], tile["px"], tile["a"]]))
+        .collect();
+    assert_eq!(
+        json!(pixels),
+        json!([
+            [0, [0, 0], [16, 16], 0.5],
+            [1, [0, 16], [16, 32], 0.5],
+            [0, [0, 0], [48, 48], 0.5],
+            [1, [0, 16], [48, 64], 0.5]
+        ])
     );
 }
 #[test]
