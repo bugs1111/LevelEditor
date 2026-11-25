@@ -760,6 +760,120 @@ fn inspects_worlds_edits_cells_and_entities_and_reopens_the_saved_project() {
 }
 
 #[test]
+fn paints_int_grid_cells_atomically_and_matches_sequential_auto_layers() {
+    let temp = tempfile::tempdir().unwrap();
+    let source = sample_path("AutoLayers_3_Mosaic.ldtk");
+    let path = temp.path().join("mosaic.ldtk");
+    fs::copy(&source, &path).unwrap();
+
+    let mut client = Client::start(&path);
+    client.initialize(PROTOCOL);
+    client.initialized();
+    let tools = client.request("tools/list", json!({}));
+    let tool = tools["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|tool| tool["name"] == "paint_int_grid_cells")
+        .expect("discoverable IntGrid batch tool");
+    let cells_schema = &tool["inputSchema"]["properties"]["cells"];
+    assert_eq!(cells_schema["type"], "array");
+    assert_eq!(
+        cells_schema["items"]["required"],
+        json!(["x", "y", "value"])
+    );
+    assert_eq!(cells_schema["items"]["additionalProperties"], false);
+
+    let levels = client.tool("list_levels", json!({}));
+    let level_iid = &levels["levels"][0]["iid"];
+    let level = client.tool("get_level", json!({"level_iid":level_iid}));
+    let layer_iid = |name: &str| {
+        &level["layers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|l| l["identifier"] == name)
+            .unwrap()["iid"]
+    };
+    let walls = json!({"level_iid":level_iid,"layer_iid":layer_iid("Walls")});
+    let background = json!({"level_iid":level_iid,"layer_iid":layer_iid("Background")});
+    let batch = |cells| {
+        let mut args = walls.clone();
+        args["cells"] = cells;
+        args
+    };
+    let before = client.tool("get_layer", walls.clone());
+    let background_before = client.tool("get_layer", background.clone());
+    let first = json!({"x":4,"y":4,"value":0});
+    let second = json!({"x":5,"y":4,"value":0});
+    for invalid in [
+        json!({"x":5,"y":4,"value":0,"typo":true}),
+        json!({"x":5,"y":4,"value":0.25}),
+        json!({"x":23,"y":4,"value":0}),
+        json!({"x":5,"y":4,"value":999}),
+    ] {
+        assert_eq!(
+            client.call("paint_int_grid_cells", batch(json!([first, invalid])))["isError"],
+            true
+        );
+    }
+    assert_eq!(client.tool("project_info", json!({}))["dirty"], false);
+    assert_eq!(client.tool("get_layer", walls.clone()), before);
+    assert_eq!(
+        client.tool("get_layer", background.clone()),
+        background_before
+    );
+
+    let edits = batch(json!([first, {"x":4,"y":4,"value":1}, second, first]));
+    assert_eq!(
+        client.tool("paint_int_grid_cells", edits),
+        json!({"changed":true,"changed_cells":2,"dirty":true})
+    );
+    let edited = client.tool("get_layer", walls.clone());
+    let edited_background = client.tool("get_layer", background.clone());
+    assert_ne!(edited["layer"]["intGridCsv"], before["layer"]["intGridCsv"]);
+    assert_ne!(
+        edited["layer"]["autoLayerTiles"],
+        before["layer"]["autoLayerTiles"]
+    );
+    assert_ne!(
+        edited_background["layer"]["autoLayerTiles"],
+        background_before["layer"]["autoLayerTiles"]
+    );
+    assert_eq!(
+        client.tool("paint_int_grid_cells", batch(json!([first, second]))),
+        json!({"changed":false,"changed_cells":0,"dirty":true})
+    );
+    assert_eq!(fs::read(&path).unwrap(), fs::read(&source).unwrap());
+    assert_eq!(client.tool("save_project", json!({}))["saved"], true);
+    client.close();
+
+    let mut reopened = Client::start(&path);
+    reopened.initialize(PROTOCOL);
+    reopened.initialized();
+    assert_eq!(reopened.tool("get_layer", walls.clone()), edited);
+    assert_eq!(
+        reopened.tool("get_layer", background.clone()),
+        edited_background
+    );
+    reopened.close();
+
+    let mut sequential = Client::start(&source);
+    sequential.initialize(PROTOCOL);
+    sequential.initialized();
+    for cell in [first, second] {
+        let mut args = walls.clone();
+        args.as_object_mut()
+            .unwrap()
+            .extend(cell.as_object().unwrap().clone());
+        assert_eq!(sequential.tool("paint_int_grid", args)["changed"], true);
+    }
+    assert_eq!(sequential.tool("get_layer", walls), edited);
+    assert_eq!(sequential.tool("get_layer", background), edited_background);
+    sequential.close();
+}
+
+#[test]
 fn save_detects_changes_to_root_external_levels_and_watched_assets() {
     let temp = tempfile::tempdir().unwrap();
     let path = copy_external_project(temp.path());

@@ -245,12 +245,30 @@ impl Session {
         let layer = self.project.layer(key, index).expect("resolved layer");
         let coordinates = || (integer(args, "x"), integer(args, "y"));
         let mut placed_iid = None;
+        let mut changed_cells = None;
         let changed = match name {
             "paint_int_grid" => {
                 let (x, y) = coordinates();
                 in_bounds(layer, ["__cWid", "__cHei"], x, y)?;
                 self.project
                     .paint_int_grid(key, index, x, y, integer(args, "value"))
+            }
+            "paint_int_grid_cells" => {
+                let cells = args["cells"].as_array().expect("validated cell array");
+                let mut edits = Vec::with_capacity(cells.len());
+                for (index, cell) in cells.iter().enumerate() {
+                    let cell = cell.as_object().expect("validated cell");
+                    let (x, y) = (integer(cell, "x"), integer(cell, "y"));
+                    in_bounds(layer, ["__cWid", "__cHei"], x, y)
+                        .map_err(|error| format!("cells[{index}]: {error}"))?;
+                    edits.push(([x, y], integer(cell, "value")));
+                }
+                self.project
+                    .paint_int_grid_cells(key, index, &edits)
+                    .map(|count| {
+                        changed_cells = Some(count);
+                        count > 0
+                    })
             }
             "paint_tile" | "erase_tile" => {
                 let (x, y) = coordinates();
@@ -311,6 +329,9 @@ impl Session {
         let mut result = json!({"changed":changed,"dirty":self.dirty});
         if let Some(iid) = placed_iid {
             result["entity_iid"] = iid;
+        }
+        if let Some(count) = changed_cells {
+            result["changed_cells"] = count.into();
         }
         Ok(result)
     }
