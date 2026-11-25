@@ -1345,7 +1345,7 @@
   "any IntGrid value": "任何整数网格值",
   "any IntGrid value from the group {name}": "「{name}」组中的任何整数网格值",
   "any entity": "任意实体",
-  "any entity with tag TODO": "任意带 TODO 标签的实体",
+  "any entity with an allowed tag": "带有任一允许标签的实体",
   "any {entity} entity": "任意 {entity} 实体",
   "auto": "自动",
   "cells": "格",

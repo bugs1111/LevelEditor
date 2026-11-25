@@ -635,7 +635,7 @@ impl FieldPick {
                     None => locale::tr(ui, "UNKNOWN ENTITY").into(),
                 }
             }
-            Some("OnlyTags") => locale::tr(ui, "any entity with tag TODO").into(),
+            Some("OnlyTags") => locale::tr(ui, "any entity with an allowed tag").into(),
             _ => locale::tr(ui, "any entity").into(),
         };
         let location = locale::tr(

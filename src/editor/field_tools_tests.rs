@@ -1073,6 +1073,25 @@ fn reference_target_hints_and_clicks_match_layer_visibility_and_field_restrictio
         start(&mut f, &ctx);
         f.app.navigate_level(f.target, false);
         frame(&mut f, &ctx, vec![], false);
+        if restriction == "OnlyTags" {
+            for (language, expected) in [
+                (
+                    locale::Language::English,
+                    "Pick any entity with an allowed tag in any level",
+                ),
+                (
+                    locale::Language::SimplifiedChinese,
+                    "在任意关卡中选取带有任一允许标签的实体",
+                ),
+            ] {
+                locale::set(&ctx, language);
+                let (_, labels) = frame(&mut f, &ctx, vec![], false);
+                assert!(
+                    labels.iter().any(|(text, _)| text == expected),
+                    "{labels:?}"
+                );
+            }
+        }
         assert_eq!(
             ctx.data(|d| d.get_temp::<usize>(egui::Id::new("target-circles"))),
             Some(2),
