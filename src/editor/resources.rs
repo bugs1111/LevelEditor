@@ -1,5 +1,6 @@
 use super::*;
 use serde_json::json;
+use std::collections::BTreeSet;
 use std::path::Path;
 
 pub(super) fn clean(path: &Path) -> PathBuf {
@@ -167,12 +168,11 @@ impl EditorApp {
         let Some(project) = &self.project else {
             return Vec::new();
         };
-        let documents = document_paths(project);
         let root_missing = project.path.as_deref().is_some_and(is_missing_file);
         let Some(snapshot) = &self.file_snapshot else {
             return Vec::new();
         };
-        let changed = match snapshot.changed_files_matching(|p| documents.contains(&clean(p))) {
+        let changed = match snapshot.changed_files_matching(|p| snapshot.is_document(p)) {
             Ok(paths) => paths,
             // A document we cannot verify must also be resolved before saving.
             Err(ldtk_core::Error::Io { path, .. }) => vec![path],
@@ -184,17 +184,9 @@ impl EditorApp {
             .collect()
     }
     pub(super) fn changed_resource_files(&self) -> Vec<PathBuf> {
-        let Some(project) = &self.project else {
-            return Vec::new();
-        };
-        let documents = document_paths(project);
         self.file_snapshot
             .as_ref()
-            .and_then(|snapshot| {
-                snapshot
-                    .changed_files_matching(|p| !documents.contains(&clean(p)))
-                    .ok()
-            })
+            .map(ldtk_core::FilesystemSnapshot::changed_resource_files)
             .unwrap_or_default()
     }
     fn resource_failure(&mut self, path: PathBuf, uids: Vec<i64>, error: String) {
@@ -357,13 +349,19 @@ impl EditorApp {
         let backgrounds = background_paths(project).collect::<HashSet<_>>();
         let backup = project.is_backup();
         let root_missing = project.path.as_deref().is_some_and(is_missing_file);
-        // Preserve an existing document conflict even if only a resource retry
-        // triggered this pass; accepting its baseline would hide disk edits.
         let mut conflicts = self.changed_document_files();
+        let paths: BTreeSet<_> = paths.into_iter().map(|path| clean(&path)).collect();
+        if let Some(snapshot) = &mut self.file_snapshot {
+            project.refresh_resource_watches(snapshot, &paths);
+        }
         let mut enum_files = HashSet::new();
         for path in paths {
-            let path = clean(&path);
-            if documents.contains(&path) {
+            if documents.contains(&path)
+                || self
+                    .file_snapshot
+                    .as_ref()
+                    .is_some_and(|snapshot| snapshot.is_document(&path))
+            {
                 if (!root_missing || !is_missing_file(&path)) && !conflicts.contains(&path) {
                     conflicts.push(path);
                 }
@@ -396,12 +394,6 @@ impl EditorApp {
             } else {
                 self.resource_failure(path, Vec::new(), self.status.clone());
             }
-        }
-        if conflicts.is_empty() {
-            self.file_snapshot = self
-                .project
-                .as_ref()
-                .and_then(|p| p.filesystem_snapshot().ok());
         }
         self.external_changes = (!conflicts.is_empty()).then_some(conflicts);
         self.pump_resources(ctx);
@@ -1107,6 +1099,68 @@ mod missing_tests {
             app.changed_document_files().into_iter().collect();
         assert_eq!(actual, std::collections::HashSet::from([source, external]));
         assert_eq!(app.changed_resource_files(), vec![enums]);
+    }
+
+    #[test]
+    fn refreshing_artwork_preserves_conflicts_on_external_levels_removed_in_memory() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("Map.ldtk");
+        let artwork = dir.path().join("Atlas.png");
+        std::fs::write(&artwork, b"old artwork").unwrap();
+        let mut project = Project::new();
+        project.add_tileset(&artwork, 16, 16, 16).unwrap();
+        let removed = project.add_level(None, "Removed", 32, 32).unwrap();
+        project.set_external_levels(true).unwrap();
+        project.save(&path).unwrap();
+        let external = dir.path().join(
+            project.json["levels"][removed.level]["externalRelPath"]
+                .as_str()
+                .unwrap(),
+        );
+        let mut app = EditorApp::empty();
+        let (project, snapshot) = Project::load_with_snapshot(&path).unwrap();
+        app.install_project(project, Some(snapshot));
+        app.project.as_mut().unwrap().remove_level(removed).unwrap();
+        app.dirty = true;
+
+        let mut outside = std::fs::read(&external).unwrap();
+        outside.push(b'\n');
+        std::fs::write(&external, &outside).unwrap();
+        std::fs::write(&artwork, b"new artwork").unwrap();
+        let ctx = egui::Context::default();
+        app.changed_resources(&ctx, vec![artwork]);
+        assert_eq!(app.external_changes, Some(vec![external.clone()]));
+        app.save_document(&ctx, path);
+        assert!(app.saving.is_none());
+        assert!(app.dirty);
+        assert_eq!(std::fs::read(external).unwrap(), outside);
+    }
+
+    #[test]
+    fn refreshing_unreadable_artwork_does_not_drop_document_watches() {
+        let dir = tempfile::tempdir().unwrap();
+        let artwork = dir.path().join("Atlas.png");
+        let other = dir.path().join("Other.png");
+        std::fs::write(&artwork, b"old artwork").unwrap();
+        std::fs::write(&other, b"old second artwork").unwrap();
+        let mut project = Project::new();
+        project.add_tileset(&artwork, 16, 16, 16).unwrap();
+        project.add_tileset(&other, 16, 16, 16).unwrap();
+        let path = dir.path().join("Map.ldtk");
+        project.save(&path).unwrap();
+        let mut app = EditorApp::empty();
+        app.set_project(project);
+        std::fs::remove_file(&artwork).unwrap();
+        std::fs::create_dir(&artwork).unwrap();
+        std::fs::write(&other, b"changed second artwork").unwrap();
+        assert_eq!(app.changed_resource_files(), std::slice::from_ref(&other));
+        app.changed_resources(&egui::Context::default(), vec![artwork]);
+        assert_eq!(app.changed_resource_files(), [other]);
+
+        let mut outside = std::fs::read(&path).unwrap();
+        outside.push(b'\n');
+        std::fs::write(&path, outside).unwrap();
+        assert_eq!(app.changed_document_files(), [path]);
     }
 
     #[test]

@@ -13,6 +13,7 @@ use std::{
 #[derive(Clone, Debug, Default)]
 pub struct FilesystemSnapshot {
     pub(super) files: BTreeMap<PathBuf, Option<u64>>,
+    documents: BTreeSet<PathBuf>,
     pub(super) loaded_external_paths: Option<(PathBuf, Vec<String>)>,
 }
 impl FilesystemSnapshot {
@@ -21,11 +22,13 @@ impl FilesystemSnapshot {
     pub fn for_save_destination(path: &Path) -> Result<Self> {
         let path = absolute(path)?;
         let mut snapshot = Self::default();
-        snapshot.refresh_file(&path)?;
+        snapshot.record_document(path.clone(), file_fingerprint(&path)?);
         let levels = super::previous_external_paths(&path);
         let parent = path.parent().expect("absolute project path");
         for level in &levels {
-            snapshot.refresh_file(&absolute(&parent.join(level))?)?;
+            let level = absolute(&parent.join(level))?;
+            let fingerprint = file_fingerprint(&level)?;
+            snapshot.record_document(level, fingerprint);
         }
         snapshot.loaded_external_paths = Some((path, levels));
         Ok(snapshot)
@@ -41,6 +44,46 @@ impl FilesystemSnapshot {
             self.loaded_external_paths = None;
         }
         Ok(())
+    }
+
+    pub(super) fn record_document(&mut self, path: PathBuf, fingerprint: Option<u64>) {
+        self.documents.insert(path.clone());
+        self.files.insert(path, fingerprint);
+    }
+
+    pub(super) fn rename_document(&mut self, old: &Path, new: &Path) {
+        if let Some(fingerprint) = self.files.remove(old) {
+            self.documents.remove(old);
+            self.record_document(new.to_owned(), fingerprint);
+        }
+        if let Some((root, _)) = &mut self.loaded_external_paths
+            && root == old
+        {
+            *root = new.to_owned();
+        }
+    }
+
+    pub fn is_document(&self, path: &Path) -> bool {
+        self.documents.contains(path)
+    }
+
+    pub fn refresh_resource_file(&mut self, path: &Path) -> Result<()> {
+        let path = absolute(path)?;
+        if !self.is_document(&path) {
+            self.refresh_file(&path)?;
+        }
+        Ok(())
+    }
+
+    /// Check readable resources independently so an unreadable one cannot mask another.
+    pub fn changed_resource_files(&self) -> Vec<PathBuf> {
+        self.files
+            .iter()
+            .filter(|(path, old)| {
+                !self.is_document(path) && file_fingerprint(path).is_ok_and(|new| &new != *old)
+            })
+            .map(|(path, _)| path.clone())
+            .collect()
     }
 
     pub fn changed_files(&self) -> Result<Vec<PathBuf>> {
@@ -61,8 +104,8 @@ impl FilesystemSnapshot {
 impl Project {
     pub fn filesystem_snapshot(&self) -> Result<FilesystemSnapshot> {
         let mut snapshot = FilesystemSnapshot {
-            files: BTreeMap::new(),
-            loaded_external_paths: None,
+            documents: self.saved_document_paths()?,
+            ..Default::default()
         };
         self.snapshot_resources(&mut snapshot)?;
         Ok(snapshot)
@@ -77,14 +120,48 @@ impl Project {
         let _ = self.add_resource_watches(snapshot, false);
     }
 
+    /// Refresh reported resources and reconcile references without rebasing documents.
+    pub fn refresh_resource_watches(
+        &self,
+        snapshot: &mut FilesystemSnapshot,
+        changed: &BTreeSet<PathBuf>,
+    ) {
+        let (Ok(mut paths), Ok(documents)) =
+            (self.resource_watch_paths(), self.saved_document_paths())
+        else {
+            return;
+        };
+        paths.retain(|path| !documents.contains(path));
+        snapshot.files.retain(|path, _| {
+            snapshot.documents.contains(path) || paths.contains(path) && !changed.contains(path)
+        });
+        let _ = add_file_watches(snapshot, paths, false);
+    }
+
     fn add_resource_watches(
         &self,
         snapshot: &mut FilesystemSnapshot,
         require_readable: bool,
     ) -> Result<()> {
-        let mut paths = BTreeSet::new();
+        add_file_watches(snapshot, self.resource_watch_paths()?, require_readable)
+    }
+
+    fn saved_document_paths(&self) -> Result<BTreeSet<PathBuf>> {
+        let Some(path) = &self.path else {
+            return Ok(BTreeSet::new());
+        };
+        let base = path.parent().expect("absolute project path");
+        let levels = self
+            .iter_level_keys()
+            .filter_map(|key| self.level_stub(key)?["externalRelPath"].as_str());
+        std::iter::once(Ok(path.clone()))
+            .chain(levels.map(|path| absolute(&base.join(path))))
+            .collect()
+    }
+
+    fn resource_watch_paths(&self) -> Result<BTreeSet<PathBuf>> {
+        let mut paths = self.saved_document_paths()?;
         if let Some(path) = &self.path {
-            paths.insert(path.clone());
             let base = path.parent().expect("absolute project path");
             // Many layers and fields refer to the same asset.
             let mut references = BTreeSet::new();
@@ -96,19 +173,27 @@ impl Project {
                 paths.insert(absolute(&base.join(reference))?);
             }
         }
-        for path in paths {
-            if let std::collections::btree_map::Entry::Vacant(entry) = snapshot.files.entry(path) {
-                match file_fingerprint(entry.key()) {
-                    Ok(fingerprint) => {
-                        entry.insert(fingerprint);
-                    }
-                    Err(error) if require_readable => return Err(error),
-                    Err(_) => {}
+        Ok(paths)
+    }
+}
+
+fn add_file_watches(
+    snapshot: &mut FilesystemSnapshot,
+    paths: BTreeSet<PathBuf>,
+    require_readable: bool,
+) -> Result<()> {
+    for path in paths {
+        if let std::collections::btree_map::Entry::Vacant(entry) = snapshot.files.entry(path) {
+            match file_fingerprint(entry.key()) {
+                Ok(fingerprint) => {
+                    entry.insert(fingerprint);
                 }
+                Err(error) if require_readable => return Err(error),
+                Err(_) => {}
             }
         }
-        Ok(())
     }
+    Ok(())
 }
 
 // Feed identical chunks to the hasher for parsed document bytes and watched files.

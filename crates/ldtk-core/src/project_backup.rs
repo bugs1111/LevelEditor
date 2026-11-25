@@ -547,10 +547,8 @@ impl Project {
                 source,
             });
         }
-        if let Some(snapshot) = snapshot
-            && let Some(fingerprint) = snapshot.files.remove(old)
-        {
-            snapshot.files.insert(target.clone(), fingerprint);
+        if let Some(snapshot) = snapshot {
+            snapshot.rename_document(old, &target);
         }
         self.path = Some(target);
         Ok(true)

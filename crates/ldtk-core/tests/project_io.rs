@@ -1049,6 +1049,8 @@ fn extension_rename_preserves_file_bytes_external_levels_and_watcher() {
         Project::load(&new).unwrap().external_levels,
         p.external_levels
     );
+    assert!(snapshot.is_document(&new) && snapshot.is_document(&external));
+    assert!(!snapshot.is_document(&old) && !snapshot.is_document(&resource));
     assert!(snapshot.changed_files().unwrap().is_empty());
 
     // Renaming must retain the original fingerprint even if the file had been

@@ -288,7 +288,7 @@ impl EditorApp {
             };
         self.status = format!("{name}: {message}");
         if let Some(snapshot) = &mut self.file_snapshot {
-            let _ = snapshot.refresh_file(path);
+            let _ = snapshot.refresh_resource_file(path);
         }
     }
 

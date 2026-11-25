@@ -282,9 +282,7 @@ impl Project {
             }
         };
         if let Some(snapshot) = &mut snapshot {
-            snapshot
-                .files
-                .insert(path.clone(), Some(bytes_fingerprint(&bytes)));
+            snapshot.record_document(path.clone(), Some(bytes_fingerprint(&bytes)));
         }
         drop(bytes);
         let mut project = Self::from_json(json)?;
@@ -326,7 +324,7 @@ impl Project {
                             let (repaired, value, bytes) =
                                 recover_renamed_external_level(&path, &rel, stub, error)?;
                             if let Some(snapshot) = &mut snapshot {
-                                snapshot.files.insert(absolute(&external)?, None);
+                                snapshot.record_document(absolute(&external)?, None);
                             }
                             project.level_stub_mut(key).expect("enumerated level")["externalRelPath"] =
                                 Value::String(repaired.clone());
@@ -352,9 +350,7 @@ impl Project {
                 }
                 if let Some(fingerprint) = fingerprint {
                     if let Some(snapshot) = &mut snapshot {
-                        snapshot
-                            .files
-                            .insert(absolute(&external)?, Some(fingerprint));
+                        snapshot.record_document(absolute(&external)?, Some(fingerprint));
                     }
                     if cache_level {
                         fingerprints.insert(

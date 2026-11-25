@@ -429,13 +429,10 @@ impl EditorApp {
             && !world_form_dialog::is_open(ctx)
         {
             self.last_file_check = Instant::now();
-            if let Some(snapshot) = &self.file_snapshot {
-                let paths = snapshot
-                    .changed_files()
-                    .unwrap_or_else(|_| self.changed_document_files());
-                if !paths.is_empty() {
-                    self.changed_resources(ctx, paths);
-                }
+            let mut paths = self.changed_document_files();
+            paths.extend(self.changed_resource_files());
+            if !paths.is_empty() {
+                self.changed_resources(ctx, paths);
             }
         }
     }
