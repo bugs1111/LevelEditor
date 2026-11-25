@@ -17,14 +17,12 @@ impl ApplicationWrite {
     }
 }
 
-fn in_application_directory(path: &Path) -> bool {
+fn in_application_directory(path: &Path, executable: Option<&Path>) -> bool {
     let Some(directory) = path.parent().and_then(|parent| parent.canonicalize().ok()) else {
         return false;
     };
-    let executable = std::env::current_exe().ok();
-    let examples = resource_path_in("examples/original", executable.as_deref());
+    let examples = resource_path_in("examples/original", executable);
     executable
-        .as_deref()
         .and_then(Path::parent)
         .into_iter()
         .chain(std::iter::once(examples.as_path()))
@@ -38,7 +36,7 @@ pub(super) fn recommends_backups(project: &Project) -> bool {
     let Some(path) = &project.path else {
         return false;
     };
-    !in_application_directory(path)
+    !in_application_directory(path, std::env::current_exe().ok().as_deref())
         && project.json["backupOnSave"] != true
         && !project.is_backup()
         && project.level_keys().len() >= 8
@@ -303,7 +301,20 @@ pub(super) fn paint_warning(
 
 impl EditorApp {
     pub(super) fn check_application_write(&mut self, ctx: &egui::Context, write: ApplicationWrite) {
-        if in_application_directory(write.path()) {
+        self.check_application_write_with_executable(
+            ctx,
+            write,
+            std::env::current_exe().ok().as_deref(),
+        );
+    }
+
+    fn check_application_write_with_executable(
+        &mut self,
+        ctx: &egui::Context,
+        write: ApplicationWrite,
+        executable: Option<&Path>,
+    ) {
+        if in_application_directory(write.path(), executable) {
             self.application_write = Some(write);
             ctx.request_repaint();
         } else {
@@ -756,8 +767,8 @@ mod tests {
 
     #[test]
     fn saving_in_application_directory_waits_for_the_users_choice() {
-        let executable = std::env::current_exe().unwrap();
-        let directory = tempfile::tempdir_in(executable.parent().unwrap()).unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        let executable = directory.path().join("level-editor");
         let path = directory.path().join("Bundled.ldtk");
         let mut project = Project::new();
         project.save(&path).unwrap();
@@ -770,7 +781,11 @@ mod tests {
         theme::configure(&ctx);
         frame(&mut app, &ctx, vec![]);
 
-        app.save(false);
+        app.check_application_write_with_executable(
+            &ctx,
+            ApplicationWrite::Save(path.clone()),
+            Some(&executable),
+        );
         frame(&mut app, &ctx, vec![]);
         let warning = frame(&mut app, &ctx, vec![]);
         label(&warning, "Save somewhere else");
@@ -779,7 +794,11 @@ mod tests {
         assert_eq!(std::fs::read(&path).unwrap(), before);
         assert!(app.dirty && !app.is_busy());
 
-        app.save(false);
+        app.check_application_write_with_executable(
+            &ctx,
+            ApplicationWrite::Save(path.clone()),
+            Some(&executable),
+        );
         frame(&mut app, &ctx, vec![]);
         let warning = frame(&mut app, &ctx, vec![]);
         let save = label(
