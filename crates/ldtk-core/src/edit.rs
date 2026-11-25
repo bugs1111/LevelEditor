@@ -423,6 +423,39 @@ impl Project {
         flips: i32,
         deferred: Option<&mut DeferredAutoLayers>,
     ) -> Result<Vec<usize>> {
+        self.paint_tile_batch(
+            key,
+            layer_index,
+            edits.len(),
+            |index| (&edits[index], flips),
+            deferred,
+        )
+    }
+
+    /// Paint a batch with individual flip flags, returning the input indices that changed.
+    pub fn paint_tile_cells(
+        &mut self,
+        key: LevelKey,
+        layer_index: usize,
+        edits: &[(TilePaint, i32)],
+    ) -> Result<Vec<usize>> {
+        self.paint_tile_batch(
+            key,
+            layer_index,
+            edits.len(),
+            |index| (&edits[index].0, edits[index].1),
+            None,
+        )
+    }
+
+    fn paint_tile_batch<'a>(
+        &mut self,
+        key: LevelKey,
+        layer_index: usize,
+        edit_count: usize,
+        edit_at: impl Fn(usize) -> (&'a TilePaint, i32),
+        deferred: Option<&mut DeferredAutoLayers>,
+    ) -> Result<Vec<usize>> {
         let layer = self
             .layer(key, layer_index)
             .ok_or_else(|| invalid("layer not found"))?;
@@ -431,35 +464,28 @@ impl Project {
         }
         let (width, height, grid) = dimensions(layer)?;
         let mut atlas = None;
-        let mut targets = HashMap::with_capacity(edits.len());
-        let mut groups = vec![None; edits.len()];
-        for (
-            index,
-            &TilePaint {
-                cell: [x, y],
-                id,
-                src,
-                stack,
-            },
-        ) in edits.iter().enumerate()
-        {
+        let mut targets = HashMap::with_capacity(edit_count);
+        let mut groups = vec![None; edit_count];
+        for (index, entry) in groups.iter_mut().enumerate() {
+            let (edit, flips) = edit_at(index);
+            let [x, y] = edit.cell;
             if !inside(x, y, width, height) {
                 continue;
             }
-            if id < 0 || src.iter().any(|v| *v < 0) || !(0..=3).contains(&flips) {
+            if edit.id < 0 || edit.src.iter().any(|v| *v < 0) || !(0..=3).contains(&flips) {
                 return Err(invalid("invalid tile ID, source coordinates or flip flags"));
             }
             let layout = match atlas {
                 Some(layout) => layout,
                 None => *atlas.insert(self.tile_atlas_layout(layer)?),
             };
-            validate_tile_source(layout, id, src)?;
+            validate_tile_source(layout, edit.id, edit.src)?;
             let pixel = [i64::from(x * grid), i64::from(y * grid)];
             let group = *targets.entry(pixel).or_insert(index);
-            if group != index && (stack || edits[group].stack) {
+            if group != index && (edit.stack || edit_at(group).0.stack) {
                 return Err(invalid("stacked tile painting requires distinct cells"));
             }
-            groups[index] = Some(group);
+            *entry = Some(group);
         }
         if targets.is_empty() {
             return Ok(Vec::new());
@@ -467,36 +493,39 @@ impl Project {
         let tiles = layer["gridTiles"]
             .as_array()
             .ok_or_else(|| invalid("gridTiles must be an array"))?;
-        let mut first = vec![None; edits.len()];
-        let mut stacked = vec![false; edits.len()];
-        let mut raise = vec![None; edits.len()];
+        let mut first = vec![None; edit_count];
+        let mut stacked = vec![false; edit_count];
+        let mut raise = vec![None; edit_count];
         let mut removals = Vec::new();
         for (index, tile) in tiles.iter().enumerate() {
-            if let Some(&edit) = targets.get(&tile_pixel(tile)?) {
-                if first[edit].is_none() {
-                    first[edit] = Some(index);
+            if let Some(&group) = targets.get(&tile_pixel(tile)?) {
+                let (edit, flips) = edit_at(group);
+                if first[group].is_none() {
+                    first[group] = Some(index);
                 } else {
-                    stacked[edit] = true;
-                    if !edits[edit].stack {
+                    stacked[group] = true;
+                    if !edit.stack {
                         removals.push(index);
                     }
                 }
-                if edits[edit].stack
-                    && raise[edit].is_none()
-                    && tile["t"] == edits[edit].id
+                if edit.stack
+                    && raise[group].is_none()
+                    && tile["t"] == edit.id
                     && tile["f"] == flips
                 {
-                    raise[edit] = Some(index);
+                    raise[group] = Some(index);
                 }
             }
         }
         let mut changed = Vec::new();
         let mut write_order = Vec::new();
-        let mut latest: Vec<Option<usize>> = vec![None; edits.len()];
-        for (index, (&TilePaint { id, src, .. }, group)) in edits.iter().zip(groups).enumerate() {
+        let mut latest = vec![None; edit_count];
+        for (index, group) in groups.into_iter().enumerate() {
             let Some(group) = group else { continue };
+            let (&TilePaint { id, src, .. }, flips) = edit_at(index);
             let unchanged = if let Some(previous) = latest[group] {
-                edits[previous].id == id && edits[previous].src == src
+                let (previous, previous_flips) = edit_at(previous);
+                previous.id == id && previous.src == src && previous_flips == flips
             } else {
                 !stacked[group]
                     && first[group].is_some_and(|first| {
@@ -524,13 +553,11 @@ impl Project {
         // A new cell is appended on its first effective write. Later overwrites
         // only change its contents, so the last write can reuse that position.
         for group in write_order {
-            let TilePaint {
-                cell: [x, y],
-                id,
-                src,
-                stack,
-            } = edits[latest[group].expect("changed tile group")];
-            let tile = if !stack && let Some(first) = first[group] {
+            let (edit, flips) = edit_at(latest[group].expect("changed tile group"));
+            let [x, y] = edit.cell;
+            let tile = if !edit.stack
+                && let Some(first) = first[group]
+            {
                 &mut tiles[first]
             } else {
                 let tile = if let Some(raise) = raise[group] {
@@ -542,7 +569,7 @@ impl Project {
                 tiles.push(tile);
                 tiles.last_mut().expect("just pushed")
             };
-            write_tile(tile, [x * grid, y * grid], id, src, flips);
+            write_tile(tile, [x * grid, y * grid], edit.id, edit.src, flips);
         }
         removals.sort_unstable();
         remove_tile_indices(tiles, &removals);
@@ -550,7 +577,7 @@ impl Project {
             key,
             layer_index,
             blocker,
-            changed.iter().map(|&index| edits[index].cell),
+            changed.iter().map(|&index| edit_at(index).0.cell),
             deferred,
         )?;
         Ok(changed)

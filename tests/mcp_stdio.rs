@@ -874,6 +874,119 @@ fn paints_int_grid_cells_atomically_and_matches_sequential_auto_layers() {
 }
 
 #[test]
+fn batches_manual_tile_paint_and_erase_with_sequential_results() {
+    let temp = tempfile::tempdir().unwrap();
+    let source = sample_path("Typical_TopDown_example.ldtk");
+    let mut project: Value = serde_json::from_slice(&fs::read(source).unwrap()).unwrap();
+    let level = &mut project["levels"][0];
+    let layer = level["layerInstances"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|layer| layer["__type"] == "Tiles")
+        .unwrap();
+    let layer_iid = layer["iid"].clone();
+    let tiles = layer["gridTiles"].as_array_mut().unwrap();
+    let mut stacked = tiles
+        .iter()
+        .find(|tile| tile["px"] == json!([32, 0]))
+        .unwrap()
+        .clone();
+    stacked["f"] = json!(1);
+    tiles.push(stacked);
+    let target = json!({"level_iid":level["iid"],"layer_iid":layer_iid});
+    let bytes = serde_json::to_vec(&project).unwrap();
+    let start = |name| {
+        let path = temp.path().join(name);
+        fs::write(&path, &bytes).unwrap();
+        let mut client = Client::start(&path);
+        client.initialize(PROTOCOL);
+        client.initialized();
+        (client, path)
+    };
+    let (mut batch, path) = start("batch.ldtk");
+    let (mut sequential, _) = start("sequential.ldtk");
+    let tools = batch.request("tools/list", json!({}));
+    let tools = tools["result"]["tools"].as_array().unwrap();
+    for name in ["paint_tile_cells", "erase_tile_cells"] {
+        let tool = tools.iter().find(|tool| tool["name"] == name).expect(name);
+        assert_eq!(tool["inputSchema"]["properties"]["cells"]["type"], "array");
+    }
+    let batch_args = |cells| {
+        let mut args = target.clone();
+        args["cells"] = cells;
+        args
+    };
+    let initial = batch.tool("get_layer", target.clone());
+    let first = json!({"x":0,"y":0,"tile_id":0,"src_x":0,"src_y":0,"flips":1});
+    let second = json!({"x":1,"y":0,"tile_id":1,"src_x":16,"src_y":0,"flips":2});
+    let mut wrong_atlas = second.clone();
+    wrong_atlas["src_x"] = json!(0);
+    let mut wrong_flip = second.clone();
+    wrong_flip["flips"] = json!(4);
+    for invalid in [wrong_atlas, wrong_flip] {
+        assert_eq!(
+            batch.call("paint_tile_cells", batch_args(json!([first, invalid])))["isError"],
+            true
+        );
+    }
+    let erase = json!({"x":2,"y":0});
+    assert_eq!(
+        batch.call(
+            "erase_tile_cells",
+            batch_args(json!([erase, {"x":32,"y":0}]))
+        )["isError"],
+        true
+    );
+    assert_eq!(batch.tool("project_info", json!({}))["dirty"], false);
+    assert_eq!(batch.tool("get_layer", target.clone()), initial);
+
+    let mut last = first.clone();
+    last["flips"] = json!(3);
+    let paint = [first, second, last];
+    assert_eq!(
+        batch.tool("paint_tile_cells", batch_args(json!(paint))),
+        json!({"changed":true,"changed_cells":2,"dirty":true})
+    );
+    let mut sequential_call = |name, edits: &[Value]| {
+        for cell in edits {
+            let mut args = target.clone();
+            args.as_object_mut()
+                .unwrap()
+                .extend(cell.as_object().unwrap().clone());
+            assert_eq!(sequential.tool(name, args)["changed"], true);
+        }
+        sequential.tool("get_layer", target.clone())
+    };
+    let after_paint = batch.tool("get_layer", target.clone());
+    assert_eq!(after_paint, sequential_call("paint_tile", &paint));
+    let erases = [erase, json!({"x":1,"y":0})];
+    assert_eq!(
+        batch.tool(
+            "erase_tile_cells",
+            batch_args(json!([erases[0], erases[1], erases[0]]))
+        ),
+        json!({"changed":true,"changed_cells":2,"dirty":true})
+    );
+    let after_erase = batch.tool("get_layer", target.clone());
+    assert_eq!(after_erase, sequential_call("erase_tile", &erases));
+    assert_eq!(
+        batch.tool("erase_tile_cells", batch_args(json!(erases))),
+        json!({"changed":false,"changed_cells":0,"dirty":true})
+    );
+    assert_eq!(fs::read(&path).unwrap(), bytes);
+    assert_eq!(batch.tool("save_project", json!({}))["saved"], true);
+    batch.close();
+    sequential.close();
+
+    let mut reopened = Client::start(&path);
+    reopened.initialize(PROTOCOL);
+    reopened.initialized();
+    assert_eq!(reopened.tool("get_layer", target), after_erase);
+    reopened.close();
+}
+
+#[test]
 fn save_detects_changes_to_root_external_levels_and_watched_assets() {
     let temp = tempfile::tempdir().unwrap();
     let path = copy_external_project(temp.path());

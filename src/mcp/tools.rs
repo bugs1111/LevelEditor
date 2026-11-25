@@ -52,6 +52,10 @@ const ENTITY: Argument = Argument("entity_iid", Kind::Iid, true);
 const X: Argument = Argument("x", Kind::Int32, true);
 const Y: Argument = Argument("y", Kind::Int32, true);
 const INT_GRID_VALUE: Argument = Argument("value", Kind::Int32, true);
+const TILE_ID: Argument = Argument("tile_id", Kind::Int32, true);
+const SRC_X: Argument = Argument("src_x", Kind::Int32, true);
+const SRC_Y: Argument = Argument("src_y", Kind::Int32, true);
+const FLIPS: Argument = Argument("flips", Kind::Int32, false);
 
 pub(super) struct Tool {
     name: &'static str,
@@ -134,21 +138,34 @@ const TOOLS: &[Tool] = &[
     edit(
         "paint_tile",
         "Replace tiles at one Tiles layer cell (grid x and y). Supply the atlas tile ID and its source pixel origin (src_x, src_y). Flips range from 0 to 3.",
+        &[LEVEL, LAYER, X, Y, TILE_ID, SRC_X, SRC_Y, FLIPS],
+    ),
+    edit(
+        "paint_tile_cells",
+        "Replace tiles at multiple cells on one Tiles layer. Each entry has zero-based x and y, tile_id, src_x, src_y, and optional flips (0–3, defaults to 0). Writes run in input order. Invalid entries reject the whole batch. Returns the number of distinct cells edited.",
         &[
             LEVEL,
             LAYER,
-            X,
-            Y,
-            Argument("tile_id", Kind::Int32, true),
-            Argument("src_x", Kind::Int32, true),
-            Argument("src_y", Kind::Int32, true),
-            Argument("flips", Kind::Int32, false),
+            Argument(
+                "cells",
+                Kind::ObjectArray(&[X, Y, TILE_ID, SRC_X, SRC_Y, FLIPS]),
+                true,
+            ),
         ],
     ),
     edit(
         "erase_tile",
         "Erase the tiles at one cell (grid x and y) on a Tiles layer.",
         &[LEVEL, LAYER, X, Y],
+    ),
+    edit(
+        "erase_tile_cells",
+        "Erase every tile at each requested cell on a Tiles layer. Each entry has zero-based x and y. Invalid entries reject the whole batch. Returns the number of distinct cells erased.",
+        &[
+            LEVEL,
+            LAYER,
+            Argument("cells", Kind::ObjectArray(&[X, Y]), true),
+        ],
     ),
     edit(
         "add_entity",

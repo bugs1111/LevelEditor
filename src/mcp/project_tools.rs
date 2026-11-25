@@ -1,4 +1,4 @@
-use ldtk_core::{FilesystemSnapshot, LevelKey, Project};
+use ldtk_core::{FilesystemSnapshot, LevelKey, Project, TilePaint};
 use serde_json::{Map, Value, json};
 use std::{
     cell::OnceCell,
@@ -242,10 +242,15 @@ impl Session {
 
     fn edit(&mut self, name: &str, args: &Arguments) -> ToolResult {
         let (key, index) = self.layer_key(args)?;
+        if matches!(
+            name,
+            "paint_int_grid_cells" | "paint_tile_cells" | "erase_tile_cells"
+        ) {
+            return self.edit_cells(name, key, index, args);
+        }
         let layer = self.project.layer(key, index).expect("resolved layer");
         let coordinates = || (integer(args, "x"), integer(args, "y"));
         let mut placed_iid = None;
-        let mut changed_cells = None;
         let changed = match name {
             "paint_int_grid" => {
                 let (x, y) = coordinates();
@@ -253,36 +258,15 @@ impl Session {
                 self.project
                     .paint_int_grid(key, index, x, y, integer(args, "value"))
             }
-            "paint_int_grid_cells" => {
-                let cells = args["cells"].as_array().expect("validated cell array");
-                let mut edits = Vec::with_capacity(cells.len());
-                for (index, cell) in cells.iter().enumerate() {
-                    let cell = cell.as_object().expect("validated cell");
-                    let (x, y) = (integer(cell, "x"), integer(cell, "y"));
-                    in_bounds(layer, ["__cWid", "__cHei"], x, y)
-                        .map_err(|error| format!("cells[{index}]: {error}"))?;
-                    edits.push(([x, y], integer(cell, "value")));
-                }
-                self.project
-                    .paint_int_grid_cells(key, index, &edits)
-                    .map(|count| {
-                        changed_cells = Some(count);
-                        count > 0
-                    })
-            }
             "paint_tile" | "erase_tile" => {
                 let (x, y) = coordinates();
                 in_bounds(layer, ["__cWid", "__cHei"], x, y)?;
                 let erase = name == "erase_tile";
-                let (tile, src) = if erase {
-                    (0, [0, 0])
+                let (tile, src, flips) = if erase {
+                    (0, [0, 0], 0)
                 } else {
-                    (
-                        integer(args, "tile_id"),
-                        [integer(args, "src_x"), integer(args, "src_y")],
-                    )
+                    tile_values(args)
                 };
-                let flips = args.get("flips").and_then(Value::as_i64).unwrap_or(0) as i32;
                 self.project
                     .paint_tile(key, index, x, y, tile, src, flips, erase)
             }
@@ -330,10 +314,74 @@ impl Session {
         if let Some(iid) = placed_iid {
             result["entity_iid"] = iid;
         }
-        if let Some(count) = changed_cells {
-            result["changed_cells"] = count.into();
-        }
         Ok(result)
+    }
+
+    fn edit_cells(
+        &mut self,
+        name: &str,
+        key: LevelKey,
+        layer_index: usize,
+        args: &Arguments,
+    ) -> ToolResult {
+        let layer = self
+            .project
+            .layer(key, layer_index)
+            .expect("resolved layer");
+        let cells = items(&args["cells"]).enumerate().map(|(index, cell)| {
+            let cell = cell.as_object().expect("validated cell");
+            let (x, y) = (integer(cell, "x"), integer(cell, "y"));
+            in_bounds(layer, ["__cWid", "__cHei"], x, y)
+                .map_err(|error| format!("cells[{index}]: {error}"))?;
+            Ok(([x, y], cell))
+        });
+        let count = match name {
+            "paint_int_grid_cells" => {
+                let edits = cells
+                    .map(|cell| cell.map(|(position, args)| (position, integer(args, "value"))))
+                    .collect::<Result<Vec<_>, String>>()?;
+                self.project.paint_int_grid_cells(key, layer_index, &edits)
+            }
+            "paint_tile_cells" => {
+                let edits = cells
+                    .map(|cell| {
+                        let (cell, args) = cell?;
+                        let (id, src, flips) = tile_values(args);
+                        Ok((
+                            TilePaint {
+                                cell,
+                                id,
+                                src,
+                                stack: false,
+                            },
+                            flips,
+                        ))
+                    })
+                    .collect::<Result<Vec<_>, String>>()?;
+                self.project
+                    .paint_tile_cells(key, layer_index, &edits)
+                    .map(|changed| {
+                        changed
+                            .into_iter()
+                            .map(|index| edits[index].0.cell)
+                            .collect::<HashSet<_>>()
+                            .len()
+                    })
+            }
+            "erase_tile_cells" => {
+                let edits = cells
+                    .map(|cell| cell.map(|(position, _)| position))
+                    .collect::<Result<Vec<_>, String>>()?;
+                self.project
+                    .erase_tile_cells_with_deferred(key, layer_index, &edits, None)
+                    .map(|changed| changed.len())
+            }
+            _ => unreachable!("registered batch editing tool"),
+        }
+        .map_err(|error| error.to_string())?;
+        let changed = count > 0;
+        self.dirty |= changed;
+        Ok(json!({"changed":changed,"changed_cells":count,"dirty":self.dirty}))
     }
 
     fn save(&mut self) -> ToolResult {
@@ -415,6 +463,14 @@ fn items(value: &Value) -> impl DoubleEndedIterator<Item = &Value> {
 
 fn integer(args: &Arguments, name: &str) -> i32 {
     args[name].as_i64().expect("validated i32") as i32
+}
+
+fn tile_values(args: &Arguments) -> (i32, [i32; 2], i32) {
+    (
+        integer(args, "tile_id"),
+        [integer(args, "src_x"), integer(args, "src_y")],
+        args.get("flips").and_then(Value::as_i64).unwrap_or(0) as i32,
+    )
 }
 
 fn in_bounds(value: &Value, dimensions: [&str; 2], x: i32, y: i32) -> Result<(), String> {
