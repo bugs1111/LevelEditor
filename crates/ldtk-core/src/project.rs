@@ -798,18 +798,13 @@ impl Project {
         self.json = candidate.json;
         self.external_level_cache = ExternalLevelCache::capture(&self.json, fingerprints);
         self.repaired_external_paths = false;
-        if !retired.is_empty() {
+        self.path = Some(path);
+        if !retired.is_empty()
+            && let Ok(referenced_paths) = self.referenced_file_paths()
+        {
+            let referenced = FilesToKeep::new(referenced_paths);
             let total = retired.len();
             progress(SaveStage::RemoveObsoleteLevels, 0, total, None);
-            let published_real_paths = paths
-                .iter()
-                .filter_map(|path| fs::canonicalize(path).ok())
-                .collect::<BTreeSet<_>>();
-            #[cfg(unix)]
-            let published_files = paths
-                .iter()
-                .filter_map(|path| file_identity(path))
-                .collect::<BTreeSet<_>>();
             for (done, (target, fingerprint)) in retired.into_iter().enumerate() {
                 progress(
                     SaveStage::RemoveObsoleteLevels,
@@ -817,22 +812,15 @@ impl Project {
                     total,
                     target.file_name().and_then(|name| name.to_str()),
                 );
-                let live_alias = fs::canonicalize(target)
-                    .ok()
-                    .is_some_and(|real| published_real_paths.contains(&real));
-                #[cfg(unix)]
-                let live_alias = live_alias
-                    || file_identity(target).is_some_and(|id| published_files.contains(&id));
-                // Case-only renames on case-insensitive volumes still resolve the retired
-                // spelling to the newly published file. Never unlink a live output alias.
-                // The save is already published. Leave a separately edited level on disk.
-                if !live_alias && retired_level_fingerprint(target) == Some(fingerprint) {
+                // A retired file may still be used as an asset or resolve to a live document.
+                if !referenced.contains(target)
+                    && retired_level_fingerprint(target) == Some(fingerprint)
+                {
                     let _ = fs::remove_file(target);
                 }
             }
             progress(SaveStage::RemoveObsoleteLevels, total, total, None);
         }
-        self.path = Some(path);
         progress(SaveStage::WriteProject, 1, 1, None);
         Ok(())
     }
@@ -2821,7 +2809,7 @@ impl Project {
         let referenced_files = OnceCell::new();
         let is_referenced = |path: &Path| {
             referenced_files
-                .get_or_init(|| self.referenced_file_paths().map(ExportFilesToKeep::new))
+                .get_or_init(|| self.referenced_file_paths().map(FilesToKeep::new))
                 .as_ref()
                 .map(|files| files.contains(path))
                 .map_err(|error| Error::Invalid(error.to_string()))
@@ -3016,7 +3004,7 @@ fn collect_configured_export(
 ) -> bool {
     match result {
         Ok(output) => {
-            let keep = ExportFilesToKeep::new(output.outputs.iter().cloned());
+            let keep = FilesToKeep::new(output.outputs.iter().cloned());
             if let Err(error) = prune_export_directory(dir, &keep, extensions, is_referenced) {
                 report.export_errors.push(error.to_string());
             }
@@ -3031,14 +3019,14 @@ fn collect_configured_export(
     }
 }
 #[derive(Default)]
-pub(crate) struct ExportFilesToKeep {
+pub(crate) struct FilesToKeep {
     paths: HashSet<PathBuf>,
     canonical_paths: OnceCell<HashSet<PathBuf>>,
     #[cfg(unix)]
     file_ids: OnceCell<HashSet<(u64, u64)>>,
 }
 
-impl ExportFilesToKeep {
+impl FilesToKeep {
     pub(crate) fn new(paths: impl IntoIterator<Item = PathBuf>) -> Self {
         Self {
             paths: paths.into_iter().collect(),
@@ -3053,7 +3041,7 @@ impl ExportFilesToKeep {
         if self.paths.is_empty() {
             return false;
         }
-        // Only build the alias lookups when an otherwise stale export is found.
+        // Only build alias lookups when a candidate does not match a known path.
         #[cfg(unix)]
         if file_identity(path).is_some_and(|id| {
             self.file_ids
@@ -3082,7 +3070,7 @@ impl ExportFilesToKeep {
 
 fn prune_export_directory(
     dir: &Path,
-    keep: &ExportFilesToKeep,
+    keep: &FilesToKeep,
     extensions: &[&str],
     is_referenced: &impl Fn(&Path) -> Result<bool>,
 ) -> Result<()> {

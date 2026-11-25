@@ -993,6 +993,103 @@ fn saving_preserves_a_retired_level_edited_after_project_publication() {
 }
 
 #[test]
+fn retiring_external_levels_keeps_files_used_by_level_fields() {
+    for keep_external_storage in [true, false] {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("Map.ldtk");
+        let mut project = Project::new();
+        let key = project.level_keys()[0];
+        let linked = project.add_level(None, "Linked", 32, 32).unwrap();
+        let unused = project.add_level(None, "Unused", 32, 32).unwrap();
+        let field = project
+            .add_field_definition(None, "LevelFile", "FilePath", false)
+            .unwrap();
+        let reference = "Map/Linked.ldtkl";
+        project
+            .set_field_editor_value(key, None, field, json!(reference))
+            .unwrap();
+        project.set_external_levels(true).unwrap();
+        project.save(&path).unwrap();
+        let linked_path = dir.path().join(reference);
+        let bytes = fs::read(&linked_path).unwrap();
+
+        let (mut project, snapshot) = Project::load_with_snapshot(&path).unwrap();
+        if keep_external_storage {
+            project.remove_level(unused).unwrap();
+            project.remove_level(linked).unwrap();
+        } else {
+            project.set_external_levels(false).unwrap();
+        }
+        project.save_if_unchanged(&path, &snapshot).unwrap();
+
+        let saved = Project::load(&path).unwrap();
+        assert_eq!(saved.json["externalLevels"], keep_external_storage);
+        assert!(
+            saved
+                .field_value_errors(key, None, field)
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(fs::read(&linked_path).unwrap(), bytes);
+        assert!(!dir.path().join("Map/Unused.ldtkl").exists());
+    }
+}
+
+#[test]
+fn save_as_keeps_a_retired_destination_level_referenced_from_the_new_location() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("source/Other.ldtk");
+    let destination = dir.path().join("destination/Map.ldtk");
+    fs::create_dir(source.parent().unwrap()).unwrap();
+    fs::create_dir(destination.parent().unwrap()).unwrap();
+    let mut existing = Project::new();
+    existing.set_external_levels(true).unwrap();
+    existing.save(&destination).unwrap();
+    let level = dir.path().join("destination/Map/Level_0.ldtkl");
+    let bytes = fs::read(&level).unwrap();
+    #[cfg(unix)]
+    let reference = {
+        let alias = dir.path().join("destination/linked.ldtkl");
+        std::os::unix::fs::symlink(&level, &alias).unwrap();
+        "linked.ldtkl"
+    };
+    #[cfg(not(unix))]
+    let reference = "Map/Level_0.ldtkl";
+
+    let mut project = Project::new();
+    project.save(&source).unwrap();
+    let key = project.level_keys()[0];
+    let field = project
+        .add_field_definition(None, "LevelFile", "FilePath", false)
+        .unwrap();
+    project
+        .set_field_editor_value(
+            key,
+            None,
+            field,
+            json!(format!("../destination/{reference}")),
+        )
+        .unwrap();
+    let snapshot = ldtk_core::FilesystemSnapshot::for_save_destination(&destination).unwrap();
+    project
+        .save_with_snapshot_and_progress(&destination, Some(&snapshot), |_, _, _, _| {})
+        .unwrap();
+
+    let saved = Project::load(&destination).unwrap();
+    assert_eq!(
+        saved.level(key).unwrap()["fieldInstances"][0]["__value"],
+        reference
+    );
+    assert!(
+        saved
+            .field_value_errors(key, None, field)
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(fs::read(level).unwrap(), bytes);
+}
+
+#[test]
 fn backup_browser_load_and_restore_use_original_assets_and_preserve_external_levels() {
     let t = tempfile::tempdir().unwrap();
     let path = t.path().join("game.ldtk");

@@ -10,7 +10,7 @@ pub use png::{
 };
 pub use tiled::TiledFormat;
 
-use crate::project::{ExportFilesToKeep, StagedSave, StagingWriter, absolute};
+use crate::project::{FilesToKeep, StagedSave, StagingWriter, absolute};
 use crate::{Error, Project, Result};
 use image::{GenericImage, Rgba, RgbaImage};
 use indexmap::{IndexMap, IndexSet};
@@ -114,9 +114,7 @@ impl<'a> ExportBatch<'a> {
             }
             let files = match &referenced {
                 Some(files) => files,
-                None => referenced.insert(ExportFilesToKeep::new(
-                    self.project.referenced_file_paths()?,
-                )),
+                None => referenced.insert(FilesToKeep::new(self.project.referenced_file_paths()?)),
             };
             if files.contains(&absolute(path)?) {
                 return Err(Error::Invalid(format!(
