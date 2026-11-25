@@ -1,4 +1,4 @@
-use super::*;
+use super::{panels::source_controls, *};
 use std::collections::VecDeque;
 
 pub(super) enum Continuation {
@@ -112,35 +112,40 @@ impl EditorApp {
         if !flow.waiting_trust {
             return;
         }
-        let commands = flow.commands.iter().cloned().collect::<Vec<_>>();
-        let mut decision = None;
-        egui::Modal::new(egui::Id::new("project-command-trust")).show(ctx, |ui| {
-            ui.set_width(620.0);
-            ui.heading(locale::tr(ui, "This project contains custom commands"));
+        let decision = command_tools::show_dialog(ctx, "project-command-trust", |ui| {
+            ui.label(
+                RichText::new(locale::tr(ui, "This project contains custom commands")).strong(),
+            );
             ui.label(locale::tr(
                 ui,
                 "Only allow commands from a project you trust.",
             ));
-            for command in commands {
-                ui.monospace(command);
-            }
-            ui.horizontal(|ui| {
-                if ui
-                    .button(locale::tr(ui, "Allow project commands"))
-                    .clicked()
-                {
-                    decision = Some(Some(true));
+            ui.spacing_mut().scroll = source_controls::scroll_style();
+            egui::ScrollArea::vertical()
+                .max_height(180.)
+                .show(ui, |ui| {
+                    for command in &flow.commands {
+                        ui.monospace(command);
+                    }
+                });
+            ui.horizontal_wrapped(|ui| {
+                let size = egui::vec2(170., 34.);
+                let allow =
+                    project_dialogs::button(ui, "Allow project commands", size, false, 13.333);
+                let block =
+                    project_dialogs::button(ui, "Block project commands", size, true, 13.333);
+                let cancel = project_dialogs::button(ui, "Cancel", size, true, 13.333);
+                if allow.clicked() {
+                    Some(Some(true))
+                } else if block.clicked() {
+                    Some(Some(false))
+                } else if cancel.clicked() {
+                    Some(None)
+                } else {
+                    None
                 }
-                if ui
-                    .button(locale::tr(ui, "Block project commands"))
-                    .clicked()
-                {
-                    decision = Some(Some(false));
-                }
-                if ui.button(locale::tr(ui, "Cancel")).clicked() {
-                    decision = Some(None);
-                }
-            });
+            })
+            .inner
         });
         if let Some(decision) = decision {
             if let Some(trust) = decision

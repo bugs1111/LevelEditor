@@ -442,7 +442,7 @@ impl EditorApp {
             }
         });
         ui.heading(locale::tr(ui, "Custom commands"));
-        self.command_properties(ui);
+        self.source_project_commands(ui);
     }
 
     fn backup_project_controls(&mut self, ui: &mut egui::Ui) {
@@ -2916,84 +2916,10 @@ impl EditorApp {
         if source_controls::button(ui, "Import Ogmo project…").clicked() {
             self.request(ui.ctx(), Action::BrowseOgmo);
         }
-        ui.separator();
-        self.command_properties(ui);
-    }
-
-    fn command_properties(&mut self, ui: &mut egui::Ui) {
-        let Some(project) = &self.project else {
-            return;
-        };
-        let iid = text(&project.json, "iid", "").to_owned();
-        let mut trusted = self.settings.trusted(&iid);
-        if ui
-            .checkbox(&mut trusted, "Allow this project's custom commands")
-            .changed()
-        {
-            self.settings.set_trusted(&iid, trusted);
-        }
-        let mut commands = self.project.as_ref().unwrap().json["customCommands"]
-            .as_array()
-            .cloned()
-            .unwrap_or_default();
-        let mut modified = false;
-        let mut delete = None;
-        for (index, command) in commands.iter_mut().enumerate() {
-            ui.push_id(index, |ui| {
-                let patch = form(
-                    ui,
-                    command,
-                    &[
-                        P(
-                            "when",
-                            "When",
-                            W::Choice(&["Manual", "AfterLoad", "BeforeSave", "AfterSave"]),
-                        ),
-                        P("command", "Command", W::Text),
-                    ],
-                );
-                if changed(&patch) {
-                    apply_patch(command, &patch);
-                    modified = true;
-                }
-                ui.horizontal(|ui| {
-                    if source_controls::add_enabled_button(
-                        ui,
-                        trusted,
-                        egui::Button::new(locale::tr(ui, "Run command")),
-                    )
-                    .clicked()
-                    {
-                        let p = self.project.as_ref().unwrap();
-                        let command = text(command, "command", "").to_owned();
-                        let cwd = p.path.as_ref().and_then(|p| p.parent()).map(PathBuf::from);
-                        self.run_command(command, cwd);
-                    }
-                    if source_controls::small_button(ui, "Delete").clicked() {
-                        delete = Some(index);
-                    }
-                });
-            });
-        }
-        if let Some(index) = delete {
-            commands.remove(index);
-            modified = true;
-        }
-        if source_controls::button(ui, "Add command").clicked() {
-            commands.push(json!({"when":"Manual","command":""}));
-            modified = true;
-        }
-        if modified {
-            let operation = |p: &mut Project| {
-                p.json["customCommands"] = json!(commands);
-                Ok(())
-            };
-            if delete.is_some() {
-                self.edit_recoverable("Project command removed", operation);
-            } else {
-                self.edit("Custom commands changed", operation);
-            }
-        }
+        ui.add_space(12.);
+        source_controls::form_heading(ui, "User custom commands");
+        ui.add_space(13.);
+        self.source_project_commands(ui);
     }
 
     fn definition_picker(&mut self, ui: &mut egui::Ui, kind: &str) -> Option<Value> {

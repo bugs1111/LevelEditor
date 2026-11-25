@@ -144,12 +144,6 @@ fn project_number(
     });
 }
 
-fn project_text(ui: &mut egui::Ui, values: &Value, patch: &mut Value, key: &str) {
-    if let Some(value) = ui_fields::buffered_text(ui, key, text(values, key, "")) {
-        patch[key] = json!(value);
-    }
-}
-
 fn project_choice(
     ui: &mut egui::Ui,
     values: &Value,
@@ -167,7 +161,7 @@ fn project_choice(
         .map(|(_, label)| (locale::tr(ui, label), Color32::WHITE))
         .collect::<Vec<_>>();
     let width = if key == "when" {
-        ui.available_width().min(164.)
+        (ui.available_width() * 0.45).min(200.)
     } else {
         ui.available_width()
     };
@@ -917,7 +911,7 @@ impl EditorApp {
         }
     }
 
-    fn source_project_commands(&mut self, ui: &mut egui::Ui) {
+    pub(in crate::app) fn source_project_commands(&mut self, ui: &mut egui::Ui) {
         let project = self.project.as_ref().unwrap();
         let iid = text(&project.json, "iid", "").to_owned();
         let mut trust = self.settings.trust_state(&iid);
@@ -966,6 +960,9 @@ impl EditorApp {
         for (index, command) in commands.iter_mut().enumerate() {
             ui.push_id(index, |ui| {
                 ui.horizontal(|ui| {
+                    let height = 30.;
+                    let run_width = 48.;
+                    ui.spacing_mut().item_spacing.x = 4.;
                     let mut patch = json!({});
                     project_choice(
                         ui,
@@ -976,9 +973,9 @@ impl EditorApp {
                             (
                                 "Manual",
                                 if cfg!(target_os = "macos") {
-                                    "Run manually (CMD-R)"
+                                    "Run manually (CMD+R)"
                                 } else {
-                                    "Run manually (CTRL-R)"
+                                    "Run manually (CTRL+R)"
                                 },
                             ),
                             ("AfterLoad", "Run after loading"),
@@ -986,19 +983,38 @@ impl EditorApp {
                             ("AfterSave", "Run after saving"),
                         ],
                     );
-                    project_text(ui, command, &mut patch, "command");
+                    let input_width = (ui.available_width()
+                        - run_width
+                        - height
+                        - 2. * ui.spacing().item_spacing.x)
+                        .max(24.);
+                    if let Some(value) = ui_fields::buffered_text_sized(
+                        ui,
+                        "command",
+                        text(command, "command", ""),
+                        egui::vec2(input_width, height),
+                    ) {
+                        patch["command"] = json!(value);
+                    }
                     if changed(&patch) {
                         apply_patch(command, &patch);
                         modified = true;
                     }
-                    if source_controls::add_enabled_button(
-                        ui,
-                        trust != Some(false),
-                        egui::Button::new(locale::tr(ui, "Run")),
-                    )
-                    .on_hover_text(locale::tr(ui, "Run command"))
-                    .clicked()
-                    {
+                    let run = ui
+                        .add_enabled_ui(trust != Some(false), |ui| {
+                            source_controls::add_sized_button(
+                                ui,
+                                [run_width, height],
+                                egui::Button::new(
+                                    RichText::new(locale::tr(ui, "Run")).color(Color32::WHITE),
+                                )
+                                .fill(SOURCE_ORANGE)
+                                .corner_radius(2),
+                            )
+                        })
+                        .inner;
+                    chrome::source_tooltip(&run, "Run command", &[], false);
+                    if run.clicked() {
                         let cwd = self
                             .project
                             .as_ref()
@@ -1009,10 +1025,22 @@ impl EditorApp {
                             .map(PathBuf::from);
                         self.run_command(text(command, "command", "").to_owned(), cwd);
                     }
-                    if source_controls::small_button(ui, "×")
-                        .on_hover_text(locale::tr(ui, "Delete command"))
-                        .clicked()
-                    {
+                    let remove = source_controls::add_sized_button(
+                        ui,
+                        Vec2::splat(height),
+                        egui::Button::image(
+                            egui::Image::new(egui::include_image!("../../assets/icons/close.png"))
+                                .fit_to_exact_size(Vec2::splat(12.)),
+                        )
+                        .fill(theme::LIGHT)
+                        .corner_radius(2),
+                    );
+                    let label = locale::tr(ui, "Delete command");
+                    remove.widget_info(|| {
+                        egui::WidgetInfo::labeled(egui::WidgetType::Button, remove.enabled(), label)
+                    });
+                    chrome::source_tooltip(&remove, "Delete command", &[], false);
+                    if remove.clicked() {
                         delete = Some(index);
                     }
                 });
@@ -2081,13 +2109,51 @@ mod tests {
             ])
         );
         let output = frame(&mut app, &ctx, vec![]);
+        let run_label = label(&output, "Run").unwrap();
+        let run = output
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Rect(rect)
+                    if rect.fill == SOURCE_ORANGE && rect.rect.contains(run_label.center()) =>
+                {
+                    Some(rect.rect)
+                }
+                _ => None,
+            })
+            .expect("Run uses the primary form action style");
+        let remove = output
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Rect(rect)
+                    if rect.fill == theme::LIGHT
+                        && rect.rect.left() > run.right()
+                        && (rect.rect.center().y - run.center().y).abs() < 1.
+                        && rect.rect.size() == Vec2::splat(30.) =>
+                {
+                    Some(rect.rect)
+                }
+                _ => None,
+            })
+            .expect("Remove uses a square companion button on the same row");
+        let add = output
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Rect(rect)
+                    if rect.fill == SOURCE_ORANGE
+                        && rect.rect.top() >= run.bottom() - 1.
+                        && rect.rect.width() > 300. =>
+                {
+                    Some(rect.rect)
+                }
+                _ => None,
+            })
+            .expect("full-width Add action below the command");
         assert!(
-            label(&output, "Run").unwrap().right() < 808.,
-            "command actions stay inside the property column"
-        );
-        assert!(
-            label(&output, "×").unwrap().right() < 808.,
-            "command removal stays inside the property column"
+            (run.height() - remove.height()).abs() < 1. && remove.right() <= add.right() + 1.,
+            "command actions stay aligned and inside the property column: {run:?}, {remove:?}, {add:?}"
         );
         assert!(app.history.undo(app.project.as_mut().unwrap()));
         assert_eq!(app.project.as_ref().unwrap().json, before);
@@ -2100,10 +2166,16 @@ mod tests {
             json!([{"when":"Manual","command":""}]);
         let output = frame(&mut app, &ctx, vec![]);
         let manual = if cfg!(target_os = "macos") {
-            "Run manually (CMD-R)"
+            "Run manually (CMD+R)"
         } else {
-            "Run manually (CTRL-R)"
+            "Run manually (CTRL+R)"
         };
+        assert!(output.shapes.iter().any(|shape| matches!(
+            &shape.shape,
+            egui::Shape::Text(text)
+                if text.galley.text() == manual
+                    && shape.clip_rect.contains_rect(text.galley.rect.translate(text.pos.to_vec2()))
+        )), "the full shortcut must fit in the dropdown");
         click(&mut app, &ctx, label(&output, manual).unwrap().center());
         frame(&mut app, &ctx, vec![]);
         let output = frame(&mut app, &ctx, vec![egui::Event::Text("  LdNg  ".into())]);

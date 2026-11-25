@@ -256,13 +256,6 @@ impl Settings {
         self.value["lastProject"] = json!({"filePath":name,"levelUid":level_uid});
         let _ = self.save();
     }
-    pub fn trusted(&self, iid: &str) -> bool {
-        self.value["projectTrusts"].as_array().is_some_and(|items| {
-            items
-                .iter()
-                .any(|p| p["iid"] == iid && p["trusted"] == true)
-        })
-    }
     pub fn trust_state(&self, iid: &str) -> Option<bool> {
         self.value["projectTrusts"]
             .as_array()?
@@ -433,10 +426,10 @@ mod tests {
     #[test]
     fn project_command_trust_is_explicit_and_reversible() {
         let mut s = Settings::default();
-        assert!(!s.trusted("p"));
+        assert_eq!(s.trust_state("p"), None);
         s.set_trusted("p", true);
-        assert!(s.trusted("p"));
+        assert_eq!(s.trust_state("p"), Some(true));
         s.set_trusted("p", false);
-        assert!(!s.trusted("p"));
+        assert_eq!(s.trust_state("p"), Some(false));
     }
 }

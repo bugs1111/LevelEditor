@@ -765,6 +765,16 @@ mod tests {
         click(app, ctx, label(&trust, "Block project commands").center());
     }
 
+    fn assert_command_dialog_header(output: &egui::FullOutput, title: &str) {
+        let title = label(output, title);
+        assert!(output.shapes.iter().any(|shape| matches!(
+            &shape.shape,
+            egui::Shape::Rect(rect)
+                if rect.fill == theme::LIGHT && rect.rect.height() == 36.
+                    && rect.rect.contains(title.center())
+        )));
+    }
+
     #[test]
     fn chinese_custom_command_trust_dialog_translates_actions_but_keeps_command_text() {
         let dir = tempfile::tempdir().unwrap();
@@ -779,10 +789,12 @@ mod tests {
         app.dirty = true;
         let ctx = egui::Context::default();
         theme::configure(&ctx);
+        ctx.style_mut(|style| style.animation_time = 0.);
         app.save_document(&ctx, path.clone());
         frame(&mut app, &ctx, vec![]);
         let dialog = frame(&mut app, &ctx, vec![]);
 
+        assert_command_dialog_header(&dialog, "项目命令");
         label(&dialog, "此项目包含自定义命令");
         label(&dialog, "只允许运行来自可信项目的命令。");
         label(&dialog, command);
@@ -803,6 +815,7 @@ mod tests {
         app.settings.value["language"] = json!("zh-CN");
         let ctx = egui::Context::default();
         theme::configure(&ctx);
+        ctx.style_mut(|style| style.animation_time = 0.);
         app.command_open = true;
         app.command_title = r#"example --name "User text""#.into();
         frame(&mut app, &ctx, vec![]);
@@ -817,7 +830,7 @@ mod tests {
         frame(&mut app, &ctx, vec![]);
         let dialog = frame(&mut app, &ctx, vec![]);
 
-        label(&dialog, "项目命令");
+        assert_command_dialog_header(&dialog, "项目命令");
         label(&dialog, &app.command_title);
         label(&dialog, "命令已退出，退出码为 7");
         label(&dialog, "终止进程");
