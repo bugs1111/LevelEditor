@@ -354,6 +354,57 @@ fn incremental_paint_rebuilds_four_cells_around_short_patterns() {
     }
 }
 #[test]
+fn distant_paint_cells_preserve_the_auto_tiles_between_them() {
+    let (mut fixture, key) = fixture();
+    let layer = fixture.layer_mut(key, 0).unwrap();
+    layer["__type"] = json!("IntGrid");
+    layer["__cWid"] = json!(30);
+    layer["__cHei"] = json!(1);
+    let mut grid = vec![0; 30];
+    grid[15] = 1;
+    layer["intGridCsv"] = json!(grid);
+    let preserved = json!({"px":[240,0],"src":[32,0],"t":2,"f":0,"d":[4,15],"a":0.5});
+    layer["autoLayerTiles"] = json!([preserved]);
+    let edits = [([1, 0], 1), ([29, 0], 1)];
+
+    let mut sequential = fixture.clone();
+    for ([x, y], value) in edits {
+        sequential.paint_int_grid(key, 0, x, y, value).unwrap();
+    }
+    let expected = tiles(&sequential, key);
+    assert_eq!(expected.as_array().unwrap().len(), 3);
+    assert_eq!(expected[1], preserved);
+
+    for (deferred, split) in [(false, false), (true, false), (true, true)] {
+        let mut project = fixture.clone();
+        project.json["defs"]["layers"][0]["useAsyncRender"] = json!(deferred);
+        let mut pending = DeferredAutoLayers::default();
+        for batch in edits.chunks(if split { 1 } else { edits.len() }) {
+            assert_eq!(
+                project
+                    .paint_int_grid_cells_with_deferred(
+                        key,
+                        0,
+                        batch,
+                        deferred.then_some(&mut pending),
+                    )
+                    .unwrap(),
+                batch.len()
+            );
+        }
+        if deferred {
+            assert_eq!(tiles(&project, key), &json!([preserved]));
+            project.settle_auto_layers(key, &mut pending).unwrap();
+        }
+        assert_eq!(
+            tiles(&project, key),
+            expected,
+            "deferred = {deferred}, split = {split}"
+        );
+    }
+}
+
+#[test]
 fn missing_cache_area_update_builds_entire_layer() {
     let (mut p, k) = fixture();
     p.level_mut(k).unwrap()["layerInstances"][0]

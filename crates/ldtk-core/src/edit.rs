@@ -49,6 +49,31 @@ fn inside(x: i32, y: i32, width: i32, height: i32) -> bool {
     x >= 0 && y >= 0 && x < width && y < height
 }
 
+fn paint_rectangles(cells: impl Iterator<Item = [i32; 2]>) -> Vec<[i32; 4]> {
+    let mut rows: Vec<_> = cells.map(|[x, y]| [y, x]).collect();
+    rows.sort_unstable();
+    rows.dedup();
+    let mut rectangles = Vec::<[i32; 4]>::new();
+    let mut cells = rows.into_iter().peekable();
+    while let Some([y, left]) = cells.next() {
+        let mut right = left + 1;
+        while cells.next_if_eq(&[y, right]).is_some() {
+            right += 1;
+        }
+        let width = right - left;
+        if let Some([x, top, previous_width, height]) = rectangles.last_mut()
+            && *x == left
+            && *previous_width == width
+            && *top + *height == y
+        {
+            *height += 1;
+        } else {
+            rectangles.push([left, y, width, 1]);
+        }
+    }
+    rectangles
+}
+
 fn tile_pixel(tile: &Value) -> Result<[i64; 2]> {
     tile["px"]
         .as_array()
@@ -185,21 +210,11 @@ impl Project {
         if touched.is_empty() {
             return Ok(0);
         }
-        let mut min_x = width;
-        let mut min_y = height;
-        let mut max_x = 0;
-        let mut max_y = 0;
         let values = self.layer_mut(key, layer_index).expect("validated layer")["intGridCsv"]
             .as_array_mut()
             .expect("validated cells");
         for &(index, _, value) in &touched {
             values[index] = value.into();
-            let x = index as i32 % width;
-            let y = index as i32 / width;
-            min_x = min_x.min(x);
-            min_y = min_y.min(y);
-            max_x = max_x.max(x);
-            max_y = max_y.max(y);
         }
         let has_auto = self.json["defs"]["layers"].as_array().is_some_and(|defs| {
             defs.iter().any(|d| {
@@ -214,7 +229,10 @@ impl Project {
             && let Err(error) = self.update_auto_layers_after_paint(
                 key,
                 uid,
-                [min_x, min_y, max_x - min_x + 1, max_y - min_y + 1],
+                &paint_rectangles(touched.iter().map(|&(index, _, _)| {
+                    let index = index as i32;
+                    [index % width, index / width]
+                })),
                 deferred,
             )
         {
@@ -315,7 +333,7 @@ impl Project {
             && killer
             && let Some(uid) = uid
             && let Err(error) =
-                self.update_auto_layers_after_paint(key, uid, [x, y, 1, 1], deferred)
+                self.update_auto_layers_after_paint(key, uid, &[[x, y, 1, 1]], deferred)
         {
             self.layer_mut(key, layer_index).expect("validated layer")["gridTiles"] =
                 old.expect("saved killer tiles");
@@ -588,25 +606,16 @@ impl Project {
         key: LevelKey,
         layer_index: usize,
         blocker: Option<(i64, Vec<Value>)>,
-        mut cells: impl Iterator<Item = [i32; 2]>,
+        cells: impl Iterator<Item = [i32; 2]>,
         deferred: Option<&mut DeferredAutoLayers>,
     ) -> Result<()> {
-        if let Some((uid, old)) = blocker {
-            let [x, y] = cells.next().expect("changed tiles");
-            let [left, top, right, bottom] =
-                cells.fold([x, y, x, y], |[left, top, right, bottom], [x, y]| {
-                    [left.min(x), top.min(y), right.max(x), bottom.max(y)]
-                });
-            if let Err(error) = self.update_auto_layers_after_paint(
-                key,
-                uid,
-                [left, top, right - left + 1, bottom - top + 1],
-                deferred,
-            ) {
-                self.layer_mut(key, layer_index).expect("validated layer")["gridTiles"] =
-                    Value::Array(old);
-                return Err(error);
-            }
+        if let Some((uid, old)) = blocker
+            && let Err(error) =
+                self.update_auto_layers_after_paint(key, uid, &paint_rectangles(cells), deferred)
+        {
+            self.layer_mut(key, layer_index).expect("validated layer")["gridTiles"] =
+                Value::Array(old);
+            return Err(error);
         }
         Ok(())
     }

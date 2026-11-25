@@ -3,6 +3,7 @@
 use crate::{Error, LevelKey, Project, Result};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
+use std::ops::Range;
 #[path = "autotile_edit.rs"]
 mod editing;
 pub(crate) use editing::clipboard_rule;
@@ -207,27 +208,12 @@ fn find_uid(values: &Value, uid: i64) -> Option<&Value> {
 /// Collects generated updates for one level while a brush or its cooldown is active.
 #[derive(Default)]
 pub struct DeferredAutoLayers {
-    targets: BTreeMap<i64, Option<[i32; 4]>>,
+    targets: BTreeMap<i64, Option<Vec<[i32; 4]>>>,
 }
 
 impl DeferredAutoLayers {
     pub fn is_empty(&self) -> bool {
         self.targets.is_empty()
-    }
-
-    fn merge(&mut self, uid: i64, rect: [i32; 4]) {
-        self.targets
-            .entry(uid)
-            .and_modify(|old| {
-                if let Some(old) = old {
-                    let left = old[0].min(rect[0]);
-                    let top = old[1].min(rect[1]);
-                    let right = (old[0] + old[2]).max(rect[0] + rect[2]);
-                    let bottom = (old[1] + old[3]).max(rect[1] + rect[3]);
-                    *old = [left, top, right - left, bottom - top];
-                }
-            })
-            .or_insert(Some(rect));
     }
 }
 
@@ -244,11 +230,11 @@ impl Project {
         &mut self,
         key: LevelKey,
         painted_uid: i64,
-        rect: [i32; 4],
+        rects: &[[i32; 4]],
         pending: Option<&mut DeferredAutoLayers>,
     ) -> Result<()> {
         let Some(pending) = pending else {
-            return self.rebuild_auto_layers_area(key, painted_uid, rect);
+            return self.rebuild_auto_filtered(key, Some((painted_uid, rects)), None);
         };
         let mut delayed = Vec::new();
         self.rebuild_auto_selected(key, |project, uid, def, source| {
@@ -259,11 +245,17 @@ impl Project {
                 delayed.push(uid);
                 None
             } else {
-                Some(Some(rect))
+                Some(Some(rects))
             }
         })?;
         for uid in delayed {
-            pending.merge(uid, rect);
+            if let Some(queued) = pending
+                .targets
+                .entry(uid)
+                .or_insert_with(|| Some(Vec::new()))
+            {
+                queued.extend_from_slice(rects);
+            }
         }
         Ok(())
     }
@@ -300,14 +292,16 @@ impl Project {
         key: LevelKey,
         pending: &mut DeferredAutoLayers,
     ) -> Result<()> {
-        self.rebuild_auto_selected(key, |_, uid, _, _| pending.targets.get(&uid).copied())?;
+        self.rebuild_auto_selected(key, |_, uid, _, _| {
+            pending.targets.get(&uid).map(Option::as_deref)
+        })?;
         pending.targets.clear();
         Ok(())
     }
 
     /// Regenerate every auto layer in a level, committing only after all layers succeed.
     pub fn rebuild_auto_layers(&mut self, key: LevelKey) -> Result<()> {
-        self.rebuild_auto(key, None)
+        self.rebuild_auto_filtered(key, None, None)
     }
     pub fn rebuild_auto_layer(&mut self, key: LevelKey, uid: i64) -> Result<()> {
         self.rebuild_auto_filtered(key, None, Some(uid))
@@ -340,15 +334,12 @@ impl Project {
         if rect[2] == 0 || rect[3] == 0 {
             return Ok(());
         }
-        self.rebuild_auto(key, Some((source_uid, rect)))
-    }
-    fn rebuild_auto(&mut self, key: LevelKey, area: Option<(i64, [i32; 4])>) -> Result<()> {
-        self.rebuild_auto_filtered(key, area, None)
+        self.rebuild_auto_filtered(key, Some((source_uid, std::slice::from_ref(&rect))), None)
     }
     fn rebuild_auto_filtered(
         &mut self,
         key: LevelKey,
-        area: Option<(i64, [i32; 4])>,
+        area: Option<(i64, &[[i32; 4]])>,
         only_uid: Option<i64>,
     ) -> Result<()> {
         self.rebuild_auto_selected(key, |_, uid, def, source| {
@@ -363,10 +354,10 @@ impl Project {
         })
     }
 
-    fn rebuild_auto_selected(
+    fn rebuild_auto_selected<'a>(
         &mut self,
         key: LevelKey,
-        mut select: impl FnMut(&Project, i64, &Value, Option<i64>) -> Option<Option<[i32; 4]>>,
+        mut select: impl FnMut(&Project, i64, &Value, Option<i64>) -> Option<Option<&'a [[i32; 4]]>>,
     ) -> Result<()> {
         let level = self
             .level(key)
@@ -557,6 +548,71 @@ struct Engine<'a> {
     killed: BTreeSet<(i32, i32)>,
     seed: i32,
 }
+
+/// Union of clipped, half-open cell rectangles.
+enum CellRegion {
+    Rectangle([i32; 4]),
+    Rows(BTreeMap<i32, Vec<[i32; 2]>>),
+}
+
+impl CellRegion {
+    fn new(bounds: impl Iterator<Item = [i32; 4]>) -> Self {
+        let mut bounds = bounds.filter(|&[left, top, right, bottom]| left < right && top < bottom);
+        let Some(first) = bounds.next() else {
+            return Self::Rectangle([0; 4]);
+        };
+        let Some(second) = bounds.next() else {
+            return Self::Rectangle(first);
+        };
+        let mut rows = BTreeMap::<i32, Vec<[i32; 2]>>::new();
+        for [left, top, right, bottom] in [first, second].into_iter().chain(bounds) {
+            for y in top..bottom {
+                rows.entry(y).or_default().push([left, right]);
+            }
+        }
+        for spans in rows.values_mut() {
+            spans.sort_unstable();
+            let mut merged = 0;
+            for index in 0..spans.len() {
+                let [left, right] = spans[index];
+                if merged > 0 && left <= spans[merged - 1][1] {
+                    spans[merged - 1][1] = spans[merged - 1][1].max(right);
+                } else {
+                    spans[merged] = [left, right];
+                    merged += 1;
+                }
+            }
+            spans.truncate(merged);
+        }
+        Self::Rows(rows)
+    }
+
+    fn contains(&self, x: i32, y: i32) -> bool {
+        match self {
+            Self::Rectangle([left, top, right, bottom]) => {
+                (*left..*right).contains(&x) && (*top..*bottom).contains(&y)
+            }
+            Self::Rows(rows) => rows.get(&y).is_some_and(|spans| {
+                let index = spans.partition_point(|span| span[1] <= x);
+                spans.get(index).is_some_and(|span| span[0] <= x)
+            }),
+        }
+    }
+
+    fn spans(&self) -> impl Iterator<Item = (i32, Range<i32>)> + '_ {
+        let (rectangle, rows) = match self {
+            Self::Rectangle(bounds) => (*bounds, None),
+            Self::Rows(rows) => ([0; 4], Some(rows)),
+        };
+        let [left, top, right, bottom] = rectangle;
+        (top..bottom).map(move |y| (y, left..right)).chain(
+            rows.into_iter()
+                .flatten()
+                .flat_map(|(&y, spans)| spans.iter().map(move |&[a, b]| (y, a..b))),
+        )
+    }
+}
+
 pub(crate) fn group_applied(group: &Value, level: &Value, li: &Value, ld: &Value) -> bool {
     let active = flag(group, "active", true);
     let required = arr(&group["requiredBiomeValues"]);
@@ -825,34 +881,51 @@ impl<'a> Engine<'a> {
         }
         true
     }
-    fn render(&mut self, area: Option<[i32; 4]>) -> Result<Vec<AutoTilesByCell>> {
+    fn render(&mut self, area: Option<&[[i32; 4]]>) -> Result<Vec<AutoTilesByCell>> {
         let area = area.filter(|_| self.li["autoLayerTiles"].is_array());
         // LDtk expands incremental updates by its maximum supported pattern radius.
-        let padding = MAX_PATTERN_SIZE / 2;
-        let [left, top, right, bottom] =
-            area.map_or([0, 0, self.width, self.height], |[x, y, w, h]| {
-                [
-                    x.saturating_sub(padding).max(0),
-                    y.saturating_sub(padding).max(0),
-                    x.saturating_add(w).saturating_add(padding).min(self.width),
-                    y.saturating_add(h).saturating_add(padding).min(self.height),
-                ]
-            });
+        let padding = if area.is_some() {
+            MAX_PATTERN_SIZE / 2
+        } else {
+            0
+        };
+        let full_layer = [[0, 0, self.width, self.height]];
+        let bounds = area.unwrap_or(&full_layer).iter().map(|&[x, y, w, h]| {
+            [
+                x.saturating_sub(padding).max(0),
+                y.saturating_sub(padding).max(0),
+                x.saturating_add(w).saturating_add(padding).min(self.width),
+                y.saturating_add(h).saturating_add(padding).min(self.height),
+            ]
+        });
+        let region = CellRegion::new(bounds.clone());
         // Relevance counts need only the 10-cell source buckets touched by rule
         // footprints. A brush update does not scan or copy the whole IntGrid.
         let radius = self.rules.iter().map(|r| r.size / 2).max().unwrap_or(0);
-        let ax = (left.saturating_sub(radius) / 10 * 10).max(0);
-        let ay = (top.saturating_sub(radius) / 10 * 10).max(0);
-        let bx = ((right.saturating_add(radius) / 10 + 1) * 10).min(self.sw);
-        let by = ((bottom.saturating_add(radius) / 10 + 1) * 10).min(self.sh);
-        for y in ay..by {
-            for x in ax..bx {
-                let v = self.grid.get(x + y * self.sw);
-                if v != 0 {
-                    let bucket = x / 10 + (y / 10) * 10000;
-                    self.areas.entry(v).or_default().insert(bucket);
-                    if let Some(g) = self.groups.get(&v) {
-                        self.areas.entry((g + 1) * 1000).or_default().insert(bucket);
+        let bucket_end = |position: i32, extent: i32| {
+            let limit = extent / 10 + i32::from(extent % 10 != 0);
+            (position.saturating_add(radius) / 10 + 1).min(limit)
+        };
+        let source_buckets = CellRegion::new(bounds.map(|[left, top, right, bottom]| {
+            [
+                left.saturating_sub(radius).max(0) / 10,
+                top.saturating_sub(radius).max(0) / 10,
+                bucket_end(right, self.sw),
+                bucket_end(bottom, self.sh),
+            ]
+        }));
+        for (row, columns) in source_buckets.spans() {
+            let bottom = (row + 1).saturating_mul(10).min(self.sh);
+            let right = columns.end.saturating_mul(10).min(self.sw);
+            for y in row * 10..bottom {
+                for x in columns.start * 10..right {
+                    let v = self.grid.get(x + y * self.sw);
+                    if v != 0 {
+                        let bucket = x / 10 + row * 10000;
+                        self.areas.entry(v).or_default().insert(bucket);
+                        if let Some(g) = self.groups.get(&v) {
+                            self.areas.entry((g + 1) * 1000).or_default().insert(bucket);
+                        }
                     }
                 }
             }
@@ -866,7 +939,7 @@ impl<'a> Engine<'a> {
                 let id = data[1].as_i64().unwrap_or(-1) as i32;
                 let x = id % width;
                 let y = id / width;
-                if x < left || x >= right || y < top || y >= bottom {
+                if !region.contains(x, y) {
                     preserved
                         .entry(uid)
                         .or_default()
@@ -909,8 +982,8 @@ impl<'a> Engine<'a> {
                 ]
                 .iter()
                 .all(|k| int(j, k, 0) == 0);
-            for y in top..bottom {
-                for x in left..right {
+            for (y, span) in region.spans() {
+                for x in span {
                     let id = x + y * self.width;
                     if locked.contains(&id)
                         || self.killed.contains(&(x, y))
