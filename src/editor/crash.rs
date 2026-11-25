@@ -81,32 +81,40 @@ impl EditorApp {
         };
         let mut close = false;
         let mut keep = false;
-        let language = self.settings.language();
-        let tr = |text| language.translate(text);
-        egui::Modal::new(egui::Id::new("crash-recovery")).show(ctx, |ui| {
-            ui.set_width(600.0);
-            ui.heading(tr("The editor encountered an unexpected error"));
-            egui::ScrollArea::vertical().max_height(220.0).show(ui, |ui| {
-                ui.monospace(message);
-            });
-            ui.separator();
-            if let Some(path) = recovery {
-                ui.label(tr("Your current work was saved in this recovery project:"));
-                ui.monospace(path.display().to_string());
-                if ui.button(tr("Copy recovery path")).clicked() {
-                    ctx.copy_text(path.to_string_lossy().into_owned());
+        locale::set(ctx, self.settings.language());
+        project_dialogs::show_dialog(
+            ctx,
+            egui::Id::new("crash-recovery"),
+            "The editor encountered an unexpected error",
+            620.,
+            |ui| {
+                let tr = |text| locale::tr_ctx(ctx, text);
+                egui::ScrollArea::vertical()
+                    .max_height(220.0)
+                    .show(ui, |ui| {
+                        ui.monospace(message);
+                    });
+                ui.separator();
+                if let Some(path) = recovery {
+                    ui.label(tr("Your current work was saved in this recovery project:"));
+                    ui.monospace(path.display().to_string());
+                    if project_dialogs::action(ui, "Copy recovery path", false).clicked() {
+                        ctx.copy_text(path.to_string_lossy().into_owned());
+                    }
+                } else if self.dirty {
+                    ui.label(tr(
+                        "A recovery file could not be written. Your project is still in memory.",
+                    ));
+                } else {
+                    ui.label(tr("There were no unsaved edits to recover."));
                 }
-            } else if self.dirty {
-                ui.label(tr("A recovery file could not be written. Your project is still in memory."));
-            } else {
-                ui.label(tr("There were no unsaved edits to recover."));
-            }
-            ui.label(tr("Restarting is recommended. Keeping this window may encounter the same error; undo history has been reset."));
-            ui.horizontal(|ui| {
-                close = ui.button(tr("Close app")).clicked();
-                keep = ui.button(tr("Keep window")).clicked();
-            });
-        });
+                ui.label(tr("Restarting is recommended. Keeping this window may encounter the same error; undo history has been reset."));
+                ui.horizontal_wrapped(|ui| {
+                    close = project_dialogs::action(ui, "Close app", true).clicked();
+                    keep = project_dialogs::action(ui, "Keep window", false).clicked();
+                });
+            },
+        );
         if close {
             // Bypass ordinary dirty-save hooks after an explicit crash-page exit.
             self.allow_close = true;

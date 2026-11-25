@@ -536,19 +536,23 @@ impl EditorApp {
         if let Some(new) = ctx.data_mut(|data| data.get_temp::<PathBuf>(id)) {
             let mut apply = false;
             let mut cancel = false;
-            let modal = egui::Modal::new(id).show(ctx, |ui| {
-                ui.set_width(560.0);
-                ui.heading(locale::tr(ui, "The selected file has a different name"));
-                ui.label(locale::tr(
+            let modal = project_dialogs::show_dialog(
+                ctx,
+                id,
+                "The selected file has a different name",
+                560.,
+                |ui| {
+                    ui.label(locale::tr(
                     ui,
                     "Selecting a different file may change your project. Is this the correct file?",
                 ));
-                ui.monospace(new.display().to_string());
-                ui.horizontal(|ui| {
-                    apply = ui.button(locale::tr(ui, "Use selected file")).clicked();
-                    cancel = ui.button(locale::tr(ui, "Cancel")).clicked();
-                });
-            });
+                    ui.monospace(new.display().to_string());
+                    ui.horizontal_wrapped(|ui| {
+                        apply = project_dialogs::action(ui, "Use selected file", true).clicked();
+                        cancel = project_dialogs::action(ui, "Cancel", false).clicked();
+                    });
+                },
+            );
             if apply || cancel || modal.should_close() {
                 ctx.data_mut(|data| data.remove::<PathBuf>(id));
             }

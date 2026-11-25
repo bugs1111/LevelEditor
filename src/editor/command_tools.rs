@@ -1,4 +1,4 @@
-use super::{panels::source_controls, *};
+use super::*;
 use std::io::Read;
 use std::process::{Command, Stdio};
 
@@ -8,30 +8,6 @@ pub(super) enum CommandEvent {
     Output(String, bool),
     Done(Option<i32>),
     Error(String),
-}
-
-pub(super) fn show_dialog<R>(
-    ctx: &egui::Context,
-    id: &str,
-    contents: impl FnOnce(&mut egui::Ui) -> R,
-) -> R {
-    let width = (ctx.content_rect().width() - 24.).min(620.);
-    egui::Modal::new(egui::Id::new(id))
-        .frame(project_dialogs::dialog_frame(0).stroke(Stroke::new(1_f32, theme::LIGHT)))
-        .backdrop_color(Color32::from_black_alpha(140))
-        .show(ctx, |ui| {
-            ui.set_width(width);
-            ui.spacing_mut().item_spacing.y = 0.;
-            project_dialogs::dialog_title(ui, "Project command", width, theme::LIGHT);
-            egui::Frame::new()
-                .inner_margin(16)
-                .show(ui, |ui| {
-                    ui.spacing_mut().item_spacing = egui::vec2(6., 10.);
-                    contents(ui)
-                })
-                .inner
-        })
-        .inner
 }
 
 pub(super) fn process(command: &str, cwd: Option<&std::path::Path>) -> Result<Command, String> {
@@ -231,50 +207,55 @@ impl EditorApp {
         if !self.command_open {
             return;
         }
-        show_dialog(ctx, "command-runner", |ui| {
-            ui.monospace(&self.command_title);
-            let max_height = (ctx.content_rect().height() - 185.).clamp(80., 420.);
-            egui::Frame::new()
-                .fill(theme::DARK)
-                .stroke(Stroke::new(1_f32, theme::LIGHT))
-                .inner_margin(8)
-                .show(ui, |ui| {
-                    ui.set_min_width(ui.available_width());
-                    ui.spacing_mut().scroll = source_controls::scroll_style();
-                    egui::ScrollArea::vertical()
-                        .stick_to_bottom(true)
-                        .max_height(max_height)
-                        .show(ui, |ui| {
-                            ui.set_min_height(160_f32.min(max_height));
-                            for (text, error) in &self.command_output {
-                                ui.label(RichText::new(text).monospace().color(if *error {
-                                    theme::ACCENT
-                                } else {
-                                    Color32::WHITE
-                                }));
-                            }
-                        });
-                });
-            ui.horizontal_wrapped(|ui| {
-                let size = egui::vec2(130., 34.);
-                let running = self.command_result.is_some();
-                let kill = ui.add_enabled_ui(running, |ui| {
-                    project_dialogs::button(ui, "Kill process", size, false, 13.333)
-                });
-                if kill.inner.clicked() {
-                    self.command_cancelled = true;
-                    if let Some(cancel) = &self.command_cancel {
-                        let _ = cancel.send(());
+        project_dialogs::show_dialog(
+            ctx,
+            egui::Id::new("command-runner"),
+            "Project command",
+            620.,
+            |ui| {
+                ui.monospace(&self.command_title);
+                let max_height = (ctx.content_rect().height() - 185.).clamp(80., 420.);
+                egui::Frame::new()
+                    .fill(theme::DARK)
+                    .stroke(Stroke::new(1_f32, theme::LIGHT))
+                    .inner_margin(8)
+                    .show(ui, |ui| {
+                        ui.set_min_width(ui.available_width());
+                        egui::ScrollArea::vertical()
+                            .stick_to_bottom(true)
+                            .max_height(max_height)
+                            .show(ui, |ui| {
+                                ui.set_min_height(160_f32.min(max_height));
+                                for (text, error) in &self.command_output {
+                                    ui.label(RichText::new(text).monospace().color(if *error {
+                                        theme::ACCENT
+                                    } else {
+                                        Color32::WHITE
+                                    }));
+                                }
+                            });
+                    });
+                ui.horizontal_wrapped(|ui| {
+                    let size = egui::vec2(130., 34.);
+                    let running = self.command_result.is_some();
+                    let kill = ui.add_enabled_ui(running, |ui| {
+                        project_dialogs::button(ui, "Kill process", size, false, 13.333)
+                    });
+                    if kill.inner.clicked() {
+                        self.command_cancelled = true;
+                        if let Some(cancel) = &self.command_cancel {
+                            let _ = cancel.send(());
+                        }
                     }
-                }
-                let close = ui.add_enabled_ui(!running, |ui| {
-                    project_dialogs::button(ui, "Close", size, true, 13.333)
+                    let close = ui.add_enabled_ui(!running, |ui| {
+                        project_dialogs::button(ui, "Close", size, true, 13.333)
+                    });
+                    if close.inner.clicked() {
+                        self.command_open = false;
+                    }
                 });
-                if close.inner.clicked() {
-                    self.command_open = false;
-                }
-            });
-        });
+            },
+        );
     }
 }
 

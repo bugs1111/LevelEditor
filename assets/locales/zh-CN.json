@@ -931,6 +931,7 @@
   "Pixels:": "像素：",
   "Plain text": "纯文本",
   "Please make sure the game engine or importer you're using supports this kind of LDtk identifier!": "请确认所用的游戏引擎或导入工具支持这种 LDtk 标识符。",
+  "Please wait…": "请稍候…",
   "Point": "点",
   "Point required!": "必须选择点位！",
   "PointPath": "点路径",

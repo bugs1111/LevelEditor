@@ -1,4 +1,6 @@
 use super::*;
+use source_controls::FormSelectAppearance;
+
 #[derive(Clone)]
 struct TransferDialog {
     source: i64,
@@ -38,118 +40,142 @@ impl EditorApp {
             .unwrap_or_default();
         let mut close = false;
         let mut apply = false;
-        egui::Modal::new(id).show(ctx, |ui| {
-            ui.heading(locale::tr(ui, "Batch move existing entity instances"));
-            ui.label(locale::tr(
-                ui,
-                "Move matching instances from the origin layer in every world and level.",
-            ));
-            ui.horizontal_wrapped(|ui| {
-                ui.label(locale::tr(ui, "Move all instances"));
-                let filter_label = match state.filter.split_once('.') {
-                    Some(("all", "*")) => locale::tr(ui, "All entities").to_owned(),
-                    Some(("id", name)) => locale::format(ui, "Entity {name}", &[("name", name)]),
-                    Some(("tag", name)) => locale::format(ui, "Tag {name}", &[("name", name)]),
-                    _ => locale::tr(ui, "Pick entities").to_owned(),
-                };
-                egui::ComboBox::from_id_salt((id, "filter"))
-                    .width(200.)
-                    .selected_text(filter_label)
-                    .show_ui(ui, |ui| {
-                        ui.selectable_value(
-                            &mut state.filter,
-                            "all.*".into(),
-                            locale::tr(ui, "All entities"),
-                        );
-                        ui.separator();
-                        ui.label(locale::tr(ui, "Entity identifiers"));
-                        for d in &entities {
-                            let name = text(d, "identifier", "");
-                            ui.selectable_value(&mut state.filter, format!("id.{name}"), name);
-                        }
-                        ui.separator();
-                        ui.label(locale::tr(ui, "With tag"));
+        project_dialogs::show_dialog(
+            ctx,
+            id,
+            "Batch move existing entity instances",
+            620.,
+            |ui| {
+                ui.label(locale::tr(
+                    ui,
+                    "Move matching instances from the origin layer in every world and level.",
+                ));
+                source_controls::form_row(
+                    ui,
+                    "Move all instances",
+                    "transfer-filter",
+                    165.,
+                    |ui| {
+                        let filter_label = match state.filter.split_once('.') {
+                            Some(("all", "*")) => locale::tr(ui, "All entities").to_owned(),
+                            Some(("id", name)) => {
+                                locale::format(ui, "Entity {name}", &[("name", name)])
+                            }
+                            Some(("tag", name)) => {
+                                locale::format(ui, "Tag {name}", &[("name", name)])
+                            }
+                            _ => locale::tr(ui, "Pick entities").to_owned(),
+                        };
+                        let mut filters =
+                            vec![("all.*".into(), (locale::tr(ui, "All entities"), None))];
+                        let identifiers = locale::tr(ui, "Entity identifiers");
+                        filters.extend(entities.iter().enumerate().map(|(index, definition)| {
+                            let name = text(definition, "identifier", "");
+                            (
+                                format!("id.{name}"),
+                                (name, (index == 0).then_some(identifiers)),
+                            )
+                        }));
                         let tags = entities
                             .iter()
-                            .flat_map(|d| d["tags"].as_array().into_iter().flatten())
+                            .flat_map(|definition| {
+                                definition["tags"].as_array().into_iter().flatten()
+                            })
                             .filter_map(Value::as_str)
                             .collect::<std::collections::BTreeSet<_>>();
-                        for tag in tags {
-                            ui.selectable_value(&mut state.filter, format!("tag.{tag}"), tag);
+                        let with_tag = locale::tr(ui, "With tag");
+                        filters.extend(tags.into_iter().enumerate().map(|(index, tag)| {
+                            (
+                                format!("tag.{tag}"),
+                                (tag, (index == 0).then_some(with_tag)),
+                            )
+                        }));
+                        let current = filters.iter().position(|(key, _)| *key == state.filter);
+                        let options: Vec<_> = filters.iter().map(|(_, option)| *option).collect();
+                        if let Some(index) = source_controls::form_select(
+                            ui,
+                            (id, "filter"),
+                            30.,
+                            &options,
+                            current,
+                            &filter_label,
+                            FormSelectAppearance::Normal,
+                        ) {
+                            state.filter.clone_from(&filters[index].0);
                         }
-                    });
-                ui.label(locale::tr(ui, "to layer"));
-                egui::ComboBox::from_id_salt((id, "layer"))
-                    .width(180.)
-                    .selected_text(
-                        layers
-                            .iter()
-                            .find(|d| d["uid"].as_i64() == state.target)
-                            .map(|d| text(d, "identifier", locale::tr(ui, "Layer")))
-                            .unwrap_or_else(|| locale::tr(ui, "Pick a layer")),
-                    )
-                    .show_ui(ui, |ui| {
-                        for d in &layers {
-                            if let Some(uid) = d["uid"].as_i64() {
-                                let enabled = d["type"] == "Entities" && uid != state.source;
-                                ui.add_enabled_ui(enabled, |ui| {
-                                    ui.selectable_value(
-                                        &mut state.target,
-                                        Some(uid),
-                                        text(d, "identifier", locale::tr(ui, "Layer")),
-                                    );
-                                });
-                            }
-                        }
-                    });
-            });
-            let preview = state
-                .target
-                .filter(|_| !state.filter.is_empty())
-                .map(|to| p.count_entities_to_transfer(state.source, to, &state.filter));
-            match &preview {
-                Some(Ok(n)) => {
+                    },
+                );
+                source_controls::form_row(ui, "to layer", "transfer-layer", 165., |ui| {
+                    let fallback = locale::tr(ui, "Layer");
+                    let choices: Vec<_> = layers
+                        .iter()
+                        .filter_map(|layer| {
+                            let uid = layer["uid"].as_i64()?;
+                            (layer["type"] == "Entities" && uid != state.source)
+                                .then(|| (uid, (text(layer, "identifier", fallback), None)))
+                        })
+                        .collect();
+                    let current = choices
+                        .iter()
+                        .position(|(uid, _)| Some(*uid) == state.target);
+                    let options: Vec<_> = choices.iter().map(|(_, option)| *option).collect();
+                    let title =
+                        current.map_or_else(|| locale::tr(ui, "Pick a layer"), |i| options[i].0);
+                    if let Some(index) = source_controls::form_select(
+                        ui,
+                        (id, "layer"),
+                        30.,
+                        &options,
+                        current,
+                        title,
+                        FormSelectAppearance::Normal,
+                    ) {
+                        state.target = Some(choices[index].0);
+                    }
+                });
+                let preview = state
+                    .target
+                    .filter(|_| !state.filter.is_empty())
+                    .map(|to| p.count_entities_to_transfer(state.source, to, &state.filter));
+                match &preview {
+                    Some(Ok(n)) => {
+                        ui.label(locale::format(
+                            ui,
+                            "{count} matching entities",
+                            &[("count", &n.to_string())],
+                        ));
+                    }
+                    Some(Err(ldtk_core::Error::Invalid(reason))) => {
+                        ui.colored_label(theme::ACCENT, locale::tr(ui, reason));
+                    }
+                    Some(Err(error)) => {
+                        ui.colored_label(theme::ACCENT, error.to_string());
+                    }
+                    None => {
+                        ui.label(locale::tr(
+                            ui,
+                            "Choose the entities and destination layer first.",
+                        ));
+                    }
+                }
+                if let Some(count) = state.result {
                     ui.label(locale::format(
                         ui,
-                        "{count} matching entities",
-                        &[("count", &n.to_string())],
+                        "{count} entities were moved.",
+                        &[("count", &count.to_string())],
                     ));
                 }
-                Some(Err(ldtk_core::Error::Invalid(reason))) => {
-                    ui.colored_label(theme::ACCENT, locale::tr(ui, reason));
-                }
-                Some(Err(error)) => {
-                    ui.colored_label(theme::ACCENT, error.to_string());
-                }
-                None => {
-                    ui.label(locale::tr(
-                        ui,
-                        "Choose the entities and destination layer first.",
-                    ));
-                }
-            }
-            if let Some(count) = state.result {
-                ui.label(locale::format(
-                    ui,
-                    "{count} entities were moved.",
-                    &[("count", &count.to_string())],
-                ));
-            }
-            ui.horizontal(|ui| {
-                if source_controls::add_enabled_button(
-                    ui,
-                    matches!(preview,Some(Ok(n))if n>0),
-                    egui::Button::new(locale::tr(ui, "Move entities")),
-                )
-                .clicked()
-                {
-                    apply = true;
-                }
-                if source_controls::button(ui, "Close").clicked() {
-                    close = true;
-                }
-            });
-        });
+                ui.horizontal_wrapped(|ui| {
+                    apply = ui
+                        .add_enabled_ui(matches!(preview, Some(Ok(n)) if n > 0), |ui| {
+                            project_dialogs::action(ui, "Move entities", true)
+                        })
+                        .inner
+                        .clicked();
+                    close = project_dialogs::action(ui, "Close", false).clicked();
+                });
+            },
+        );
         if apply
             && let Some(target) = state.target
             && let Some(count) = self.edit_recoverable("Moved entities between layers", |p| {
@@ -240,6 +266,12 @@ mod tests {
         app.begin_entity_transfer(&ctx, origin);
         frame(&mut app, &ctx, vec![]);
         let initial = frame(&mut app, &ctx, vec![]);
+        let title = label(&initial, "批量移动现有实体实例");
+        assert!(initial.shapes.iter().any(|shape| matches!(
+            &shape.shape,
+            egui::Shape::Rect(rect)
+                if rect.fill == theme::LIGHT && rect.rect.height() == 36. && rect.rect.contains(title)
+        )));
         for text in [
             "批量移动现有实体实例",
             "在所有世界和关卡中移动来源图层里符合条件的实例。",

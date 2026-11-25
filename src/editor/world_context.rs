@@ -221,16 +221,22 @@ impl EditorApp {
         if self.world_context.no_room {
             let mut pick = false;
             let mut cancel = false;
-            egui::Modal::new(egui::Id::new("world-no-room")).show(ctx, |ui| {
-                ui.label(locale::tr(
-                    ui,
-                    "No room for a level here! Do you want to pick another location?",
-                ));
-                ui.horizontal(|ui| {
-                    pick = ui.button(locale::tr(ui, "Pick another location")).clicked();
-                    cancel = ui.button(locale::tr(ui, "Cancel")).clicked();
-                });
-            });
+            project_dialogs::show_dialog(
+                ctx,
+                egui::Id::new("world-no-room"),
+                "New level",
+                440.,
+                |ui| {
+                    ui.label(locale::tr(
+                        ui,
+                        "No room for a level here! Do you want to pick another location?",
+                    ));
+                    ui.horizontal_wrapped(|ui| {
+                        pick = project_dialogs::action(ui, "Pick another location", true).clicked();
+                        cancel = project_dialogs::action(ui, "Cancel", false).clicked();
+                    });
+                },
+            );
             if pick {
                 self.start_level_spot_picker();
             } else if cancel {

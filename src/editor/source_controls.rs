@@ -982,7 +982,7 @@ pub(in crate::app) fn context_menu_frame(style: &egui::Style) -> egui::Frame {
 pub(super) const FORM_OPTION_HIGHLIGHT: Color32 = Color32::from_rgb(30, 144, 255);
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-pub(super) enum FormSelectAppearance {
+pub(in crate::app) enum FormSelectAppearance {
     Normal,
     Unassigned,
     Required,
@@ -1030,7 +1030,7 @@ fn select_highlight(keys: &[Key], mut index: usize, last: usize) -> (usize, bool
 }
 
 /// Each option can introduce a heading before its selectable row.
-pub(super) fn form_select(
+pub(in crate::app) fn form_select(
     ui: &mut egui::Ui,
     salt: impl std::hash::Hash + Copy,
     height: f32,

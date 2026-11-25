@@ -390,17 +390,16 @@ impl EditorApp {
             }
         }
         if let Some(target) = ctx.data(|d| d.get_temp::<i64>(pending_id)) {
-            let modal = egui::Modal::new(pending_id).show(ctx, |ui| {
-                ui.set_max_width(400.);
+            let modal = project_dialogs::show_dialog(ctx, pending_id, "Tileset", 440., |ui| {
                 ui.label(locale::tr(
                     ui,
                     "Warning: using this tileset in this layer will mess any existing tiles here.",
                 ));
                 let enter =
                     ui.input_mut(|input| input.consume_key(egui::Modifiers::NONE, Key::Enter));
-                ui.horizontal(|ui| {
-                    let confirm = panels::source_controls::button(ui, "Confirm").clicked() || enter;
-                    let cancel = panels::source_controls::button(ui, "Cancel").clicked();
+                ui.horizontal_wrapped(|ui| {
+                    let confirm = project_dialogs::action(ui, "Confirm", true).clicked() || enter;
+                    let cancel = project_dialogs::action(ui, "Cancel", false).clicked();
                     (confirm, cancel)
                 })
                 .inner

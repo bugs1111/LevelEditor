@@ -531,19 +531,21 @@ impl EditorApp {
             .data_mut(|data| data.get_temp::<String>(rename_key))
         {
             let mut close = false;
-            egui::Modal::new(rename_key).show(ui.ctx(), |ui| {
-                ui.heading(locale::tr(ui, "Rename project"));
+            project_dialogs::show_dialog(ui.ctx(), rename_key, "Rename project", 440., |ui| {
                 ui.label(locale::tr(
                     ui,
                     "New file name; the project extension is kept.",
                 ));
-                ui.text_edit_singleline(&mut name);
-                ui.horizontal(|ui| {
-                    if source_controls::button(ui, "Rename").clicked() {
+                ui.add_sized(
+                    [ui.available_width(), 30.],
+                    egui::TextEdit::singleline(&mut name).vertical_align(egui::Align::Center),
+                );
+                ui.horizontal_wrapped(|ui| {
+                    if project_dialogs::action(ui, "Rename", true).clicked() {
                         self.request(ui.ctx(), Action::RenameProject(name.clone()));
                         close = true;
                     }
-                    if source_controls::button(ui, "Cancel").clicked() {
+                    if project_dialogs::action(ui, "Cancel", false).clicked() {
                         close = true;
                     }
                 });
@@ -561,27 +563,58 @@ impl EditorApp {
             .data_mut(|data| data.get_temp::<BackupBrowser>(browser_key))
         {
             let mut close = false;
-            egui::Modal::new(browser_key).show(ui.ctx(), |ui| {
-                ui.heading(locale::tr(ui, "Project backups"));
+            project_dialogs::show_dialog(ui.ctx(), browser_key, "Project backups", 560., |ui| {
                 ui.label(browser.original.display().to_string());
-                if let Some(backup)=browser.restore.clone(){
+                if let Some(backup) = browser.restore.clone() {
                     ui.colored_label(theme::ACCENT,locale::tr(ui, "Restoring replaces the current project with this backup. The current version will be backed up first."));
                     ui.label(backup.display().to_string());
-                    ui.horizontal(|ui|{
-                        if source_controls::button(ui,"Restore backup").clicked(){self.request(ui.ctx(),Action::RestoreBackup{backup:backup.clone(),original:browser.original.clone()});close=true;}
-                        if source_controls::button(ui,"Back").clicked(){browser.restore=None;}
+                    ui.horizontal_wrapped(|ui| {
+                        if project_dialogs::action(ui, "Restore backup", true).clicked() {
+                            self.request(
+                                ui.ctx(),
+                                Action::RestoreBackup {
+                                    backup,
+                                    original: browser.original.clone(),
+                                },
+                            );
+                            close = true;
+                        }
+                        if project_dialogs::action(ui, "Back", false).clicked() {
+                            browser.restore = None;
+                        }
                     });
-                }else{
-                    if browser.backups.is_empty(){ui.label(locale::tr(ui, "No backups found."));}
-                    egui::ScrollArea::vertical().max_height(360.0).show(ui,|ui|{
-                        for backup in &browser.backups{ui.horizontal(|ui|{
-                            ui.label(format!("{}{}",backup.timestamp,if backup.crash{locale::tr(ui, " (crash recovery)")}else{""}));
-                            if source_controls::button(ui,"Open").clicked(){self.request(ui.ctx(),Action::OpenBackup{backup:backup.path.clone(),original:browser.original.clone()});close=true;}
-                            if source_controls::button(ui,"Restore…").clicked(){browser.restore=Some(backup.path.clone());}
-                        });}
-                    });
+                } else if browser.backups.is_empty() {
+                    ui.label(locale::tr(ui, "No backups found."));
+                } else {
+                    egui::ScrollArea::vertical()
+                        .max_height(360.)
+                        .show(ui, |ui| {
+                            for backup in &browser.backups {
+                                ui.horizontal_wrapped(|ui| {
+                                    let suffix = if backup.crash {
+                                        locale::tr(ui, " (crash recovery)")
+                                    } else {
+                                        ""
+                                    };
+                                    ui.label(format!("{}{suffix}", backup.timestamp));
+                                    if project_dialogs::action(ui, "Open", false).clicked() {
+                                        self.request(
+                                            ui.ctx(),
+                                            Action::OpenBackup {
+                                                backup: backup.path.clone(),
+                                                original: browser.original.clone(),
+                                            },
+                                        );
+                                        close = true;
+                                    }
+                                    if project_dialogs::action(ui, "Restore…", false).clicked() {
+                                        browser.restore = Some(backup.path.clone());
+                                    }
+                                });
+                            }
+                        });
                 }
-                if source_controls::button(ui,"Close").clicked(){close=true;}
+                close |= project_dialogs::action(ui, "Close", false).clicked();
             });
             ui.ctx().data_mut(|data| {
                 if close {
@@ -2577,13 +2610,19 @@ impl EditorApp {
         {
             let mut confirm = false;
             let mut cancel = false;
-            let modal = egui::Modal::new(pending_id).show(ui.ctx(), |ui| {
-                ui.label(locale::tr(ui, "Be careful: you have tags in this tileset. You will LOSE them by changing the source Enum!"));
-                ui.horizontal(|ui| {
-                    confirm = ui.button(locale::tr(ui, "Confirm")).clicked();
-                    cancel = ui.button(locale::tr(ui, "Cancel")).clicked();
-                });
-            });
+            let modal = project_dialogs::show_dialog(
+                ui.ctx(),
+                pending_id,
+                "Enum for tile marking",
+                440.,
+                |ui| {
+                    ui.label(locale::tr(ui, "Be careful: you have tags in this tileset. You will LOSE them by changing the source Enum!"));
+                    ui.horizontal_wrapped(|ui| {
+                        confirm = project_dialogs::action(ui, "Confirm", true).clicked();
+                        cancel = project_dialogs::action(ui, "Cancel", false).clicked();
+                    });
+                },
+            );
             cancel |= modal.should_close();
             if confirm || cancel {
                 ui.ctx()

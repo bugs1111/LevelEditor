@@ -1170,7 +1170,6 @@ impl EditorApp {
         else {
             return;
         };
-        let mut open = true;
         let mut dismiss = false;
         let mut apply = None;
         let title = if convert.is_some() {
@@ -1180,11 +1179,10 @@ impl EditorApp {
         } else {
             "Create single value field"
         };
-        egui::Window::new(locale::tr_ctx(ctx, title))
-            .id(id)
-            .open(&mut open)
-            .resizable(false)
-            .show(ctx, |ui| {
+        let modal = project_dialogs::show_dialog(ctx, id, title, 560., |ui| {
+            egui::ScrollArea::vertical()
+                .max_height((ctx.content_rect().height() - 140.).clamp(80., 420.))
+                .show(ui, |ui| {
                 ui.horizontal_wrapped(|ui| {
                     for kind in [
                         "Int", "Float", "Bool", "String", "Multilines", "Color", "FilePath",
@@ -1193,8 +1191,7 @@ impl EditorApp {
                         if owner.is_none() && matches!(kind, "EntityRef" | "Point") {
                             continue;
                         }
-                        let button = egui::Button::new(locale::tr(ui, kind));
-                        if source_controls::add_sized_button(ui, [95., 44.], button).clicked() {
+                        if project_dialogs::button(ui, kind, egui::vec2(95., 34.), true, 13.333).clicked() {
                             chosen = Some(kind.into());
                             if convert.is_none() {
                                 apply = chosen.clone();
@@ -1220,7 +1217,7 @@ impl EditorApp {
                     && project.json["defs"]["externalEnums"].as_array().is_none_or(Vec::is_empty)
                 {
                     ui.label(locale::tr(ui, "Create an enum in the Enum panel first."));
-                    if source_controls::button(ui, "Open enum panel").clicked() {
+                    if project_dialogs::action(ui, "Open enum panel", false).clicked() {
                         self.show_panel(Some(Panel::Enums));
                         dismiss = true;
                     }
@@ -1233,14 +1230,14 @@ impl EditorApp {
                     );
                     let label = if kind.contains('.') { kind } else { locale::tr(ui, kind) };
                     ui.label(locale::format(ui, "Convert to {kind}", &[("kind", label)]));
-                    if source_controls::button(ui, "Convert all values").clicked() {
+                    if project_dialogs::action(ui, "Convert all values", true).clicked() {
                         apply = chosen.clone();
                     }
                 }
             });
-        if dismiss {
-            open = false;
-        }
+            project_dialogs::action(ui, "Cancel", false).clicked()
+        });
+        let mut open = !(dismiss || modal.inner || modal.should_close());
         if let Some(kind) = apply {
             if let Some(uid) = convert {
                 if self

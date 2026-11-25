@@ -891,39 +891,37 @@ impl EditorApp {
             return;
         }
         let mut chosen = None;
-        egui::Window::new(locale::tr_ctx(ctx, "Create a layer"))
-            .id(id)
-            .open(&mut open)
-            .resizable(false)
-            .show(ctx, |ui| {
-                for (kind, description) in [
-                    (
-                        "IntGrid",
-                        "Integer grids for collisions, game data and automatic tiles.",
-                    ),
-                    (
-                        "Entities",
-                        "Instances of gameplay objects, such as the player or items.",
-                    ),
-                    ("Tiles", "Image tiles picked from a tileset."),
-                    (
-                        "AutoLayer",
-                        "Tiles rendered automatically using rules and a source IntGrid layer.",
-                    ),
-                ] {
-                    if source_controls::add_sized_button(
-                        ui,
-                        [140., 42.],
-                        egui::Button::new(locale::tr(ui, kind)),
-                    )
-                    .clicked()
-                    {
-                        chosen = Some(kind);
+        let modal = project_dialogs::show_dialog(ctx, id, "Create a layer", 500., |ui| {
+            egui::ScrollArea::vertical()
+                .max_height((ctx.content_rect().height() - 140.).max(80.))
+                .show(ui, |ui| {
+                    for (kind, description) in [
+                        (
+                            "IntGrid",
+                            "Integer grids for collisions, game data and automatic tiles.",
+                        ),
+                        (
+                            "Entities",
+                            "Instances of gameplay objects, such as the player or items.",
+                        ),
+                        ("Tiles", "Image tiles picked from a tileset."),
+                        (
+                            "AutoLayer",
+                            "Tiles rendered automatically using rules and a source IntGrid layer.",
+                        ),
+                    ] {
+                        if project_dialogs::button(ui, kind, egui::vec2(140., 34.), true, 13.333)
+                            .clicked()
+                        {
+                            chosen = Some(kind);
+                        }
+                        ui.label(locale::tr(ui, description));
+                        ui.add_space(8.);
                     }
-                    ui.label(locale::tr(ui, description));
-                    ui.add_space(8.);
-                }
-            });
+                });
+            project_dialogs::action(ui, "Cancel", false).clicked()
+        });
+        open = !(modal.inner || modal.should_close());
         if let Some(kind) = chosen {
             self.new_kind = kind.into();
             self.source_create_definition("layers", None);

@@ -153,6 +153,36 @@ pub(super) fn dialog_frame(padding: i8) -> egui::Frame {
         })
 }
 
+pub(super) fn show_dialog<R>(
+    ctx: &egui::Context,
+    id: egui::Id,
+    title: &str,
+    max_width: f32,
+    contents: impl FnOnce(&mut egui::Ui) -> R,
+) -> egui::ModalResponse<R> {
+    let width = (ctx.content_rect().width() - 24.).clamp(40., max_width);
+    egui::Modal::new(id)
+        .frame(dialog_frame(0).stroke(Stroke::new(1_f32, theme::LIGHT)))
+        .backdrop_color(Color32::from_black_alpha(140))
+        .show(ctx, |ui| {
+            ui.set_width(width);
+            ui.spacing_mut().item_spacing.y = 0.;
+            dialog_title(ui, title, width, theme::LIGHT);
+            egui::Frame::new()
+                .inner_margin(16)
+                .show(ui, |ui| {
+                    ui.spacing_mut().item_spacing = egui::vec2(6., 10.);
+                    ui.spacing_mut().scroll = panels::source_controls::scroll_style();
+                    contents(ui)
+                })
+                .inner
+        })
+}
+
+pub(super) fn action(ui: &mut egui::Ui, label: &str, primary: bool) -> egui::Response {
+    button(ui, label, egui::vec2(112., 34.), !primary, 13.333)
+}
+
 pub(super) fn form_warning_dialog(id: egui::Id) -> egui::Modal {
     egui::Modal::new(id)
         .area(egui::Modal::default_area(id).anchor(Align2::LEFT_TOP, [0., 16.]))
@@ -189,13 +219,19 @@ pub(super) fn button(
 pub(super) fn dialog_title(ui: &mut egui::Ui, title: &str, width: f32, fill: Color32) {
     let (header, _) = ui.allocate_exact_size(egui::vec2(width, 36.), Sense::hover());
     ui.painter().rect_filled(header, 0., fill);
-    ui.painter().text(
-        header.left_center() + egui::vec2(20., 0.),
-        Align2::LEFT_CENTER,
-        locale::tr(ui, title),
+    let mut job = egui::text::LayoutJob::simple_singleline(
+        locale::tr(ui, title).to_owned(),
         FontId::new(20., egui::FontFamily::Name("panel-title".into())),
         Color32::WHITE,
     );
+    job.wrap.max_width = (width - 40.).max(0.);
+    job.wrap.max_rows = 1;
+    job.wrap.break_anywhere = true;
+    let galley = ui.painter().layout_job(job);
+    let position = Align2::LEFT_CENTER
+        .anchor_size(header.left_center() + egui::vec2(20., 0.), galley.size())
+        .min;
+    ui.painter().galley(position, galley, Color32::WHITE);
 }
 
 fn save_warning(ui: &mut egui::Ui, width: f32, message: String) {
@@ -765,7 +801,7 @@ mod tests {
         click(app, ctx, label(&trust, "Block project commands").center());
     }
 
-    fn assert_command_dialog_header(output: &egui::FullOutput, title: &str) {
+    fn assert_dialog_header(output: &egui::FullOutput, title: &str) {
         let title = label(output, title);
         assert!(output.shapes.iter().any(|shape| matches!(
             &shape.shape,
@@ -773,6 +809,51 @@ mod tests {
                 if rect.fill == theme::LIGHT && rect.rect.height() == 36.
                     && rect.rect.contains(title.center())
         )));
+    }
+
+    #[test]
+    fn shared_dialog_fits_a_narrow_window_with_a_long_title() {
+        let title = "The editor encountered an unexpected error";
+        let ctx = egui::Context::default();
+        theme::configure(&ctx);
+        ctx.style_mut(|style| style.animation_time = 0.);
+        let screen = Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(320., 480.));
+        let draw = || {
+            ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(screen),
+                    ..Default::default()
+                },
+                |ctx| {
+                    show_dialog(
+                        ctx,
+                        egui::Id::new("narrow-dialog-test"),
+                        title,
+                        620.,
+                        |ui| {
+                            ui.horizontal_wrapped(|ui| {
+                                action(ui, "Close app", true);
+                                action(ui, "Keep window", false);
+                            });
+                        },
+                    );
+                },
+            )
+        };
+        draw();
+        let output = draw();
+        let value = output
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) if text.galley.text() == title => Some(text),
+                _ => None,
+            })
+            .unwrap();
+        assert!(value.galley.elided && screen.contains_rect(value.visual_bounding_rect()));
+        for action in ["Close app", "Keep window"] {
+            assert!(screen.contains_rect(label(&output, action)));
+        }
     }
 
     #[test]
@@ -794,7 +875,7 @@ mod tests {
         frame(&mut app, &ctx, vec![]);
         let dialog = frame(&mut app, &ctx, vec![]);
 
-        assert_command_dialog_header(&dialog, "项目命令");
+        assert_dialog_header(&dialog, "项目命令");
         label(&dialog, "此项目包含自定义命令");
         label(&dialog, "只允许运行来自可信项目的命令。");
         label(&dialog, command);
@@ -830,7 +911,7 @@ mod tests {
         frame(&mut app, &ctx, vec![]);
         let dialog = frame(&mut app, &ctx, vec![]);
 
-        assert_command_dialog_header(&dialog, "项目命令");
+        assert_dialog_header(&dialog, "项目命令");
         label(&dialog, &app.command_title);
         label(&dialog, "命令已退出，退出码为 7");
         label(&dialog, "终止进程");
@@ -852,8 +933,10 @@ mod tests {
     }
 
     fn keep_my_version(app: &mut EditorApp, ctx: &egui::Context) {
+        ctx.style_mut(|style| style.animation_time = 0.);
         frame(app, ctx, vec![]);
         let dialog = frame(app, ctx, vec![]);
+        assert_dialog_header(&dialog, "Project files changed outside LDtk");
         click(app, ctx, label(&dialog, "Keep my version").center());
     }
 

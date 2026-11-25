@@ -722,47 +722,62 @@ impl EditorApp {
             return;
         }
         if self.is_busy() {
-            egui::Modal::new(egui::Id::new("background-operation")).show(ctx, |ui| {
-                ui.horizontal(|ui| {
-                    ui.spinner();
-                    ui.label(&self.status);
-                });
-            });
+            project_dialogs::show_dialog(
+                ctx,
+                egui::Id::new("background-operation"),
+                "Please wait…",
+                420.,
+                |ui| {
+                    ui.horizontal(|ui| {
+                        ui.spinner();
+                        ui.label(locale::tr(ui, &self.status));
+                    });
+                },
+            );
             return;
         }
         if let Some(paths) = self.external_changes.clone() {
-            egui::Modal::new(egui::Id::new("external-file-change")).show(ctx, |ui| {
-                ui.heading(locale::tr(ui, "Project files changed outside LDtk"));
-                for path in &paths {
-                    ui.label(path.display().to_string());
-                }
-                ui.horizontal(|ui| {
-                    if ui.button(locale::tr(ui, "Reload from disk")).clicked()
-                        && let Some(path) = self.project.as_ref().and_then(|p| p.path.clone())
-                    {
-                        self.external_changes = None;
-                        self.request(ctx, Action::Open(path));
-                    }
-                    if ui.button(locale::tr(ui, "Keep my version")).clicked() {
-                        match self
-                            .file_snapshot
-                            .get_or_insert_with(Default::default)
-                            .acknowledge_document_changes(&paths)
-                        {
-                            Ok(()) => {
-                                let remaining = self.changed_document_files();
-                                self.external_changes =
-                                    (!remaining.is_empty()).then_some(remaining);
-                                self.dirty = true;
+            project_dialogs::show_dialog(
+                ctx,
+                egui::Id::new("external-file-change"),
+                "Project files changed outside LDtk",
+                620.,
+                |ui| {
+                    egui::ScrollArea::vertical()
+                        .max_height(240.)
+                        .show(ui, |ui| {
+                            for path in &paths {
+                                ui.monospace(path.display().to_string());
                             }
-                            Err(error) => {
-                                self.status = error.to_string();
-                                self.status_error = true;
+                        });
+                    ui.horizontal_wrapped(|ui| {
+                        if project_dialogs::action(ui, "Reload from disk", true).clicked()
+                            && let Some(path) = self.project.as_ref().and_then(|p| p.path.clone())
+                        {
+                            self.external_changes = None;
+                            self.request(ctx, Action::Open(path));
+                        }
+                        if project_dialogs::action(ui, "Keep my version", false).clicked() {
+                            match self
+                                .file_snapshot
+                                .get_or_insert_with(Default::default)
+                                .acknowledge_document_changes(&paths)
+                            {
+                                Ok(()) => {
+                                    let remaining = self.changed_document_files();
+                                    self.external_changes =
+                                        (!remaining.is_empty()).then_some(remaining);
+                                    self.dirty = true;
+                                }
+                                Err(error) => {
+                                    self.status = error.to_string();
+                                    self.status_error = true;
+                                }
                             }
                         }
-                    }
-                });
-            });
+                    });
+                },
+            );
         }
     }
 
