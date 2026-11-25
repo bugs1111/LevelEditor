@@ -1,5 +1,5 @@
 //! Transactional rule-definition editing; evaluation remains in the parent module.
-use super::{Rule, arr};
+use super::{MAX_PERLIN_OCTAVES, Rule, arr};
 use crate::{Error, Project, Result, workflow::alloc_uid};
 use serde_json::{Value, json};
 
@@ -95,9 +95,13 @@ fn validate_rule(rule: &Value) -> Result<()> {
         return Err(invalid("Perlin scale must be nonnegative"));
     }
     if let Some(value) = rule.get("perlinOctaves")
-        && value.as_i64().is_none_or(|v| !(1..=32).contains(&v))
+        && value
+            .as_i64()
+            .is_none_or(|v| !(1..=MAX_PERLIN_OCTAVES).contains(&v))
     {
-        return Err(invalid("Perlin octaves must be between 1 and 32"));
+        return Err(invalid(&format!(
+            "Perlin octaves must be between 1 and {MAX_PERLIN_OCTAVES}"
+        )));
     }
     if let Some(mode) = rule.get("tileMode")
         && mode != "Single"

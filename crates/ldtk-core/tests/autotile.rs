@@ -311,6 +311,36 @@ fn extreme_modulo_offsets_keep_the_expected_rule_period() {
 }
 
 #[test]
+fn imported_perlin_octaves_are_bounded_in_previews_and_rebuilds() {
+    use ldtk_core::auto_rule_perlin_value;
+
+    for (imported, effective) in [(-7, 1), (64, 32), (i64::MAX, 32)] {
+        let (mut project, key) = fixture();
+        let rule = &mut project.json["defs"]["layers"][0]["autoRuleGroups"][0]["rules"][0];
+        rule["perlinActive"] = json!(true);
+        rule["perlinSeed"] = json!(17);
+        rule["perlinOctaves"] = json!(effective);
+        let expected_noise = auto_rule_perlin_value(100, [5, 7], rule);
+        let mut expected = project.clone();
+        expected.rebuild_auto_layers(key).unwrap();
+
+        let rule = &mut project.json["defs"]["layers"][0]["autoRuleGroups"][0]["rules"][0];
+        rule["perlinOctaves"] = json!(imported);
+        assert_eq!(
+            auto_rule_perlin_value(100, [5, 7], rule),
+            expected_noise,
+            "imported octaves = {imported}"
+        );
+        project.rebuild_auto_layers(key).unwrap();
+        assert_eq!(tiles(&project, key), tiles(&expected, key));
+        assert_eq!(
+            project.json["defs"]["layers"][0]["autoRuleGroups"][0]["rules"][0]["perlinOctaves"],
+            imported
+        );
+    }
+}
+
+#[test]
 fn late_auto_layer_failure_keeps_earlier_cache_and_source_cells() {
     let (mut p, key) = fixture();
     p.layer_mut(key, 0).unwrap()["__type"] = json!("IntGrid");

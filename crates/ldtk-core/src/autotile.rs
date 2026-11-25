@@ -11,6 +11,7 @@ pub(crate) use editing::clipboard_rule;
 mod noise;
 
 const MAX_PATTERN_SIZE: i32 = 9;
+const MAX_PERLIN_OCTAVES: i64 = 32;
 
 fn rule_pattern(rule: &Value) -> Option<(usize, &[Value])> {
     let size = usize::try_from(rule["size"].as_u64()?).ok()?;
@@ -175,11 +176,16 @@ fn flag(v: &Value, k: &str, default: bool) -> bool {
 /// Per-cell Perlin value shared by auto-layer evaluation and the editor preview.
 pub fn auto_rule_perlin_value(layer_seed: i32, cell: [i32; 2], rule: &Value) -> f64 {
     let scale = float(rule, "perlinScale", 0.2);
+    // Stored rules can bypass the settings editor's range checks.
+    let octaves = rule["perlinOctaves"]
+        .as_i64()
+        .unwrap_or(2)
+        .clamp(1, MAX_PERLIN_OCTAVES);
     noise::perlin(
         f64::from(layer_seed) + f64::from(int(rule, "perlinSeed", 0)),
         f64::from(cell[0]) * scale,
         f64::from(cell[1]) * scale,
-        int(rule, "perlinOctaves", 2),
+        octaves as i32,
     )
 }
 fn arr(v: &Value) -> &[Value] {
@@ -468,7 +474,6 @@ impl<'a> Rule<'a> {
             "tileRandomYMin",
             "tileRandomYMax",
             "perlinSeed",
-            "perlinOctaves",
         ] {
             if let Some(value) = v.get(key)
                 && value.as_i64().and_then(|n| i32::try_from(n).ok()).is_none()
