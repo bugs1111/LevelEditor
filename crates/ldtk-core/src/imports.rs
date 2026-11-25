@@ -359,11 +359,38 @@ impl Project {
                 let mut values = Vec::new();
                 let mut map = BTreeMap::new();
                 if let Some(legend) = layer["legend"].as_object() {
-                    for (i, (k, c)) in legend.iter().enumerate() {
-                        map.insert(k.clone(), i as i64);
-                        if i > 0 {
-                            values.push(json!({"value":i,"identifier":clean_identifier(&if k.chars().all(|c|c.is_ascii_digit()){format!("v{k}")}else{k.clone()}),"color":rgb(c.as_str().unwrap_or("")),"tile":null,"groupUid":0}));
+                    // Ogmo's JavaScript object enumerates index keys before other keys.
+                    let mut entries: Vec<_> = legend.iter().collect();
+                    entries.sort_by_key(|(key, _)| {
+                        key.parse::<u32>()
+                            .ok()
+                            .filter(|_| {
+                                (key.len() == 1 || !key.starts_with('0'))
+                                    && key.bytes().all(|c| c.is_ascii_digit())
+                            })
+                            .unwrap_or(u32::MAX)
+                    });
+                    let mut identifiers = BTreeSet::new();
+                    for (i, (key, color)) in entries.into_iter().enumerate() {
+                        map.insert(key.clone(), i as i64);
+                        if i == 0 {
+                            continue;
                         }
+                        let base = if key.bytes().all(|c| c.is_ascii_digit()) {
+                            format!("v{key}")
+                        } else {
+                            key.clone()
+                        };
+                        let mut identifier = clean_identifier(&base);
+                        let mut suffix = 2;
+                        while !identifiers.insert(identifier.clone()) {
+                            identifier = clean_identifier(&format!("{base}_{suffix}"));
+                            suffix += 1;
+                        }
+                        values.push(json!({
+                            "value":i,"identifier":identifier,"color":rgb(color.as_str().unwrap_or("")),
+                            "tile":null,"groupUid":0
+                        }));
                     }
                 }
                 ld["intGridValues"] = json!(values);

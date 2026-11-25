@@ -205,6 +205,73 @@ fn ogmo_directory_rows_use_maximum_level_height() {
     assert_eq!(p.json["levels"][1]["worldX"], 32);
 }
 #[test]
+fn ogmo_import_keeps_legend_defaults_and_distinct_palette_identifiers() {
+    let directory = tempfile::tempdir().unwrap();
+    let base = directory.path();
+    fs::create_dir(base.join("levels")).unwrap();
+    let source = base.join("game.ogmo");
+    fs::write(
+        &source,
+        json!({
+            "ogmoVersion":"3.4.0", "levelPaths":["levels"],
+            "layers":[
+                {"name":"Numeric","definition":"grid","legend":{
+                    "2":"#FF0000FF","01":"#FFFF00FF","metal":"#00FFFFFF",
+                    "0":"#FFFFFFFF","1":"#01020300","!":"#00FF00FF","?":"#0000FFFF"
+                }},
+                {"name":"Named","definition":"grid","legend":{
+                    "void":"#FFFFFFFF","clear":"#12345600","rock":"#999999FF"
+                }}
+            ]
+        })
+        .to_string(),
+    )
+    .unwrap();
+    fs::write(
+        base.join("levels/room.json"),
+        json!({
+            "width":112,"height":16,
+            "layers":[
+                {"name":"Numeric","grid":[0,1,"2","01","metal","!","?"]},
+                {"name":"Named","grid2D":[["void","clear","rock"]]}
+            ]
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let mut report = Project::import_ogmo_with_report(source).unwrap();
+    assert!(report.warnings.is_empty());
+    let saved = base.join("game.ldtk");
+    report.project.save(&saved).unwrap();
+    let project = Project::load(saved).unwrap();
+    let key = project.level_keys()[0];
+    for (name, expected_ids, cells) in [
+        (
+            "Numeric",
+            vec!["v1", "v2", "v01", "metal", "_", "_2"],
+            [0, 1, 2, 3, 4, 5, 6],
+        ),
+        ("Named", vec!["clear", "rock"], [0, 1, 2, 0, 0, 0, 0]),
+    ] {
+        let defs = project.json["defs"]["layers"].as_array().unwrap();
+        let index = defs
+            .iter()
+            .position(|def| def["identifier"] == name)
+            .unwrap();
+        let values = defs[index]["intGridValues"].as_array().unwrap();
+        let ids: Vec<_> = values
+            .iter()
+            .map(|v| v["identifier"].as_str().unwrap())
+            .collect();
+        assert_eq!(ids, expected_ids, "{name}");
+        assert_eq!(
+            project.layer(key, index).unwrap()["intGridCsv"],
+            json!(cells)
+        );
+    }
+}
+
+#[test]
 fn ogmo_reports_unknown_grid_values_instead_of_silently_discarding_them() {
     let t = tempfile::tempdir().unwrap();
     fs::create_dir(t.path().join("levels")).unwrap();
