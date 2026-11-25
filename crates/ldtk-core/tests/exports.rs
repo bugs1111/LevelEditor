@@ -1364,6 +1364,16 @@ fn tmj_exports_typed_properties_unsigned_gids_and_world() {
     assert_eq!(world["maps"][0]["width"], 32);
     assert_eq!(world["maps"][0]["height"], 16);
     assert!(!output.join("Level_0.tmx").exists());
+
+    p.export_tiled(&output).unwrap();
+    let xml = fs::read_to_string(output.join("Level_0.tmx")).unwrap();
+    let object_ids: Vec<_> = xml
+        .split("<object id=\"")
+        .skip(1)
+        .map(|object| object.split_once('"').unwrap().0)
+        .collect();
+    assert_eq!(object_ids, ["1", "2", "3"]);
+    assert!(xml.contains("nextobjectid=\"4\""));
 }
 
 #[test]
@@ -2271,6 +2281,58 @@ fn tiled_entity_fields_match_source_point_tile_string_and_pivot_conversions() {
     assert!(xml.contains("name=\"point\" value=\"null\""));
     assert!(xml.contains("name=\"text\" value=\"a\nb\""));
 }
+#[test]
+fn tiled_entity_bounds_use_resized_dimensions_and_keep_the_anchor() {
+    use ldtk_core::exports::TiledFormat;
+
+    let dir = tempfile::tempdir().unwrap();
+    let mut project = Project::new();
+    let key = project.level_keys()[0];
+    project.resize_level(key, 128, 128, 0, 0).unwrap();
+    project.add_layer("Actors", "Entities", 16).unwrap();
+    let actor = project.add_entity_def("Actor", 16, 24).unwrap();
+    project
+        .update_entity_definition(
+            actor,
+            &json!({"pivotX":0.5,"pivotY":1,"resizableX":true,"resizableY":true}),
+        )
+        .unwrap();
+    project.add_entity(key, 0, actor, 64, 80).unwrap();
+    project.resize_entity(key, 0, 0, 48, 40).unwrap();
+    project.add_entity(key, 0, actor, 32, 48).unwrap();
+    let legacy = project.layer_mut(key, 0).unwrap()["entityInstances"][1]
+        .as_object_mut()
+        .unwrap();
+    legacy.remove("width");
+    legacy.remove("height");
+
+    project.export_tiled(dir.path()).unwrap();
+    let xml = fs::read_to_string(dir.path().join("Level_0.tmx")).unwrap();
+    assert!(
+        xml.contains("x=\"40\" y=\"40\" width=\"48\" height=\"40\""),
+        "{xml}"
+    );
+    assert!(
+        xml.contains("x=\"24\" y=\"24\" width=\"16\" height=\"24\""),
+        "{xml}"
+    );
+    assert!(xml.contains("name=\"__anchorX\" type=\"int\" value=\"64\""));
+    assert!(xml.contains("name=\"__anchorY\" type=\"int\" value=\"80\""));
+
+    project
+        .export_tiled_format_with_report_progress(dir.path(), TiledFormat::Tmj, |_, _| {})
+        .unwrap();
+    let map: Value =
+        serde_json::from_slice(&fs::read(dir.path().join("Level_0.tmj")).unwrap()).unwrap();
+    let objects = map["layers"][0]["objects"].as_array().unwrap();
+    let bounds =
+        |object: &Value| ["x", "y", "width", "height"].map(|key| object[key].as_i64().unwrap());
+    assert_eq!(bounds(&objects[0]), [40, 40, 48, 40]);
+    assert_eq!(bounds(&objects[1]), [24, 24, 16, 24]);
+    assert_eq!(objects[0]["properties"][0]["value"], 64);
+    assert_eq!(objects[0]["properties"][1]["value"], 80);
+}
+
 #[test]
 fn tiled_entity_file_properties_resolve_from_the_exported_map_directory() {
     use ldtk_core::exports::TiledFormat;

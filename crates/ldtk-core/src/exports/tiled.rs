@@ -600,7 +600,7 @@ impl Project {
         let grid = map.grid;
         let mut layers = Vec::new();
         let mut layer_id = 1;
-        let object_id = 1;
+        let mut object_id = 1;
         for &(li, [cw, ch]) in &map.layers {
             let def = self.layer_def(n(li, "layerDefUid")).unwrap_or(li);
             let typ = s(li, "__type");
@@ -615,7 +615,9 @@ impl Project {
                     let ed = self.definition("entities", n(e, "defUid")).unwrap_or(e);
                     let rect = EntityRect::new(e, ed);
                     let [ex, ey, width, height] = rect.bounds;
-                    layer.push_str(&format!("<object name=\"{}\" type=\"{}\" x=\"{ex}\" y=\"{ey}\" width=\"{width}\" height=\"{height}\"><properties>",xml(s(e,"__identifier")),xml(s(e,"__identifier"))));
+                    let name = xml(s(e, "__identifier"));
+                    write!(layer, "<object id=\"{object_id}\" name=\"{name}\" type=\"{name}\" x=\"{ex}\" y=\"{ey}\" width=\"{width}\" height=\"{height}\"><properties>")
+                        .expect("writing to a String is infallible");
                     for (name, value) in rect.anchor_properties(grid) {
                         write_property(&mut layer, name, None, Some("int"), &value.to_string());
                     }
@@ -628,6 +630,7 @@ impl Project {
                         },
                     )?;
                     layer.push_str("</properties></object>");
+                    object_id += 1;
                 }
                 layer.push_str("</objectgroup>");
                 layers.push(TmxLayer {
@@ -688,8 +691,12 @@ impl EntityRect {
     fn new(entity: &Value, def: &Value) -> Self {
         let x = entity["px"][0].as_i64().unwrap_or(0);
         let y = entity["px"][1].as_i64().unwrap_or(0);
-        let width = n(def, "width");
-        let height = n(def, "height");
+        let [width, height] = ["width", "height"].map(|field| {
+            entity[field]
+                .as_i64()
+                .filter(|size| (1..=i64::from(i32::MAX)).contains(size))
+                .unwrap_or_else(|| n(def, field))
+        });
         let pivot = [num(def, "pivotX", 0.), num(def, "pivotY", 0.)];
         let left = x - (pivot[0] * width as f64).round() as i64;
         let top = y - (pivot[1] * height as f64).round() as i64;
