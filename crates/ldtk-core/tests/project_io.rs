@@ -942,6 +942,56 @@ fn disabling_external_storage_removes_only_retired_owned_level_documents() {
     assert!(unrelated.exists());
     assert!(Project::load(path).unwrap().json["levels"][0]["layerInstances"].is_array());
 }
+
+#[test]
+fn saving_preserves_a_retired_level_edited_after_project_publication() {
+    for guarded in [true, false] {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("Map.ldtk");
+        let mut project = Project::new();
+        project.add_level(None, "Changed", 32, 32).unwrap();
+        project.add_level(None, "Unchanged", 32, 32).unwrap();
+        project.set_external_levels(true).unwrap();
+        project.save(&path).unwrap();
+        let changed = dir.path().join("Map/Changed.ldtkl");
+        let unchanged = dir.path().join("Map/Unchanged.ldtkl");
+        let outside = fs::read_to_string(&changed)
+            .unwrap()
+            .replace("Changed", "Outside");
+        let (mut project, snapshot) = Project::load_with_snapshot(&path).unwrap();
+        let keys = project.level_keys();
+        project.remove_level(keys[2]).unwrap();
+        project.remove_level(keys[1]).unwrap();
+        project.level_mut(keys[0]).unwrap()["bgColor"] = json!("#123456");
+
+        let mut edited = false;
+        project
+            .save_with_snapshot_and_progress(
+                &path,
+                guarded.then_some(&snapshot),
+                |stage, _, _, label| {
+                    if stage == ldtk_core::SaveStage::RemoveObsoleteLevels
+                        && label == Some("Changed.ldtkl")
+                    {
+                        assert_eq!(Project::load(&path).unwrap().level_keys().len(), 1);
+                        fs::write(&changed, &outside).unwrap();
+                        edited = true;
+                    }
+                },
+            )
+            .unwrap();
+
+        assert!(edited);
+        assert_eq!(
+            fs::read_to_string(&changed).ok().as_deref(),
+            Some(outside.as_str())
+        );
+        assert!(!unchanged.exists());
+        let saved = Project::load(&path).unwrap();
+        assert_eq!(saved.level(keys[0]).unwrap()["bgColor"], "#123456");
+    }
+}
+
 #[test]
 fn backup_browser_load_and_restore_use_original_assets_and_preserve_external_levels() {
     let t = tempfile::tempdir().unwrap();

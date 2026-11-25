@@ -447,7 +447,10 @@ impl Project {
             .map_or_else(
                 || previous_external_paths(&path),
                 |(_, paths)| paths.clone(),
-            );
+            )
+            .into_iter()
+            .map(|rel| absolute(&base.join(rel)))
+            .collect::<Result<Vec<_>>>()?;
         if backup_file(&path, self.json["iid"].as_str().unwrap_or("")) {
             return Err(Error::Unsupported(
                 "backup files are read-only; restore the backup or save as a new project".into(),
@@ -615,8 +618,8 @@ impl Project {
         let watched_retired = if verified_snapshot.is_some() {
             retired
                 .iter()
-                .map(|rel| absolute(&base.join(rel)))
-                .collect::<Result<BTreeSet<_>>>()?
+                .map(PathBuf::as_path)
+                .collect::<BTreeSet<_>>()
         } else {
             BTreeSet::new()
         };
@@ -635,7 +638,7 @@ impl Project {
                         if metadata.is_file()
                             && watched_retired.iter().any(|previous| {
                                 snapshot.is_document(previous)
-                                    && !paths.contains(previous)
+                                    && !paths.contains(*previous)
                                     && is_case_only_rename_target(previous, target)
                             }) => {}
                     Ok(_) => occupied.push(target.clone()),
@@ -778,6 +781,17 @@ impl Project {
         }
         // The main document is prepared first but published after all referenced files.
         staged.files.push(root);
+        let retired: Vec<_> = retired
+            .iter()
+            .filter(|target| target.starts_with(&document_dir) && !paths.contains(*target))
+            .filter_map(|target| {
+                let fingerprint = match verified_snapshot {
+                    Some(snapshot) => snapshot.document_fingerprint(target),
+                    None => retired_level_fingerprint(target),
+                }?;
+                Some((target, fingerprint))
+            })
+            .collect();
         verify_files()?;
         staged.publish()?;
         self.external_levels = candidate.external_levels;
@@ -796,23 +810,23 @@ impl Project {
                 .iter()
                 .filter_map(|path| file_identity(path))
                 .collect::<BTreeSet<_>>();
-            for (done, rel) in retired.into_iter().enumerate() {
-                let target = absolute(&base.join(rel))?;
+            for (done, (target, fingerprint)) in retired.into_iter().enumerate() {
                 progress(
                     SaveStage::RemoveObsoleteLevels,
                     done,
                     total,
                     target.file_name().and_then(|name| name.to_str()),
                 );
-                let live_alias = fs::canonicalize(&target)
+                let live_alias = fs::canonicalize(target)
                     .ok()
                     .is_some_and(|real| published_real_paths.contains(&real));
                 #[cfg(unix)]
                 let live_alias = live_alias
-                    || file_identity(&target).is_some_and(|id| published_files.contains(&id));
+                    || file_identity(target).is_some_and(|id| published_files.contains(&id));
                 // Case-only renames on case-insensitive volumes still resolve the retired
                 // spelling to the newly published file. Never unlink a live output alias.
-                if target.starts_with(&document_dir) && !paths.contains(&target) && !live_alias {
+                // The save is already published. Leave a separately edited level on disk.
+                if !live_alias && retired_level_fingerprint(target) == Some(fingerprint) {
                     let _ = fs::remove_file(target);
                 }
             }
@@ -822,6 +836,13 @@ impl Project {
         progress(SaveStage::WriteProject, 1, 1, None);
         Ok(())
     }
+}
+
+fn retired_level_fingerprint(path: &Path) -> Option<u64> {
+    if !fs::symlink_metadata(path).ok()?.is_file() {
+        return None;
+    }
+    snapshot::file_fingerprint(path).ok().flatten()
 }
 
 fn previous_external_paths(path: &Path) -> Vec<String> {

@@ -261,7 +261,7 @@ pub(super) fn bytes_fingerprint(bytes: &[u8]) -> u64 {
     hash.finish()
 }
 
-fn file_fingerprint(path: &Path) -> Result<Option<u64>> {
+pub(super) fn file_fingerprint(path: &Path) -> Result<Option<u64>> {
     let io_error = |source| Error::Io {
         path: path.into(),
         source,
