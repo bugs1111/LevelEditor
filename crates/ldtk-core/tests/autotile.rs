@@ -1214,6 +1214,65 @@ fn tile_bucket_erase_updates_blocked_auto_tiles_and_rolls_back_on_error() {
 }
 
 #[test]
+fn tile_batch_restores_overwrites_removals_and_raised_tiles_on_auto_layer_error() {
+    use ldtk_core::TilePaint;
+
+    let (mut project, key) = fixture();
+    let definitions = project.json["defs"]["layers"].as_array_mut().unwrap();
+    definitions[0]["layerUidsPreventingAutoTilingHere"] = json!([9]);
+    definitions.push(json!({"uid":9,"type":"Tiles","gridSize":16,"tilesetDefUid":2}));
+    project.level_mut(key).unwrap()["layerInstances"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({
+            "layerDefUid":9, "__type":"Tiles", "__gridSize":16, "__cWid":3, "__cHei":2,
+            "gridTiles":[
+                {"px":[0,0],"t":0,"src":[0,0],"f":0,"custom":"keep-on-overwrite"},
+                {"px":[16,0],"t":1,"src":[16,0],"f":1,"custom":"raised"},
+                {"px":[0,0],"t":3,"src":[48,0],"f":0,"custom":"overwrite-removes"},
+                {"px":[16,0],"t":0,"src":[0,0],"f":0,"custom":"untouched"},
+                {"px":[32,0],"t":0,"src":[0,0],"f":0}
+            ]
+        }));
+    let edit = |cell, id, stack, flip| {
+        (
+            TilePaint {
+                cell,
+                id,
+                src: [id * 16, 0],
+                stack,
+            },
+            flip,
+        )
+    };
+    let edits = [
+        edit([0, 0], 1, false, 0),
+        edit([1, 0], 1, true, 1),
+        edit([2, 1], 2, false, 0),
+    ];
+    project.rebuild_auto_layers(key).unwrap();
+    let mut sequential = project.clone();
+    for (edit, flips) in &edits {
+        let [x, y] = edit.cell;
+        assert!(
+            sequential
+                .paint_tile_stacked(key, 1, x, y, edit.id, edit.src, *flips, false, edit.stack)
+                .unwrap()
+        );
+    }
+
+    let mut invalid = project.clone();
+    invalid.json["defs"]["layers"][0]["tilesetDefUid"] = json!(999);
+    let before = invalid.json.clone();
+    let error = invalid.paint_tile_cells(key, 1, &edits).unwrap_err();
+    assert!(error.to_string().contains("missing auto-layer tileset 999"));
+    assert_eq!(invalid.json, before);
+
+    assert_eq!(project.paint_tile_cells(key, 1, &edits).unwrap(), [0, 1, 2]);
+    assert_eq!(project.json, sequential.json);
+}
+
+#[test]
 fn preview_154_offset_grids_keep_their_cell_stride_through_load_and_grid_edits() {
     let (mut project, key) = fixture();
     project.json["defs"]["layers"][0]["identifier"] = json!("Terrain");

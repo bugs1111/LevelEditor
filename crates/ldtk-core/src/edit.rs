@@ -16,6 +16,52 @@ pub struct TilePaint {
     pub stack: bool,
 }
 
+struct TileBatchBackup {
+    original_len: usize,
+    overwritten: Vec<(usize, Value)>,
+    removed: Vec<(usize, Value)>,
+}
+
+impl TileBatchBackup {
+    fn new(original_len: usize) -> Self {
+        Self {
+            original_len,
+            overwritten: Vec::new(),
+            removed: Vec::new(),
+        }
+    }
+
+    fn take_removed(&mut self, tiles: &mut [Value], removals: &[usize]) {
+        self.removed.extend(
+            removals
+                .iter()
+                .map(|&index| (index, std::mem::take(&mut tiles[index]))),
+        );
+    }
+
+    fn restore(self, tiles: &mut Vec<Value>) {
+        // The surviving originals retain their order and precede all appended tiles.
+        let mut retained = self.original_len - self.removed.len();
+        tiles.truncate(retained);
+        if let Some((first, _)) = self.removed.first() {
+            let first = *first;
+            tiles.resize_with(self.original_len, || Value::Null);
+            let mut removed = self.removed.into_iter().rev().peekable();
+            for index in (first..self.original_len).rev() {
+                if let Some((_, original)) = removed.next_if(|(i, _)| *i == index) {
+                    tiles[index] = original;
+                } else {
+                    retained -= 1;
+                    tiles.swap(retained, index);
+                }
+            }
+        }
+        for (index, original) in self.overwritten {
+            tiles[index] = original;
+        }
+    }
+}
+
 fn invalid(message: &str) -> Error {
     Error::Invalid(message.into())
 }
@@ -411,16 +457,17 @@ impl Project {
             .copied()
             .filter(|&cell| targets.remove(&pixel(cell)).flatten().is_some())
             .collect();
-        let blocker = layer["layerDefUid"]
+        let mut blocker = layer["layerDefUid"]
             .as_i64()
             .filter(|&uid| self.tile_layer_blocks_auto(uid))
-            .map(|uid| (uid, tiles.clone()));
-        remove_tile_indices(
-            self.layer_mut(key, layer_index).expect("validated layer")["gridTiles"]
-                .as_array_mut()
-                .expect("validated tiles"),
-            &removals,
-        );
+            .map(|uid| (uid, TileBatchBackup::new(tiles.len())));
+        let tiles = self.layer_mut(key, layer_index).expect("validated layer")["gridTiles"]
+            .as_array_mut()
+            .expect("validated tiles");
+        if let Some((_, backup)) = &mut blocker {
+            backup.take_removed(tiles, &removals);
+        }
+        remove_tile_indices(tiles, &removals);
         self.update_auto_after_tile_batch(
             key,
             layer_index,
@@ -561,10 +608,10 @@ impl Project {
         if changed.is_empty() {
             return Ok(changed);
         }
-        let blocker = layer["layerDefUid"]
+        let mut blocker = layer["layerDefUid"]
             .as_i64()
             .filter(|&uid| self.tile_layer_blocks_auto(uid))
-            .map(|uid| (uid, tiles.clone()));
+            .map(|uid| (uid, TileBatchBackup::new(tiles.len())));
         let tiles = self.layer_mut(key, layer_index).expect("validated layer")["gridTiles"]
             .as_array_mut()
             .expect("validated tiles");
@@ -576,11 +623,18 @@ impl Project {
             let tile = if !edit.stack
                 && let Some(first) = first[group]
             {
+                if let Some((_, backup)) = &mut blocker {
+                    backup.overwritten.push((first, tiles[first].clone()));
+                }
                 &mut tiles[first]
             } else {
                 let tile = if let Some(raise) = raise[group] {
                     removals.push(raise);
-                    std::mem::take(&mut tiles[raise])
+                    if blocker.is_some() {
+                        tiles[raise].clone()
+                    } else {
+                        std::mem::take(&mut tiles[raise])
+                    }
                 } else {
                     json!({"a":1,"d":[y*width+x]})
                 };
@@ -590,6 +644,9 @@ impl Project {
             write_tile(tile, [x * grid, y * grid], edit.id, edit.src, flips);
         }
         removals.sort_unstable();
+        if let Some((_, backup)) = &mut blocker {
+            backup.take_removed(tiles, &removals);
+        }
         remove_tile_indices(tiles, &removals);
         self.update_auto_after_tile_batch(
             key,
@@ -605,16 +662,18 @@ impl Project {
         &mut self,
         key: LevelKey,
         layer_index: usize,
-        blocker: Option<(i64, Vec<Value>)>,
+        blocker: Option<(i64, TileBatchBackup)>,
         cells: impl Iterator<Item = [i32; 2]>,
         deferred: Option<&mut DeferredAutoLayers>,
     ) -> Result<()> {
-        if let Some((uid, old)) = blocker
+        if let Some((uid, backup)) = blocker
             && let Err(error) =
                 self.update_auto_layers_after_paint(key, uid, &paint_rectangles(cells), deferred)
         {
-            self.layer_mut(key, layer_index).expect("validated layer")["gridTiles"] =
-                Value::Array(old);
+            let tiles = self.layer_mut(key, layer_index).expect("validated layer")["gridTiles"]
+                .as_array_mut()
+                .expect("validated tiles");
+            backup.restore(tiles);
             return Err(error);
         }
         Ok(())
