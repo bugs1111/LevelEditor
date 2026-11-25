@@ -2622,7 +2622,7 @@ pub(crate) fn rebase_paths(value: &mut Value, old: &Path, new: &Path) -> Result<
     }
     Ok(())
 }
-fn asset_is_absolute(path: &str) -> bool {
+pub(crate) fn asset_is_absolute(path: &str) -> bool {
     Path::new(path).is_absolute()
         || path.starts_with("\\\\")
         || (path.len() >= 3

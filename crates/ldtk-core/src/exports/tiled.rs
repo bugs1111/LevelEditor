@@ -2,7 +2,7 @@ use super::{
     CSV_BYTE_TEXT, ExportBatch, ExportReport, arr, bytes, color, encode_png, n, num,
     png::checked_image_dimensions, s, safe_name,
 };
-use crate::project::relative_to;
+use crate::project::{asset_is_absolute, relative_to};
 use crate::workflow::{MAX_LAYER_CELLS, layer_cell_extent};
 use crate::{Error, Project, Result};
 use image::RgbaImage;
@@ -33,6 +33,25 @@ impl TiledFormat {
 enum TiledTilesets {
     Xml(String),
     Json(Vec<Value>),
+}
+
+struct TiledPaths<'a> {
+    project_dir: &'a Path,
+    output_dir: &'a Path,
+}
+
+impl TiledPaths<'_> {
+    fn file_property<'a>(&self, text: &'a str) -> Result<Cow<'a, str>> {
+        let path = if text.contains('\\') {
+            Cow::Owned(text.replace('\\', "/"))
+        } else {
+            Cow::Borrowed(text)
+        };
+        if path.is_empty() || asset_is_absolute(&path) {
+            return Ok(path);
+        }
+        relative_to(&self.project_dir.join(path.as_ref()), self.output_dir).map(Cow::Owned)
+    }
 }
 
 struct TiledMap<'a> {
@@ -383,15 +402,11 @@ impl Project {
     }
     fn tiled_tilesets(
         &self,
-        dir: &Path,
+        paths: &TiledPaths<'_>,
         batch: &mut ExportBatch<'_>,
         format: TiledFormat,
     ) -> Result<(TiledTilesets, TiledGids)> {
-        let base = self
-            .path
-            .as_ref()
-            .and_then(|p| p.parent())
-            .unwrap_or(Path::new("."));
+        let dir = paths.output_dir;
         let mut tilesets = match format {
             TiledFormat::Tmx => TiledTilesets::Xml(String::new()),
             TiledFormat::Tmj => TiledTilesets::Json(Vec::new()),
@@ -405,7 +420,7 @@ impl Project {
             let size = n(td, "tileGridSize").max(1);
             let cols = (n(td, "pxWid") + size - 1) / size;
             let count = cols * ((n(td, "pxHei") + size - 1) / size);
-            let source = relative_to(&base.join(rel), dir)?;
+            let source = relative_to(&paths.project_dir.join(rel), dir)?;
             gids.atlases.insert(n(td, "uid"), gid);
             tilesets.add(
                 Tileset {
@@ -518,7 +533,15 @@ impl Project {
         let total = levels.len();
         if total > 0 {
             progress(0, total);
-            let (tilesets, gids) = self.tiled_tilesets(dir, &mut batch, format)?;
+            let paths = TiledPaths {
+                project_dir: self
+                    .path
+                    .as_deref()
+                    .and_then(Path::parent)
+                    .unwrap_or(Path::new(".")),
+                output_dir: dir,
+            };
+            let (tilesets, gids) = self.tiled_tilesets(&paths, &mut batch, format)?;
             let extension = format.extension();
             for (index, level) in levels.enumerate() {
                 let (l, [x, y]) =
@@ -534,7 +557,7 @@ impl Project {
                 let mut world_map = json!({"fileName":filename,"x":x,"y":y});
                 match &tilesets {
                     TiledTilesets::Xml(tilesets) => {
-                        let (header, layers) = self.tiled_map_xml(&map, &gids);
+                        let (header, layers) = self.tiled_map_xml(&map, &gids, &paths)?;
                         let mut parts = Vec::with_capacity(layers.len() + 3);
                         parts.extend([header.as_bytes(), tilesets.as_bytes()]);
                         for layer in &layers {
@@ -545,7 +568,7 @@ impl Project {
                     }
                     TiledTilesets::Json(tilesets) => {
                         batch.add_writer(path, |writer| {
-                            self.write_tiled_map_json(writer, &map, &gids, tilesets)
+                            self.write_tiled_map_json(writer, &map, &gids, tilesets, &paths)
                         })?;
                         world_map["width"] = map.pixels[0].into();
                         world_map["height"] = map.pixels[1].into();
@@ -568,7 +591,12 @@ impl Project {
         )?;
         batch.publish()
     }
-    fn tiled_map_xml(&self, map: &TiledMap<'_>, gids: &TiledGids) -> (String, Vec<TmxLayer>) {
+    fn tiled_map_xml(
+        &self,
+        map: &TiledMap<'_>,
+        gids: &TiledGids,
+        paths: &TiledPaths<'_>,
+    ) -> Result<(String, Vec<TmxLayer>)> {
         let grid = map.grid;
         let mut layers = Vec::new();
         let mut layer_id = 1;
@@ -591,9 +619,14 @@ impl Project {
                     for (name, value) in rect.anchor_properties(grid) {
                         write_property(&mut layer, name, None, Some("int"), &value.to_string());
                     }
-                    for_each_entity_field(e, |name, index, kind, raw_type, value| {
-                        write_property(&mut layer, name, index, kind, &field_text(raw_type, value));
-                    });
+                    for_each_entity_field(
+                        e,
+                        paths,
+                        |name, index, kind, raw_type, value, file_path| {
+                            let text = file_path.unwrap_or_else(|| field_text(raw_type, value));
+                            write_property(&mut layer, name, index, kind, &text);
+                        },
+                    )?;
                     layer.push_str("</properties></object>");
                 }
                 layer.push_str("</objectgroup>");
@@ -641,7 +674,7 @@ impl Project {
             map.size[1],
             xml(s(map.level, "__bgColor"))
         );
-        (header, layers)
+        Ok((header, layers))
     }
 }
 
@@ -680,8 +713,16 @@ impl EntityRect {
 
 fn for_each_entity_field<'a>(
     entity: &'a Value,
-    mut emit: impl FnMut(&'a str, Option<usize>, Option<&'static str>, &'a str, &'a Value),
-) {
+    paths: &TiledPaths<'_>,
+    mut emit: impl FnMut(
+        &'a str,
+        Option<usize>,
+        Option<&'static str>,
+        &'a str,
+        &'a Value,
+        Option<Cow<'a, str>>,
+    ),
+) -> Result<()> {
     for f in arr(&entity["fieldInstances"]) {
         let raw_type = s(f, "__type")
             .trim_start_matches("Array<")
@@ -701,15 +742,24 @@ fn for_each_entity_field<'a>(
             .map_or_else(|| std::slice::from_ref(value), Vec::as_slice);
         let field_name = s(f, "__identifier");
         for (i, v) in values.iter().enumerate() {
+            let file_path = if raw_type == "FilePath" {
+                v.as_str()
+                    .map(|path| paths.file_property(path))
+                    .transpose()?
+            } else {
+                None
+            };
             emit(
                 field_name,
                 (values.len() > 1).then_some(i),
                 kind,
                 raw_type,
                 v,
+                file_path,
             );
         }
     }
+    Ok(())
 }
 
 fn field_text<'a>(raw_type: &str, v: &'a Value) -> Cow<'a, str> {
@@ -727,13 +777,14 @@ fn field_text<'a>(raw_type: &str, v: &'a Value) -> Cow<'a, str> {
             n(v, "w"),
             n(v, "h")
         )),
-        "String" | "Multilines" | "FilePath" => match v.as_str() {
+        "String" | "Multilines" => match v.as_str() {
             Some(text) if text.contains('\\') => {
                 Cow::Owned(text.replace("\\\\", "\\").replace("\\n", "\n"))
             }
             Some(text) => Cow::Borrowed(text),
             None => Cow::Borrowed("null"),
         },
+        "FilePath" => Cow::Borrowed("null"),
         _ => property_text(v),
     }
 }

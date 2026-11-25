@@ -1,5 +1,5 @@
 use super::{
-    EntityRect, TileStack, TiledGids, TiledMap, arr, field_text, for_each_entity_field,
+    EntityRect, TileStack, TiledGids, TiledMap, TiledPaths, arr, field_text, for_each_entity_field,
     intgrid_gids, intgrid_name, n, num, s, tiled_tile_layers,
 };
 use crate::Project;
@@ -126,6 +126,7 @@ impl Project {
         map: &TiledMap<'_>,
         gids: &TiledGids,
         tilesets: &[Value],
+        paths: &TiledPaths<'_>,
     ) -> io::Result<()> {
         let grid = map.grid;
         writer.write_all(b"{\"layers\":[")?;
@@ -164,12 +165,18 @@ impl Project {
                             value: PropertyValue::Integer(value),
                         },
                     ));
-                    for_each_entity_field(entity, |name, index, kind, raw_type, value| {
-                        let name = index
-                            .map_or(Cow::Borrowed(name), |i| Cow::Owned(format!("{name}_{i}")));
-                        properties
-                            .push(property(name, kind, value, || field_text(raw_type, value)));
-                    });
+                    for_each_entity_field(
+                        entity,
+                        paths,
+                        |name, index, kind, raw_type, value, file_path| {
+                            let name = index
+                                .map_or(Cow::Borrowed(name), |i| Cow::Owned(format!("{name}_{i}")));
+                            properties.push(property(name, kind, value, || {
+                                file_path.unwrap_or_else(|| field_text(raw_type, value))
+                            }));
+                        },
+                    )
+                    .map_err(io::Error::other)?;
                     serde_json::to_writer(
                         &mut *writer,
                         &MapObject {

@@ -2272,6 +2272,66 @@ fn tiled_entity_fields_match_source_point_tile_string_and_pivot_conversions() {
     assert!(xml.contains("name=\"text\" value=\"a\nb\""));
 }
 #[test]
+fn tiled_entity_file_properties_resolve_from_the_exported_map_directory() {
+    use ldtk_core::exports::TiledFormat;
+
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("project");
+    let output = dir.path().join("build/maps");
+    fs::create_dir_all(source.join("assets")).unwrap();
+    fs::write(source.join("assets/voice & music.ogg"), b"audio fixture").unwrap();
+    fs::write(dir.path().join("shared.txt"), b"shared fixture").unwrap();
+    let mut project = Project::new();
+    project.path = Some(source.join("Map.ldtk"));
+    project.add_layer("Actors", "Entities", 16).unwrap();
+    let key = project.level_keys()[0];
+    project.layer_mut(key, 0).unwrap()["entityInstances"] = json!([{
+        "__identifier":"Actor", "px":[0,0], "width":16, "height":16,
+        "fieldInstances":[
+            {"__identifier":"Voice","__type":"FilePath","__value":"assets/voice & music.ogg"},
+            {"__identifier":"Files","__type":"Array<FilePath>","__value":["../shared.txt","C:\\new\\effects.ogg"]},
+            {"__identifier":"Text","__type":"String","__value":"assets/voice & music.ogg"}
+        ]
+    }]);
+
+    project.export_tiled(&output).unwrap();
+    let xml = fs::read_to_string(output.join("Level_0.tmx")).unwrap();
+    for property in [
+        "name=\"Voice\" type=\"file\" value=\"../../project/assets/voice &amp; music.ogg\"",
+        "name=\"Files_0\" type=\"file\" value=\"../../shared.txt\"",
+        "name=\"Files_1\" type=\"file\" value=\"C:/new/effects.ogg\"",
+        "name=\"Text\" value=\"assets/voice &amp; music.ogg\"",
+    ] {
+        assert!(xml.contains(property), "missing {property} in {xml}");
+    }
+    project
+        .export_tiled_format_with_report_progress(&output, TiledFormat::Tmj, |_, _| {})
+        .unwrap();
+    let map: Value =
+        serde_json::from_slice(&fs::read(output.join("Level_0.tmj")).unwrap()).unwrap();
+    let properties = map["layers"][0]["objects"][0]["properties"]
+        .as_array()
+        .unwrap();
+    assert_eq!(
+        properties[4..],
+        [
+            json!({"name":"Voice","type":"file","value":"../../project/assets/voice & music.ogg"}),
+            json!({"name":"Files_0","type":"file","value":"../../shared.txt"}),
+            json!({"name":"Files_1","type":"file","value":"C:/new/effects.ogg"}),
+            json!({"name":"Text","type":"string","value":"assets/voice & music.ogg"}),
+        ]
+    );
+    assert_eq!(
+        fs::read(output.join(properties[4]["value"].as_str().unwrap())).unwrap(),
+        b"audio fixture"
+    );
+    assert_eq!(
+        fs::read(output.join(properties[5]["value"].as_str().unwrap())).unwrap(),
+        b"shared fixture"
+    );
+}
+
+#[test]
 fn gamemaker_reexport_preserves_identical_files_and_replaces_changed_rooms() {
     let mut project = project();
     project
