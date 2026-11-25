@@ -1136,6 +1136,42 @@ fn preview_154_multiple_tile_and_intgrid_blockers_update_incrementally() {
 }
 
 #[test]
+fn blocker_coverage_counts_cells_once_and_preserves_signed_pixel_coordinates() {
+    let (mut project, key) = fixture();
+    project.json["defs"]["layers"][0]["layerUidsPreventingAutoTilingHere"] = json!([9, 10]);
+    let layers = project.level_mut(key).unwrap()["layerInstances"]
+        .as_array_mut()
+        .unwrap();
+    layers[0]["intGridCsv"] = json!([1, 1, 1, 1, 1, 1]);
+    layers.extend([
+        json!({
+            "layerDefUid":9,"__type":"Tiles","__gridSize":16,
+            "gridTiles":[
+                {"px":[16,16]}, {"px":[32,16]}, {"px":[16,-15]},
+                {"px":[0,0]}, {"px":[0,-16]}, {"px":[0,32]},
+                {"px":[0,0]}, {"px":[0,0]}
+            ]
+        }),
+        json!({
+            "layerDefUid":10,"__type":"IntGrid","__cWid":3,
+            "intGridCsv":[0,0,1,0,0,0]
+        }),
+    ]);
+    project.rebuild_auto_layers(key).unwrap();
+    assert_eq!(tiles(&project, key).as_array().unwrap().len(), 1);
+    assert_eq!(tiles(&project, key)[0]["px"], json!([0, 16]));
+
+    project.layer_mut(key, 1).unwrap()["gridTiles"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({"px":[0,16]}));
+    project
+        .rebuild_auto_layers_area(key, 9, [0, 1, 1, 1])
+        .unwrap();
+    assert!(tiles(&project, key).as_array().unwrap().is_empty());
+}
+
+#[test]
 fn incremental_rebuild_respects_the_blocker_stride_and_partial_row() {
     let (mut project, key) = fixture();
     project.json["defs"]["layers"][0]["layerUidsPreventingAutoTilingHere"] = json!([9]);

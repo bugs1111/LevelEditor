@@ -647,6 +647,19 @@ impl CellRegion {
         }
     }
 
+    fn cell_count(&self) -> usize {
+        match self {
+            Self::Rectangle([left, top, right, bottom]) => {
+                (right - left) as usize * (bottom - top) as usize
+            }
+            Self::Rows(rows) => rows
+                .values()
+                .flatten()
+                .map(|[left, right]| (right - left) as usize)
+                .sum(),
+        }
+    }
+
     fn spans(&self) -> impl Iterator<Item = (i32, Range<i32>)> + '_ {
         let (rectangle, rows) = match self {
             Self::Rectangle(bounds) => (*bounds, None),
@@ -850,11 +863,16 @@ impl<'a> Engine<'a> {
 
     fn blocked_cells(&self, region: &CellRegion) -> BTreeSet<(i32, i32)> {
         let mut killed = BTreeSet::new();
+        let cell_count = std::cell::LazyCell::new(|| region.cell_count());
         for blocker in self.layers.iter().filter(|l| {
             l["layerDefUid"]
                 .as_i64()
                 .is_some_and(|uid| blocks_auto_layer(self.ld, uid))
         }) {
+            let cell_count = *cell_count;
+            if cell_count == 0 {
+                return killed;
+            }
             if blocker["__type"] == "IntGrid" {
                 let width = int(blocker, "__cWid", 0).max(0) as usize;
                 if width == 0 {
@@ -880,16 +898,23 @@ impl<'a> Engine<'a> {
                 }
             } else if blocker["__type"] == "Tiles" || blocker["__type"].is_null() {
                 let blocker_grid = int(blocker, "__gridSize", self.grid_size).max(1);
-                for tile in arr(&blocker["gridTiles"]) {
+                // The brush appends new tiles, including tiles in the region being rebuilt.
+                for tile in arr(&blocker["gridTiles"]).iter().rev() {
                     let px = arr(&tile["px"]);
                     if let [x, y] = px {
                         let x = x.as_i64().unwrap_or(0) as i32 / blocker_grid;
                         let y = y.as_i64().unwrap_or(0) as i32 / blocker_grid;
-                        if region.contains(x, y) {
-                            killed.insert((x, y));
+                        if region.contains(x, y)
+                            && killed.insert((x, y))
+                            && killed.len() == cell_count
+                        {
+                            return killed;
                         }
                     }
                 }
+            }
+            if killed.len() == cell_count {
+                return killed;
             }
         }
         killed
