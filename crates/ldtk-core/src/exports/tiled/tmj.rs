@@ -1,12 +1,11 @@
 use super::{
-    EntityRect, TileStack, arr, field_text, for_each_entity_field, intgrid_gids, intgrid_name, n,
-    num, s, tiled_tile_layers,
+    EntityRect, TileStack, TiledGids, arr, field_text, for_each_entity_field, intgrid_gids,
+    intgrid_name, n, num, s, tiled_tile_layers,
 };
 use crate::Project;
 use serde::Serialize;
 use serde_json::{Value, json};
 use std::borrow::Cow;
-use std::collections::BTreeMap;
 use std::io::{self, Write};
 use std::sync::LazyLock;
 
@@ -126,7 +125,7 @@ impl Project {
         writer: &mut impl Write,
         level: &Value,
         grid: i64,
-        gids: &BTreeMap<i64, u32>,
+        gids: &TiledGids,
         tilesets: &[Value],
     ) -> io::Result<()> {
         writer.write_all(b"{\"layers\":[")?;
@@ -201,7 +200,7 @@ impl Project {
             ];
             let area = size[0] * size[1];
             if typ == "IntGrid" {
-                let base = *gids.get(&layer_uid).unwrap_or(&1);
+                let palette = gids.intgrids.get(&layer_uid);
                 let cells = arr(&li["intGridCsv"]);
                 let id = next_layer(writer, &mut layer_id)?;
                 write_tile_layer(
@@ -210,10 +209,10 @@ impl Project {
                     &intgrid_name(li),
                     size,
                     opacity,
-                    nonzero_gids(intgrid_gids(cells, area, base)),
+                    nonzero_gids(intgrid_gids(cells, area, palette)),
                 )?;
             }
-            for (name, stack) in tiled_tile_layers(li, def, size, grid, gids) {
+            for (name, stack) in tiled_tile_layers(li, def, size, grid, &gids.atlases) {
                 let id = next_layer(writer, &mut layer_id)?;
                 match stack {
                     TileStack::Dense(data) => write_tile_layer(

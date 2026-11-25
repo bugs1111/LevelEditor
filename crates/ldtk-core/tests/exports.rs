@@ -1168,11 +1168,90 @@ fn tmx_exports_colored_intgrid_and_world_position() {
     p.export_tiled(t.path()).unwrap();
     let xml = fs::read_to_string(t.path().join("Level_0.tmx")).unwrap();
     assert!(xml.contains("tilewidth=\"16\""));
-    assert!(xml.contains("<data encoding=\"csv\">1,257</data>"));
+    assert!(xml.contains("<data encoding=\"csv\">1,2</data>"));
     assert!(t.path().join("Solid.intgrid.png").exists());
     let w: Value =
         serde_json::from_slice(&fs::read(t.path().join("Untitled.world")).unwrap()).unwrap();
     assert_eq!(w["maps"][0]["fileName"], "Level_0.tmx");
+}
+
+#[test]
+fn tiled_intgrid_gids_follow_each_palette_in_tmx_and_tmj() {
+    use ldtk_core::exports::TiledFormat;
+
+    let dir = tempfile::tempdir().unwrap();
+    let mut p = project();
+    p.json["defs"]["layers"][0]["intGridValues"] = json!([
+        {"value":257,"color":"#00ff00"}, {"value":1,"color":"#ff0000"}
+    ]);
+    p.json["defs"]["layers"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({
+            "uid":8,"identifier":"Zones","type":"IntGrid","gridSize":16,
+            "intGridValues":[{"value":257,"color":"#0000ff"}]
+        }));
+    p.json["levels"][0]["layerInstances"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({
+            "layerDefUid":8,"__identifier":"Zones","__type":"IntGrid","__gridSize":16,
+            "__cWid":2,"__cHei":1,"intGridCsv":[257,0]
+        }));
+
+    p.export_tiled(dir.path()).unwrap();
+    let xml = fs::read_to_string(dir.path().join("Level_0.tmx")).unwrap();
+    assert!(xml.contains("<data encoding=\"csv\">2,1</data>"), "{xml}");
+    assert!(xml.contains("<data encoding=\"csv\">3,0</data>"), "{xml}");
+    p.export_tiled_format_with_report_progress(dir.path(), TiledFormat::Tmj, |_, _| {})
+        .unwrap();
+    let map: Value =
+        serde_json::from_slice(&fs::read(dir.path().join("Level_0.tmj")).unwrap()).unwrap();
+    assert_eq!(map["tilesets"][0]["firstgid"], 1);
+    assert_eq!(map["tilesets"][1]["firstgid"], 3);
+    assert_eq!(map["layers"][0]["data"], json!([3, 0]));
+    assert_eq!(map["layers"][1]["data"], json!([2, 1]));
+
+    let solid = image::open(dir.path().join("Solid.intgrid.png"))
+        .unwrap()
+        .into_rgba8();
+    let zones = image::open(dir.path().join("Zones.intgrid.png"))
+        .unwrap()
+        .into_rgba8();
+    assert_eq!(solid.get_pixel(0, 0).0, [0, 255, 0, 255]);
+    assert_eq!(solid.get_pixel(16, 0).0, [255, 0, 0, 255]);
+    assert_eq!(zones.get_pixel(0, 0).0, [0, 0, 255, 255]);
+}
+
+#[test]
+fn tiled_exports_an_empty_intgrid_palette_without_a_tileset_image() {
+    use ldtk_core::exports::TiledFormat;
+
+    let dir = tempfile::tempdir().unwrap();
+    let mut p = project();
+    p.json["defs"]["layers"][0]["intGridValues"] = json!([]);
+    p.json["levels"][0]["layerInstances"][0]["intGridCsv"] = json!([0, 0]);
+    p.export_tiled(dir.path()).unwrap();
+    let xml = fs::read_to_string(dir.path().join("Level_0.tmx")).unwrap();
+    assert!(!xml.contains("<tileset"));
+    assert!(xml.contains("<data encoding=\"csv\">0,0</data>"));
+    p.export_tiled_format_with_report_progress(dir.path(), TiledFormat::Tmj, |_, _| {})
+        .unwrap();
+    let map: Value =
+        serde_json::from_slice(&fs::read(dir.path().join("Level_0.tmj")).unwrap()).unwrap();
+    assert_eq!(map["tilesets"], json!([]));
+    assert_eq!(map["layers"][0]["data"], json!([0, 0]));
+    assert!(!dir.path().join("Solid.intgrid.png").exists());
+}
+
+#[test]
+fn tiled_rejects_intgrid_tileset_dimensions_that_would_truncate() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut p = project();
+    p.json["defs"]["layers"][0]["gridSize"] = json!((1_i64 << 32) + 1);
+    let error = p.export_tiled(dir.path()).unwrap_err().to_string();
+    assert!(error.contains("IntGrid tileset Solid"), "{error}");
+    assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 0);
 }
 
 #[test]
@@ -1196,7 +1275,7 @@ fn tmj_exports_typed_properties_unsigned_gids_and_world() {
     let level = &mut p.json["levels"][0];
     level["worldX"] = json!(-32);
     level["layerInstances"][0]["__tilesetDefUid"] = json!(7);
-    level["layerInstances"][0]["intGridCsv"] = json!([1, 2]);
+    level["layerInstances"][0]["intGridCsv"] = json!([1, 257]);
     level["layerInstances"][0]["autoLayerTiles"] = json!([
         {"px":[0,0],"t":0,"f":3},{"px":[0,0],"t":1,"f":0}
     ]);

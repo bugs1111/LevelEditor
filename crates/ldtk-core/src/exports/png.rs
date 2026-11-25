@@ -684,7 +684,7 @@ fn dimensions(l: &Value) -> Result<(u32, u32)> {
         .ok_or_else(|| Error::Invalid("invalid export image dimensions".into()))
 }
 
-fn checked_image_dimensions(width: i64, height: i64) -> Option<(u32, u32)> {
+pub(super) fn checked_image_dimensions(width: i64, height: i64) -> Option<(u32, u32)> {
     if width <= 0 || height <= 0 || width.checked_mul(height)? > 268_435_456 {
         return None;
     }

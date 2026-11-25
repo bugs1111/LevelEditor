@@ -1,5 +1,6 @@
 use super::{
-    CSV_BYTE_TEXT, ExportBatch, ExportReport, arr, bytes, color, encode_png, n, num, s, safe_name,
+    CSV_BYTE_TEXT, ExportBatch, ExportReport, arr, bytes, color, encode_png, n, num,
+    png::checked_image_dimensions, s, safe_name,
 };
 use crate::project::relative_to;
 use crate::{Error, Project, Result};
@@ -31,6 +32,40 @@ impl TiledFormat {
 enum TiledTilesets {
     Xml(String),
     Json(Vec<Value>),
+}
+
+#[derive(Default)]
+struct TiledGids {
+    atlases: BTreeMap<i64, u32>,
+    intgrids: BTreeMap<i64, IntGridGids>,
+}
+
+enum IntGridGids {
+    Sequential { first: u32, count: u32 },
+    ByValue(HashMap<i64, u32>),
+}
+
+impl IntGridGids {
+    fn new(values: &[Value], first: u32) -> Self {
+        if values
+            .iter()
+            .enumerate()
+            .all(|(i, value)| n(value, "value") == i as i64 + 1)
+        {
+            return Self::Sequential {
+                first,
+                count: values.len() as u32,
+            };
+        }
+        let mut by_value = HashMap::with_capacity(values.len());
+        for (index, entry) in values.iter().enumerate() {
+            let value = n(entry, "value");
+            if value > 0 {
+                by_value.entry(value).or_insert(first + index as u32);
+            }
+        }
+        Self::ByValue(by_value)
+    }
 }
 
 struct Tileset<'a> {
@@ -290,7 +325,7 @@ impl Project {
         dir: &Path,
         batch: &mut ExportBatch<'_>,
         format: TiledFormat,
-    ) -> Result<(TiledTilesets, BTreeMap<i64, u32>)> {
+    ) -> Result<(TiledTilesets, TiledGids)> {
         let base = self
             .path
             .as_ref()
@@ -300,7 +335,7 @@ impl Project {
             TiledFormat::Tmx => TiledTilesets::Xml(String::new()),
             TiledFormat::Tmj => TiledTilesets::Json(Vec::new()),
         };
-        let mut gids = BTreeMap::new();
+        let mut gids = TiledGids::default();
         let mut gid = 1u32;
         for td in arr(&self.json["defs"]["tilesets"]) {
             let Some(rel) = td["relPath"].as_str() else {
@@ -310,7 +345,7 @@ impl Project {
             let cols = (n(td, "pxWid") + size - 1) / size;
             let count = cols * ((n(td, "pxHei") + size - 1) / size);
             let source = relative_to(&base.join(rel), dir)?;
-            gids.insert(n(td, "uid"), gid);
+            gids.atlases.insert(n(td, "uid"), gid);
             tilesets.add(
                 Tileset {
                     gid,
@@ -332,9 +367,25 @@ impl Project {
             .filter(|d| s(d, "type") == "IntGrid")
         {
             let values = arr(&d["intGridValues"]);
-            let size = n(d, "gridSize").max(1) as u32;
-            let width = size * values.len() as u32;
-            let filename = format!("{}.intgrid.png", safe_name(s(d, "identifier"))?);
+            if values.is_empty() {
+                continue;
+            }
+            let name = safe_name(s(d, "identifier"))?;
+            let size = n(d, "gridSize").max(1);
+            let (width, size) = size
+                .checked_mul(values.len() as i64)
+                .and_then(|width| checked_image_dimensions(width, size))
+                .ok_or_else(|| {
+                    Error::Invalid(format!("invalid dimensions for IntGrid tileset {name}"))
+                })?;
+            let count = width / size;
+            let next_gid = gid
+                .checked_add(count)
+                .filter(|&next| next <= 0x1000_0000)
+                .ok_or_else(|| {
+                    Error::Invalid(format!("too many tiles for IntGrid tileset {name}"))
+                })?;
+            let filename = format!("{name}.intgrid.png");
             let path = dir.join(&filename);
             if !batch.seen.contains(&path) {
                 let mut image = RgbaImage::new(width, size);
@@ -348,14 +399,15 @@ impl Project {
                 }
                 batch.add(path, &encode_png(&image)?)?;
             }
-            gids.insert(n(d, "uid"), gid);
+            gids.intgrids
+                .insert(n(d, "uid"), IntGridGids::new(values, gid));
             tilesets.add(
                 Tileset {
                     gid,
-                    name: s(d, "identifier"),
+                    name,
                     size: i64::from(size),
-                    columns: values.len() as i64,
-                    count: values.len() as i64,
+                    columns: i64::from(count),
+                    count: i64::from(count),
                     image: &filename,
                     width: i64::from(width),
                     height: i64::from(size),
@@ -363,7 +415,7 @@ impl Project {
                 },
                 &[],
             )?;
-            gid += values.len() as u32;
+            gid = next_gid;
         }
         Ok((tilesets, gids))
     }
@@ -454,12 +506,7 @@ impl Project {
         )?;
         batch.publish()
     }
-    fn tiled_map_xml(
-        &self,
-        l: &Value,
-        grid: i64,
-        gids: &BTreeMap<i64, u32>,
-    ) -> (String, Vec<TmxLayer>) {
+    fn tiled_map_xml(&self, l: &Value, grid: i64, gids: &TiledGids) -> (String, Vec<TmxLayer>) {
         let mut layers = Vec::new();
         let mut layer_id = 1;
         let object_id = 1;
@@ -499,9 +546,9 @@ impl Project {
                 continue;
             }
             if typ == "IntGrid" {
-                let base = *gids.get(&n(li, "layerDefUid")).unwrap_or(&1);
+                let palette = gids.intgrids.get(&n(li, "layerDefUid"));
                 let cells = arr(&li["intGridCsv"]);
-                let values = intgrid_gids(cells, cw * ch, base);
+                let values = intgrid_gids(cells, cw * ch, palette);
                 let name = intgrid_name(li);
                 let mut layer = TmxLayer::default();
                 write_tmx_layer(&mut layer, layer_id, &name, [cw, ch], opacity, values);
@@ -509,7 +556,7 @@ impl Project {
                 layer_id += 1;
             }
             let area = cw * ch;
-            for (name, data) in tiled_tile_layers(li, def, [cw, ch], grid, gids) {
+            for (name, data) in tiled_tile_layers(li, def, [cw, ch], grid, &gids.atlases) {
                 let mut layer = TmxLayer::default();
                 match data {
                     TileStack::Dense(data) => write_tmx_layer(
@@ -642,10 +689,28 @@ fn intgrid_name(li: &Value) -> Cow<'_, str> {
     }
 }
 
-fn intgrid_gids(cells: &[Value], area: usize, base: u32) -> impl Iterator<Item = u32> + '_ {
+fn intgrid_gids<'a>(
+    cells: &'a [Value],
+    area: usize,
+    palette: Option<&'a IntGridGids>,
+) -> impl Iterator<Item = u32> + 'a {
+    let (first, count, by_value) = match palette {
+        Some(IntGridGids::Sequential { first, count }) => (*first, u64::from(*count), None),
+        Some(IntGridGids::ByValue(gids)) => (0, 0, Some(gids)),
+        None => (0, 0, None),
+    };
     (0..area).map(move |i| {
-        let v = cells.get(i).and_then(Value::as_i64).unwrap_or(0);
-        if v > 0 { base + v as u32 - 1 } else { 0 }
+        let value = cells.get(i).and_then(Value::as_i64).unwrap_or(0);
+        // Zero and negative cells fall outside the unsigned palette index range.
+        let index = (value as u64).wrapping_sub(1);
+        if index < count {
+            first + index as u32
+        } else {
+            by_value
+                .and_then(|gids| gids.get(&value))
+                .copied()
+                .unwrap_or(0)
+        }
     })
 }
 
