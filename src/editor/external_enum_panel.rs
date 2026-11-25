@@ -241,7 +241,7 @@ impl EditorApp {
                                                 );
                                             }
                                             let remove = |app: &mut Self, ui: &mut egui::Ui| {
-                                                if source_controls::button(
+                                                if source_controls::context_menu_item(
                                                     ui,
                                                     "Remove extern source",
                                                 )
@@ -252,7 +252,11 @@ impl EditorApp {
                                                     ui.close();
                                                 }
                                             };
-                                            row.context_menu(|ui| remove(self, ui));
+                                            egui::Popup::context_menu(&row)
+                                                .frame(source_controls::context_menu_frame(
+                                                    ui.style(),
+                                                ))
+                                                .show(|ui| remove(self, ui));
                                             source_menu(ui, |ui| remove(self, ui));
                                         });
                                     });

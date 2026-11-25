@@ -222,7 +222,7 @@ fn tileset_tag_enum_picker(
         ));
     }
     let mut next = current;
-    egui::ComboBox::from_id_salt("tileset-tag-source-enum")
+    source_controls::form_combo("tileset-tag-source-enum")
         .width(ui.available_width().min(465.))
         .selected_text(selected)
         .show_ui(ui, |ui| {
@@ -645,7 +645,7 @@ impl EditorApp {
                 .and_then(|i| worlds.iter().find(|(id, _)| *id == i))
                 .map(|(_, s)| s.as_str())
                 .unwrap_or("World");
-            egui::ComboBox::from_id_salt("world-properties")
+            source_controls::form_combo("world-properties")
                 .selected_text(label)
                 .show_ui(ui, |ui| {
                     if worlds.is_empty()
@@ -882,7 +882,7 @@ impl EditorApp {
             .unwrap_or_default();
         if !destinations.is_empty() {
             let mut destination = key.world;
-            egui::ComboBox::from_id_salt("level-world")
+            source_controls::form_combo("level-world")
                 .selected_text(
                     destinations
                         .iter()
@@ -928,7 +928,7 @@ impl EditorApp {
         if !self.source_panel_active(ui) {
             ui.horizontal(|ui| {
                 ui.text_edit_singleline(&mut self.new_name);
-                egui::ComboBox::from_id_salt("new-layer-kind")
+                source_controls::form_combo("new-layer-kind")
                     .selected_text(locale::tr(ui, &self.new_kind))
                     .show_ui(ui, |ui| {
                         for kind in ["IntGrid", "Tiles", "AutoLayer", "Entities"] {
@@ -1327,18 +1327,15 @@ impl EditorApp {
                                                 egui::vec2(LABEL_WIDTH - 8., 12.),
                                                 egui::Layout::top_down(egui::Align::RIGHT),
                                                 |ui| {
-                                                    ui.visuals_mut().hyperlink_color =
-                                                        theme::ACCENT;
-                                                    ui.link(
+                                                    let label = egui::Label::new(
                                                         RichText::new(locale::tr(
                                                             ui,
                                                             "Empty array",
                                                         ))
-                                                        .size(9.333)
-                                                        .color(theme::ACCENT)
-                                                        .underline(),
-                                                    )
-                                                    .clicked()
+                                                        .size(9.333),
+                                                    );
+                                                    ui.add(source_controls::underlined_link(label))
+                                                        .clicked()
                                                 },
                                             )
                                             .inner;
@@ -1346,19 +1343,23 @@ impl EditorApp {
                                 },
                             )
                             .inner;
-                        label.context_menu(|ui| {
-                            if ui.button(locale::tr(ui, "Edit field definition")).clicked() {
-                                self.field_uid = Some(uid);
-                                self.field_owner = owner["defUid"].as_i64();
-                                if let Some(owner) = self.field_owner {
-                                    self.definition_uid = Some(owner);
-                                    self.show_panel(Some(Panel::Entities));
-                                } else {
-                                    self.show_panel(Some(Panel::Fields));
+                        egui::Popup::context_menu(&label)
+                            .frame(source_controls::context_menu_frame(ui.style()))
+                            .show(|ui| {
+                                if source_controls::context_menu_item(ui, "Edit field definition")
+                                    .clicked()
+                                {
+                                    self.field_uid = Some(uid);
+                                    self.field_owner = owner["defUid"].as_i64();
+                                    if let Some(owner) = self.field_owner {
+                                        self.definition_uid = Some(owner);
+                                        self.show_panel(Some(Panel::Entities));
+                                    } else {
+                                        self.show_panel(Some(Panel::Fields));
+                                    }
+                                    ui.close();
                                 }
-                                ui.close();
-                            }
-                        });
+                            });
                         let value_width = (width - LABEL_WIDTH - 2.).max(30.);
                         let value = ui.allocate_ui_with_layout(
                             egui::vec2(value_width, 26.),
@@ -1639,7 +1640,7 @@ impl EditorApp {
         let mut array = def["isArray"].as_bool().unwrap_or(false);
         let old = (kind.clone(), array);
         ui.horizontal(|ui| {
-            egui::ComboBox::from_id_salt("field-type")
+            source_controls::form_combo("field-type")
                 .selected_text(if kind.contains('.') {
                     &kind
                 } else {
@@ -2697,7 +2698,7 @@ impl EditorApp {
                         ));
                         let mut mode = text(selection, "mode", "Stamp").to_owned();
                         let old = mode.clone();
-                        egui::ComboBox::from_id_salt(ui.id().with("mode"))
+                        source_controls::form_combo(ui.id().with("mode"))
                             .selected_text(locale::tr(ui, &mode))
                             .show_ui(ui, |ui| {
                                 ui.selectable_value(
@@ -3025,7 +3026,7 @@ impl EditorApp {
         };
         ui.horizontal(|ui| {
             ui.label(locale::tr(ui, label));
-            egui::ComboBox::from_id_salt(ui.id().with(label))
+            source_controls::form_combo(ui.id().with(label))
                 .selected_text(
                     p.tileset(*value)
                         .map(|d| text(d, "identifier", "Tileset"))

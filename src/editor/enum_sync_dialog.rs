@@ -64,7 +64,7 @@ impl PendingSync {
         } else {
             Color32::WHITE
         });
-        egui::ComboBox::from_id_salt(("enum-sync-action", key))
+        source_controls::form_combo(("enum-sync-action", key))
             .width(ui.available_width().clamp(90., 348.))
             .selected_text(text)
             .show_ui(ui, |ui| {
@@ -500,21 +500,24 @@ impl EditorApp {
         Some(path)
     }
     pub(super) fn import_enum_menu(&mut self, ui: &mut egui::Ui, label: &str) {
-        ui.menu_button(label, |ui| {
-            for (label, key, extension) in [
-                ("Text file", "ImportEnumText", "txt"),
-                ("JSON", "ImportEnumText", "json"),
-                ("Haxe source code", "ImportEnumHaxe", "hx"),
-                ("CastleDB", "ImportEnumCdb", "cdb"),
-            ] {
-                if source_controls::button(ui, label).clicked() {
-                    if let Some(path) = self.pick_project_file(key, &[extension]) {
-                        self.begin_enum_sync(ui.ctx(), path);
+        let button = ui.button(label);
+        egui::Popup::menu(&button)
+            .frame(source_controls::context_menu_frame(ui.style()))
+            .show(|ui| {
+                for (label, key, extension) in [
+                    ("Text file", "ImportEnumText", "txt"),
+                    ("JSON", "ImportEnumText", "json"),
+                    ("Haxe source code", "ImportEnumHaxe", "hx"),
+                    ("CastleDB", "ImportEnumCdb", "cdb"),
+                ] {
+                    if source_controls::context_menu_item(ui, label).clicked() {
+                        if let Some(path) = self.pick_project_file(key, &[extension]) {
+                            self.begin_enum_sync(ui.ctx(), path);
+                        }
+                        ui.close();
                     }
-                    ui.close();
                 }
-            }
-        });
+            });
     }
 }
 

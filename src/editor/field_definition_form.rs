@@ -274,7 +274,7 @@ fn field_display_select<'a>(
         egui::Layout::left_to_right(egui::Align::Center),
         |ui| {
             ui.set_max_width(width);
-            egui::ComboBox::from_id_salt(id)
+            source_controls::form_combo(id)
                 .selected_text(locale::tr(ui, label))
                 .width(width)
                 .truncate()
@@ -469,7 +469,7 @@ impl EditorApp {
                 "textLanguageMode",
                 FIELD_LABEL_WIDTH,
                 |ui| {
-                    egui::ComboBox::from_id_salt(("field-language", uid))
+                    source_controls::form_combo(("field-language", uid))
                         .selected_text(locale::tr(ui, language.as_deref().unwrap_or("Plain text")))
                         .show_ui(ui, |ui| {
                             ui.selectable_value(&mut language, None, locale::tr(ui, "Plain text"));

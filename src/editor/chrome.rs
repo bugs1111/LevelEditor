@@ -1251,35 +1251,42 @@ impl EditorApp {
                         self.toggle_toolbar_panel(panel);
                     }
                     if panel == Panel::Project {
-                        response.context_menu(|ui| {
-                            if ui.button(locale::tr(ui, "New project")).clicked() {
-                                self.request(ctx, Action::New);
-                                ui.close();
-                            }
-                            if ui.button(locale::tr(ui, "Open…")).clicked() {
-                                self.request(ctx, Action::Browse);
-                                ui.close();
-                            }
-                            if ui.button(locale::tr(ui, "Save")).clicked() {
-                                self.save(false);
-                                ui.close();
-                            }
-                            if ui.button(locale::tr(ui, "Save as…")).clicked() {
-                                self.save(true);
-                                ui.close();
-                            }
-                            if ui.button(locale::tr(ui, "Export…")).clicked() {
-                                self.show_panel(Some(Panel::Export));
-                                ui.close();
-                            }
-                        });
+                        egui::Popup::context_menu(&response)
+                            .frame(panels::source_controls::context_menu_frame(ui.style()))
+                            .show(|ui| {
+                                use panels::source_controls::context_menu_item as item;
+                                if item(ui, "New project").clicked() {
+                                    self.request(ctx, Action::New);
+                                    ui.close();
+                                }
+                                if item(ui, "Open…").clicked() {
+                                    self.request(ctx, Action::Browse);
+                                    ui.close();
+                                }
+                                if item(ui, "Save").clicked() {
+                                    self.save(false);
+                                    ui.close();
+                                }
+                                if item(ui, "Save as…").clicked() {
+                                    self.save(true);
+                                    ui.close();
+                                }
+                                if item(ui, "Export…").clicked() {
+                                    self.show_panel(Some(Panel::Export));
+                                    ui.close();
+                                }
+                            });
                     } else if panel == Panel::World {
-                        response.context_menu(|ui| {
-                            if ui.button(locale::tr(ui, "World settings")).clicked() {
-                                self.show_panel(Some(Panel::World));
-                                ui.close();
-                            }
-                        });
+                        egui::Popup::context_menu(&response)
+                            .frame(panels::source_controls::context_menu_frame(ui.style()))
+                            .show(|ui| {
+                                if panels::source_controls::context_menu_item(ui, "World settings")
+                                    .clicked()
+                                {
+                                    self.show_panel(Some(Panel::World));
+                                    ui.close();
+                                }
+                            });
                     }
                 }
                 if toolbar_button(
@@ -2824,6 +2831,54 @@ mod tests {
         app_click(&mut app, &ctx, egui::pos2(45., 18.));
         assert!(!fades_at(&app_frame(&mut app, &ctx, vec![]), layer_button));
         assert!(app.panel.is_none());
+    }
+
+    #[test]
+    fn project_toolbar_context_menu_draws_the_shared_frame_and_opens_export() {
+        let ctx = egui::Context::default();
+        theme::configure(&ctx);
+        ctx.style_mut(|style| style.animation_time = 0.);
+        let mut app = EditorApp::empty();
+        app.set_project(Project::new());
+        app_frame(&mut app, &ctx, vec![]);
+        let pos = egui::pos2(15., 18.);
+        for pressed in [true, false] {
+            app_frame(
+                &mut app,
+                &ctx,
+                vec![
+                    egui::Event::PointerMoved(pos),
+                    egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Secondary,
+                        pressed,
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                ],
+            );
+        }
+        let output = app_frame(&mut app, &ctx, vec![]);
+        let export = output
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) if text.galley.text() == "Export…" => {
+                    Some(text.pos + text.galley.size() * 0.5)
+                }
+                _ => None,
+            })
+            .expect("project toolbar context menu is visible");
+        let shared_frame = |shape: &egui::Shape| {
+            matches!(shape, egui::Shape::Rect(rect)
+                if rect.rect.contains(export) && rect.fill == theme::DARK
+                    && rect.stroke.color == theme::LIGHT)
+        };
+        assert!(output.shapes.iter().any(|shape| match &shape.shape {
+            egui::Shape::Vec(shapes) => shapes.iter().any(shared_frame),
+            shape => shared_frame(shape),
+        }));
+        app_click(&mut app, &ctx, export);
+        assert_eq!(app.panel, Some(Panel::Export));
     }
 
     #[test]

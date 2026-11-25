@@ -1,6 +1,8 @@
 //! Application settings, following the upstream EditAppSettings dialog.
 use super::*;
-use source_controls::{form_heading as heading, form_row as row};
+use source_controls::{
+    FormSelectAppearance, form_heading as heading, form_row as row, form_select,
+};
 
 const SCALES: [f64; 18] = [
     0.5, 0.6, 0.7, 0.8, 0.9, 1., 1.1, 1.2, 1.3, 1.4, 1.5, 2., 2.5, 3., 3.5, 4., 4.5, 5.,
@@ -44,26 +46,22 @@ fn choice(
     options: &[(&str, &str)],
 ) {
     let current = text(values, key, options[0].0);
-    let mut selected = current.to_owned();
-    egui::ComboBox::from_id_salt(key)
-        .width(ui.available_width())
-        .truncate()
-        .selected_text(
-            options
-                .iter()
-                .find(|(value, _)| *value == current)
-                .map_or_else(
-                    || locale::tr(ui, options[0].1),
-                    |(_, label)| locale::tr(ui, label),
-                ),
-        )
-        .show_ui(ui, |ui| {
-            for (value, label) in options {
-                ui.selectable_value(&mut selected, (*value).into(), locale::tr(ui, label));
-            }
-        });
-    if selected != current {
-        patch[key] = json!(selected);
+    let selected = options.iter().position(|(value, _)| *value == current);
+    let rows: Vec<_> = options
+        .iter()
+        .map(|(_, label)| (locale::tr(ui, label), None))
+        .collect();
+    if let Some(index) = form_select(
+        ui,
+        key,
+        30.,
+        &rows,
+        selected,
+        rows[selected.unwrap_or(0)].0,
+        FormSelectAppearance::Normal,
+    ) && options[index].0 != current
+    {
+        patch[key] = json!(options[index].0);
     }
 }
 fn normalize_preset(values: &mut Value, key: &str, options: &[f64], default: f64) -> f64 {
@@ -94,18 +92,19 @@ fn number_choice(
         }
         text
     };
-    let mut selected = current;
-    egui::ComboBox::from_id_salt(key)
-        .width(ui.available_width())
-        .truncate()
-        .selected_text(choice_label(current))
-        .show_ui(ui, |ui| {
-            for value in options {
-                ui.selectable_value(&mut selected, *value, choice_label(*value));
-            }
-        });
-    if selected != current {
-        patch[key] = json!(selected);
+    let labels: Vec<_> = options.iter().map(|&value| choice_label(value)).collect();
+    let rows: Vec<_> = labels.iter().map(|label| (label.as_str(), None)).collect();
+    if let Some(index) = form_select(
+        ui,
+        key,
+        30.,
+        &rows,
+        options.iter().position(|&value| value == current),
+        &choice_label(current),
+        FormSelectAppearance::Normal,
+    ) && options[index] != current
+    {
+        patch[key] = json!(options[index]);
     }
 }
 fn percent_label(value: f64) -> String {
@@ -338,7 +337,7 @@ impl EditorApp {
                     let response = ui.scope(|ui| checkbox(ui,&values,&mut patch,"autoInstallUpdates")).response;
                     response.on_hover_text(locale::tr(ui, "Automatically download updates on supported native platforms. Installation still requires confirmation."));
                     ui.label(locale::tr(ui, "(Recommended)"));
-                    if ui.small_button(locale::tr(ui, "Check for updates")).clicked() { self.open_updater(ui.ctx()); }
+                    if source_controls::small_button(ui, "Check for updates").clicked() { self.open_updater(ui.ctx()); }
                 });
                 row(ui,"Log file","Log file",right_width, |ui| {
                     if let Some(path) = app_log::path(self.settings.path.as_deref()) {

@@ -979,7 +979,53 @@ pub(in crate::app) fn context_menu_frame(style: &egui::Style) -> egui::Frame {
         .inner_margin(0.)
 }
 
+pub(in crate::app) fn context_menu_item(ui: &mut egui::Ui, label: &str) -> egui::Response {
+    ui.spacing_mut().item_spacing.y = 0.;
+    ui.scope(|ui| {
+        ui.spacing_mut().button_padding = egui::vec2(20., 0.);
+        let visuals = ui.visuals_mut();
+        visuals.override_text_color = None;
+        let widgets = &mut visuals.widgets;
+        for (state, fill, text) in [
+            (&mut widgets.inactive, Color32::TRANSPARENT, theme::ACCENT),
+            (&mut widgets.hovered, theme::ACCENT, theme::DARK),
+            (&mut widgets.active, theme::ACCENT, theme::DARK),
+        ] {
+            state.weak_bg_fill = fill;
+            state.fg_stroke.color = text;
+            state.expansion = 0.;
+        }
+        ui.add(
+            egui::Button::new(RichText::new(locale::tr(ui, label)).size(13.333))
+                .min_size(egui::vec2(0., 31.))
+                .stroke(Stroke::NONE)
+                .corner_radius(0.),
+        )
+        .on_hover_cursor(egui::CursorIcon::PointingHand)
+    })
+    .inner
+}
+
 pub(super) const FORM_OPTION_HIGHLIGHT: Color32 = Color32::from_rgb(30, 144, 255);
+
+pub(in crate::app) fn form_combo(salt: impl std::hash::Hash) -> egui::ComboBox {
+    egui::ComboBox::from_id_salt(salt).popup_style(egui::style::StyleModifier::new(|style| {
+        style.spacing.menu_margin = egui::Margin::ZERO;
+        let visuals = &mut style.visuals;
+        visuals.window_fill = theme::LIGHT;
+        visuals.window_stroke = Stroke::new(1_f32, Color32::from_gray(118));
+        visuals.menu_corner_radius = 2.into();
+        visuals.popup_shadow = egui::epaint::Shadow::NONE;
+        visuals.override_text_color = None;
+        visuals.selection.bg_fill = FORM_OPTION_HIGHLIGHT;
+        visuals.selection.stroke.color = Color32::WHITE;
+        visuals.widgets.inactive.fg_stroke.color = theme::ACCENT;
+        for state in [&mut visuals.widgets.hovered, &mut visuals.widgets.active] {
+            state.weak_bg_fill = FORM_OPTION_HIGHLIGHT;
+            state.fg_stroke.color = Color32::WHITE;
+        }
+    }))
+}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(in crate::app) enum FormSelectAppearance {
@@ -1116,7 +1162,7 @@ pub(in crate::app) fn form_select(
     let anchor = ui.next_widget_position().y;
     let available = (anchor - screen.top()).max(screen.bottom() - anchor - height) - 2.;
     let popup_height = (rows as f32 * ROW_HEIGHT).clamp(ROW_HEIGHT, available.max(ROW_HEIGHT));
-    egui::ComboBox::from_id_salt(salt)
+    form_combo(salt)
         .width(ui.available_width())
         .height(popup_height)
         .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
@@ -1133,13 +1179,6 @@ pub(in crate::app) fn form_select(
             ));
         })
         .selected_text(RichText::new(name).font(font.clone()))
-        .popup_style(egui::style::StyleModifier::new(|style| {
-            style.spacing.menu_margin = egui::Margin::ZERO;
-            style.visuals.window_fill = theme::LIGHT;
-            style.visuals.window_stroke = Stroke::new(1_f32, Color32::from_gray(118));
-            style.visuals.menu_corner_radius = 2.into();
-            style.visuals.popup_shadow = egui::epaint::Shadow::NONE;
-        }))
         .show_ui(ui, |ui| {
             ui.spacing_mut().item_spacing.y = 0.;
             let start = ui.next_widget_position();
@@ -1620,6 +1659,35 @@ pub(in crate::app) fn add_sized_button(
     finish(ui, index, &response);
     response
 }
+
+pub(in crate::app) fn underlined_link(label: egui::Label) -> impl egui::Widget {
+    move |ui: &mut egui::Ui| {
+        let (pos, galley, response) = label.sense(Sense::click()).layout_in_ui(ui);
+        response.widget_info(|| {
+            egui::WidgetInfo::labeled(egui::WidgetType::Link, ui.is_enabled(), galley.text())
+        });
+        if ui.is_rect_visible(response.rect) {
+            let underline = Stroke::new(1_f32, theme::ACCENT);
+            if ui.style().interaction.selectable_labels {
+                egui::text_selection::LabelSelectionState::label_text_selection(
+                    ui,
+                    &response,
+                    pos,
+                    galley,
+                    theme::ACCENT,
+                    underline,
+                );
+            } else {
+                ui.painter().add(
+                    egui::epaint::TextShape::new(pos, galley, theme::ACCENT)
+                        .with_underline(underline),
+                );
+            }
+        }
+        response.on_hover_cursor(egui::CursorIcon::PointingHand)
+    }
+}
+
 pub(in crate::app) fn form_help_link(ui: &mut egui::Ui, width: f32, label: &str, url: &str) {
     ui.scope(|ui| {
         let normal = Color32::from_rgb(73, 141, 85);

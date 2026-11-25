@@ -716,6 +716,7 @@ impl EditorApp {
                     .on_hover_text(locale::tr(ui, "All updates"));
                 egui::Popup::menu(&others)
                     .align(egui::RectAlign::BOTTOM_END)
+                    .frame(panels::source_controls::context_menu_frame(ui.style()).inner_margin(6))
                     .show(|ui| {
                         ui.label(RichText::new(locale::tr(ui, "LDtk major updates")).strong());
                         for release in entries

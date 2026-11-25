@@ -452,32 +452,34 @@ impl EditorApp {
                         )
                     })
                     .inner;
-                egui::Popup::menu(&create).show(|ui| {
-                    if ui
-                        .button(locale::tr(ui, "Use assistant (recommended)"))
-                        .clicked()
-                    {
-                        self.begin_rule_wizard(ui.ctx(), view.uid, None);
-                        ui.close();
-                    }
-                    if ui.button(locale::tr(ui, "Create an empty group")).clicked() {
-                        if let Some(gid) = self.edit("Rule group created", |p| {
-                            p.edit_document(|p| {
-                                let group = p.add_auto_rule_group(view.uid, "New group")?;
-                                p.reorder_auto_rule_group(view.uid, group, 0)?;
-                                Ok(group)
-                            })
-                        }) {
-                            self.open_rule_groups.insert((view.uid, gid));
-                            ui.data_mut(|data| {
-                                data.insert_temp(rename_group_id(), (view.uid, gid))
-                            });
-                            self.rule_group_uid = Some(gid);
-                            self.rule_uid = None;
+                egui::Popup::menu(&create)
+                    .frame(rule_popup_frame(ui))
+                    .show(|ui| {
+                        if source_controls::context_menu_item(ui, "Use assistant (recommended)")
+                            .clicked()
+                        {
+                            self.begin_rule_wizard(ui.ctx(), view.uid, None);
+                            ui.close();
                         }
-                        ui.close();
-                    }
-                });
+                        if source_controls::context_menu_item(ui, "Create an empty group").clicked()
+                        {
+                            if let Some(gid) = self.edit("Rule group created", |p| {
+                                p.edit_document(|p| {
+                                    let group = p.add_auto_rule_group(view.uid, "New group")?;
+                                    p.reorder_auto_rule_group(view.uid, group, 0)?;
+                                    Ok(group)
+                                })
+                            }) {
+                                self.open_rule_groups.insert((view.uid, gid));
+                                ui.data_mut(|data| {
+                                    data.insert_temp(rename_group_id(), (view.uid, gid))
+                                });
+                                self.rule_group_uid = Some(gid);
+                                self.rule_uid = None;
+                            }
+                            ui.close();
+                        }
+                    });
                 if compact_button(
                     ui,
                     RichText::new(locale::tr(ui, "RANDOMIZE"))
@@ -562,7 +564,7 @@ impl EditorApp {
                 let selected = current
                     .map(name)
                     .unwrap_or_else(|| locale::tr(ui, "-- Select a tileset --").into());
-                let picker = egui::ComboBox::from_id_salt(("rule-instance-tileset", view.uid))
+                let picker = source_controls::form_combo(("rule-instance-tileset", view.uid))
                     .width(width - 2.)
                     .selected_text(RichText::new(selected).size(13.333).color(Color32::WHITE))
                     .icon(|ui, rect, _, _| {
@@ -920,16 +922,13 @@ impl EditorApp {
                     if compact_button(ui, edit, [width, 35.], SOURCE_ORANGE).clicked() {
                         self.begin_rule_wizard(ui.ctx(), view.uid, Some(gid));
                     }
-                    let advanced = RichText::new(locale::tr(ui, "Switch to advanced mode"))
-                        .size(10.667)
-                        .color(theme::ACCENT)
-                        .underline();
+                    let advanced =
+                        RichText::new(locale::tr(ui, "Switch to advanced mode")).size(10.667);
                     if ui
                         .add_sized(
                             [width, 21.],
-                            egui::Label::new(advanced).sense(Sense::click()),
+                            source_controls::underlined_link(egui::Label::new(advanced)),
                         )
-                        .on_hover_cursor(egui::CursorIcon::PointingHand)
                         .clicked()
                     {
                         self.set_rule_options(ui.ctx(), view.uid, gid, None, RuleOptions::Advanced);
@@ -1399,7 +1398,9 @@ impl EditorApp {
                         self.clipboard_focus(ui.ctx(), target.clone());
                         self.begin_rule_edit(view.uid, gid, rid);
                     }
-                    response.context_menu(|ui| self.clipboard_menu(ui, target.clone()));
+                    egui::Popup::context_menu(&response)
+                        .frame(rule_popup_frame(ui))
+                        .show(|ui| self.clipboard_menu(ui, target.clone()));
                     ui.add_space(10.);
                     ui.vertical(|ui| {
                         ui.spacing_mut().item_spacing = egui::vec2(2., 2.);

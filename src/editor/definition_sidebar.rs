@@ -106,19 +106,20 @@ impl EditorApp {
                         ui.spacing_mut().button_padding = egui::vec2(6., 10.);
                         ui.visuals_mut().widgets.inactive.weak_bg_fill = SOURCE_ORANGE;
                         ui.visuals_mut().widgets.inactive.bg_fill = SOURCE_ORANGE;
-                        ui.menu_button(
-                            RichText::new(locale::tr(ui, "PRESETS")).color(Color32::WHITE),
-                            |ui| {
-                                if source_controls::button(ui, "Rectangle region").clicked() {
-                                    self.source_create_definition("entities", Some(false));
-                                    ui.close();
+                        let button = ui
+                            .button(RichText::new(locale::tr(ui, "PRESETS")).color(Color32::WHITE));
+                        egui::Popup::menu(&button)
+                            .frame(source_controls::context_menu_frame(ui.style()))
+                            .show(|ui| {
+                                for (label, circle) in
+                                    [("Rectangle region", false), ("Circle region", true)]
+                                {
+                                    if source_controls::context_menu_item(ui, label).clicked() {
+                                        self.source_create_definition("entities", Some(circle));
+                                        ui.close();
+                                    }
                                 }
-                                if source_controls::button(ui, "Circle region").clicked() {
-                                    self.source_create_definition("entities", Some(true));
-                                    ui.close();
-                                }
-                            },
-                        );
+                            });
                     });
                 } else if panel == Panel::Enums {
                     ui.scope(|ui| {

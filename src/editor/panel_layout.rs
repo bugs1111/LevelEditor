@@ -195,7 +195,10 @@ fn source_menu(ui: &mut egui::Ui, body: impl FnOnce(&mut egui::Ui)) {
         ui.visuals_mut().widgets.inactive.bg_fill = Color32::TRANSPARENT;
         ui.visuals_mut().widgets.inactive.bg_stroke =
             Stroke::new(1_f32, Color32::from_black_alpha(45));
-        let response = ui.menu_button(" ", body).response;
+        let response = ui.button(" ");
+        egui::Popup::menu(&response)
+            .frame(source_controls::context_menu_frame(ui.style()))
+            .show(body);
         for y in [-4., 0., 4.] {
             ui.painter()
                 .circle_filled(response.rect.center() + egui::vec2(0., y), 1., theme::TEXT);

@@ -339,7 +339,7 @@ pub(super) fn property_value(
         Widget::Choice(choices) => {
             let mut v = current.as_str().unwrap_or(choices[0]).to_owned();
             let old = v.clone();
-            egui::ComboBox::from_id_salt(ui.id().with(key))
+            panels::source_controls::form_combo(ui.id().with(key))
                 .selected_text(locale::tr(ui, &v))
                 .show_ui(ui, |ui| {
                     for option in *choices {
@@ -836,7 +836,7 @@ fn scalar_editor_inner(
                 .find(|(iid, _, _, _, _)| *iid == selected)
                 .map(|(_, entity, _, level, _)| label_for(entity, level))
                 .unwrap_or_else(|| "None".to_owned());
-            egui::ComboBox::from_id_salt(ui.id().with("ref"))
+            panels::source_controls::form_combo(ui.id().with("ref"))
                 .selected_text(label)
                 .show_ui(ui, |ui| {
                     let count = options.len() + 1;
@@ -886,7 +886,7 @@ fn scalar_editor_inner(
                 .or_else(|| definition["tilesetUid"].as_i64())
                 .unwrap_or(-1);
             let old_uid = uid;
-            egui::ComboBox::from_id_salt(ui.id().with("tile-atlas"))
+            panels::source_controls::form_combo(ui.id().with("tile-atlas"))
                 .selected_text(
                     project
                         .tileset(uid)

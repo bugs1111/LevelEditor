@@ -95,37 +95,15 @@ fn group_actions(
     reset: &mut bool,
 ) {
     ui.set_min_width(160.);
-    if ui
-        .button(
-            RichText::new(locale::tr(ui, "DELETE GROUP"))
-                .size(13.333)
-                .color(theme::ACCENT),
-        )
-        .clicked()
-    {
+    if source_controls::context_menu_item(ui, "DELETE GROUP").clicked() {
         *remove = true;
         ui.close();
     }
-    if ui
-        .button(
-            RichText::new(locale::tr(ui, "SET GROUP COLOR"))
-                .size(13.333)
-                .color(theme::ACCENT),
-        )
-        .clicked()
-    {
+    if source_controls::context_menu_item(ui, "SET GROUP COLOR").clicked() {
         *color = true;
         ui.close();
     }
-    if colored
-        && ui
-            .button(
-                RichText::new(locale::tr(ui, "REMOVE GROUP COLOR"))
-                    .size(13.333)
-                    .color(theme::ACCENT),
-            )
-            .clicked()
-    {
+    if colored && source_controls::context_menu_item(ui, "REMOVE GROUP COLOR").clicked() {
         *reset = true;
         ui.close();
     }
@@ -508,9 +486,9 @@ impl EditorApp {
             if response.clicked() {
                 ui.data_mut(|data| data.insert_temp(name_state, true));
             }
-            response.context_menu(|ui| {
-                group_actions(ui, colored, &mut remove, &mut set_color, &mut reset)
-            });
+            egui::Popup::context_menu(&response)
+                .frame(source_controls::context_menu_frame(ui.style()))
+                .show(|ui| group_actions(ui, colored, &mut remove, &mut set_color, &mut reset));
         }
         let menu = source_controls::add_sized_button(
             ui,
@@ -520,9 +498,11 @@ impl EditorApp {
         .on_hover_text(locale::tr(ui, "Group options"));
         egui::Popup::menu(&menu)
             .align(egui::RectAlign::BOTTOM_END)
+            .frame(source_controls::context_menu_frame(ui.style()))
             .show(|ui| group_actions(ui, colored, &mut remove, &mut set_color, &mut reset));
         egui::Popup::context_menu(&menu)
             .id(menu.id.with("context"))
+            .frame(source_controls::context_menu_frame(ui.style()))
             .show(|ui| group_actions(ui, colored, &mut remove, &mut set_color, &mut reset));
         if reset {
             group["color"] = Value::Null;

@@ -750,7 +750,7 @@ impl EditorApp {
             let old = def["biomeFieldUid"].as_i64();
             let mut selected = old;
             let response = ui.add_enabled_ui(!biome_fields.is_empty(), |ui| {
-                egui::ComboBox::from_id_salt(("auto-layer-biome", uid))
+                source_controls::form_combo(("auto-layer-biome", uid))
                     .width(ui.available_width())
                     .selected_text(
                         biome_fields

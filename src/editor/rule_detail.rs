@@ -679,7 +679,7 @@ impl EditorApp {
                             ui.spacing_mut().button_padding.x = 5.;
                             ui.spacing_mut().icon_width = 9.;
                             ui.spacing_mut().icon_spacing = 4.;
-                            let mode = egui::ComboBox::from_id_salt("rule-output-mode")
+                            let mode = source_controls::form_combo("rule-output-mode")
                                 .width(117.)
                                 .truncate()
                                 .selected_text(
@@ -939,7 +939,7 @@ impl EditorApp {
                         egui::vec2(width, 29.),
                         egui::Layout::left_to_right(egui::Align::Center),
                         |ui| {
-                            let menu = egui::ComboBox::from_id_salt("rule-outside")
+                            let menu = source_controls::form_combo("rule-outside")
                                 .width(width)
                                 .truncate()
                                 .selected_text(RichText::new(label(before)).size(13.333))
@@ -1416,9 +1416,10 @@ impl EditorApp {
                             numeric_input = true;
                         }
                         ui.add_space(24.);
+                        let reset = egui::Label::new(locale::tr(ui, "Reset"));
                         if ui.add_sized(
                             [132., 50.],
-                            egui::Link::new(RichText::new(locale::tr(ui, "Reset")).color(theme::ACCENT).underline()),
+                            source_controls::underlined_link(reset),
                         ).clicked() {
                             values = [1, 1, 0, 0];
                             checker = "None";
@@ -1471,7 +1472,7 @@ impl EditorApp {
                         ];
                         let label = choices.iter().find(|(value, _, _)| *value == checker)
                             .map_or("Off", |(_, label, _)| *label);
-                        egui::ComboBox::from_id_salt("checker").width(244.)
+                        source_controls::form_combo("checker").width(244.)
                             .selected_text(RichText::new(locale::tr(ui, label)).size(13.333))
                             .show_ui(ui, |ui| {
                                 for (value, label, enabled) in choices {

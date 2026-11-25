@@ -833,19 +833,15 @@ impl EditorApp {
                                                 response
                                                     .clone()
                                                     .on_hover_text(text(def, "doc", ""));
-                                                response.context_menu(|ui| {
-                                                    if ui
-                                                        .button(locale::tr(
-                                                            ui,
-                                                            "Edit entity definition",
-                                                        ))
-                                                        .clicked()
-                                                    {
-                                                        self.definition_uid = Some(uid);
-                                                        open_definition = Some(uid);
-                                                        ui.close();
-                                                    }
-                                                });
+                                                egui::Popup::context_menu(&response)
+                                                    .frame(panels::source_controls::context_menu_frame(ui.style()))
+                                                    .show(|ui| {
+                                                        if panels::source_controls::context_menu_item(ui, "Edit entity definition").clicked() {
+                                                            self.definition_uid = Some(uid);
+                                                            open_definition = Some(uid);
+                                                            ui.close();
+                                                        }
+                                                    });
                                             }
                                         });
                                     };

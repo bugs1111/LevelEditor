@@ -94,7 +94,7 @@ fn background_position_controls(
             egui::vec2(width, 42.),
             egui::Layout::left_to_right(egui::Align::Center),
             |ui| {
-                egui::ComboBox::from_id_salt("bgPos")
+                source_controls::form_combo("bgPos")
                     .width(width)
                     .truncate()
                     .selected_text(RichText::new(label).size(12.))
@@ -111,14 +111,10 @@ fn background_position_controls(
             if !show_advanced && standard(pivot) {
                 ui.add_space(4.);
                 let help = locale::tr(ui, "Show advanced options");
-                let label = RichText::new(help)
-                    .size(12.)
-                    .color(theme::ACCENT)
-                    .underline();
+                let label = egui::Label::new(RichText::new(help).size(12.)).truncate();
                 show_advanced = ui
-                    .add(egui::Label::new(label).truncate().sense(Sense::click()))
+                    .add(source_controls::underlined_link(label))
                     .on_hover_text(help)
-                    .on_hover_cursor(egui::CursorIcon::PointingHand)
                     .clicked();
             }
         }
@@ -951,18 +947,10 @@ impl EditorApp {
                                     .color(Color32::from_gray(153)),
                             );
                         } else {
-                            let reset = ui
-                                .scope(|ui| {
-                                    ui.visuals_mut().hyperlink_color = theme::ACCENT;
-                                    ui.link(
-                                        RichText::new(locale::tr(ui, "Use default"))
-                                            .size(13.333)
-                                            .color(theme::ACCENT)
-                                            .underline(),
-                                    )
-                                })
-                                .inner;
-                            if reset.clicked() {
+                            let label = egui::Label::new(
+                                RichText::new(locale::tr(ui, "Use default")).size(13.333),
+                            );
+                            if ui.add(source_controls::underlined_link(label)).clicked() {
                                 patch["bgColor"] = Value::Null;
                             }
                         }
@@ -1549,13 +1537,13 @@ mod tests {
                 .expect("source reset link");
             assert_eq!(link.pos.x, swatch.right() + 8.);
             assert_eq!(link.fallback_color, theme::ACCENT);
+            assert_eq!(link.underline, Stroke::new(1_f32, theme::ACCENT));
             assert!(
                 link.galley
                     .job
                     .sections
                     .iter()
-                    .any(|part| part.format.color == theme::ACCENT
-                        && part.format.underline.width > 0.)
+                    .all(|part| part.format.underline == Stroke::NONE)
             );
             let output = click(&mut app, &ctx, panel, "Use default");
             assert!(app.project.as_ref().unwrap().level(key).unwrap()["bgColor"].is_null());

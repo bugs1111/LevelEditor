@@ -35,37 +35,13 @@ fn project_checkbox(ui: &mut egui::Ui, values: &Value, patch: &mut Value, key: &
 }
 
 fn project_help_link(ui: &mut egui::Ui, label: &str, url: &str) -> egui::Response {
-    let text = RichText::new(locale::tr(ui, label)).color(theme::ACCENT);
-    let (pos, galley, response) = egui::Label::new(text)
-        .wrap()
-        .sense(Sense::click())
-        .layout_in_ui(ui);
-    response.widget_info(|| {
-        egui::WidgetInfo::labeled(egui::WidgetType::Link, ui.is_enabled(), galley.text())
-    });
-    if ui.is_rect_visible(response.rect) {
-        let underline = Stroke::new(1_f32, theme::ACCENT);
-        if ui.style().interaction.selectable_labels {
-            egui::text_selection::LabelSelectionState::label_text_selection(
-                ui,
-                &response,
-                pos,
-                galley,
-                theme::ACCENT,
-                underline,
-            );
-        } else {
-            ui.painter().add(
-                egui::epaint::TextShape::new(pos, galley, theme::ACCENT).with_underline(underline),
-            );
-        }
-    }
+    let label = egui::Label::new(locale::tr(ui, label)).wrap();
+    let response = ui.add(source_controls::underlined_link(label));
     if response.clicked_with_open_in_background() {
         ui.ctx().open_url(egui::OpenUrl::new_tab(url));
     } else if response.clicked() {
         ui.ctx().open_url(egui::OpenUrl::same_tab(url));
     }
-    let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
     if ui.style().url_in_tooltip {
         response.on_hover_text(url)
     } else {
@@ -287,7 +263,7 @@ impl EditorApp {
                 return;
             }
             source_menu(ui, |ui| {
-                if source_controls::button(ui, "Browse backups…").clicked() {
+                if source_controls::context_menu_item(ui, "Browse backups…").clicked() {
                     match self.project.as_ref().unwrap().list_backups() {
                         Ok(backups) => {
                             if let Some(original) = &path {
@@ -310,7 +286,7 @@ impl EditorApp {
                     }
                     ui.close();
                 }
-                if source_controls::button(ui, "Export…").clicked() {
+                if source_controls::context_menu_item(ui, "Export…").clicked() {
                     self.show_panel(Some(Panel::Export));
                     ui.close();
                 }

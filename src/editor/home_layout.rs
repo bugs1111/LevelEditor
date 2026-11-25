@@ -326,10 +326,17 @@ impl EditorApp {
             if button(ui,flexible,egui::include_image!("../../assets/icons/new.svg"),"New",Color32::from_rgb(227,77,0)).clicked() { action=Some(Action::New); }
             if button(ui,flexible,egui::include_image!("../../assets/icons/open.svg"),"Load",Color32::from_rgb(227,77,0)).clicked() { action=Some(Action::Browse); }
             let import=button(ui,import_width,egui::include_image!("../../assets/icons/open.svg"),"Import",theme::LIGHT);
-            egui::Popup::menu(&import).show(|ui| {
-                ui.weak(locale::tr(ui, "Import a project from another app"));
-                if ui.button(locale::tr(ui, "Ogmo 3 project")).clicked() { action=Some(Action::BrowseOgmo);ui.close(); }
-            });
+            egui::Popup::menu(&import)
+                .frame(panels::source_controls::context_menu_frame(ui.style()))
+                .show(|ui| {
+                    egui::Frame::new().inner_margin(8).show(ui, |ui| {
+                        ui.weak(locale::tr(ui, "Import a project from another app"));
+                    });
+                    if panels::source_controls::context_menu_item(ui, "Ogmo 3 project").clicked() {
+                        action = Some(Action::BrowseOgmo);
+                        ui.close();
+                    }
+                });
             if button(ui,41.,egui::include_image!("../../assets/icons/settings.svg"),"",theme::LIGHT).on_hover_text(locale::tr(ui, "Application settings")).clicked() { self.show_panel(Some(Panel::Settings)); }
             if fullscreen && button(ui,41.,egui::include_image!("../../assets/icons/exit.svg"),"",theme::DARK).on_hover_text(locale::tr(ui, "Close app")).clicked() { action=Some(Action::Quit); }
         });

@@ -497,14 +497,8 @@ impl EditorApp {
                 }
                 ui.add_space(2.);
                 if !advanced {
-                    if ui
-                        .link(
-                            RichText::new(locale::tr(ui, "Show advanced options"))
-                                .color(theme::ACCENT)
-                                .underline(),
-                        )
-                        .clicked()
-                    {
+                    let label = egui::Label::new(locale::tr(ui, "Show advanced options"));
+                    if ui.add(source_controls::underlined_link(label)).clicked() {
                         ui.data_mut(|data| data.insert_temp(advanced_id, true));
                     }
                     return;

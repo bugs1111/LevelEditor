@@ -249,6 +249,7 @@ fn wizard_value(ui: &mut egui::Ui, values: &[Value], value: &mut i64, outer: boo
     let old = *value;
     egui::Popup::menu(&button.on_hover_cursor(egui::CursorIcon::PointingHand))
         .width(rect.width())
+        .frame(source_controls::context_menu_frame(ui.style()).inner_margin(6))
         .show(|ui| {
             if outer && ui.selectable_value(value, 0, empty).clicked() {
                 ui.close();
@@ -863,16 +864,18 @@ fn remap_value_row(ui: &mut egui::Ui, values: &[Value], old: i64, new: &mut i64,
             [width * 0.56 - 18., 34.],
             egui::Button::new(label).fill(new_color),
         );
-        egui::Popup::menu(&button).show(|ui| {
-            for entry in values {
-                if let Some(value) = entry["value"].as_i64() {
-                    let (label, _) = describe(value);
-                    if ui.selectable_value(new, value, label).clicked() {
-                        ui.close();
+        egui::Popup::menu(&button)
+            .frame(source_controls::context_menu_frame(ui.style()).inner_margin(6))
+            .show(|ui| {
+                for entry in values {
+                    if let Some(value) = entry["value"].as_i64() {
+                        let (label, _) = describe(value);
+                        if ui.selectable_value(new, value, label).clicked() {
+                            ui.close();
+                        }
                     }
                 }
-            }
-        });
+            });
     });
 }
 
