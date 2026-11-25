@@ -2,6 +2,8 @@ use super::*;
 use std::io::Read;
 use std::process::{Command, Stdio};
 
+const EMPTY_COMMAND: &str = "Command is empty";
+
 pub(super) enum CommandEvent {
     Output(String, bool),
     Done(Option<i32>),
@@ -11,7 +13,7 @@ pub(super) enum CommandEvent {
 pub(super) fn process(command: &str, cwd: Option<&std::path::Path>) -> Result<Command, String> {
     let args = command_args::parse(command);
     let Some(name) = args.first().filter(|s| !s.is_empty()) else {
-        return Err("Command is empty".into());
+        return Err(EMPTY_COMMAND.into());
     };
     let mut child = Command::new(name);
     child.args(&args[1..]);
@@ -168,11 +170,14 @@ impl EditorApp {
                 CommandEvent::Done(code) => {
                     self.command_result = None;
                     self.command_cancel = None;
-                    self.status = format!(
-                        "Command terminated with {}",
-                        code.map(|c| c.to_string())
-                            .unwrap_or_else(|| "signal".into())
-                    );
+                    self.status = match code {
+                        Some(code) => locale::format_ctx(
+                            ctx,
+                            "Command terminated with {code}",
+                            &[("code", &code.to_string())],
+                        ),
+                        None => locale::tr_ctx(ctx, "Command terminated with signal").into(),
+                    };
                     self.command_output.push_back((self.status.clone(), false));
                     if code == Some(0) && !self.command_cancelled {
                         self.command_open = false;
@@ -181,7 +186,13 @@ impl EditorApp {
                 CommandEvent::Error(error) => {
                     self.command_result = None;
                     self.command_cancel = None;
-                    self.status = format!("Command failed: {error}");
+                    let detail = if error == EMPTY_COMMAND {
+                        locale::tr_ctx(ctx, EMPTY_COMMAND)
+                    } else {
+                        &error
+                    };
+                    self.status =
+                        locale::format_ctx(ctx, "Command failed ({error})", &[("error", detail)]);
                     self.status_error = true;
                     self.command_output.push_back((self.status.clone(), true));
                 }
@@ -198,7 +209,7 @@ impl EditorApp {
         }
         egui::Modal::new(egui::Id::new("command-runner")).show(ctx, |ui| {
             ui.set_width(660.0);
-            ui.heading("Project command");
+            ui.heading(locale::tr(ui, "Project command"));
             ui.monospace(&self.command_title);
             egui::ScrollArea::vertical()
                 .stick_to_bottom(true)
@@ -217,7 +228,7 @@ impl EditorApp {
                 if ui
                     .add_enabled(
                         self.command_result.is_some(),
-                        egui::Button::new("Kill process"),
+                        egui::Button::new(locale::tr(ui, "Kill process")),
                     )
                     .clicked()
                 {
@@ -227,7 +238,10 @@ impl EditorApp {
                     }
                 }
                 if ui
-                    .add_enabled(self.command_result.is_none(), egui::Button::new("Close"))
+                    .add_enabled(
+                        self.command_result.is_none(),
+                        egui::Button::new(locale::tr(ui, "Close")),
+                    )
                     .clicked()
                 {
                     self.command_open = false;

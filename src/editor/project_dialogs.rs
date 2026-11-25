@@ -765,6 +765,79 @@ mod tests {
         click(app, ctx, label(&trust, "Block project commands").center());
     }
 
+    #[test]
+    fn chinese_custom_command_trust_dialog_translates_actions_but_keeps_command_text() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("Map.ldtk");
+        let mut project = Project::new();
+        project.save(&path).unwrap();
+        let command = r#"example --name "User text""#;
+        project.json["customCommands"] = json!([{"command":command,"when":"BeforeSave"}]);
+        let mut app = EditorApp::empty();
+        app.settings.value["language"] = json!("zh-CN");
+        app.set_project(project);
+        app.dirty = true;
+        let ctx = egui::Context::default();
+        theme::configure(&ctx);
+        app.save_document(&ctx, path.clone());
+        frame(&mut app, &ctx, vec![]);
+        let dialog = frame(&mut app, &ctx, vec![]);
+
+        label(&dialog, "此项目包含自定义命令");
+        label(&dialog, "只允许运行来自可信项目的命令。");
+        label(&dialog, command);
+        label(&dialog, "允许项目命令");
+        label(&dialog, "取消");
+        click(&mut app, &ctx, label(&dialog, "阻止项目命令").center());
+        wait_for_save(&mut app, &ctx);
+        assert!(!app.dirty && app.command_result.is_none());
+        assert_eq!(
+            Project::load(&path).unwrap().json["customCommands"][0]["command"],
+            command
+        );
+    }
+
+    #[test]
+    fn chinese_command_runner_keeps_process_output_verbatim() {
+        let mut app = EditorApp::empty();
+        app.settings.value["language"] = json!("zh-CN");
+        let ctx = egui::Context::default();
+        theme::configure(&ctx);
+        app.command_open = true;
+        app.command_title = r#"example --name "User text""#.into();
+        frame(&mut app, &ctx, vec![]);
+        let (sender, receiver) = std::sync::mpsc::channel();
+        app.command_result = Some(receiver);
+        sender
+            .send(command_tools::CommandEvent::Output("Close".into(), false))
+            .unwrap();
+        sender
+            .send(command_tools::CommandEvent::Done(Some(7)))
+            .unwrap();
+        frame(&mut app, &ctx, vec![]);
+        let dialog = frame(&mut app, &ctx, vec![]);
+
+        label(&dialog, "项目命令");
+        label(&dialog, &app.command_title);
+        label(&dialog, "命令已退出，退出码为 7");
+        label(&dialog, "终止进程");
+        label(&dialog, "Close");
+        click(&mut app, &ctx, label(&dialog, "关闭").center());
+        assert!(!app.command_open);
+
+        app.command_open = true;
+        let (sender, receiver) = std::sync::mpsc::channel();
+        app.command_result = Some(receiver);
+        sender
+            .send(command_tools::CommandEvent::Error(
+                "raw process detail".into(),
+            ))
+            .unwrap();
+        frame(&mut app, &ctx, vec![]);
+        let failure = frame(&mut app, &ctx, vec![]);
+        label(&failure, "命令执行失败（raw process detail）");
+    }
+
     fn keep_my_version(app: &mut EditorApp, ctx: &egui::Context) {
         frame(app, ctx, vec![]);
         let dialog = frame(app, ctx, vec![]);

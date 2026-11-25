@@ -116,19 +116,28 @@ impl EditorApp {
         let mut decision = None;
         egui::Modal::new(egui::Id::new("project-command-trust")).show(ctx, |ui| {
             ui.set_width(620.0);
-            ui.heading("This project contains custom commands");
-            ui.label("Only allow commands from a project you trust.");
+            ui.heading(locale::tr(ui, "This project contains custom commands"));
+            ui.label(locale::tr(
+                ui,
+                "Only allow commands from a project you trust.",
+            ));
             for command in commands {
                 ui.monospace(command);
             }
             ui.horizontal(|ui| {
-                if ui.button("Allow project commands").clicked() {
+                if ui
+                    .button(locale::tr(ui, "Allow project commands"))
+                    .clicked()
+                {
                     decision = Some(Some(true));
                 }
-                if ui.button("Block project commands").clicked() {
+                if ui
+                    .button(locale::tr(ui, "Block project commands"))
+                    .clicked()
+                {
                     decision = Some(Some(false));
                 }
-                if ui.button("Cancel").clicked() {
+                if ui.button(locale::tr(ui, "Cancel")).clicked() {
                     decision = Some(None);
                 }
             });
