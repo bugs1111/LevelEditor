@@ -310,6 +310,31 @@ fn wrong_layer_types_and_malformed_tile_lists_are_rejected() {
 }
 
 #[test]
+fn single_cell_batches_validate_unrelated_tile_coordinates_before_editing() {
+    let mut p = project();
+    p.layer_mut(KEY, 1).unwrap()["gridTiles"] =
+        json!([{"px":[0,0],"src":[0,0],"t":0,"f":0},{"px":[16,"bad"]}]);
+    let before = p.json.clone();
+    let edit = ldtk_core::TilePaint {
+        cell: [0, 0],
+        id: 0,
+        src: [0, 0],
+        stack: false,
+    };
+    let paint = p.paint_tile_cells(KEY, 1, &[(edit, 0)]);
+    let erase = p.erase_tile_cells_with_deferred(KEY, 1, &[[0, 0]], None);
+    for result in [paint.map(|_| ()), erase.map(|_| ())] {
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("tile pixel coordinates")
+        );
+    }
+    assert_eq!(p.json, before);
+}
+
+#[test]
 fn external_save_preflights_all_files_before_replacing_any_document() {
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("map.ldtk");

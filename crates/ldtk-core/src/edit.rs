@@ -456,9 +456,14 @@ impl Project {
         let tiles = layer["gridTiles"]
             .as_array()
             .ok_or_else(|| invalid("gridTiles must be an array"))?;
+        let single_target = (targets.len() == 1).then(|| *targets.keys().next().unwrap());
         let mut removals = Vec::new();
         for (index, tile) in tiles.iter().enumerate() {
-            if let Some(top) = targets.get_mut(&tile_pixel(tile)?) {
+            let pixel = tile_pixel(tile)?;
+            if single_target.is_some_and(|target| target != pixel) {
+                continue;
+            }
+            if let Some(top) = targets.get_mut(&pixel) {
                 *top = Some(index);
                 if !stack {
                     removals.push(index);
@@ -578,12 +583,17 @@ impl Project {
         let tiles = layer["gridTiles"]
             .as_array()
             .ok_or_else(|| invalid("gridTiles must be an array"))?;
+        let single_target = (targets.len() == 1).then(|| *targets.keys().next().unwrap());
         let mut first = vec![None; edit_count];
         let mut stacked = vec![false; edit_count];
         let mut raise = vec![None; edit_count];
         let mut removals = Vec::new();
         for (index, tile) in tiles.iter().enumerate() {
-            if let Some(&group) = targets.get(&tile_pixel(tile)?) {
+            let pixel = tile_pixel(tile)?;
+            if single_target.is_some_and(|target| target != pixel) {
+                continue;
+            }
+            if let Some(&group) = targets.get(&pixel) {
                 let (edit, flips) = edit_at(group);
                 if first[group].is_none() {
                     first[group] = Some(index);
