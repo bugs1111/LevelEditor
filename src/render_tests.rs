@@ -1077,6 +1077,143 @@ fn selection_ghost_mirrors_cells_about_group_bounds_and_preserves_project() {
 }
 
 #[test]
+fn intgrid_ghost_skips_offscreen_cells_and_keeps_brush_strokes_at_the_edge() {
+    let mut project = Project::new();
+    let uid = project.add_layer("Terrain", "IntGrid", 16).unwrap();
+    let key = project.level_keys()[0];
+    let group = serde_json::json!({"origin":[-48.75,16],"size":[144,16],"layers":[{
+        "layerDefUid":uid,"origin":[-48.75,16],"rect":[-4,1,9,1],
+        "clipboard":{"gridSize":16,"width":9,"height":1,"intGridCsv":[1,1,1,1,1,1,1,1,1]}
+    }]});
+    let canvas = Rect::from_min_size(Pos2::ZERO, egui::vec2(64., 64.));
+    let view = Viewport {
+        center: [32., 32.],
+        zoom: 1.,
+    };
+    let ctx = egui::Context::default();
+    let mut assets = Assets::default();
+    for (mode, expected) in [
+        (GhostMode::Move, 5),
+        (GhostMode::Copy, 5),
+        (GhostMode::Brush, 12),
+    ] {
+        let output = ctx.run(
+            egui::RawInput {
+                screen_rect: Some(canvas),
+                ..Default::default()
+            },
+            |ctx| {
+                draw_group_ghost(
+                    ctx,
+                    &ctx.layer_painter(egui::LayerId::background()),
+                    canvas,
+                    &project,
+                    &view,
+                    key,
+                    &group,
+                    [0.; 2],
+                    [false; 2],
+                    mode,
+                    &mut assets,
+                );
+            },
+        );
+        let rects: Vec<_> = output
+            .shapes
+            .iter()
+            .filter_map(|shape| match &shape.shape {
+                egui::Shape::Rect(rect) => Some(rect),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(rects.len(), expected, "{mode:?}");
+        let edge = rects.iter().find(|r| r.rect.right() == -0.75);
+        assert_eq!(edge.is_some(), mode == GhostMode::Brush);
+        if let Some(edge) = edge {
+            assert_eq!(edge.stroke.width, 2.);
+            assert!(edge.visual_bounding_rect().intersects(canvas));
+        }
+    }
+}
+
+#[test]
+#[ignore = "manual large IntGrid selection preview performance comparison"]
+fn benchmark_cropped_intgrid_selection_preview() {
+    use serde_json::json;
+    use std::hash::{DefaultHasher, Hash, Hasher};
+
+    let mut project = Project::new();
+    let uid = project.add_layer("Terrain", "IntGrid", 16).unwrap();
+    let key = project.level_keys()[0];
+    let side = 256;
+    project.json["defs"]["layers"][0]["intGridValues"] =
+        json!([{"value":1,"color":"#123456"},{"value":2,"color":"#AB4567"}]);
+    let group = json!({
+        "geometryAware":true,"scaledGridSize":16,"origin":[8,5],"size":[4096,4096],
+        "layers":[{
+            "layerDefUid":uid,"origin":[8,5],"geometry":{"scale":1},"rect":[0,0,side,side],
+            "clipboard":{"gridSize":16,"width":side,"height":side,
+                "intGridCsv":(0..(side * side - 5)).map(|index| index % 3).collect::<Vec<_>>()}
+        }]
+    });
+    let canvas = Rect::from_min_size(Pos2::ZERO, egui::vec2(1000., 700.));
+    let ctx = egui::Context::default();
+    let mut assets = Assets::default();
+    for (case, zoom, mode, flips) in [
+        ("cropped", 4., GhostMode::Move, [true, false]),
+        ("brush", 4., GhostMode::Brush, [false, true]),
+        ("full", 0.16, GhostMode::Copy, [false; 2]),
+    ] {
+        let view = Viewport {
+            center: [2048., 2048.],
+            zoom,
+        };
+        let mut draw = || {
+            ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(canvas),
+                    ..Default::default()
+                },
+                |ctx| {
+                    draw_group_ghost(
+                        ctx,
+                        &ctx.layer_painter(egui::LayerId::background()),
+                        canvas,
+                        &project,
+                        &view,
+                        key,
+                        &group,
+                        [16., -16.],
+                        flips,
+                        mode,
+                        &mut assets,
+                    );
+                },
+            )
+        };
+        let expected = draw();
+        let shape_count = expected.shapes.len();
+        let primitives = ctx.tessellate(expected.shapes, expected.pixels_per_point);
+        assert!(!primitives.is_empty());
+        let mut hasher = DefaultHasher::new();
+        format!("{primitives:?}").hash(&mut hasher);
+        let mut times = [Duration::ZERO; 7];
+        for time in &mut times {
+            let start = Instant::now();
+            let output = draw();
+            *time = start.elapsed();
+            assert_eq!(output.shapes.len(), shape_count);
+        }
+        times.sort_unstable();
+        eprintln!(
+            "IntGrid selection {case}: median {:?}; shapes {shape_count}; mesh {:016x}",
+            times[3],
+            hasher.finish()
+        );
+    }
+}
+
+#[test]
 fn neighbor_distances_match_64_installed_original_js_vectors() {
     let oracle: Value =
         serde_json::from_str(include_str!("../docs/status/renderer-oracle.json")).unwrap();

@@ -2023,17 +2023,6 @@ pub fn draw_group_ghost(
     let painter = painter.with_clip_rect(canvas);
     let origin = pair(&group["origin"], [0.; 2]);
     let size = pair(&group["size"], [0.; 2]);
-    let legacy_moved = |point: [f32; 2], extent: [f32; 2]| -> [f32; 2] {
-        std::array::from_fn(|axis| {
-            origin[axis]
-                + delta_px[axis]
-                + if flips[axis] {
-                    size[axis] - (point[axis] - origin[axis]) - extent[axis]
-                } else {
-                    point[axis] - origin[axis]
-                }
-        })
-    };
     for entry in values(&group["layers"]).iter().rev() {
         let Some((index, layer)) = values(&level["layerInstances"])
             .iter()
@@ -2082,58 +2071,90 @@ pub fn draw_group_ghost(
             delta_px.map(|d| (d / smart).trunc() * (smart / scaled).trunc() * grid)
         };
         let point_delta = delta_px.map(|d| (d / scaled).trunc() * grid);
-        let moved = |point: [f32; 2], extent: [f32; 2]| {
-            if geometry_aware {
-                let extent_group = [width as f32 * grid, number(clipboard, "height", 0.) * grid];
-                std::array::from_fn(|axis| {
-                    source_origin[axis]
-                        + raw_delta[axis]
-                        + if flips[axis] {
-                            extent_group[axis] - (point[axis] - source_origin[axis]) - extent[axis]
-                        } else {
-                            point[axis] - source_origin[axis]
-                        }
-                })
+        let (move_origin, move_size, move_delta) = if geometry_aware {
+            (
+                source_origin,
+                [width as f32 * grid, number(clipboard, "height", 0.) * grid],
+                raw_delta,
+            )
+        } else {
+            (origin, size, delta_px)
+        };
+        let moved_axis = |axis: usize, point: f32, extent: f32| {
+            let relative = point - move_origin[axis];
+            let relative = if flips[axis] {
+                move_size[axis] - relative - extent
             } else {
-                legacy_moved(point, extent)
-            }
+                relative
+            };
+            move_origin[axis] + move_delta[axis] + relative
+        };
+        let moved = |point: [f32; 2], extent: [f32; 2]| -> [f32; 2] {
+            std::array::from_fn(|axis| moved_axis(axis, point[axis], extent[axis]))
         };
 
-        if width > 0 {
-            let mut cell_color = intgrid_cell_colors(def, 1.);
-            for (i, value) in values(&clipboard["intGridCsv"]).iter().enumerate() {
-                let value = value.as_i64().unwrap_or(0);
-                if value == 0 {
-                    continue;
-                }
-                let local = moved(
-                    [
-                        source_origin[0] + (i % width) as f32 * grid,
-                        source_origin[1] + (i / width) as f32 * grid,
-                    ],
-                    [grid; 2],
-                );
-                let color = cell_color(value);
-                let rect = scene.screen(transform.rect(Rect::from_min_size(
-                    egui::pos2(local[0] - offset[0], local[1] - offset[1]),
-                    egui::vec2(grid, grid),
-                )));
-                if mode == GhostMode::Brush {
-                    let scale = view.zoom * transform.scale;
-                    painter.rect_stroke(
-                        rect.shrink(2. * scale),
-                        0.,
-                        Stroke::new(2. * scale, Color32::BLACK),
-                        StrokeKind::Middle,
-                    );
-                    painter.rect_stroke(
-                        rect,
-                        0.,
-                        Stroke::new(2. * scale, color),
-                        StrokeKind::Middle,
-                    );
-                } else {
-                    painter.rect_filled(rect, 0., color);
+        let cells = values(&clipboard["intGridCsv"]);
+        if width > 0 && !cells.is_empty() {
+            let brush = mode == GhostMode::Brush;
+            let radius = if brush {
+                view.zoom * transform.scale
+            } else {
+                0.
+            };
+            let clip = painter.clip_rect();
+            let min: [f32; 2] = clip.min.into();
+            let max: [f32; 2] = clip.max.into();
+            let screen_size: [f32; 2] = scene.canvas.size().into();
+            let edges = |axis: usize, cell: usize| {
+                let point = source_origin[axis] + cell as f32 * grid;
+                let local = moved_axis(axis, point, grid) - offset[axis];
+                [local, local + grid].map(|edge| {
+                    let world = transform.origin[axis] + edge * transform.scale;
+                    scene.projection_origin[axis]
+                        + screen_size[axis] * 0.5
+                        + (world - view.center[axis]) * view.zoom
+                })
+            };
+            // Match the rectangle tessellator's bounds for a centered brush stroke.
+            let visible = |axis: usize, [start, end]: [f32; 2]| {
+                start - radius <= max[axis] && end + radius >= min[axis]
+            };
+            // Visible columns are contiguous even when the selection is mirrored.
+            let mut columns = (0..width.min(cells.len())).filter(|&x| visible(0, edges(0, x)));
+            if let Some(first) = columns.next() {
+                let end = columns.next_back().unwrap_or(first) + 1;
+                let mut cell_color = intgrid_cell_colors(def, 1.);
+                for (y, row) in cells.chunks(width).enumerate() {
+                    let vertical @ [top, bottom] = edges(1, y);
+                    if !visible(1, vertical) {
+                        continue;
+                    }
+                    for (x, value) in row.iter().enumerate().take(end).skip(first) {
+                        let value = value.as_i64().unwrap_or(0);
+                        if value == 0 {
+                            continue;
+                        }
+                        let [left, right] = edges(0, x);
+                        let rect =
+                            Rect::from_min_max(egui::pos2(left, top), egui::pos2(right, bottom));
+                        let color = cell_color(value);
+                        if brush {
+                            painter.rect_stroke(
+                                rect.shrink(2. * radius),
+                                0.,
+                                Stroke::new(2. * radius, Color32::BLACK),
+                                StrokeKind::Middle,
+                            );
+                            painter.rect_stroke(
+                                rect,
+                                0.,
+                                Stroke::new(2. * radius, color),
+                                StrokeKind::Middle,
+                            );
+                        } else {
+                            painter.rect_filled(rect, 0., color);
+                        }
+                    }
                 }
             }
         }
