@@ -18,6 +18,12 @@ pub(super) enum ToolPayload<'a> {
     Layer {
         layer: Option<&'a Value>,
     },
+    Entity {
+        entity: &'a Value,
+        level_iid: &'a Value,
+        layer_iid: &'a Value,
+        layer_offset_px: [i64; 2],
+    },
     IntGridRegion {
         x: i32,
         y: i32,
@@ -119,6 +125,22 @@ impl Session {
                 let (key, layer) = self.layer_key(args)?;
                 return Ok(ToolPayload::Layer {
                     layer: self.project.layer(key, layer),
+                });
+            }
+            "get_entity" => {
+                let iid = args["entity_iid"].as_str().unwrap();
+                let found = self
+                    .project
+                    .entity_by_iid(iid)
+                    .ok_or_else(|| format!("Entity IID not found: {iid}"))?;
+                let level = self.project.level(found.level).expect("resolved level");
+                let layer = &level["layerInstances"][found.layer_index];
+                return Ok(ToolPayload::Entity {
+                    entity: found.entity,
+                    level_iid: &level["iid"],
+                    layer_iid: &layer["iid"],
+                    layer_offset_px: ["__pxTotalOffsetX", "__pxTotalOffsetY"]
+                        .map(|field| layer[field].as_i64().unwrap_or(0)),
                 });
             }
             "get_int_grid_region" => return self.get_int_grid_region(args),

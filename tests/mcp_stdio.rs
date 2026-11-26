@@ -708,6 +708,11 @@ fn inspects_worlds_edits_cells_and_entities_and_reopens_the_saved_project() {
         }),
     );
     let item_iid = item["entity_iid"].as_str().unwrap();
+    let read_item = json!({"entity_iid":item_iid});
+    let found = client.tool("get_entity", read_item.clone());
+    assert_eq!(found["level_iid"], level_iid);
+    assert_eq!(found["layer_iid"], entities);
+    assert_eq!(found["entity"]["px"], json!([80, 80]));
     assert_eq!(
         client.tool(
             "move_entity",
@@ -769,6 +774,14 @@ fn inspects_worlds_edits_cells_and_entities_and_reopens_the_saved_project() {
             })
         )["changed"],
         true
+    );
+    let removed = client.call("get_entity", read_item);
+    assert_eq!(removed["isError"], true);
+    assert!(
+        removed["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains(item_iid)
     );
     assert_eq!(
         client.tool(
@@ -1126,14 +1139,25 @@ fn entity_edits_use_level_coordinates_on_offset_layers() {
     let result = client.tool("add_entity", args(json!({"def_uid":entity,"x":12,"y":20})));
     let iid = &result["entity_iid"];
     assert!(iid.is_string());
+    let read = json!({"entity_iid":iid});
+    let added = client.tool("get_entity", read.clone());
     assert_eq!(
-        client.tool("get_layer", target.clone())["layer"]["entityInstances"][0]["px"],
-        json!([-4, 28])
+        added,
+        json!({
+            "entity":client.tool("get_layer", target.clone())["layer"]["entityInstances"][0],
+            "level_iid":target["level_iid"],"layer_iid":target["layer_iid"],
+            "layer_offset_px":[16,-8]
+        })
     );
+    assert_eq!(added["entity"]["px"], json!([-4, 28]));
     let destination = args(json!({"entity_iid":iid,"x":50,"y":40}));
     assert_eq!(
         client.tool("move_entity", destination.clone())["changed"],
         true
+    );
+    assert_eq!(
+        client.tool("get_entity", read.clone())["entity"]["px"],
+        json!([34, 48])
     );
     assert_eq!(client.tool("save_project", json!({}))["saved"], true);
     client.close();
@@ -1145,6 +1169,7 @@ fn entity_edits_use_level_coordinates_on_offset_layers() {
     let saved = &after_save["layer"]["entityInstances"][0];
     assert_eq!(&saved["iid"], iid);
     assert_eq!(saved["px"], json!([34, 48]));
+    assert_eq!(reopened.tool("get_entity", read)["entity"], *saved);
     assert_eq!(
         reopened.tool("move_entity", destination),
         json!({"changed":false,"dirty":false})

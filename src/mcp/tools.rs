@@ -131,6 +131,11 @@ const TOOLS: &[Tool] = &[
         &[LEVEL, LAYER],
     ),
     read(
+        "get_entity",
+        "Read one LDtk entity instance by IID, including unsaved edits. Returns entity, level_iid, layer_iid and layer_offset_px. Add layer_offset_px to entity.px for level-local pixel coordinates.",
+        &[ENTITY],
+    ),
+    read(
         "get_int_grid_region",
         "Read a rectangle of at most 4096 cells from one IntGrid layer. Use zero-based layer grid coordinates x and y and positive width and height in cells. Returns values left to right, top to bottom; 0 means empty. Includes unsaved edits in this session.",
         &[
