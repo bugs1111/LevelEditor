@@ -622,29 +622,31 @@ impl EditorApp {
                 }) => self.world_group_delta(*anchor, *start, *end),
                 _ => [0, 0],
             };
-            for (_, level, bounds) in canvas::iter_placements(project, selected) {
-                if !level["iid"]
-                    .as_str()
-                    .is_some_and(|iid| selected_iids.contains(iid))
-                {
-                    continue;
-                }
-                let area = Rect::from_two_pos(
-                    screen([bounds[0] + delta[0] as f32, bounds[1] + delta[1] as f32]),
-                    screen([bounds[2] + delta[0] as f32, bounds[3] + delta[1] as f32]),
-                );
-                painter.rect_filled(
-                    area,
-                    0.,
-                    egui::Color32::from_rgba_unmultiplied(0, 255, 0, 38),
-                );
-                painter.rect_stroke(
-                    area,
-                    0.,
-                    egui::Stroke::new(3_f32, egui::Color32::from_rgba_unmultiplied(0, 255, 0, 204)),
-                    egui::StrokeKind::Middle,
-                );
-            }
+            let clip = painter.clip_rect();
+            let cull = ui.ctx().tessellation_options(|options| {
+                options.coarse_tessellation_culling && !options.debug_paint_clip_rects
+            });
+            let fill = Color32::from_rgba_unmultiplied(0, 255, 0, 38);
+            let stroke = Stroke::new(3., Color32::from_rgba_unmultiplied(0, 255, 0, 204));
+            let shapes = canvas::iter_placements(project, selected)
+                .filter_map(|(_, level, bounds)| {
+                    if !selected_iids.contains(level["iid"].as_str()?) {
+                        return None;
+                    }
+                    let area = Rect::from_two_pos(
+                        screen([bounds[0] + delta[0] as f32, bounds[1] + delta[1] as f32]),
+                        screen([bounds[2] + delta[0] as f32, bounds[3] + delta[1] as f32]),
+                    );
+                    // Match egui's coarse culling for a centered stroke.
+                    (!cull || area.expand(stroke.width * 0.5).intersects(clip)).then_some(area)
+                })
+                .flat_map(|area| {
+                    [
+                        egui::Shape::rect_filled(area, 0., fill),
+                        egui::Shape::rect_stroke(area, 0., stroke, egui::StrokeKind::Middle),
+                    ]
+                });
+            painter.extend(shapes);
         }
         if let Some(tools::Gesture::WorldRectangle {
             corners: Some([start, end]),
@@ -938,6 +940,7 @@ mod tests {
             .collect();
         let ctx = egui::Context::default();
         let rect = Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1600., 900.));
+        app.viewport.center = rect.center().into();
         let overlay_frame = |app: &EditorApp| {
             let mut elapsed = std::time::Duration::ZERO;
             let output = ctx.run(
@@ -947,28 +950,39 @@ mod tests {
                 },
                 |ctx| {
                     egui::CentralPanel::default().show(ctx, |ui| {
+                        ui.set_clip_rect(rect);
                         let start = Instant::now();
                         app.draw_world_selection(ui, rect);
                         elapsed = start.elapsed();
                     });
                 },
             );
-            let outlines = output
-                .shapes
-                .iter()
-                .filter(|shape| {
-                    matches!(&shape.shape, egui::Shape::Rect(r)
-                    if r.stroke.color == Color32::from_rgba_unmultiplied(0, 255, 0, 204))
-                })
-                .count();
-            assert_eq!(outlines, app.world_selection.len());
-            elapsed
+            let outlines = output.shapes.iter().filter_map(|shape| match &shape.shape {
+                egui::Shape::Rect(r)
+                    if r.stroke.color == Color32::from_rgba_unmultiplied(0, 255, 0, 204) =>
+                {
+                    Some(r.visual_bounding_rect().intersects(rect))
+                }
+                _ => None,
+            });
+            let (submitted, visible) = outlines.fold((0, 0), |(submitted, visible), intersects| {
+                (submitted + 1, visible + usize::from(intersects))
+            });
+            assert_eq!(
+                visible,
+                if app.world_selection.is_empty() {
+                    0
+                } else {
+                    65
+                }
+            );
+            (elapsed, submitted)
         };
         overlay_frame(&app);
         let mut marquee = [std::time::Duration::ZERO; 5];
         let mut hit = marquee;
-        let mut selected_overlay = marquee;
-        let mut empty_overlay = marquee;
+        let mut selected_overlay = [(std::time::Duration::ZERO, 0); 5];
+        let mut empty_overlay = selected_overlay;
         for index in 0..marquee.len() {
             app.world_selection.clear();
             empty_overlay[index] = overlay_frame(&app);
@@ -1010,9 +1024,9 @@ mod tests {
             hit[2]
         );
         for (case, samples) in [("selected", selected_overlay), ("empty", empty_overlay)] {
+            let (median, outlines) = samples[2];
             eprintln!(
-                "World overlay {case}: median {:?}; samples {samples:?}",
-                samples[2]
+                "World overlay {case}: median {median:?}; submitted {outlines} outlines; samples {samples:?}",
             );
         }
     }
@@ -1097,6 +1111,60 @@ mod tests {
             .collect();
         assert_eq!(fills, expected);
         assert!(fills[0].intersects(fills[1]));
+    }
+
+    #[test]
+    fn world_selection_overlay_culls_against_the_clipped_outline_bounds() {
+        let mut app = editor();
+        let canvas = Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(600., 480.));
+        let clip = Rect::from_min_max(egui::pos2(200., 0.), canvas.max);
+        app.viewport.center = canvas.center().into();
+        let project = app.project.as_mut().unwrap();
+        project.json["worldLayout"] = json!("Free");
+        project.json["levels"] = json!([
+            {"iid":"edge","worldX":183.,"worldY":30,"pxWid":16,"pxHei":16},
+            {"iid":"touching","worldX":182.5,"worldY":60,"pxWid":16,"pxHei":16},
+            {"iid":"outside","worldX":182.25,"worldY":90,"pxWid":16,"pxHei":16},
+            {"iid":"inside","worldX":201.,"worldY":120,"pxWid":16,"pxHei":16}
+        ]);
+        app.world_selection = ["edge", "touching", "outside", "inside"]
+            .map(str::to_owned)
+            .to_vec();
+        let ctx = egui::Context::default();
+        let edges = |coarse, debug| {
+            ctx.tessellation_options_mut(|options| {
+                options.coarse_tessellation_culling = coarse;
+                options.debug_paint_clip_rects = debug;
+            });
+            let output = ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(canvas),
+                    ..Default::default()
+                },
+                |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        ui.set_clip_rect(clip);
+                        app.draw_world_selection(ui, canvas);
+                    });
+                },
+            );
+            output
+                .shapes
+                .iter()
+                .filter_map(|shape| match &shape.shape {
+                    egui::Shape::Rect(rect)
+                        if rect.stroke.color == Color32::from_rgba_unmultiplied(0, 255, 0, 204) =>
+                    {
+                        assert_eq!(shape.clip_rect, clip);
+                        Some(rect.rect.right())
+                    }
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(edges(true, false), [199., 198.5, 217.]);
+        assert_eq!(edges(false, false), [199., 198.5, 198.25, 217.]);
+        assert_eq!(edges(true, true), [199., 198.5, 198.25, 217.]);
     }
 
     #[test]
