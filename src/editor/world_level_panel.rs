@@ -800,12 +800,10 @@ impl EditorApp {
             level["worldX"] = json!(x);
             level["worldY"] = json!(y);
         } else if text(world, "worldLayout", "Free").starts_with("Linear")
-            && let Some((_, bounds)) = canvas::placements(project, key)
-                .into_iter()
-                .find(|(candidate, _)| *candidate == key)
+            && let Some([x, y]) = canvas::level_origin(project, key)
         {
-            level["worldX"] = json!(bounds[0] as i64);
-            level["worldY"] = json!(bounds[1] as i64);
+            level["worldX"] = json!(x as i64);
+            level["worldY"] = json!(y as i64);
         }
         let default_grid =
             number(&self.project.as_ref().unwrap().json, "defaultGridSize", 16.) as i64;

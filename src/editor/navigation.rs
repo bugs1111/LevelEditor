@@ -14,10 +14,7 @@ fn contains(bounds: [f32; 4], point: [f32; 2], padding: f32) -> bool {
         && point[1] < bounds[3] + padding
 }
 
-fn level_distance(bounds: [f32; 4], point: [f32; 2]) -> f32 {
-    if contains(bounds, point, 0.) {
-        return 0.;
-    }
+fn distance_to_level_edge(bounds: [f32; 4], point: [f32; 2]) -> f32 {
     if point[1] >= bounds[1] && point[1] < bounds[3] {
         return (point[0] - bounds[0])
             .abs()
@@ -38,23 +35,31 @@ fn level_distance(bounds: [f32; 4], point: [f32; 2]) -> f32 {
         .fold(f32::INFINITY, f32::min)
 }
 
-pub(super) fn level_world_origin(project: &Project, key: LevelKey) -> [f32; 2] {
-    let world = key
-        .world
-        .and_then(|index| project.json["worlds"].get(index))
-        .unwrap_or(&project.json);
-    if matches!(
-        world["worldLayout"].as_str(),
-        Some("LinearHorizontal" | "LinearVertical")
-    ) {
-        canvas::placements(project, key)
-            .into_iter()
-            .find(|(candidate, _)| *candidate == key)
-            .map_or([0.; 2], |(_, [x, y, ..])| [x, y])
-    } else {
-        let level = project.level(key).unwrap_or(&Value::Null);
-        [number(level, "worldX", 0.), number(level, "worldY", 0.)]
+fn zoom_level_at(
+    project: &Project,
+    selected: LevelKey,
+    point: [f32; 2],
+    depth: i64,
+) -> Option<(LevelKey, &Value, [f32; 4])> {
+    let mut nearest = None;
+    for placement @ (_, level, bounds) in canvas::iter_placements(project, selected) {
+        if !contains(bounds, point, 500.) || number(level, "worldDepth", 0.) as i64 != depth {
+            continue;
+        }
+        // Containment has the highest score. Equal scores keep document order.
+        if contains(bounds, point, 0.) {
+            return Some(placement);
+        }
+        let distance = distance_to_level_edge(bounds, point);
+        if nearest.as_ref().is_none_or(|(best, _)| distance < *best) {
+            nearest = Some((distance, placement));
+        }
     }
+    nearest.map(|(_, placement)| placement)
+}
+
+pub(super) fn level_world_origin(project: &Project, key: LevelKey) -> [f32; 2] {
+    canvas::level_origin(project, key).unwrap_or([0.; 2])
 }
 
 impl EditorApp {
@@ -180,16 +185,12 @@ impl EditorApp {
         let preference = self.settings.value["autoWorldModeSwitch"]
             .as_str()
             .unwrap_or("ZoomInAndOut");
-        let placements = canvas::placements(project, key);
         let target = if !self.world
             && delta < 0.
             && preference != "Never"
             && self.viewport.zoom <= level_minimum
         {
-            placements
-                .iter()
-                .find(|(candidate, _)| *candidate == key)
-                .map(|(_, bounds)| (key, *bounds, true))
+            canvas::level_origin(project, key).map(|origin| (key, origin, true))
         } else if self.world && delta > 0. && preference == "ZoomInAndOut" {
             // The source publishes the new zoom to the world renderer before
             // applying the cursor's center adjustment. Coords uses that
@@ -205,39 +206,20 @@ impl EditorApp {
                 [0.; 2],
                 pixels_per_point,
             );
-            let score = |bounds| {
-                let contained_bonus = if contains(bounds, point, 0.) {
-                    100.
-                } else {
-                    0.
-                };
-                contained_bonus - level_distance(bounds, point)
-            };
-            placements
-                .iter()
-                .filter(|(candidate, bounds)| {
-                    project.level(*candidate).is_some_and(|level| {
-                        number(level, "worldDepth", 0.) as i64 == self.world_depth
-                    }) && contains(*bounds, point, 500.)
-                })
-                .min_by(|a, b| score(b.1).total_cmp(&score(a.1)))
-                .filter(|(candidate, _)| {
-                    project.level(*candidate).is_some_and(|level| {
-                        self.viewport.zoom > level_min_zoom(level, rect.size())
-                    })
-                })
-                .map(|(candidate, bounds)| (*candidate, *bounds, false))
+            zoom_level_at(project, key, point, self.world_depth)
+                .filter(|(_, level, _)| self.viewport.zoom > level_min_zoom(level, rect.size()))
+                .map(|(candidate, _, [x, y, ..])| (candidate, [x, y], false))
         } else {
             None
         };
-        if let Some((key, bounds, world)) = target {
+        if let Some((key, origin, world)) = target {
             self.finish_gesture();
             self.finish_stroke();
             self.navigate_level(key, false);
             self.world = world;
             let direction = if world { 1. } else { -1. };
-            self.viewport.center[0] += direction * bounds[0];
-            self.viewport.center[1] += direction * bounds[1];
+            self.viewport.center[0] += direction * origin[0];
+            self.viewport.center[1] += direction * origin[1];
             self.selection = None;
             self.selection_group = None;
             self.entity_index = None;
@@ -283,6 +265,38 @@ mod tests {
                 shift <= 2.,
                 "zoom anchor shifted from {expected:?} to {actual:?}"
             );
+        }
+    }
+
+    #[test]
+    fn level_origins_use_available_documents_and_their_world_layout() {
+        let mut project = Project::new();
+        project.json["worlds"] = json!([{"levels":[
+            {"externalRelPath":"missing.ldtkl"},
+            {"externalRelPath":"room.ldtkl","pxWid":200},
+            {"worldX":-14.5,"worldY":24},
+            {}
+        ]}]);
+        project
+            .external_levels
+            .insert("room.ldtkl".into(), json!({"pxWid":15.5,"pxHei":21}));
+        let key = |level| LevelKey {
+            world: Some(0),
+            level,
+        };
+        for (layout, expected) in [
+            ("Free", [-14.5, 24.]),
+            ("GridVania", [-14.5, 24.]),
+            ("LinearHorizontal", [63.5, 0.]),
+            ("LinearVertical", [0., 69.]),
+        ] {
+            project.json["worlds"][0]["worldLayout"] = json!(layout);
+            assert_eq!(canvas::level_origin(&project, key(0)), None);
+            assert_eq!(canvas::level_origin(&project, key(1)), Some([0.; 2]));
+            assert_eq!(canvas::level_origin(&project, key(2)), Some(expected));
+            for (placed, _, [x, y, ..]) in canvas::iter_placements(&project, key(0)) {
+                assert_eq!(canvas::level_origin(&project, placed), Some([x, y]));
+            }
         }
     }
 
@@ -519,6 +533,43 @@ mod tests {
         app.zoom_at_canvas(rect, rect.center(), 0.15, 1.);
         assert!(app.world);
     }
+    #[test]
+    fn zoom_between_levels_ranks_by_distance_and_keeps_document_order_on_ties() {
+        let mut app = editor();
+        let first = app.selected.unwrap();
+        let project = app.project.as_mut().unwrap();
+        let right = project.add_level(None, "Right", 256, 256).unwrap();
+        project.move_level(right, 1356, 2000, 0).unwrap();
+        let at = |x| zoom_level_at(project, right, [x, 2128.], 0).map(|(key, _, _)| key);
+        assert_eq!(at(1305.), Some(first));
+        assert_eq!(at(1306.), Some(first));
+        assert_eq!(at(1307.), Some(right));
+        assert_eq!(at(2112.), None);
+    }
+
+    #[test]
+    fn zoom_in_checks_the_threshold_of_the_first_equally_ranked_level() {
+        let mut app = editor();
+        let first = app.selected.unwrap();
+        let project = app.project.as_mut().unwrap();
+        project.resize_level(first, 64, 64, 0, 0).unwrap();
+        let larger = project.add_level(None, "Overlap", 512, 512).unwrap();
+        project.move_level(larger, 1000, 2000, 0).unwrap();
+        app.selected = Some(larger);
+        app.world = true;
+        app.viewport.center = [1032., 2032.];
+        app.viewport.zoom = 1.;
+        let rect = canvas();
+        app.zoom_at_canvas(rect, rect.center(), 0.15, 1.);
+        assert!(app.world);
+        assert_eq!(app.selected, Some(larger));
+
+        app.viewport.zoom = 5.;
+        app.zoom_at_canvas(rect, rect.center(), 0.15, 1.);
+        assert!(!app.world);
+        assert_eq!(app.selected, Some(first));
+    }
+
     #[test]
     fn zoom_in_prefers_the_level_owning_the_rounded_shared_edge() {
         for x in [1256., 1255.75] {

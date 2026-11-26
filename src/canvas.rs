@@ -89,12 +89,16 @@ pub fn placements(project: &Project, selected: LevelKey) -> Vec<(LevelKey, [f32;
         .collect()
 }
 
-pub(crate) fn world_layout(project: &Project, selected: LevelKey) -> &str {
+fn linear_layout_axis(project: &Project, selected: LevelKey) -> Option<usize> {
     let settings = selected
         .world
         .and_then(|i| project.json["worlds"].get(i))
         .unwrap_or(&project.json);
-    text(settings, "worldLayout", "Free")
+    match settings["worldLayout"].as_str() {
+        Some("LinearHorizontal") => Some(0),
+        Some("LinearVertical") => Some(1),
+        _ => None,
+    }
 }
 
 fn placement_bounds(origin: [f32; 2], size: [f32; 2]) -> [f32; 4] {
@@ -117,25 +121,41 @@ fn free_level_bounds(level: &Value) -> [f32; 4] {
     [x.start, y.start, x.end, y.end]
 }
 
+const LINEAR_LEVEL_GAP: f32 = 48.;
+
 pub(crate) fn iter_placements(
     project: &Project,
     selected: LevelKey,
 ) -> impl Iterator<Item = (LevelKey, &Value, [f32; 4])> {
-    let layout = world_layout(project, selected);
+    let axis = linear_layout_axis(project, selected);
     let mut cursor = [0.0_f32; 2];
     project
         .levels_in_world(selected.world)
         .map(move |(key, level)| {
-            let axis = match layout {
-                "LinearHorizontal" => 0,
-                "LinearVertical" => 1,
-                _ => return (key, level, free_level_bounds(level)),
+            let Some(axis) = axis else {
+                return (key, level, free_level_bounds(level));
             };
             let size = [number(level, "pxWid", 256.), number(level, "pxHei", 256.)];
             let bounds = placement_bounds(cursor, size);
-            cursor[axis] += size[axis] + 48.0;
+            cursor[axis] += size[axis] + LINEAR_LEVEL_GAP;
             (key, level, bounds)
         })
+}
+
+pub(crate) fn level_origin(project: &Project, key: LevelKey) -> Option<[f32; 2]> {
+    let level = project.level(key)?;
+    let Some(axis) = linear_layout_axis(project, key) else {
+        return Some([number(level, "worldX", 0.), number(level, "worldY", 0.)]);
+    };
+    let extent = ["pxWid", "pxHei"][axis];
+    let mut origin = [0.; 2];
+    for (_, level) in project
+        .levels_in_world(key.world)
+        .take_while(|(candidate, _)| candidate.level < key.level)
+    {
+        origin[axis] += number(level, extent, 256.) + LINEAR_LEVEL_GAP;
+    }
+    Some(origin)
 }
 
 pub(crate) fn placement_at(
@@ -146,10 +166,7 @@ pub(crate) fn placement_at(
 ) -> Option<(LevelKey, [f32; 4])> {
     let [x, y] = position.map(|value| (value + 0.5).floor());
     let active = |level: &Value| number(level, "worldDepth", 0.) as i64 == depth;
-    if matches!(
-        world_layout(project, selected),
-        "LinearHorizontal" | "LinearVertical"
-    ) {
+    if linear_layout_axis(project, selected).is_some() {
         return iter_placements(project, selected)
             .filter(|(_, level, [left, top, right, bottom])| {
                 (*left..*right).contains(&x) && (*top..*bottom).contains(&y) && active(level)

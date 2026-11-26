@@ -777,10 +777,7 @@ impl EditorApp {
     fn move_context_level(&mut self, key: LevelKey, world: usize) {
         if let Some(target) = self.edit("Move level to world", |p| {
             let count = p.level_keys_in_world(Some(world)).len();
-            let origin = canvas::placements(p, key)
-                .into_iter()
-                .find(|(candidate, _)| *candidate == key)
-                .map(|(_, bounds)| [bounds[0] as i32, bounds[1] as i32]);
+            let origin = canvas::level_origin(p, key).map(|point| point.map(|v| v as i32));
             let target = p.move_level_to_world(key, Some(world), count)?;
             if !text(container(p, Some(world)), "worldLayout", "Free").starts_with("Linear")
                 && let Some(origin) = origin

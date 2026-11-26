@@ -61,14 +61,8 @@ impl EditorApp {
             })?;
         // World positions are runtime placements (including linear layout). The source temp
         // link itself adds raw layer offsets; it does not apply either layer's parallax.
-        let origin = |key| {
-            canvas::placements(project, key)
-                .into_iter()
-                .find(|(k, _)| *k == key)
-                .map(|(_, rect)| [rect[0], rect[1]])
-        };
-        let source_origin = origin(source_key)?;
-        let current_origin = origin(key)?;
+        let source_origin = canvas::level_origin(project, source_key)?;
+        let current_origin = canvas::level_origin(project, key)?;
         let start = std::array::from_fn(|axis| {
             source["px"][axis].as_f64().unwrap_or(0.) as f32 + source_origin[axis]
                 - current_origin[axis]

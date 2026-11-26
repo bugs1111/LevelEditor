@@ -144,17 +144,17 @@ impl EditorApp {
             self.notify_world_view();
         }
         if let (Some(project), Some(key)) = (&self.project, self.selected) {
-            let placements = canvas::placements(project, key);
-            if let Some((_, bounds)) = placements.iter().find(|(placed, _)| *placed == key) {
+            if let Some(origin) = canvas::level_origin(project, key) {
                 let direction = if world { 1.0 } else { -1.0 };
-                let offset = [direction * bounds[0], direction * bounds[1]];
+                let offset = origin.map(|v| direction * v);
                 self.viewport.center[0] += offset[0];
                 self.viewport.center[1] += offset[1];
                 self.camera_motion.translate_center(offset);
             }
             if world {
+                let one_level = project.levels_in_world(key.world).nth(1).is_none();
                 self.camera_motion
-                    .enter_world(canvas::bounds(project, key, true), placements.len() <= 1);
+                    .enter_world(canvas::bounds(project, key, true), one_level);
             } else {
                 self.world_depth = project
                     .level(key)
@@ -453,6 +453,11 @@ mod tests {
     #[test]
     fn manual_world_entry_animates_only_zoom_at_backing_density_and_exit_fits_the_level() {
         let (mut app, ctx) = camera_editor(2.);
+        // An unavailable external level doesn't count toward the world-entry zoom.
+        app.project.as_mut().unwrap().json["levels"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"externalRelPath":"missing.ldtkl"}));
         app.viewport.center = [80., 112.];
         app.viewport.zoom = 2.;
         let key = |key, pressed| egui::Event::Key {
