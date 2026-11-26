@@ -1,8 +1,12 @@
 use super::{ExportBatch, arr, bytes, n, s, safe_name};
 use crate::workflow::MAX_LAYER_CELLS;
 use crate::{Error, Project, Result};
-use serde::{Serialize, Serializer, ser::SerializeMap};
+use serde::{
+    Serialize, Serializer,
+    ser::{SerializeMap, SerializeSeq},
+};
 use serde_json::{Value, json};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 struct GameMakerRoom<'a> {
@@ -87,7 +91,39 @@ struct GameMakerTileData {
     #[serde(rename = "SerialiseHeight")]
     height: usize,
     #[serde(rename = "TileSerialiseData")]
-    tiles: Vec<u32>,
+    tiles: GameMakerCells,
+}
+
+const EMPTY_CELL: u32 = 1 << 31;
+
+enum GameMakerCells {
+    Dense(Vec<u32>),
+    Sparse {
+        area: usize,
+        occupied: BTreeMap<usize, u32>,
+    },
+}
+
+impl Serialize for GameMakerCells {
+    fn serialize<S: Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
+        let (area, occupied) = match self {
+            Self::Dense(cells) => return cells.serialize(serializer),
+            Self::Sparse { area, occupied } => (area, occupied),
+        };
+        let mut cells = serializer.serialize_seq(Some(*area))?;
+        let mut next = 0;
+        for (&index, value) in occupied {
+            for _ in next..index {
+                cells.serialize_element(&EMPTY_CELL)?;
+            }
+            cells.serialize_element(value)?;
+            next = index + 1;
+        }
+        for _ in next..*area {
+            cells.serialize_element(&EMPTY_CELL)?;
+        }
+        cells.end()
+    }
 }
 
 impl Project {
@@ -198,15 +234,30 @@ fn gamemaker_tiles(
     height: usize,
     grid: i64,
 ) -> Result<GameMakerTileData> {
-    const EMPTY: u32 = 1 << 31;
     const TILE_INDEX_MASK: u64 = (1 << 19) - 1;
-    let mut tiles = vec![EMPTY; width * height];
-    for tile in arr(&instance["gridTiles"]) {
+    let area = width * height;
+    let grid_tiles = arr(&instance["gridTiles"]);
+    // Leave room for the tree index while keeping dense layers on the array path.
+    let mut tiles = if area >= 4096 && grid_tiles.len() <= area / 32 {
+        GameMakerCells::Sparse {
+            area,
+            occupied: BTreeMap::new(),
+        }
+    } else {
+        GameMakerCells::Dense(vec![EMPTY_CELL; area])
+    };
+    for tile in grid_tiles {
         let x = tile["px"][0].as_i64().unwrap_or(0).div_euclid(grid);
         let y = tile["px"][1].as_i64().unwrap_or(0).div_euclid(grid);
         if (0..width as i64).contains(&x) && (0..height as i64).contains(&y) {
-            let cell = &mut tiles[x as usize + y as usize * width];
-            if *cell == EMPTY {
+            let index = x as usize + y as usize * width;
+            let cell = match &mut tiles {
+                GameMakerCells::Dense(cells) => &mut cells[index],
+                GameMakerCells::Sparse { occupied, .. } => {
+                    occupied.entry(index).or_insert(EMPTY_CELL)
+                }
+            };
+            if *cell == EMPTY_CELL {
                 let id = tile["t"]
                     .as_u64()
                     .filter(|&id| id <= TILE_INDEX_MASK)

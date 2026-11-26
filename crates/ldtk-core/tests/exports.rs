@@ -1748,6 +1748,46 @@ fn gamemaker_preserves_manual_tile_flips_and_layer_offsets() {
 }
 
 #[test]
+fn sparse_gamemaker_layers_keep_empty_cells_and_the_first_tile_in_each_stack() {
+    let mut p = project();
+    p.json["defs"]["tilesets"] = json!([{"uid":42,"identifier":"Atlas"}]);
+    let layer = p.layer_mut(p.level_keys()[0], 0).unwrap();
+    layer["__type"] = json!("Tiles");
+    layer["__tilesetDefUid"] = json!(42);
+    let (width, height) = (128, 32);
+    layer["__cWid"] = json!(width);
+    layer["__cHei"] = json!(height);
+    layer["gridTiles"] = json!([
+        {"px":[(width-1)*16,(height-1)*16],"t":1,"f":3},
+        {"px":[-1,0],"t":-1},
+        {"px":[16,0],"t":0},
+        {"px":[16,0],"t":-1},
+        {"px":[width*16,0],"t":-1}
+    ]);
+    let directory = tempfile::tempdir().unwrap();
+    p.export_gamemaker(directory.path()).unwrap();
+    let room: Value =
+        serde_json::from_slice(&fs::read(directory.path().join("Level_0.yy")).unwrap()).unwrap();
+    let area = width * height;
+    let expected = (0..area).map(|i| match i {
+        1 => 0,
+        i if i == area - 1 => 1 | (3_u64 << 28),
+        _ => 1_u64 << 31,
+    });
+    let tiles = &room["layers"][0]["tiles"];
+    assert_eq!(tiles["SerialiseWidth"], width);
+    assert_eq!(tiles["SerialiseHeight"], height);
+    assert!(
+        tiles["TileSerialiseData"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|tile| tile.as_u64().unwrap())
+            .eq(expected)
+    );
+}
+
+#[test]
 fn gamemaker_rejects_invalid_tile_dimensions_and_ids_without_replacing_outputs() {
     let mut p = project();
     p.json["defs"]["tilesets"] = json!([{"uid":42,"identifier":"Atlas"}]);
