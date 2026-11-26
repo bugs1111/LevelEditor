@@ -1,7 +1,8 @@
 use eframe::egui::{self, FontData, FontDefinitions, FontFamily};
 use std::{
+    borrow::Cow,
     path::PathBuf,
-    sync::{Arc, LazyLock},
+    sync::{Arc, LazyLock, OnceLock},
 };
 
 const BUNDLED_CJK: &[u8] = include_bytes!("../../assets/fonts/LevelEditorCJK-Regular.otf");
@@ -12,7 +13,12 @@ const REGULAR: usize = 0;
 const BOLD: usize = 1;
 const LIGHT: usize = 2;
 
-static FONT_DEFINITIONS: LazyLock<[FontDefinitions; 2]> = LazyLock::new(|| {
+static FONT_DEFINITIONS: [LazyLock<FontDefinitions>; 2] = [
+    LazyLock::new(|| font_definitions(false)),
+    LazyLock::new(|| font_definitions(true)),
+];
+
+fn font_definitions(chinese: bool) -> FontDefinitions {
     let mut fonts = FontDefinitions::default();
     for (name, bytes) in [
         (
@@ -33,13 +39,29 @@ static FONT_DEFINITIONS: LazyLock<[FontDefinitions; 2]> = LazyLock::new(|| {
             .font_data
             .insert(name.into(), Arc::new(FontData::from_static(bytes)));
     }
-    for (chinese, names) in [(false, LATIN), (true, CHINESE)] {
+    for (cjk, names) in [(false, LATIN), (true, CHINESE)] {
         for (weight, name) in names.into_iter().enumerate() {
-            if let Some(font) = system_font(chinese, weight) {
+            if (!cjk || chinese || weight == REGULAR)
+                && let Some(font) = cached_system_font(cjk, weight)
+            {
                 fonts.font_data.insert(name.into(), Arc::new(font));
             }
         }
     }
+    static SYMBOLS: LazyLock<Option<Vec<u8>>> = LazyLock::new(load_system_symbols);
+    if let Some(bytes) = &*SYMBOLS {
+        fonts.font_data.insert(
+            "system-symbols".into(),
+            Arc::new(FontData::from_static(bytes)),
+        );
+        for family in fonts.families.values_mut() {
+            family.push("system-symbols".into());
+        }
+    }
+    with_priorities(fonts, chinese)
+}
+
+fn load_system_symbols() -> Option<Vec<u8>> {
     let symbols = if cfg!(target_os = "macos") {
         PathBuf::from("/System/Library/Fonts/Apple Symbols.ttf")
     } else if cfg!(target_os = "windows") {
@@ -47,22 +69,23 @@ static FONT_DEFINITIONS: LazyLock<[FontDefinitions; 2]> = LazyLock::new(|| {
     } else {
         PathBuf::from("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf")
     };
-    if let Ok(bytes) = std::fs::read(symbols)
-        && ttf_parser::Face::parse(&bytes, 0).is_ok()
-    {
-        fonts.font_data.insert(
-            "system-symbols".into(),
-            Arc::new(FontData::from_owned(bytes)),
-        );
-        for family in fonts.families.values_mut() {
-            family.push("system-symbols".into());
-        }
-    }
-    [
-        with_priorities(fonts.clone(), false),
-        with_priorities(fonts, true),
-    ]
-});
+    let bytes = std::fs::read(symbols).ok()?;
+    ttf_parser::Face::parse(&bytes, 0).ok()?;
+    Some(bytes)
+}
+
+fn cached_system_font(chinese: bool, weight: usize) -> Option<FontData> {
+    // Egui copies owned font bytes when creating its atlas. Lend it the cached face instead.
+    static FACES: [[OnceLock<Option<FontData>>; 3]; 2] =
+        [const { [const { OnceLock::new() }; 3] }; 2];
+    let face = FACES[usize::from(chinese)][weight]
+        .get_or_init(|| system_font(chinese, weight))
+        .as_ref()?;
+    Some(FontData {
+        font: Cow::Borrowed(&face.font),
+        ..*face
+    })
+}
 
 pub(crate) fn set_font_language(ctx: &egui::Context, chinese: bool) {
     ctx.set_fonts(FONT_DEFINITIONS[usize::from(chinese)].clone());
@@ -344,7 +367,17 @@ mod tests {
 
     #[test]
     fn chinese_roles_use_one_face_for_han_and_latin_and_keep_monospace() {
-        let [english, chinese] = &*FONT_DEFINITIONS;
+        let [english, chinese] = &FONT_DEFINITIONS;
+        for weight in [BOLD, LIGHT] {
+            assert!(!english.font_data.contains_key(CHINESE[weight]));
+        }
+        for fonts in [english, chinese] {
+            for (name, face) in &fonts.font_data {
+                if name.starts_with("system-") {
+                    assert!(matches!(face.font, std::borrow::Cow::Borrowed(_)), "{name}");
+                }
+            }
+        }
         for (family, weight) in [
             (FontFamily::Proportional, REGULAR),
             (FontFamily::Name("heading".into()), BOLD),
