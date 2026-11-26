@@ -1697,7 +1697,10 @@ fn brush_and_selection_tile_ghosts_use_source_anchors_and_keep_flipped_uvs() {
     project.json["defs"]["layers"] =
         serde_json::json!([{"uid":2,"type":"Tiles","tilePivotX":0.25,"tilePivotY":0.75}]);
     project.json["levels"][0]["layerInstances"] = serde_json::json!([{"layerDefUid":2,"__type":"Tiles","__gridSize":16,"__tilesetDefUid":1,"__pxTotalOffsetX":8,"__pxTotalOffsetY":4}]);
-    let group = serde_json::json!({"origin":[80,32],"size":[16,16],"layers":[{"layerDefUid":2,"origin":[80,32],"rect":[0,0,1,1],"clipboard":{"gridSize":16,"width":1,"height":1,"gridTiles":[{"px":[0,0],"src":[32,0],"t":1,"f":1,"a":1}]}}]});
+    let group = serde_json::json!({"origin":[80,32],"size":[16,16],"layers":[{"layerDefUid":2,"origin":[80,32],"rect":[0,0,1,1],"clipboard":{"gridSize":16,"width":1,"height":1,"gridTiles":[
+        {"px":[0,0],"src":[32,0],"t":1,"f":1,"a":1},
+        {"px":[10000,0],"src":[32,0],"t":1,"f":1,"a":1}
+    ]}}]});
     let ctx = egui::Context::default();
     let mut assets = Assets::default();
     let atlas = assets.embedded(&ctx).unwrap();
@@ -1707,9 +1710,36 @@ fn brush_and_selection_tile_ghosts_use_source_anchors_and_keep_flipped_uvs() {
         zoom: 1.,
     };
     let key = project.level_keys()[0];
-    for (mode, want) in [
-        (GhostMode::Move, [64., 32., 96., 64.]),
-        (GhostMode::Brush, [88., 8., 120., 40.]),
+    let image_size = atlas.size_vec2();
+    for (mode, flips, want, uv_left, uv_right) in [
+        (
+            GhostMode::Move,
+            [false; 2],
+            [64., 32., 96., 64.],
+            [64., 0.],
+            32.,
+        ),
+        (
+            GhostMode::Brush,
+            [false; 2],
+            [88., 8., 120., 40.],
+            [64., 0.],
+            32.,
+        ),
+        (
+            GhostMode::Copy,
+            [true; 2],
+            [80., 16., 112., 48.],
+            [32., 32.],
+            64.,
+        ),
+        (
+            GhostMode::Brush,
+            [true; 2],
+            [72., 56., 104., 88.],
+            [32., 32.],
+            64.,
+        ),
     ] {
         let out = ctx.run(
             egui::RawInput {
@@ -1726,7 +1756,7 @@ fn brush_and_selection_tile_ghosts_use_source_anchors_and_keep_flipped_uvs() {
                     key,
                     &group,
                     [0.; 2],
-                    [false; 2],
+                    flips,
                     mode,
                     &mut assets,
                 )
@@ -1744,15 +1774,115 @@ fn brush_and_selection_tile_ghosts_use_source_anchors_and_keep_flipped_uvs() {
             mesh.calc_bounds(),
             Rect::from_min_max(egui::pos2(want[0], want[1]), egui::pos2(want[2], want[3]))
         );
+        assert_eq!(mesh.vertices.len(), 4);
         assert_eq!(
             mesh.vertices[0].uv,
-            egui::pos2(64. / atlas.size()[0] as f32, 0.)
+            egui::pos2(uv_left[0] / image_size.x, uv_left[1] / image_size.y)
         );
-        assert_eq!(mesh.vertices[1].uv.x, 32. / atlas.size()[0] as f32);
+        assert_eq!(mesh.vertices[1].uv.x, uv_right / image_size.x);
         assert!(
             mesh.vertices
                 .iter()
                 .all(|vertex| vertex.color == Color32::WHITE)
+        );
+    }
+}
+
+#[test]
+#[ignore = "manual large tile selection preview performance comparison"]
+fn benchmark_tile_selection_preview() {
+    use serde_json::json;
+    use std::hash::{DefaultHasher, Hash, Hasher};
+
+    let mut project = Project::new();
+    let uid = project.add_layer("Ground", "Tiles", 16).unwrap();
+    let key = project.level_keys()[0];
+    project.json["defs"]["tilesets"] =
+        json!([{"uid":100,"relPath":null,"embedAtlas":"LdtkIcons","tileGridSize":32}]);
+    project.json["defs"]["layers"][0]["tilePivotX"] = json!(0.25);
+    project.json["defs"]["layers"][0]["tilePivotY"] = json!(0.75);
+    let layer = project.layer_mut(key, 0).unwrap();
+    layer["__tilesetDefUid"] = json!(100);
+    layer["__pxTotalOffsetX"] = json!(-9);
+    layer["__pxTotalOffsetY"] = json!(5);
+    let side = 160;
+    let tiles = (0..side * side)
+        .map(|index| {
+            json!({
+                "px":[index % side * 16,index / side * 16],
+                "src":[(index % 3) * 32,0],"t":index % 3,"f":index % 4,
+                "a":0.75,"d":[index],
+            })
+        })
+        .collect::<Vec<_>>();
+    let group = json!({
+        "geometryAware":true,"scaledGridSize":16,"origin":[8,5],"size":[side*16,side*16],
+        "layers":[{
+            "layerDefUid":uid,"origin":[8,5],"geometry":{"scale":1},"rect":[0,0,side,side],
+            "clipboard":{"gridSize":16,"width":side,"height":side,"gridTiles":tiles}
+        }]
+    });
+    let canvas = Rect::from_min_size(Pos2::ZERO, egui::vec2(1000., 700.));
+    let ctx = egui::Context::default();
+    let mut assets = Assets::default();
+    let atlas = assets.embedded(&ctx).unwrap();
+    for (case, zoom, mode, flips) in [
+        ("cropped", 4., GhostMode::Move, [true, false]),
+        ("brush", 4., GhostMode::Brush, [false, true]),
+        ("full", 0.25, GhostMode::Copy, [false; 2]),
+    ] {
+        let view = Viewport {
+            center: [1280., 1280.],
+            zoom,
+        };
+        let mut draw = || {
+            ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(canvas),
+                    ..Default::default()
+                },
+                |ctx| {
+                    draw_group_ghost(
+                        ctx,
+                        &ctx.layer_painter(egui::LayerId::background()),
+                        canvas,
+                        &project,
+                        &view,
+                        key,
+                        &group,
+                        [16., -16.],
+                        flips,
+                        mode,
+                        &mut assets,
+                    )
+                },
+            )
+        };
+        let expected = draw();
+        let mesh = expected
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Mesh(mesh) if mesh.texture_id == atlas.id() => Some(mesh),
+                _ => None,
+            })
+            .unwrap();
+        let count = mesh.vertices.len() / 4;
+        assert!(count > 100);
+        let mut hasher = DefaultHasher::new();
+        format!("{mesh:?}").hash(&mut hasher);
+        let mut times = [Duration::ZERO; 7];
+        for time in &mut times {
+            let start = Instant::now();
+            let output = draw();
+            *time = start.elapsed();
+            assert_eq!(output.shapes, expected.shapes);
+        }
+        times.sort_unstable();
+        eprintln!(
+            "Tile selection {case}: median {:?}; quads {count}; mesh {:016x}",
+            times[3],
+            hasher.finish()
         );
     }
 }

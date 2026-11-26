@@ -2158,20 +2158,20 @@ pub fn draw_group_ghost(
                 }
             }
         }
-        let mut tiles = values(&clipboard["gridTiles"]).to_vec();
-        for tile in &mut tiles {
-            let px = pair(&tile["px"], [0.; 2]);
-            let dst = moved(
-                [source_origin[0] + px[0], source_origin[1] + px[1]],
-                [grid; 2],
-            );
-            tile["px"] = serde_json::json!([dst[0] - offset[0], dst[1] - offset[1]]);
-            tile["f"] = serde_json::json!(
-                tile["f"].as_i64().unwrap_or(0) ^ i64::from(flips[0]) ^ (i64::from(flips[1]) << 1)
-            );
-        }
+        let tiles = values(&clipboard["gridTiles"]);
         if !tiles.is_empty() {
-            scene.ghost_tiles(&painter, layer, def, &tiles, transform, grid, mode);
+            let flip_mask = i64::from(flips[0]) | (i64::from(flips[1]) << 1);
+            scene.ghost_tiles(
+                &painter,
+                layer,
+                def,
+                tiles,
+                transform,
+                grid,
+                mode,
+                flip_mask,
+                |axis, pixel| moved_axis(axis, source_origin[axis] + pixel, grid) - offset[axis],
+            );
         }
         let source_offset = [
             source_origin[0] - entry["rect"][0].as_f64().unwrap_or(0.) as f32 * grid,

@@ -120,6 +120,8 @@ impl Scene<'_> {
         transform: Transform,
         grid: f32,
         mode: GhostMode,
+        flip_mask: i64,
+        remap_axis: impl Fn(usize, f32) -> f32,
     ) {
         let Some(atlas) = layer["__tilesetDefUid"]
             .as_i64()
@@ -131,42 +133,52 @@ impl Scene<'_> {
             return;
         };
         let tile_size = number(atlas, "tileGridSize", grid);
+        let brush = mode == GhostMode::Brush;
+        let size = if brush {
+            tile_size * transform.scale
+        } else {
+            tile_size
+        };
+        let adjustment = if brush {
+            let step = grid * (tile_size / grid).round().max(1.) * transform.scale;
+            ["tilePivotX", "tilePivotY"].map(|key| {
+                let pivot = number(def, key, 0.);
+                [-pivot * size, step - (1. - pivot) * size]
+            })
+        } else {
+            [[0., grid * transform.scale - size]; 2]
+        };
+        let screen_size: [f32; 2] = self.canvas.size().into();
+        let center: [f32; 2] =
+            std::array::from_fn(|axis| self.projection_origin[axis] + screen_size[axis] * 0.5);
+        let edges = |axis: usize, px: &[Value], flips: i64| {
+            let flipped = flips & (1 << axis) != 0;
+            let pixel = px.get(axis).and_then(Value::as_f64).unwrap_or(0.) as f32;
+            let local = remap_axis(axis, pixel);
+            // The previous JSON round trip represented non-finite coordinates as null.
+            let local = if local.is_finite() { local } else { 0. };
+            let mut anchor = transform.origin[axis] + local * transform.scale;
+            if brush || flipped {
+                anchor += adjustment[axis][usize::from(flipped)];
+            }
+            [anchor, anchor + size]
+                .map(|value| center[axis] + (value - self.view.center[axis]) * self.view.zoom)
+        };
+        let clip = painter.clip_rect();
         let image_size = texture.size_vec2();
         let mut mesh = Mesh::with_texture(texture.id());
         for tile in tiles {
-            let flips = tile["f"].as_i64().unwrap_or(0);
-            let mut anchor = transform.point(pair(&tile["px"], [0.; 2]));
-            let size = if mode == GhostMode::Brush {
-                tile_size * transform.scale
-            } else {
-                tile_size
-            };
-            for (axis, coordinate) in anchor.iter_mut().enumerate() {
-                let flipped = flips & (1 << axis) != 0;
-                if mode == GhostMode::Brush {
-                    let pivot = number(
-                        def,
-                        if axis == 0 {
-                            "tilePivotX"
-                        } else {
-                            "tilePivotY"
-                        },
-                        0.,
-                    );
-                    let step = grid * (tile_size / grid).round().max(1.) * transform.scale;
-                    *coordinate += if flipped {
-                        step - (1. - pivot) * size
-                    } else {
-                        -pivot * size
-                    };
-                } else if flipped {
-                    *coordinate += grid * transform.scale - size;
-                }
-            }
-            let dst = self.screen([anchor[0], anchor[1], anchor[0] + size, anchor[1] + size]);
-            if !dst.intersects(painter.clip_rect()) {
+            let flips = tile["f"].as_i64().unwrap_or(0) ^ flip_mask;
+            let px = values(tile_anchor(tile));
+            let [left, right] = edges(0, px, flips);
+            if !(left <= clip.right() && clip.left() <= right) {
                 continue;
             }
+            let [top, bottom] = edges(1, px, flips);
+            if !(top <= clip.bottom() && clip.top() <= bottom) {
+                continue;
+            }
+            let dst = Rect::from_min_max(egui::pos2(left, top), egui::pos2(right, bottom));
             let uv = tile_uv(
                 pair(&tile["src"], [0.; 2]),
                 [tile_size; 2],
