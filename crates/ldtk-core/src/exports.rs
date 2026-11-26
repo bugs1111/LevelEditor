@@ -12,7 +12,7 @@ pub use tiled::TiledFormat;
 
 use crate::project::{FilesToKeep, StagedSave, StagingWriter, absolute};
 use crate::{Error, Project, Result};
-use image::{GenericImage, Rgba, RgbaImage};
+use image::{GenericImage, Rgba, RgbaImage, codecs::png::PngEncoder};
 use indexmap::{IndexMap, IndexSet};
 use serde::Serialize;
 use serde_json::Value;
@@ -81,6 +81,28 @@ impl<'a> ExportBatch<'a> {
     ) -> Result<()> {
         self.prepare_target(&path)?;
         self.staged.add_writer(path, write)
+    }
+
+    fn add_png(&mut self, path: PathBuf, image: &RgbaImage) -> Result<()> {
+        self.prepare_target(&path)?;
+        let result = self
+            .staged
+            .add_writer(path.clone(), |writer| write_png(image, writer));
+        if let Err(Error::Io { source, .. }) = &result
+            && matches!(
+                source.kind(),
+                io::ErrorKind::PermissionDenied
+                    | io::ErrorKind::ReadOnlyFilesystem
+                    | io::ErrorKind::StorageFull
+                    | io::ErrorKind::QuotaExceeded
+            )
+        {
+            // An identical output can still be reused when there is no room or permission to stage.
+            let mut bytes = Vec::new();
+            write_png(image, &mut bytes).map_err(|error| Error::Invalid(error.to_string()))?;
+            return self.staged.add_parts(path, &[&bytes], true);
+        }
+        result
     }
 
     fn prepare_target(&mut self, path: &Path) -> Result<()> {
@@ -177,11 +199,62 @@ fn color(v: &str) -> Rgba<u8> {
         Rgba([(c >> 16) as u8, (c >> 8) as u8, c as u8, 255])
     }
 }
-fn encode_png(img: &RgbaImage) -> Result<Vec<u8>> {
-    let mut out = Cursor::new(Vec::new());
-    img.write_to(&mut out, image::ImageFormat::Png)
-        .map_err(|e| Error::Invalid(e.to_string()))?;
-    Ok(out.into_inner())
+fn write_png(img: &RgbaImage, writer: impl Write) -> io::Result<()> {
+    // The image encoder writes IEND in Drop, which can discard a write error.
+    struct PngOutput<W> {
+        writer: W,
+        error: Option<io::Error>,
+    }
+
+    impl<W: Write> Write for PngOutput<W> {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            if self.error.is_none() {
+                self.error = self.writer.write_all(bytes).err();
+            }
+            match &self.error {
+                Some(error) => Err(error.kind().into()),
+                None => Ok(bytes.len()),
+            }
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            self.writer.flush()
+        }
+    }
+
+    let mut output = PngOutput {
+        writer,
+        error: None,
+    };
+    let encoded = img
+        .write_with_encoder(PngEncoder::new(&mut output))
+        .map_err(|error| match error {
+            image::ImageError::IoError(source) => source,
+            other => io::Error::other(other),
+        });
+    output.error.map_or(encoded, Err)
+}
+
+#[cfg(test)]
+#[test]
+fn png_write_reports_footer_io_failure() {
+    struct RejectEndChunk;
+
+    impl Write for RejectEndChunk {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            if bytes == b"IEND" {
+                return Err(io::Error::other("cannot write PNG footer"));
+            }
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    let error = write_png(&RgbaImage::new(1, 1), RejectEndChunk).unwrap_err();
+    assert_eq!(error.to_string(), "cannot write PNG footer");
 }
 impl Project {
     pub fn export_csv(&self, dir: impl AsRef<Path>) -> Result<Vec<PathBuf>> {

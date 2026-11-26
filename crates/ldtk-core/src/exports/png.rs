@@ -1,6 +1,4 @@
-use super::{
-    ExportBatch, arr, color, embedded_atlas, encode_png, load_image_rgba, n, num, s, safe_name,
-};
+use super::{ExportBatch, arr, color, embedded_atlas, load_image_rgba, n, num, s, safe_name};
 use crate::{Error, LevelKey, Project, Result};
 use image::{Pixel, Rgba, RgbaImage};
 use serde_json::Value;
@@ -560,7 +558,7 @@ impl<'a> PngRenderer<'a> {
                 } else {
                     format!("{name}_bg.png")
                 };
-                batch.add(dir.join(filename), &encode_png(&background)?)?;
+                batch.add_png(dir.join(filename), &background)?;
             }
             match options.mode {
                 PngExportMode::OneImagePerLevel => Some(background),
@@ -607,12 +605,12 @@ impl<'a> PngRenderer<'a> {
                     composite(combined, &image, area, alpha, premultiplied);
                 }
                 if layer_file {
-                    batch.add(dir.join(format!("{file}.png")), &encode_png(&image)?)?;
+                    batch.add_png(dir.join(format!("{file}.png")), &image)?;
                 }
             }
             if typ == "IntGrid" && options.mode != PngExportMode::OneImagePerLevel {
                 let img = intgrid_image(li, def)?;
-                batch.add(dir.join(format!("{file}-int.png")), &encode_png(&img)?)?;
+                batch.add_png(dir.join(format!("{file}-int.png")), &img)?;
             }
         }
         if let Some(combined) = combined {
@@ -628,7 +626,7 @@ impl<'a> PngRenderer<'a> {
             } else {
                 name.to_owned()
             };
-            batch.add(dir.join(format!("{filename}.png")), &encode_png(&combined)?)?;
+            batch.add_png(dir.join(format!("{filename}.png")), &combined)?;
         }
         Ok(())
     }

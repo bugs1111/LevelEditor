@@ -105,6 +105,82 @@ fn png_skips_tiles_with_overflowing_coordinates() {
 }
 
 #[test]
+fn large_png_reexport_preserves_identical_output_and_replaces_changed_pixels() {
+    use image::{Rgba, RgbaImage};
+
+    let dir = tempfile::tempdir().unwrap();
+    let mut project = Project::new();
+    let key = project.level_keys()[0];
+    project.path = Some(dir.path().join("background.ldtk"));
+    project.resize_level(key, 256, 128, 0, 0).unwrap();
+    project.json["imageExportMode"] = json!("OneImagePerLevel");
+    project.json["exportLevelBg"] = json!(true);
+    project.level_mut(key).unwrap()["bgRelPath"] = json!("background.png");
+
+    let source = dir.path().join("background.png");
+    let mut state = 0x7A28B3D4u32;
+    let mut image = RgbaImage::from_fn(256, 128, |_, _| {
+        state ^= state << 13;
+        state ^= state >> 17;
+        state ^= state << 5;
+        let [r, g, b, _] = state.to_le_bytes();
+        Rgba([r, g, b, 255])
+    });
+    image.save(&source).unwrap();
+    let original = fs::read(&source).unwrap();
+    assert!(original.len() > 64 * 1024);
+
+    let target = dir.path().join("png");
+    let output = target.join("Level_0.png");
+    let paths = project.export_png(&target).unwrap();
+    assert_eq!(paths, std::slice::from_ref(&output));
+    assert_eq!(fs::read(&output).unwrap(), original);
+
+    let modified = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(946_684_800);
+    fs::File::options()
+        .write(true)
+        .open(&output)
+        .unwrap()
+        .set_modified(modified)
+        .unwrap();
+    assert_eq!(project.export_png(&target).unwrap(), paths);
+    assert_eq!(fs::metadata(&output).unwrap().modified().unwrap(), modified);
+    assert_eq!(fs::read(&output).unwrap(), original);
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        let writable = fs::metadata(&target).unwrap().permissions();
+        fs::set_permissions(&target, fs::Permissions::from_mode(0o555)).unwrap();
+        let identical = project.export_png(&target);
+        fs::set_permissions(&target, writable).unwrap();
+        assert_eq!(identical.unwrap(), paths);
+        assert_eq!(fs::metadata(&output).unwrap().modified().unwrap(), modified);
+    }
+
+    let updated_source = dir.path().join("updated-background.png");
+    image.get_pixel_mut(255, 127)[0] ^= 255;
+    image.save(&updated_source).unwrap();
+    let updated = fs::read(&updated_source).unwrap();
+    assert!(updated.len() > 64 * 1024);
+    assert_ne!(updated, original);
+    project.level_mut(key).unwrap()["bgRelPath"] = json!("updated-background.png");
+    let replaced = project
+        .export_png_with_progress(&target, |done, total| {
+            if (done, total) == (1, 1) {
+                assert_eq!(fs::read(&output).unwrap(), original);
+            }
+        })
+        .unwrap();
+    assert_eq!(replaced, paths);
+    assert_eq!(fs::read(&output).unwrap(), updated);
+    assert_eq!(fs::read(&source).unwrap(), original);
+    assert_eq!(fs::read(&updated_source).unwrap(), updated);
+    assert_eq!(fs::read_dir(&target).unwrap().count(), 1);
+}
+
+#[test]
 #[ignore = "manual PNG re-export performance and peak memory comparison"]
 fn benchmark_large_png_reexport() {
     use image::{Rgba, RgbaImage};

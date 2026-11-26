@@ -1,5 +1,5 @@
 use super::{
-    CSV_BYTE_TEXT, ExportBatch, ExportReport, arr, bytes, color, encode_png, n, num,
+    CSV_BYTE_TEXT, ExportBatch, ExportReport, arr, bytes, color, n, num,
     png::checked_image_dimensions, s, safe_name,
 };
 use crate::project::{asset_is_absolute, relative_to};
@@ -477,7 +477,7 @@ impl Project {
                         }
                     }
                 }
-                batch.add(path, &encode_png(&image)?)?;
+                batch.add_png(path, &image)?;
             }
             gids.intgrids
                 .insert(n(d, "uid"), IntGridGids::new(values, gid));
