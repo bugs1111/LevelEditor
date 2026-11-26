@@ -501,12 +501,15 @@ fn paint_marks(ui: &egui::Ui, canvas: Rect, view: &Viewport, marks: &[Mark]) {
         .copied()
         .filter(|&mark| bounds(mark).intersects(sample_rect));
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    for n in [rect.min.x, rect.min.y, rect.max.x, rect.max.y] {
-        n.to_bits().hash(&mut hasher);
-    }
     sampled.is_some().hash(&mut hasher);
     if let Some((first, step)) = sampled {
+        // Screen placement can move independently of the sampled level pixels.
+        size.hash(&mut hasher);
         for n in [first.x, first.y, step] {
+            n.to_bits().hash(&mut hasher);
+        }
+    } else {
+        for n in [rect.min.x, rect.min.y, rect.max.x, rect.max.y] {
             n.to_bits().hash(&mut hasher);
         }
     }
@@ -704,38 +707,41 @@ mod tests {
         app.settings.value["emptySpaceSelection"] = json!(false);
         app.select_all();
         assert!(app.selection_group.is_some());
-        let ctx = egui::Context::default();
         let canvas = Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1000., 700.));
-        let draw = |app: &EditorApp| {
-            ctx.run(
-                egui::RawInput {
-                    screen_rect: Some(canvas),
-                    ..Default::default()
-                },
-                |ctx| {
-                    egui::CentralPanel::default().show(ctx, |ui| {
-                        app.draw_selection_highlight(ui, canvas);
-                    });
-                },
-            )
-        };
-        for (case, zoom, pan) in [
-            ("cached", 4., false),
-            ("pan", 4., true),
-            ("sampled", 0.25, true),
+        for (case, zoom, center, pan) in [
+            ("cached", 4., [130., 130.], false),
+            ("pan", 4., [130., 130.], true),
+            ("sampled", 0.25, [130., 130.], true),
+            ("sampled-clipped", 0.25, [2600., 1024.], true),
         ] {
             app.viewport.zoom = zoom;
-            app.viewport.center = [130., 130.];
-            let initial = draw(&app);
-            let non_font_textures = |output: &egui::FullOutput| {
-                output
-                    .textures_delta
-                    .set
-                    .iter()
-                    .filter(|(id, _)| *id != egui::TextureId::default())
-                    .count()
+            app.viewport.center = center;
+            let ctx = egui::Context::default();
+            let draw = |app: &EditorApp| {
+                ctx.run(
+                    egui::RawInput {
+                        screen_rect: Some(canvas),
+                        ..Default::default()
+                    },
+                    |ctx| {
+                        egui::CentralPanel::default().show(ctx, |ui| {
+                            app.draw_selection_highlight(ui, canvas);
+                        });
+                    },
+                )
             };
-            assert!(non_font_textures(&initial) <= 1);
+            let initial = draw(&app);
+            let upload = |output: &egui::FullOutput| {
+                let mut textures = output.textures_delta.set.iter().filter_map(|(id, delta)| {
+                    let egui::ImageData::Color(image) = &delta.image;
+                    (*id != egui::TextureId::default()).then(|| image.clone())
+                });
+                let texture = textures.next();
+                assert!(textures.next().is_none());
+                texture
+            };
+            let mut image = upload(&initial).expect("initial outline texture");
+            let mut uploads = 0;
             let mut hasher = DefaultHasher::new();
             let mut times = [Duration::ZERO; 7];
             for time in &mut times {
@@ -745,19 +751,29 @@ mod tests {
                 let start = Instant::now();
                 let output = draw(&app);
                 *time = start.elapsed();
-                assert_eq!(non_font_textures(&output), usize::from(pan));
-                format!("{:?}", output.shapes).hash(&mut hasher);
-                for (id, delta) in &output.textures_delta.set {
-                    if *id != egui::TextureId::default() {
-                        let egui::ImageData::Color(image) = &delta.image;
-                        image.size.hash(&mut hasher);
-                        image.pixels.hash(&mut hasher);
-                    }
+                if let Some(next) = upload(&output) {
+                    image = next;
+                    uploads += 1;
                 }
+                let mesh = output
+                    .shapes
+                    .iter()
+                    .find_map(|shape| match &shape.shape {
+                        egui::Shape::Mesh(mesh)
+                            if mesh.texture_id != egui::TextureId::default() =>
+                        {
+                            Some(mesh)
+                        }
+                        _ => None,
+                    })
+                    .expect("outline image on canvas");
+                format!("{:?}{:?}", mesh.vertices, mesh.indices).hash(&mut hasher);
+                image.size.hash(&mut hasher);
+                image.pixels.hash(&mut hasher);
             }
             times.sort_unstable();
             eprintln!(
-                "Selection outline {case}: median {:?}; output {:016x}",
+                "Selection outline {case}: median {:?}; output {:016x}; uploads {uploads}",
                 times[3],
                 hasher.finish()
             );
@@ -980,6 +996,64 @@ mod interaction_tests {
                 ..view
             };
             assert!(has_outline_upload(&draw(&moved, BLUE)));
+        }
+    }
+
+    #[test]
+    fn sampled_outline_reuses_texture_when_only_the_screen_position_changes() {
+        let canvas = Rect::from_min_size(egui::Pos2::ZERO, Vec2::splat(100.));
+        let marks = [Mark::Rect(
+            Rect::from_min_size(egui::Pos2::ZERO, Vec2::splat(1200.)),
+            YELLOW,
+        )];
+        for density in [1., 2.] {
+            let ctx = egui::Context::default();
+            ctx.set_pixels_per_point(density);
+            let draw = |center| {
+                let view = Viewport {
+                    center,
+                    zoom: 0.0625,
+                };
+                ctx.run(
+                    egui::RawInput {
+                        screen_rect: Some(canvas),
+                        ..Default::default()
+                    },
+                    |ctx| {
+                        egui::CentralPanel::default()
+                            .show(ctx, |ui| paint_marks(ui, canvas, &view, &marks));
+                    },
+                )
+            };
+            let image = |output: &egui::FullOutput| {
+                output
+                    .shapes
+                    .iter()
+                    .find_map(|shape| match &shape.shape {
+                        egui::Shape::Mesh(mesh)
+                            if mesh.texture_id != egui::TextureId::default() =>
+                        {
+                            Some((mesh.texture_id, mesh.calc_bounds()))
+                        }
+                        _ => None,
+                    })
+                    .expect("selection outline image")
+            };
+            let initial = draw([600., 600.]);
+            let mut uploads = initial
+                .textures_delta
+                .set
+                .iter()
+                .filter(|(id, _)| *id != egui::TextureId::default());
+            let (_, delta) = uploads.next().expect("initial outline texture");
+            assert!(delta.image.width() < (canvas.width() * density) as usize);
+            let moved = draw([616., 568.]);
+            let (id, bounds) = image(&initial);
+            assert_eq!(image(&moved), (id, bounds.translate(egui::vec2(-1., 2.))));
+            assert!(moved.textures_delta.set.is_empty());
+            let clipped = draw([950., 600.]);
+            assert_ne!(image(&clipped).0, id);
+            assert_eq!(clipped.textures_delta.set.len(), 1);
         }
     }
     #[test]
