@@ -98,14 +98,14 @@ pub struct Project {
 }
 
 struct ExternalLevelCache {
-    settings: [Value; 3],
+    settings: [Value; 4],
     fingerprints: BTreeMap<PathBuf, ExternalLevelFingerprint>,
 }
 
 struct ExternalLevelFingerprint {
     length: usize,
     bytes: u64,
-    // Only a value parsed from these bytes can be reused when reopening a save.
+    // Only share a parsed revision on reload. An editable value can differ from its saved JSON.
     parsed: bool,
     // A write via Arc::make_mut detaches this reference. The cache never owns a level.
     level: Weak<Value>,
@@ -118,13 +118,18 @@ struct PublishedDocuments {
     reusable_levels: BTreeMap<PathBuf, (Arc<Value>, usize, u64)>,
 }
 
+enum LoadSource<'a> {
+    Disk(Option<&'a ExternalLevelCache>),
+    Published(PublishedDocuments),
+}
+
 enum SaveVerification<'a> {
     DocumentDestinations(&'a FilesystemSnapshot),
     AllWatchedFiles(&'a FilesystemSnapshot),
 }
 
-fn external_level_save_settings(root: &Value) -> [&Value; 3] {
-    ["jsonStyle", "minifyJson", "flags"].map(|key| &root[key])
+fn external_level_save_settings(root: &Value) -> [&Value; 4] {
+    ["jsonVersion", "jsonStyle", "minifyJson", "flags"].map(|key| &root[key])
 }
 
 impl ExternalLevelCache {
@@ -229,12 +234,24 @@ impl Project {
         path: impl AsRef<Path>,
         progress: impl FnMut(usize, usize),
     ) -> Result<Self> {
-        Self::read_documents(path.as_ref(), progress, None, None)
+        Self::read_documents(path.as_ref(), progress, None, LoadSource::Disk(None))
     }
 
     /// Bind the watch baseline to the parsed documents and track resources even if unavailable.
     pub fn load_with_snapshot(path: impl AsRef<Path>) -> Result<(Self, FilesystemSnapshot)> {
-        Self::load_snapshot_with_documents(path.as_ref(), None, None)
+        Self::load_snapshot_with_documents(path.as_ref(), LoadSource::Disk(None), None)
+    }
+
+    /// Reread the bound project, sharing previously parsed external levels that still match disk.
+    pub fn reload_with_snapshot(&mut self) -> Result<FilesystemSnapshot> {
+        let path = self
+            .path
+            .as_deref()
+            .ok_or_else(|| Error::Invalid("project has no file path".into()))?;
+        let source = LoadSource::Disk(self.external_level_cache.as_deref());
+        let (project, snapshot) = Self::load_snapshot_with_documents(path, source, None)?;
+        *self = project;
+        Ok(snapshot)
     }
 
     /// Record the exact bytes parsed for the project and its external levels.
@@ -242,15 +259,15 @@ impl Project {
         path: impl AsRef<Path>,
         progress: impl FnMut(usize, usize),
     ) -> Result<(Self, FilesystemSnapshot)> {
-        Self::read_document_snapshot(path.as_ref(), progress, None)
+        Self::read_document_snapshot(path.as_ref(), progress, LoadSource::Disk(None))
     }
 
     fn load_snapshot_with_documents(
         path: &Path,
-        published: Option<PublishedDocuments>,
+        source: LoadSource<'_>,
         previous: Option<&FilesystemSnapshot>,
     ) -> Result<(Self, FilesystemSnapshot)> {
-        let (project, mut snapshot) = Self::read_document_snapshot(path, |_, _| {}, published)?;
+        let (project, mut snapshot) = Self::read_document_snapshot(path, |_, _| {}, source)?;
         if let Some(previous) = previous {
             snapshot.carry_resource_watches(previous);
             project.refresh_resource_watches(&mut snapshot, &BTreeSet::new());
@@ -271,10 +288,10 @@ impl Project {
     fn read_document_snapshot(
         path: &Path,
         progress: impl FnMut(usize, usize),
-        published: Option<PublishedDocuments>,
+        source: LoadSource<'_>,
     ) -> Result<(Self, FilesystemSnapshot)> {
         let mut snapshot = FilesystemSnapshot::default();
-        let project = Self::read_documents(path, progress, Some(&mut snapshot), published)?;
+        let project = Self::read_documents(path, progress, Some(&mut snapshot), source)?;
         Ok((project, snapshot))
     }
 
@@ -282,27 +299,20 @@ impl Project {
         path: &Path,
         mut progress: impl FnMut(usize, usize),
         mut snapshot: Option<&mut FilesystemSnapshot>,
-        published: Option<PublishedDocuments>,
+        source: LoadSource<'_>,
     ) -> Result<Self> {
         let path = absolute(path)?;
-        let (json, bytes, mut reusable_levels) = match published {
-            Some(saved) => (
-                parse_json_at(&path, &saved.root)?,
-                saved.root,
-                saved.reusable_levels,
-            ),
-            None => {
-                let (json, bytes) = read_json_with_bytes(&path)?;
-                (json, bytes, BTreeMap::new())
-            }
+        let (bytes, mut reusable_levels, cache) = match source {
+            LoadSource::Disk(cache) => (read_bytes(&path)?, BTreeMap::new(), cache),
+            LoadSource::Published(saved) => (saved.root, saved.reusable_levels, None),
         };
+        let json = parse_json_at(&path, &bytes)?;
         if let Some(snapshot) = &mut snapshot {
             snapshot.record_document(path.clone(), Some(bytes_fingerprint(&bytes)));
         }
         drop(bytes);
         let mut project = Self::from_json(json)?;
-        let cache_level = project.json["jsonVersion"] == "1.5.4";
-        let fingerprint_levels = cache_level || snapshot.is_some();
+        let fingerprint_levels = snapshot.is_some() || project.json["jsonVersion"] == "1.5.4";
         let mut fingerprints = BTreeMap::new();
         let keys = project.level_keys();
         let mut total = 0;
@@ -333,7 +343,7 @@ impl Project {
                 {
                     (value, length, Some(fingerprint))
                 } else {
-                    let (value, bytes) = match read_json_with_bytes(&external) {
+                    match read_external_level(&external, fingerprint_levels, cache) {
                         Ok(result) => result,
                         Err(error) if project.json["externalLevels"] == true => {
                             let (repaired, value, bytes) =
@@ -346,12 +356,14 @@ impl Project {
                             project.repaired_external_paths = true;
                             rel = repaired;
                             external = base.join(&rel);
-                            (value, bytes)
+                            (
+                                Arc::new(value),
+                                bytes.len(),
+                                fingerprint_levels.then(|| bytes_fingerprint(&bytes)),
+                            )
                         }
                         Err(error) => return Err(error),
-                    };
-                    let fingerprint = fingerprint_levels.then(|| bytes_fingerprint(&bytes));
-                    (Arc::new(value), bytes.len(), fingerprint)
+                    }
                 };
                 if project.external_levels.0.contains_key(&rel) {
                     return Err(Error::Invalid(format!(
@@ -367,17 +379,15 @@ impl Project {
                     if let Some(snapshot) = &mut snapshot {
                         snapshot.record_document(absolute(&external)?, Some(fingerprint));
                     }
-                    if cache_level {
-                        fingerprints.insert(
-                            external,
-                            ExternalLevelFingerprint {
-                                length,
-                                bytes: fingerprint,
-                                parsed: true,
-                                level: Arc::downgrade(&value),
-                            },
-                        );
-                    }
+                    fingerprints.insert(
+                        external,
+                        ExternalLevelFingerprint {
+                            length,
+                            bytes: fingerprint,
+                            parsed: true,
+                            level: Arc::downgrade(&value),
+                        },
+                    );
                 }
                 project.external_levels.0.insert(rel, value);
                 done += 1;
@@ -1026,11 +1036,35 @@ pub(crate) fn read_json(path: &Path) -> Result<Value> {
     read_json_with_bytes(path).map(|(value, _)| value)
 }
 
-fn read_json_with_bytes(path: &Path) -> Result<(Value, Vec<u8>)> {
-    let bytes = fs::read(path).map_err(|source| Error::Io {
+fn read_external_level(
+    path: &Path,
+    fingerprint_levels: bool,
+    cache: Option<&ExternalLevelCache>,
+) -> Result<(Arc<Value>, usize, Option<u64>)> {
+    let bytes = read_bytes(path)?;
+    let fingerprint = fingerprint_levels.then(|| bytes_fingerprint(&bytes));
+    let cached = cache
+        .and_then(|cache| cache.fingerprints.get(path))
+        .filter(|entry| {
+            entry.parsed && entry.length == bytes.len() && Some(entry.bytes) == fingerprint
+        })
+        .and_then(|entry| entry.level.upgrade());
+    let value = match cached {
+        Some(value) => value,
+        None => Arc::new(parse_json_at(path, &bytes)?),
+    };
+    Ok((value, bytes.len(), fingerprint))
+}
+
+fn read_bytes(path: &Path) -> Result<Vec<u8>> {
+    fs::read(path).map_err(|source| Error::Io {
         path: path.to_path_buf(),
         source,
-    })?;
+    })
+}
+
+fn read_json_with_bytes(path: &Path) -> Result<(Value, Vec<u8>)> {
+    let bytes = read_bytes(path)?;
     Ok((parse_json_at(path, &bytes)?, bytes))
 }
 
@@ -2045,8 +2079,11 @@ mod save_transaction_tests {
                 Project::load(&path).unwrap().json["defaultLevelBgColor"],
                 "#123456"
             );
-            let reopened =
-                Project::load_snapshot_with_documents(&path, Some(published), Some(&snapshot));
+            let reopened = Project::load_snapshot_with_documents(
+                &path,
+                LoadSource::Published(published),
+                Some(&snapshot),
+            );
             assert!(matches!(reopened, Err(Error::FilesChanged(paths)) if paths == [atlas]));
         }
     }
@@ -2158,9 +2195,10 @@ mod save_transaction_tests {
         let mut bytes = fs::read(target).unwrap();
         bytes.push(b'\n');
         fs::write(target, bytes).unwrap();
-        let error = Project::load_snapshot_with_documents(&path, Some(published), None)
-            .err()
-            .expect("changed reused level must fail reload");
+        let error =
+            Project::load_snapshot_with_documents(&path, LoadSource::Published(published), None)
+                .err()
+                .expect("changed reused level must fail reload");
         assert!(
             error
                 .to_string()
@@ -2207,9 +2245,10 @@ mod save_transaction_tests {
             )
             .unwrap();
         assert_eq!(fs::read_to_string(&target).unwrap(), changed);
-        let error = Project::load_snapshot_with_documents(&path, Some(published), None)
-            .err()
-            .expect("changed untouched level must fail reload");
+        let error =
+            Project::load_snapshot_with_documents(&path, LoadSource::Published(published), None)
+                .err()
+                .expect("changed untouched level must fail reload");
         assert!(
             error
                 .to_string()
@@ -2921,14 +2960,15 @@ impl Project {
         let mut published = PublishedDocuments::default();
         self.save_if_unchanged_capturing_documents(path, snapshot, Some(&mut published))?;
         let path = self.path.as_deref().expect("published document path");
-        Ok(
-            Self::load_snapshot_with_documents(path, Some(published), Some(snapshot)).map(
-                |(project, snapshot)| {
-                    *self = project;
-                    snapshot
-                },
-            ),
+        Ok(Self::load_snapshot_with_documents(
+            path,
+            LoadSource::Published(published),
+            Some(snapshot),
         )
+        .map(|(project, snapshot)| {
+            *self = project;
+            snapshot
+        }))
     }
 
     fn save_if_unchanged_capturing_documents(

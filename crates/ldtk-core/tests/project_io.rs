@@ -3,6 +3,66 @@ use serde_json::json;
 use std::fs;
 
 #[test]
+fn reload_reuses_only_external_levels_still_matching_their_parsed_bytes() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("map.ldtk");
+    for version in ["1.5.3", "1.5.4"] {
+        let files = ["stable.ldtkl", "edited.ldtkl", "replaced.ldtkl"];
+        let levels = files.map(|name| json!({"externalRelPath":name}));
+        fs::write(
+            &path,
+            json!({"jsonVersion":version, "levels":levels}).to_string(),
+        )
+        .unwrap();
+        for name in files {
+            fs::write(dir.path().join(name), br#"{"value":1}"#).unwrap();
+        }
+        let (mut project, _) = Project::load_with_snapshot(&path).unwrap();
+        project.external_levels.get_mut(files[1]).unwrap()["value"] = json!(2);
+        let before = project.clone();
+        let replaced = dir.path().join(files[2]);
+        fs::write(&replaced, b"{").unwrap();
+        assert!(project.reload_with_snapshot().is_err());
+        assert_eq!(project.external_levels, before.external_levels);
+
+        fs::write(&replaced, br#"{"value":3}"#).unwrap();
+        let snapshot = project.reload_with_snapshot().unwrap();
+        assert!(snapshot.changed_files().unwrap().is_empty());
+        assert!(std::ptr::eq(
+            &project.external_levels[files[0]],
+            &before.external_levels[files[0]]
+        ));
+        assert_eq!(project.external_levels[files[1]]["value"], 1);
+        assert_eq!(project.external_levels[files[2]]["value"], 3);
+    }
+}
+
+#[test]
+fn upgrading_the_project_version_reencodes_cached_external_levels() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("Map.ldtk");
+    let mut project = Project::new();
+    project.json["jsonStyle"] = json!("Minified");
+    project.set_external_levels(true).unwrap();
+    project.save(&path).unwrap();
+
+    let external = directory.path().join(
+        project.json["levels"][0]["externalRelPath"]
+            .as_str()
+            .unwrap(),
+    );
+    let canonical = fs::read(&external).unwrap();
+    fs::write(&external, [canonical.as_slice(), b" \n"].concat()).unwrap();
+    project.json["jsonVersion"] = json!("1.5.3");
+    fs::write(&path, project.json.to_string()).unwrap();
+
+    let (mut loaded, _) = Project::load_with_snapshot(&path).unwrap();
+    loaded.json["jsonVersion"] = json!("1.5.4");
+    loaded.save(&path).unwrap();
+    assert_eq!(fs::read(external).unwrap(), canonical);
+}
+
+#[test]
 fn world_level_iteration_keeps_original_keys_when_an_external_level_is_unavailable() {
     let mut project = Project::new();
     project.json["worlds"] = json!([{

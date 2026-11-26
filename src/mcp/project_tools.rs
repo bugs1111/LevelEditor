@@ -91,7 +91,13 @@ impl Session {
                 if self.dirty && args.get("discard_changes") != Some(&Value::Bool(true)) {
                     return Err("Unsaved changes. Save first or pass discard_changes=true.".into());
                 }
-                *self = Self::open(self.path.clone()).map_err(|error| error.to_string())?;
+                self.snapshot = Some(
+                    self.project
+                        .reload_with_snapshot()
+                        .map_err(|error| error.to_string())?,
+                );
+                self.level_keys.take();
+                self.dirty = false;
                 Ok(self.info())
             }
             _ if self.snapshot.is_none() => {
