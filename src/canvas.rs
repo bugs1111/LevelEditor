@@ -1230,8 +1230,12 @@ impl Scene<'_> {
         else {
             return;
         };
-        let mut colors_by_tile = std::collections::HashMap::new();
         let tags = values(&tileset["enumTags"]);
+        let enum_values = values(&en["values"]);
+        if tags.is_empty() || enum_values.is_empty() {
+            return;
+        }
+        let mut colors_by_tile = std::collections::HashMap::new();
         let offset = [
             number(def, "tilePivotX", 0.) * grid,
             number(def, "tilePivotY", 0.) * grid,
@@ -1254,10 +1258,27 @@ impl Scene<'_> {
         };
         let box_size = grid - 1.;
         let stroke_width = transform.scale * self.view.zoom;
+        let position = |tile| {
+            let [x, y] = pair(tile_anchor(tile), [0.; 2]);
+            [x + offset[0], y + offset[1]]
+        };
+        let intersects = |[x, y]: [f32; 2], inset: usize| {
+            let inset = inset as f32;
+            rect(
+                [x + 0.5, y + 0.5],
+                [x + inset + 0.5 + box_size, y + inset + 0.5 + box_size],
+            )
+            .intersects(clip)
+        };
         for tile in tile_groups.into_iter().flatten() {
+            let clipped_position = cull.then(|| position(tile));
+            // Every enum value can contribute at most one border.
+            if clipped_position.is_some_and(|pos| !intersects(pos, enum_values.len() - 1)) {
+                continue;
+            }
             let id = &tile["t"];
             let colors = colors_by_tile.entry(id).or_insert_with(|| {
-                values(&en["values"])
+                enum_values
                     .iter()
                     .filter(|value| {
                         tags.iter().any(|tag| {
@@ -1271,20 +1292,11 @@ impl Scene<'_> {
             if colors.is_empty() {
                 continue;
             }
-            let [x, y] = pair(&tile["px"], [0.; 2]);
-            let [x, y] = [x + offset[0], y + offset[1]];
-            if cull {
-                // Use the innermost box's start and the outermost box's width as
-                // a conservative bound, including cells clipped at fractional zoom.
-                let inset = (colors.len() - 1) as f32;
-                let bounds = rect(
-                    [x + 0.5, y + 0.5],
-                    [x + inset + 0.5 + box_size, y + inset + 0.5 + box_size],
-                );
-                if !bounds.intersects(clip) {
-                    continue;
-                }
+            let at = clipped_position.unwrap_or_else(|| position(tile));
+            if cull && !intersects(at, colors.len() - 1) {
+                continue;
             }
+            let [x, y] = at;
             for (n, &color) in colors.iter().enumerate() {
                 let n = n as f32;
                 let min = [x + n + 0.5, y + n + 0.5];
