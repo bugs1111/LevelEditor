@@ -10,6 +10,35 @@ pub(super) enum CommandEvent {
     Error(String),
 }
 
+fn read_output(mut stream: impl Read, mut emit: impl FnMut(String) -> bool) {
+    let mut bytes = [0; 4096];
+    let mut pending = 0;
+    loop {
+        let count = match stream.read(&mut bytes[pending..]) {
+            Ok(0) => break,
+            Ok(count) => count,
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(_) => break,
+        };
+        let end = pending + count;
+        // Only the final one to three bytes can start a character that needs another read.
+        let complete = (end.saturating_sub(3)..end)
+            .find(|&start| {
+                std::str::from_utf8(&bytes[start..end])
+                    .is_err_and(|error| error.valid_up_to() == 0 && error.error_len().is_none())
+            })
+            .unwrap_or(end);
+        if complete > 0 && !emit(String::from_utf8_lossy(&bytes[..complete]).into_owned()) {
+            return;
+        }
+        bytes.copy_within(complete..end, 0);
+        pending = end - complete;
+    }
+    if pending > 0 {
+        emit(String::from_utf8_lossy(&bytes[..pending]).into_owned());
+    }
+}
+
 pub(super) fn process(command: &str, cwd: Option<&std::path::Path>) -> Result<Command, String> {
     let args = command_args::parse(command);
     let Some(name) = args.first().filter(|s| !s.is_empty()) else {
@@ -91,31 +120,19 @@ impl EditorApp {
                 ]
                 .into_iter()
                 .filter_map(|(stream, error)| {
-                    stream.map(|mut stream| {
+                    stream.map(|stream| {
                         let tx = tx.clone();
                         let repaint = repaint.clone();
                         std::thread::spawn(move || {
-                            let mut bytes = [0u8; 4096];
-                            loop {
-                                match stream.read(&mut bytes) {
-                                    Ok(0) | Err(_) => break,
-                                    Ok(count) => {
-                                        if tx
-                                            .send(CommandEvent::Output(
-                                                String::from_utf8_lossy(&bytes[..count])
-                                                    .into_owned(),
-                                                error,
-                                            ))
-                                            .is_err()
-                                        {
-                                            break;
-                                        }
-                                        if let Some(ctx) = &repaint {
-                                            ctx.request_repaint();
-                                        }
-                                    }
+                            read_output(stream, |text| {
+                                if tx.send(CommandEvent::Output(text, error)).is_err() {
+                                    return false;
                                 }
-                            }
+                                if let Some(ctx) = &repaint {
+                                    ctx.request_repaint();
+                                }
+                                true
+                            });
                         })
                     })
                 })
@@ -178,7 +195,7 @@ impl EditorApp {
                         ),
                         None => locale::tr_ctx(ctx, "Command terminated with signal").into(),
                     };
-                    self.command_output.push_back((self.status.clone(), false));
+                    self.append_command_status(false);
                     if code == Some(0) && !self.command_cancelled {
                         self.command_open = false;
                     }
@@ -194,13 +211,22 @@ impl EditorApp {
                     self.status =
                         locale::format_ctx(ctx, "Command failed ({error})", &[("error", detail)]);
                     self.status_error = true;
-                    self.command_output.push_back((self.status.clone(), true));
+                    self.append_command_status(true);
                 }
             }
         }
         if self.command_result.is_some() {
             ctx.request_repaint_after(std::time::Duration::from_millis(30));
         }
+    }
+
+    fn append_command_status(&mut self, error: bool) {
+        if let Some((last, _)) = self.command_output.back_mut()
+            && !last.ends_with('\n')
+        {
+            last.push('\n');
+        }
+        self.command_output.push_back((self.status.clone(), error));
     }
 
     pub(super) fn command_dialog(&mut self, ctx: &egui::Context) {
@@ -226,12 +252,22 @@ impl EditorApp {
                             .max_height(max_height)
                             .show(ui, |ui| {
                                 ui.set_min_height(160_f32.min(max_height));
+                                let mut log = egui::text::LayoutJob::default();
+                                let font = egui::TextStyle::Monospace.resolve(ui.style());
                                 for (text, error) in &self.command_output {
-                                    ui.label(RichText::new(text).monospace().color(if *error {
+                                    let color = if *error {
                                         theme::ACCENT
                                     } else {
                                         Color32::WHITE
-                                    }));
+                                    };
+                                    log.append(
+                                        text,
+                                        0.,
+                                        egui::TextFormat::simple(font.clone(), color),
+                                    );
+                                }
+                                if !log.is_empty() {
+                                    ui.label(log);
                                 }
                             });
                     });
@@ -259,9 +295,30 @@ impl EditorApp {
     }
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn streamed_utf8_matches_whole_output_at_every_read_boundary() {
+        let bytes = [
+            "开始 café 😀\r\n".as_bytes(),
+            &[0xff, 0xe2, 0x82, b'x', 0x80],
+            "完成".as_bytes(),
+            &[0xf0, 0x9f, 0x92],
+        ]
+        .concat();
+        for split in 0..=bytes.len() {
+            let (first, second) = bytes.split_at(split);
+            let mut output = String::new();
+            read_output(first.chain(second), |text| {
+                output.push_str(&text);
+                true
+            });
+            assert_eq!(output, String::from_utf8_lossy(&bytes), "split at {split}");
+        }
+    }
+
     #[cfg(unix)]
     #[test]
     fn command_output_streams_before_completion_and_cancel_terminates_it() {

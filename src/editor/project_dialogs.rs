@@ -955,9 +955,11 @@ mod tests {
         frame(&mut app, &ctx, vec![]);
         let (sender, receiver) = std::sync::mpsc::channel();
         app.command_result = Some(receiver);
-        sender
-            .send(command_tools::CommandEvent::Output("Close".into(), false))
-            .unwrap();
+        for (text, stderr) in [("Cl", false), ("ose\n", false), ("错误详情", true)] {
+            sender
+                .send(command_tools::CommandEvent::Output(text.into(), stderr))
+                .unwrap();
+        }
         sender
             .send(command_tools::CommandEvent::Done(Some(7)))
             .unwrap();
@@ -966,13 +968,13 @@ mod tests {
 
         assert_dialog_header(&dialog, "项目命令");
         label(&dialog, &app.command_title);
-        label(&dialog, "命令已退出，退出码为 7");
+        label(&dialog, "Close\n错误详情\n命令已退出，退出码为 7");
         label(&dialog, "终止进程");
-        label(&dialog, "Close");
         click(&mut app, &ctx, label(&dialog, "关闭").center());
         assert!(!app.command_open);
 
         app.command_open = true;
+        app.command_output.clear();
         let (sender, receiver) = std::sync::mpsc::channel();
         app.command_result = Some(receiver);
         sender
