@@ -217,10 +217,16 @@ fn bounds(mark: Mark) -> Rect {
     }
 }
 fn raster_pixels(marks: &[Mark], xs: &[f32], ys: &[f32]) -> Vec<[u8; 4]> {
+    let ([Some(&left), Some(&right)], [Some(&top), Some(&bottom)]) =
+        ([xs.first(), xs.last()], [ys.first(), ys.last()])
+    else {
+        return Vec::new();
+    };
+    let samples = Rect::from_min_max(egui::pos2(left, top), egui::pos2(right, bottom));
     let mut pixels = vec![[0_u8; 4]; xs.len() * ys.len()];
     for &mark in marks {
         let b = bounds(mark);
-        if !b.is_positive() {
+        if !b.is_positive() || !b.intersects(samples) {
             continue;
         }
         let min_y = ys.partition_point(|&y| y < b.top());
@@ -296,13 +302,18 @@ fn raster(marks: &[Mark], rect: Rect, size: [usize; 2]) -> egui::ColorImage {
 
 // Two outline passes need the sampled level texel and its neighbours out to
 // two pixels. Skip the gaps between these neighbourhoods when zoomed out.
+const SAMPLE_MARGIN: i32 = 2;
+const SAMPLE_STRIP_ROWS: usize = 16;
+
+fn sample_center(start: f32, step: f32, index: usize) -> f32 {
+    (start + index as f32 * step).floor() + 0.5
+}
+
 fn sample_axis(start: f32, step: f32, len: usize) -> (Vec<f32>, Vec<usize>) {
-    let centers: Vec<_> = (0..len)
-        .map(|i| (start + i as f32 * step).floor() + 0.5)
-        .collect();
+    let centers: Vec<_> = (0..len).map(|i| sample_center(start, step, i)).collect();
     let mut axis = Vec::with_capacity(len);
     for &center in &centers {
-        for offset in -2..=2 {
+        for offset in -SAMPLE_MARGIN..=SAMPLE_MARGIN {
             let texel = center + offset as f32;
             if axis.last().is_none_or(|&last| last < texel) {
                 axis.push(texel);
@@ -329,9 +340,8 @@ fn raster_sampled(
     let mut pixels = Vec::with_capacity(size[0] * size[1]);
     // Process neighbouring rows together, with a fresh two-pixel margin on
     // each strip, so temporary storage stays bounded by the window width.
-    const STRIP_ROWS: usize = 16;
-    for top in (0..size[1]).step_by(STRIP_ROWS) {
-        let count = STRIP_ROWS.min(size[1] - top);
+    for top in (0..size[1]).step_by(SAMPLE_STRIP_ROWS) {
+        let count = SAMPLE_STRIP_ROWS.min(size[1] - top);
         let (ys, rows) = sample_axis(first.y + top as f32 * step, step, count);
         let strip = raster_pixels(marks, &xs, &ys);
         for row in rows {
@@ -405,6 +415,26 @@ fn paint_marks(ui: &egui::Ui, canvas: Rect, view: &Viewport, marks: &[Mark]) {
         return;
     }
     let size = [rect.width() as usize, rect.height() as usize];
+    let sample_rect = if let Some((first, step)) = sampled {
+        let left = sample_center(first.x, step, 0);
+        let right = sample_center(first.x, step, size[0] - 1);
+        let mut samples = Rect::NOTHING;
+        for top in (0..size[1]).step_by(SAMPLE_STRIP_ROWS) {
+            let start = first.y + top as f32 * step;
+            let rows = SAMPLE_STRIP_ROWS.min(size[1] - top);
+            samples = samples.union(Rect::from_min_max(
+                egui::pos2(left, sample_center(start, step, 0)),
+                egui::pos2(right, sample_center(start, step, rows - 1)),
+            ));
+        }
+        samples.expand(SAMPLE_MARGIN as f32)
+    } else {
+        rect
+    };
+    let contributing_marks = marks
+        .iter()
+        .copied()
+        .filter(|&mark| bounds(mark).intersects(sample_rect));
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     for n in [rect.min.x, rect.min.y, rect.max.x, rect.max.y] {
         n.to_bits().hash(&mut hasher);
@@ -415,8 +445,8 @@ fn paint_marks(ui: &egui::Ui, canvas: Rect, view: &Viewport, marks: &[Mark]) {
             n.to_bits().hash(&mut hasher);
         }
     }
-    for m in marks {
-        match *m {
+    for mark in contributing_marks.clone() {
+        match mark {
             Mark::Rect(r, c) => {
                 0.hash(&mut hasher);
                 for n in [r.min.x, r.min.y, r.max.x, r.max.y].into_iter().chain(c) {
@@ -437,9 +467,10 @@ fn paint_marks(ui: &egui::Ui, canvas: Rect, view: &Viewport, marks: &[Mark]) {
     let texture = if let Some(cache) = cached.filter(|c| c.key == key) {
         cache.texture
     } else {
+        let marks: Vec<_> = contributing_marks.collect();
         let image = match sampled {
-            Some((first, step)) => raster_sampled(marks, size, first, step),
-            None => raster(marks, rect, size),
+            Some((first, step)) => raster_sampled(&marks, size, first, step),
+            None => raster(&marks, rect, size),
         };
         let texture = ui.ctx().load_texture(
             "LDtk selection PixelOutline",
@@ -623,8 +654,12 @@ mod tests {
                 },
             )
         };
-        app.viewport.zoom = 4.;
-        for pan in [false, true] {
+        for (case, zoom, pan) in [
+            ("cached", 4., false),
+            ("pan", 4., true),
+            ("sampled", 0.25, true),
+        ] {
+            app.viewport.zoom = zoom;
             app.viewport.center = [130., 130.];
             let initial = draw(&app);
             let non_font_textures = |output: &egui::FullOutput| {
@@ -656,7 +691,6 @@ mod tests {
                 }
             }
             times.sort_unstable();
-            let case = if pan { "pan" } else { "cached" };
             eprintln!(
                 "Selection outline {case}: median {:?}; output {:016x}",
                 times[3],
@@ -820,6 +854,67 @@ mod interaction_tests {
         view.center[0] = 48.;
         let clipped = run(&view);
         assert_eq!(clipped.textures_delta.set.len(), 1);
+    }
+
+    #[test]
+    fn offscreen_mark_changes_reuse_both_outline_texture_modes() {
+        let canvas = Rect::from_min_size(egui::Pos2::ZERO, Vec2::splat(100.));
+        let view = Viewport {
+            center: [500., 50.],
+            zoom: 0.0625,
+        };
+        let visible = Mark::Rect(
+            Rect::from_min_max(egui::pos2(5., 5.), egui::pos2(40., 40.)),
+            YELLOW,
+        );
+        let far = Rect::from_min_max(egui::pos2(3000., 5.), egui::pos2(3040., 40.));
+        for max_texture_side in [1024, 4096] {
+            let ctx = egui::Context::default();
+            let draw = |view: &Viewport, color| {
+                ctx.run(
+                    egui::RawInput {
+                        screen_rect: Some(canvas),
+                        max_texture_side: Some(max_texture_side),
+                        ..Default::default()
+                    },
+                    |ctx| {
+                        egui::CentralPanel::default().show(ctx, |ui| {
+                            paint_marks(ui, canvas, view, &[visible, Mark::Rect(far, color)]);
+                        });
+                    },
+                )
+            };
+            let has_outline_upload = |output: &egui::FullOutput| {
+                output
+                    .textures_delta
+                    .set
+                    .iter()
+                    .any(|(id, _)| *id != egui::TextureId::default())
+            };
+            let initial = draw(&view, YELLOW);
+            let texture_width = initial
+                .textures_delta
+                .set
+                .iter()
+                .find(|(id, _)| *id != egui::TextureId::default())
+                .unwrap()
+                .1
+                .image
+                .width();
+            assert_eq!(
+                texture_width <= canvas.width() as usize,
+                max_texture_side == 1024
+            );
+            assert!(
+                !has_outline_upload(&draw(&view, BLUE)),
+                "max side {max_texture_side}"
+            );
+            let moved = Viewport {
+                center: [3020., 50.],
+                ..view
+            };
+            assert!(has_outline_upload(&draw(&moved, BLUE)));
+        }
     }
     #[test]
     fn fit_zoom_projects_selection_from_the_rounded_backing_origin() {
