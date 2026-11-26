@@ -56,6 +56,17 @@ fn blend_rgba(d: &mut Rgba<u8>, c: Rgba<u8>, alpha: f64) {
         *d = c;
         return;
     }
+    if d[3] == 0 && a > 0. {
+        // Over a transparent pixel, straight RGB comes entirely from the source.
+        *d = Rgba([c[0], c[1], c[2], (a * 255.).round() as u8]);
+        return;
+    }
+    if d[3] == 255 && a > 0. {
+        for i in 0..3 {
+            d[i] = (c[i] as f64 * a + d[i] as f64 * (1. - a)).round() as u8;
+        }
+        return;
+    }
     let da = d[3] as f64 / 255.;
     let out = a + da * (1. - a);
     if out > 0. {
@@ -778,4 +789,23 @@ pub(super) fn checked_image_dimensions(width: i64, height: i64) -> Option<(u32, 
         return None;
     }
     Some((width as u32, height as u32))
+}
+
+#[test]
+fn straight_alpha_blend_preserves_rgb_and_rounds_opacity() {
+    let source = Rgba([43, 31, 11, 255]);
+    for (dest_alpha, opacity, expected) in [
+        (0, 0., [12, 34, 56, 0]),
+        (0, 0.001, [43, 31, 11, 0]),
+        (0, 0.5, [43, 31, 11, 128]),
+        (128, 0.5, [33, 32, 26, 192]),
+        (255, 0.5, [28, 33, 34, 255]),
+    ] {
+        let mut pixel = Rgba([12, 34, 56, dest_alpha]);
+        blend_rgba(&mut pixel, source, opacity);
+        assert_eq!(
+            pixel.0, expected,
+            "dest alpha {dest_alpha}, opacity {opacity}"
+        );
+    }
 }
