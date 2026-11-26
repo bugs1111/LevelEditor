@@ -199,14 +199,17 @@ fn layer_response_preserves_escaped_json_for_every_protocol() {
     let path = dir.path().join("escaping.ldtk");
     let mut project = Project::new();
     let key = project.level_keys()[0];
+    project.resize_level(key, 64 * 16, 64 * 16, 0, 0).unwrap();
     project.add_layer("Terrain", "IntGrid", 16).unwrap();
     let level_iid = project.level(key).unwrap()["iid"]
         .as_str()
         .unwrap()
         .to_owned();
     let layer = project.layer_mut(key, 0).unwrap();
+    // The digit-heavy response exercises the fast text encoder.
+    layer["intGridCsv"].as_array_mut().unwrap().fill(json!(123));
     layer["extension"] = json!({
-        "text":"关卡 \"quote\"\nline\\path\t\0",
+        "text":"关卡 🎨 \"quote\"\nline\\path\t\r\0\u{0008}\u{000C}\u{001F}",
         "list":[-129,0,255,256,4294967296u64,u64::MAX,1.25,null]
     });
     let args = json!({"level_iid":level_iid,"layer_iid":layer["iid"]});
@@ -241,25 +244,46 @@ fn layer_response_preserves_escaped_json_for_every_protocol() {
 #[test]
 #[ignore = "manual large MCP response performance comparison"]
 fn benchmark_large_mcp_layer_response() {
+    for kind in ["IntGrid", "Tiles"] {
+        benchmark_layer_response(kind);
+    }
+}
+
+fn benchmark_layer_response(kind: &str) {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("large-layer.ldtk");
     let mut project = Project::new();
     let key = project.level_keys()[0];
-    project.resize_level(key, 512 * 16, 256 * 16, 0, 0).unwrap();
-    project.add_layer("Terrain", "IntGrid", 16).unwrap();
+    let rows = if kind == "IntGrid" { 256 } else { 64 };
+    project
+        .resize_level(key, 512 * 16, rows * 16, 0, 0)
+        .unwrap();
+    project.add_layer("Terrain", kind, 16).unwrap();
     let level_iid = project.level(key).unwrap()["iid"]
         .as_str()
         .unwrap()
         .to_owned();
     let layer = project.layer_mut(key, 0).unwrap();
     layer["opaque_extra"] = json!("关卡 \"quoted\"\ntext\\path");
-    for (i, value) in layer["intGridCsv"]
-        .as_array_mut()
-        .unwrap()
-        .iter_mut()
-        .enumerate()
-    {
-        *value = (i % 256).into();
+    if kind == "IntGrid" {
+        for (i, value) in layer["intGridCsv"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .enumerate()
+        {
+            *value = (i % 256).into();
+        }
+    } else {
+        layer["gridTiles"] = (0..512 * rows)
+            .map(|index| {
+                json!({
+                    "px":[index % 512 * 16, index / 512 * 16],
+                    "src":[index % 8 * 16, 0],"f":index % 4,"t":index % 8,"a":1.,"d":[index]
+                })
+            })
+            .collect::<Vec<_>>()
+            .into();
     }
     let args = json!({"level_iid":level_iid,"layer_iid":layer["iid"]});
     let layer = project.layer(key, 0).unwrap();
@@ -295,7 +319,7 @@ fn benchmark_large_mcp_layer_response() {
     client.close();
     times.sort_unstable();
     eprintln!(
-        "Large MCP layer response: median {:?}; samples {times:?}",
+        "Large MCP {kind} layer response: median {:?}; samples {times:?}",
         times[2]
     );
 }

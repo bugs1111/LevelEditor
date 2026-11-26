@@ -49,13 +49,12 @@ impl Response<'_> {
                     &mut *buffer,
                     SmallIntegerFormatter(&SMALL_INTEGERS),
                 ))?;
-                let text = std::str::from_utf8(buffer).expect("JSON encoder writes UTF-8");
                 writer.write_all(br#"{"jsonrpc":"2.0","id":"#)?;
                 serde_json::to_writer(&mut writer, id)?;
                 writer.write_all(
                     br#","result":{"isError":false,"content":[{"type":"text","text":"#,
                 )?;
-                serde_json::to_writer(&mut writer, text)?;
+                write_json_as_text(&mut writer, buffer)?;
                 writer.write_all(b"}]")?;
                 if structured {
                     writer.write_all(br#","structuredContent":"#)?;
@@ -69,6 +68,41 @@ impl Response<'_> {
             }
         }
     }
+}
+
+fn write_json_as_text(writer: &mut impl Write, json: &[u8]) -> io::Result<()> {
+    // The JSON serializer already emits UTF-8 and escapes control bytes.
+    // Only quotes and backslashes need another escape in the MCP text string.
+    const LOW_BITS: u64 = u64::from_le_bytes([0x7f; 8]);
+    const QUOTES: u64 = u64::from_le_bytes([b'"'; 8]);
+    const BACKSLASHES: u64 = u64::from_le_bytes([b'\\'; 8]);
+    // The addition sets the high bit for each nonzero low part without
+    // carrying between bytes. The inverse flags exactly the zero bytes.
+    let zero_bytes = |word: u64| !(((word & LOW_BITS) + LOW_BITS) | word | LOW_BITS);
+    writer.write_all(b"\"")?;
+    let mut start = 0;
+    let (words, tail) = json.as_chunks::<8>();
+    for (block, bytes) in words.iter().enumerate() {
+        let word = u64::from_le_bytes(*bytes);
+        let mut escapes = zero_bytes(word ^ QUOTES) | zero_bytes(word ^ BACKSLASHES);
+        while escapes != 0 {
+            let index = block * 8 + escapes.trailing_zeros() as usize / 8;
+            writer.write_all(&json[start..index])?;
+            writer.write_all(&[b'\\', json[index]])?;
+            start = index + 1;
+            escapes &= escapes - 1;
+        }
+    }
+    for (offset, &byte) in tail.iter().enumerate() {
+        if matches!(byte, b'"' | b'\\') {
+            let index = words.len() * 8 + offset;
+            writer.write_all(&json[start..index])?;
+            writer.write_all(&[b'\\', byte])?;
+            start = index + 1;
+        }
+    }
+    writer.write_all(&json[start..])?;
+    writer.write_all(b"\"")
 }
 
 pub fn run(path: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
