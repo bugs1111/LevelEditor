@@ -371,7 +371,7 @@ fn layer_transform_for(
         scale,
     }
 }
-fn editing_transform(
+pub(super) fn editing_transform(
     project: &Project,
     key: LevelKey,
     index: usize,

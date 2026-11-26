@@ -35,13 +35,19 @@ fn group_marks(project: &Project, key: LevelKey, view: &Viewport, group: &Value)
             continue;
         };
         let grid = number(layer, "__gridSize", 16.);
-        let at = |local| -> egui::Pos2 {
-            canvas::layer_to_world(project, key, index, view, local).into()
-        };
+        let transform = canvas::editing_transform(project, key, index, view);
+        let at = |local| -> egui::Pos2 { transform.map_or(local, |t| t.point(local)).into() };
         let scale = (at([1., 0.]).x - at([0., 0.]).x).abs();
         let left = entry["rect"][0].as_i64().unwrap_or(0);
         let top = entry["rect"][1].as_i64().unwrap_or(0);
         let width = entry["clipboard"]["width"].as_i64().unwrap_or(0);
+        let tile_cell = |tile: &Value| {
+            let px = canvas::values(canvas::tile_anchor(tile));
+            [0, 1].map(|axis| {
+                (px.get(axis).and_then(Value::as_f64).unwrap_or(0.) / f64::from(grid)).floor()
+                    as i64
+            })
+        };
         let mut cells = std::collections::BTreeSet::new();
         if width > 0 {
             for value in entry["cellMask"]
@@ -58,22 +64,15 @@ fn group_marks(project: &Project, key: LevelKey, view: &Viewport, group: &Value)
             .into_iter()
             .flatten()
         {
-            cells.insert([
-                left + (tile["px"][0].as_f64().unwrap_or(0.) / f64::from(grid)).floor() as i64,
-                top + (tile["px"][1].as_f64().unwrap_or(0.) / f64::from(grid)).floor() as i64,
-            ]);
+            let [x, y] = tile_cell(tile);
+            cells.insert([left + x, top + y]);
         }
         let columns = number(layer, "__cWid", 0.) as i64;
         let occupied_tiles = layer["gridTiles"]
             .as_array()
             .into_iter()
             .flatten()
-            .map(|tile| {
-                [
-                    (tile["px"][0].as_f64().unwrap_or(0.) / f64::from(grid)).floor() as i64,
-                    (tile["px"][1].as_f64().unwrap_or(0.) / f64::from(grid)).floor() as i64,
-                ]
-            })
+            .map(tile_cell)
             .collect::<HashSet<_>>();
         let live_entities = layer["entityInstances"]
             .as_array()
@@ -235,6 +234,18 @@ fn raster_pixels(marks: &[Mark], xs: &[f32], ys: &[f32]) -> Vec<[u8; 4]> {
         let opaque = (color[3] == 1.).then(|| color.map(|channel| (channel * 255.).round() as u8));
         let min_x = xs.partition_point(|&x| x < b.left());
         let max_x = xs.partition_point(|&x| x <= b.right());
+        if min_x == max_x {
+            continue;
+        }
+        if let Mark::Rect(..) = mark
+            && let Some(color) = opaque
+        {
+            for row in min_y..max_y {
+                let start = row * xs.len();
+                pixels[start + min_x..start + max_x].fill(color);
+            }
+            continue;
+        }
         for (row, &y) in ys[min_y..max_y].iter().enumerate() {
             let start = (row + min_y) * xs.len() + min_x;
             let end = start + max_x - min_x;
@@ -571,6 +582,89 @@ pub(super) fn draw_move_arrow(
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    #[ignore = "manual large selection outline performance comparison"]
+    fn benchmark_large_selection_outline() {
+        use std::hash::{DefaultHasher, Hash, Hasher};
+        use std::time::{Duration, Instant};
+
+        let mut project = Project::new();
+        let key = project.level_keys()[0];
+        let side = 128;
+        project
+            .resize_level(key, side * 16, side * 16, 0, 0)
+            .unwrap();
+        project.add_layer("Ground", "Tiles", 16).unwrap();
+        let tiles = (0..(side * side))
+            .filter(|index| index % 5 != 0)
+            .map(
+                |index| json!({"px":[index % side * 16,index / side * 16],"src":[0,0],"f":0,"t":0}),
+            )
+            .collect::<Vec<_>>();
+        project.layer_mut(key, 0).unwrap()["gridTiles"] = tiles.into();
+        let mut app = EditorApp::empty();
+        app.set_project(project);
+        app.settings.value["emptySpaceSelection"] = json!(false);
+        app.select_all();
+        assert!(app.selection_group.is_some());
+        let ctx = egui::Context::default();
+        let canvas = Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1000., 700.));
+        let draw = |app: &EditorApp| {
+            ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(canvas),
+                    ..Default::default()
+                },
+                |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        app.draw_selection_highlight(ui, canvas);
+                    });
+                },
+            )
+        };
+        app.viewport.zoom = 4.;
+        for pan in [false, true] {
+            app.viewport.center = [130., 130.];
+            let initial = draw(&app);
+            let non_font_textures = |output: &egui::FullOutput| {
+                output
+                    .textures_delta
+                    .set
+                    .iter()
+                    .filter(|(id, _)| *id != egui::TextureId::default())
+                    .count()
+            };
+            assert!(non_font_textures(&initial) <= 1);
+            let mut hasher = DefaultHasher::new();
+            let mut times = [Duration::ZERO; 7];
+            for time in &mut times {
+                if pan {
+                    app.viewport.center[0] += 11.;
+                }
+                let start = Instant::now();
+                let output = draw(&app);
+                *time = start.elapsed();
+                assert_eq!(non_font_textures(&output), usize::from(pan));
+                format!("{:?}", output.shapes).hash(&mut hasher);
+                for (id, delta) in &output.textures_delta.set {
+                    if *id != egui::TextureId::default() {
+                        let egui::ImageData::Color(image) = &delta.image;
+                        image.size.hash(&mut hasher);
+                        image.pixels.hash(&mut hasher);
+                    }
+                }
+            }
+            times.sort_unstable();
+            let case = if pan { "pan" } else { "cached" };
+            eprintln!(
+                "Selection outline {case}: median {:?}; output {:016x}",
+                times[3],
+                hasher.finish()
+            );
+        }
+    }
+
     #[test]
     fn sparse_selected_cells_leave_the_hole_unmarked_and_points_are_circles() {
         let mut p = Project::new();
