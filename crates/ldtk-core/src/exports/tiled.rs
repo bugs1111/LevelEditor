@@ -8,7 +8,7 @@ use crate::{Error, Project, Result};
 use image::RgbaImage;
 use serde_json::{Value, json};
 use std::borrow::Cow;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, hash_map::Entry};
 use std::fmt::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
@@ -878,41 +878,16 @@ fn tiled_tile_layers<'a>(
     let td_uid = li["__tilesetDefUid"]
         .as_i64()
         .or_else(|| def["tilesetDefUid"].as_i64());
-    let mut ground = Vec::new();
-    let mut stacks = Vec::<TileStack>::new();
-    if let Some(base) = td_uid.and_then(|uid| gids.get(&uid)) {
-        let area = cw * ch;
-        let mut next_stack = HashMap::new();
-        for t in tiles {
-            let x = t["px"][0].as_i64().unwrap_or(0) / grid;
-            let y = t["px"][1].as_i64().unwrap_or(0) / grid;
-            if x < 0 || y < 0 || x >= cw as i64 || y >= ch as i64 {
-                continue;
-            }
-            let coord = x as usize + y as usize * cw;
-            let f = n(t, "f");
-            let gid = (*base + n(t, "t") as u32)
-                | if f & 1 != 0 { 0x80000000 } else { 0 }
-                | if f & 2 != 0 { 0x40000000 } else { 0 };
-            if ground.is_empty() {
-                ground.resize(area, 0);
-            }
-            if ground[coord] == 0 {
-                ground[coord] = gid;
-                continue;
-            }
-            let next = next_stack.entry(coord).or_insert(0);
-            let index = *next;
-            *next += usize::from(gid != 0);
-            if index == stacks.len() {
-                stacks.push(TileStack::new(area));
-            }
-            stacks[index].insert(coord, gid, area);
-        }
-    }
+    let area = cw * ch;
+    // Sparse ground needs both the stored cells and an index of occupied positions.
+    let sparse_ground = area > 256 && tiles.len() <= area / 16;
+    let (ground, stacks) = match td_uid.and_then(|uid| gids.get(&uid)).copied() {
+        Some(base) if sparse_ground => collect_tiled_stacks::<true>(tiles, [cw, ch], grid, base),
+        Some(base) => collect_tiled_stacks::<false>(tiles, [cw, ch], grid, base),
+        None => (None, Vec::new()),
+    };
     let single = stacks.is_empty();
-    (!ground.is_empty())
-        .then_some(TileStack::Dense(ground))
+    ground
         .into_iter()
         .chain(stacks)
         .enumerate()
@@ -924,6 +899,67 @@ fn tiled_tile_layers<'a>(
             };
             (name, data)
         })
+}
+
+// Specialize once per layer so dense tile scans retain their direct array lookup.
+fn collect_tiled_stacks<const SPARSE: bool>(
+    tiles: &[Value],
+    [cw, ch]: [usize; 2],
+    grid: i64,
+    base: u32,
+) -> (Option<TileStack>, Vec<TileStack>) {
+    let area = cw * ch;
+    let mut dense = Vec::new();
+    let mut sparse = Vec::new();
+    let mut has_tiles = false;
+    let mut stacks = Vec::<TileStack>::new();
+    let mut next_stack = HashMap::new();
+    for tile in tiles {
+        let x = tile["px"][0].as_i64().unwrap_or(0) / grid;
+        let y = tile["px"][1].as_i64().unwrap_or(0) / grid;
+        if x < 0 || y < 0 || x >= cw as i64 || y >= ch as i64 {
+            continue;
+        }
+        let coord = x as usize + y as usize * cw;
+        let f = n(tile, "f");
+        let gid = (base + n(tile, "t") as u32)
+            | if f & 1 != 0 { 0x80000000 } else { 0 }
+            | if f & 2 != 0 { 0x40000000 } else { 0 };
+        let next = if SPARSE {
+            has_tiles = true;
+            match next_stack.entry(coord) {
+                Entry::Occupied(entry) => entry.into_mut(),
+                Entry::Vacant(entry) => {
+                    if gid != 0 {
+                        sparse.push((coord, gid));
+                        entry.insert(0);
+                    }
+                    continue;
+                }
+            }
+        } else {
+            if dense.is_empty() {
+                dense.resize(area, 0);
+            }
+            if dense[coord] == 0 {
+                dense[coord] = gid;
+                continue;
+            }
+            next_stack.entry(coord).or_insert(0)
+        };
+        let index = *next;
+        *next += usize::from(gid != 0);
+        if index == stacks.len() {
+            stacks.push(TileStack::new(area));
+        }
+        stacks[index].insert(coord, gid, area);
+    }
+    let ground = if SPARSE {
+        has_tiles.then_some(TileStack::Sparse(sparse))
+    } else {
+        (!dense.is_empty()).then_some(TileStack::Dense(dense))
+    };
+    (ground, stacks)
 }
 
 const EMPTY_TILE_BLOCK_BYTES: usize = 64 * 1024;

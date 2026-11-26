@@ -1164,7 +1164,7 @@ fn sparse_tmx_preserves_csv_boundaries_and_does_not_replace_identical_output() {
         .map(|data| data.split_once("</data>").unwrap().0)
         .collect();
     assert_eq!(layers.len(), 3);
-    for (layer, data) in layers.into_iter().enumerate() {
+    for (layer, data) in layers.iter().enumerate() {
         assert!(
             data.split(',')
                 .eq((0..area).map(|index| match (layer, index) {
@@ -1175,6 +1175,28 @@ fn sparse_tmx_preserves_csv_boundaries_and_does_not_replace_identical_output() {
                     (1, i) if i >= area - 2 => "2",
                     _ => "0",
                 }))
+        );
+    }
+    let output_json = dir.path().join("tiled-json");
+    project
+        .export_tiled_format_with_report_progress(
+            &output_json,
+            ldtk_core::exports::TiledFormat::Tmj,
+            |_, _| {},
+        )
+        .unwrap();
+    let tmj: Value =
+        serde_json::from_slice(&fs::read(output_json.join("Level_0.tmj")).unwrap()).unwrap();
+    let json_layers = tmj["layers"].as_array().unwrap();
+    assert_eq!(json_layers.len(), layers.len());
+    for (json_layer, csv) in json_layers.iter().zip(layers) {
+        assert!(
+            json_layer["data"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|gid| gid.as_u64().unwrap())
+                .eq(csv.split(',').map(|gid| gid.parse::<u64>().unwrap()))
         );
     }
     let earlier = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(946_684_800);
