@@ -48,16 +48,28 @@ impl PendingSync {
             return;
         }
         let name = key.split_once('.').map_or(key, |(_, value)| value);
-        let remove = if key.contains('.') {
-            format!("REMOVE {key} FROM PROJECT")
-        } else {
-            format!("REMOVE {key} ENUM FROM PROJECT")
+        let remove = locale::format(
+            ui,
+            if key.contains('.') {
+                "REMOVE {key} FROM PROJECT"
+            } else {
+                "REMOVE {key} ENUM FROM PROJECT"
+            },
+            &[("key", key)],
+        );
+        let rename = |ui: &egui::Ui, target: &str| {
+            locale::format(
+                ui,
+                "Rename {name} ➜ {target}",
+                &[("name", name), ("target", target)],
+            )
         };
+        let prompt = locale::tr(ui, "-- Choose an action --");
         let mut choice = self.actions.get(key).cloned();
         let summary = match &choice {
-            Some(SyncAction::Rename(target)) => format!("Rename {name} ➜ {target}"),
+            Some(SyncAction::Rename(target)) => rename(ui, target),
             Some(SyncAction::Remove) => remove.clone(),
-            None => "-- Choose an action --".to_owned(),
+            None => prompt.to_owned(),
         };
         let text = RichText::new(summary).size(14.).color(if choice.is_none() {
             theme::TEXT.gamma_multiply(0.6)
@@ -68,12 +80,12 @@ impl PendingSync {
             .width(ui.available_width().clamp(90., 348.))
             .selected_text(text)
             .show_ui(ui, |ui| {
-                ui.selectable_value(&mut choice, None, "-- Choose an action --");
+                ui.selectable_value(&mut choice, None, prompt);
                 for target in options {
                     ui.selectable_value(
                         &mut choice,
                         Some(SyncAction::Rename(target.to_owned())),
-                        format!("Rename {name} ➜ {target}"),
+                        rename(ui, target),
                     );
                 }
                 ui.selectable_value(&mut choice, Some(SyncAction::Remove), remove);
@@ -103,7 +115,11 @@ fn change_badge(ui: &mut egui::Ui, added: bool) {
         .corner_radius(2.)
         .inner_margin(egui::Margin::symmetric(4, 1))
         .show(ui, |ui| {
-            ui.label(RichText::new(label).size(10.).color(foreground));
+            ui.label(
+                RichText::new(locale::tr(ui, label))
+                    .size(10.)
+                    .color(foreground),
+            );
         });
 }
 
@@ -205,7 +221,7 @@ fn sync_changes(ui: &mut egui::Ui, project: &Project, pending: &mut PendingSync)
             ui.horizontal(|ui| {
                 ui.label(RichText::new(name).color(theme::TEXT.gamma_multiply(0.62)));
                 ui.label(
-                    RichText::new("UNCHANGED")
+                    RichText::new(locale::tr(ui, "UNCHANGED"))
                         .color(theme::TEXT.gamma_multiply(0.55))
                         .size(10.)
                         .italics(),
@@ -214,7 +230,7 @@ fn sync_changes(ui: &mut egui::Ui, project: &Project, pending: &mut PendingSync)
         }
     }
     if added.is_empty() && removed.is_empty() && pending.report.changed.is_empty() {
-        ui.label("The source is already up to date.");
+        ui.label(locale::tr(ui, "The source is already up to date."));
     }
 }
 
@@ -282,11 +298,11 @@ impl EditorApp {
             .to_string_lossy();
         let message =
             if report.added.is_empty() && report.removed.is_empty() && report.changed.is_empty() {
-                "Enums are already up-to-date."
+                "{name}: Enums are already up-to-date."
             } else {
-                "Enums updated successfully."
+                "{name}: Enums updated successfully."
             };
-        self.status = format!("{name}: {message}");
+        self.status = self.settings.language().format(message, &[("name", &name)]);
         if let Some(snapshot) = &mut self.file_snapshot {
             let _ = snapshot.refresh_resource_file(path);
         }
@@ -311,7 +327,7 @@ impl EditorApp {
                 egui::Frame::new().inner_margin(20).show(ui, |ui| {
                     let width = width - 40.;
                     ui.set_width(width);
-                    ui.label(RichText::new("The following file has been modified externally and should be updated:").size(14.667).color(Color32::WHITE));
+                    ui.label(RichText::new(locale::tr(ui, "The following file has been modified externally and should be updated:")).size(14.667).color(Color32::WHITE));
                     ui.add_space(14.);
                     egui::Frame::new()
                         .fill(theme::DARK)
@@ -322,7 +338,7 @@ impl EditorApp {
                             ui.label(RichText::new(relative).size(14.667).strong().color(Color32::WHITE));
                         });
                     ui.add_space(14.);
-                    ui.label(RichText::new("What do you want to do?").size(14.667).color(Color32::WHITE));
+                    ui.label(RichText::new(locale::tr(ui, "What do you want to do?")).size(14.667).color(Color32::WHITE));
                     ui.add_space(16.);
                     ui.horizontal(|ui| {
                         ui.spacing_mut().item_spacing.x = 2.;
@@ -370,7 +386,7 @@ impl EditorApp {
             .show(ctx, |ui| {
                 ui.set_width(width);
                 ui.spacing_mut().item_spacing = Vec2::ZERO;
-                project_dialogs::dialog_title(ui, &format!("SYNCING \"{name}\"..."), width, theme::LIGHT);
+                project_dialogs::dialog_title(ui, &locale::format(ui, "SYNCING \"{name}\"...", &[("name", &name)]), width, theme::LIGHT);
                 egui::Frame::new().inner_margin(20).show(ui, |ui| {
                     let width = width - 40.;
                     ui.set_width(width);
@@ -380,7 +396,7 @@ impl EditorApp {
                         .inner_margin(8)
                         .show(ui, |ui| {
                             ui.set_width(width - 18.);
-                            ui.label(RichText::new("This file was updated by an external program and you need to make some decisions with the changes that happened.").size(14.667).color(Color32::WHITE));
+                            ui.label(RichText::new(locale::tr(ui, "This file was updated by an external program and you need to make some decisions with the changes that happened.")).size(14.667).color(Color32::WHITE));
                         });
                     ui.add_space(16.);
                     let height = (ctx.content_rect().height() - 205.).clamp(100., 300.);
@@ -457,7 +473,7 @@ impl EditorApp {
             .show(ctx, |ui| {
                 ui.set_width(width);
                 ui.spacing_mut().item_spacing = egui::vec2(2., 0.);
-                ui.label(RichText::new("WARNING: removing this external enum will also remove ALL the external enums from the same source! Please note that this will also affect all Entities using any of these enums in ALL levels.").size(14.).color(Color32::WHITE));
+                ui.label(RichText::new(locale::tr(ui, "WARNING: removing this external enum will also remove ALL the external enums from the same source! Please note that this will also affect all Entities using any of these enums in ALL levels.")).size(14.).color(Color32::WHITE));
                 ui.add_space(16.);
                 ui.horizontal(|ui| {
                     let size = egui::vec2((width - 2.) / 2., 35.);
@@ -470,9 +486,10 @@ impl EditorApp {
         if confirm {
             let filename = source.rsplit(['/', '\\']).next().unwrap_or(&source);
             if self
-                .edit_recoverable(&format!("{filename} enums deleted"), |project| {
-                    project.remove_external_enum_source(&source)
-                })
+                .edit_recoverable(
+                    &locale::format_ctx(ctx, "{name} enums deleted", &[("name", filename)]),
+                    |project| project.remove_external_enum_source(&source),
+                )
                 .is_some()
             {
                 self.definition_uid = None;
@@ -489,7 +506,8 @@ impl EditorApp {
         extensions: &[&str],
     ) -> Option<PathBuf> {
         let project = self.project.as_ref().and_then(|p| p.path.clone());
-        let mut dialog = FileDialog::new().add_filter("File", extensions);
+        let mut dialog =
+            FileDialog::new().add_filter(self.settings.language().translate("File"), extensions);
         if let Some(dir) = self.settings.ui_dir(project.as_deref(), ui_id, None) {
             dialog = dialog.set_directory(dir);
         }

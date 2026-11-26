@@ -857,6 +857,59 @@ mod tests {
     }
 
     #[test]
+    fn chinese_enum_sync_preserves_identifiers_when_renaming_a_used_value() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("Commands.json");
+        std::fs::write(&path, r#"{"Action":["Close"]}"#).unwrap();
+        let mut project = Project::new();
+        project.path = Some(dir.path().join("Map.ldtk"));
+        project.sync_external_enums(&path).unwrap();
+        let field = project
+            .add_field_definition(None, "Command", "ExternEnum.Action", false)
+            .unwrap();
+        let level = project.level_keys()[0];
+        project
+            .set_field_editor_value(level, None, field, json!("Close"))
+            .unwrap();
+        std::fs::write(&path, r#"{"Action":["Save"]}"#).unwrap();
+
+        let ctx = egui::Context::default();
+        theme::configure(&ctx);
+        ctx.style_mut(|style| style.animation_time = 0.);
+        let mut app = EditorApp::empty();
+        app.settings.value["language"] = json!("zh-CN");
+        app.set_project(project);
+        app.resource_scan(&ctx);
+        frame(&mut app, &ctx, vec![]);
+        let reload = frame(&mut app, &ctx, vec![]);
+        label(&reload, "文件已修改");
+        label(&reload, "Commands.json");
+        click(&mut app, &ctx, label(&reload, "重新加载").center());
+        frame(&mut app, &ctx, vec![]);
+        let sync = frame(&mut app, &ctx, vec![]);
+        label(&sync, "正在同步“Commands.json”…");
+        for text in ["已添加", "已移除", "Close", "Save"] {
+            label(&sync, text);
+        }
+        click(&mut app, &ctx, label(&sync, "请选择操作").center());
+        let choices = frame(&mut app, &ctx, vec![]);
+        label(&choices, "从项目中移除 Action.Close");
+        click(
+            &mut app,
+            &ctx,
+            label(&choices, "将 Close 重命名为 Save").center(),
+        );
+        let chosen = frame(&mut app, &ctx, vec![]);
+        click(&mut app, &ctx, label(&chosen, "应用更改").center());
+        assert!(!app.enum_sync_is_open());
+        assert_eq!(app.status, "Commands.json 中的枚举已更新。");
+        assert_eq!(
+            app.project.as_ref().unwrap().level(level).unwrap()["fieldInstances"][0]["__value"],
+            "Save"
+        );
+    }
+
+    #[test]
     fn chinese_custom_command_trust_dialog_translates_actions_but_keeps_command_text() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("Map.ldtk");

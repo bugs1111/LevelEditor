@@ -191,7 +191,9 @@ impl EditorApp {
                                     .show(ui, |ui| {
                                         ui.set_width(ui.available_width());
                                         ui.label(
-                                            RichText::new(warning).size(12.).color(Color32::WHITE),
+                                            RichText::new(locale::tr(ui, warning))
+                                                .size(12.)
+                                                .color(Color32::WHITE),
                                         );
                                     });
                             }
@@ -270,19 +272,12 @@ impl EditorApp {
 
     pub(super) fn source_enum_form(&mut self, ui: &mut egui::Ui) {
         let Some(uid) = self.definition_uid else {
-            let green = Color32::from_rgb(101, 178, 117);
-            egui::Frame::new()
-                .stroke(Stroke::new(1_f32, green))
-                .inner_margin(10)
-                .corner_radius(4.)
-                .show(ui, |ui| {
-                    ui.set_width(ui.available_width());
-                    ui.horizontal(|ui| {
-                        ui.add(egui::Image::new(egui::include_image!("../../assets/icons/help.svg"))
-                            .tint(green).fit_to_exact_size(Vec2::splat(40.)));
-                        ui.add(egui::Label::new(RichText::new("Enumerations (Enums) are list of values. Examples: your enemy types, items, states etc.").size(16.).color(green)).wrap());
-                    });
-                });
+            source_controls::centered_help_card(
+                ui,
+                ui.available_width(),
+                56.,
+                "Enumerations (Enums) are list of values. Examples: your enemy types, items, states etc.",
+            );
             return;
         };
         let project = self.project.as_ref().unwrap();
