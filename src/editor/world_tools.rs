@@ -797,33 +797,13 @@ impl EditorApp {
     }
 
     pub(super) fn level_at_world(&self, position: [f32; 2]) -> Option<LevelKey> {
-        let project = self.project.as_ref()?;
-        let selected = self.selected?;
-        let position = position.map(|value| (value + 0.5).floor());
-        let contains = |bounds: [f32; 4]| {
-            position[0] >= bounds[0]
-                && position[0] < bounds[2]
-                && position[1] >= bounds[1]
-                && position[1] < bounds[3]
-        };
-        let active = |level: &Value| number(level, "worldDepth", 0.) as i64 == self.world_depth;
-        if matches!(
-            canvas::world_layout(project, selected),
-            "LinearHorizontal" | "LinearVertical"
-        ) {
-            return canvas::iter_placements(project, selected)
-                .filter(|(_, level, bounds)| contains(*bounds) && active(level))
-                .map(|(key, _, _)| key)
-                .last();
-        }
-        project
-            .level_keys_in_world(selected.world)
-            .rev()
-            .find(|&key| {
-                project.level(key).is_some_and(|level| {
-                    contains(canvas::free_level_bounds(level)) && active(level)
-                })
-            })
+        canvas::placement_at(
+            self.project.as_ref()?,
+            self.selected?,
+            position,
+            self.world_depth,
+        )
+        .map(|(key, _)| key)
     }
 
     pub(super) fn world_drag_position(
@@ -3498,6 +3478,34 @@ mod tests {
         app.project.as_mut().unwrap().json["worldLayout"] = json!("LinearVertical");
         assert_eq!(app.level_at_world([10., 303.5]), Some(second));
         assert_eq!(app.level_at_world([10., 432.]), None);
+    }
+
+    #[test]
+    fn world_hit_returns_resolved_external_bounds_in_the_selected_world() {
+        let mut project = Project::new();
+        project.json["worlds"] = json!([{"levels": [
+            {"externalRelPath": "outside.ldtkl", "worldX": 100},
+            {"externalRelPath": "missing.ldtkl"}
+        ]}]);
+        project.external_levels.insert(
+            "outside.ldtkl".into(),
+            json!({"worldX": -15, "worldY": -9, "pxWid": 8}),
+        );
+        let key = LevelKey {
+            world: Some(0),
+            level: 0,
+        };
+        for layout in ["Free", "GridVania"] {
+            project.json["worlds"][0]["worldLayout"] = json!(layout);
+            let hit = |point| canvas::placement_at(&project, key, point, 0);
+            let expected = Some((key, [-15., -9., -7., 247.]));
+            assert_eq!(hit([-15.5, -9.5]), expected);
+            assert_eq!(hit([-7.51, 246.49]), expected);
+            assert_eq!(hit([-15.51, -9.]), None);
+            assert_eq!(hit([-7.5, -9.]), None);
+            assert_eq!(hit([-10., 246.5]), None);
+            assert_eq!(hit([100., 0.]), None);
+        }
     }
 
     #[test]

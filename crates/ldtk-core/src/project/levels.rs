@@ -55,7 +55,7 @@ impl Project {
     pub fn levels_in_world(
         &self,
         world: Option<usize>,
-    ) -> impl Iterator<Item = (LevelKey, &Value)> {
+    ) -> impl DoubleEndedIterator<Item = (LevelKey, &Value)> {
         self.level_stubs_in_world(world)
             .iter()
             .enumerate()

@@ -106,11 +106,15 @@ fn placement_bounds(origin: [f32; 2], size: [f32; 2]) -> [f32; 4] {
     ]
 }
 
-pub(crate) fn free_level_bounds(level: &Value) -> [f32; 4] {
-    placement_bounds(
-        [number(level, "worldX", 0.), number(level, "worldY", 0.)],
-        [number(level, "pxWid", 256.), number(level, "pxHei", 256.)],
-    )
+fn free_level_axis(level: &Value, origin: &str, extent: &str) -> std::ops::Range<f32> {
+    let start = number(level, origin, 0.);
+    start..start + number(level, extent, 256.)
+}
+
+fn free_level_bounds(level: &Value) -> [f32; 4] {
+    let x = free_level_axis(level, "worldX", "pxWid");
+    let y = free_level_axis(level, "worldY", "pxHei");
+    [x.start, y.start, x.end, y.end]
 }
 
 pub(crate) fn iter_placements(
@@ -131,6 +135,46 @@ pub(crate) fn iter_placements(
             let bounds = placement_bounds(cursor, size);
             cursor[axis] += size[axis] + 48.0;
             (key, level, bounds)
+        })
+}
+
+pub(crate) fn placement_at(
+    project: &Project,
+    selected: LevelKey,
+    position: [f32; 2],
+    depth: i64,
+) -> Option<(LevelKey, [f32; 4])> {
+    let [x, y] = position.map(|value| (value + 0.5).floor());
+    let active = |level: &Value| number(level, "worldDepth", 0.) as i64 == depth;
+    if matches!(
+        world_layout(project, selected),
+        "LinearHorizontal" | "LinearVertical"
+    ) {
+        return iter_placements(project, selected)
+            .filter(|(_, level, [left, top, right, bottom])| {
+                (*left..*right).contains(&x) && (*top..*bottom).contains(&y) && active(level)
+            })
+            .map(|(key, _, bounds)| (key, bounds))
+            .last();
+    }
+    project
+        .levels_in_world(selected.world)
+        .rev()
+        .find_map(|(key, level)| {
+            let horizontal = free_level_axis(level, "worldX", "pxWid");
+            if !horizontal.contains(&x) {
+                return None;
+            }
+            let vertical = free_level_axis(level, "worldY", "pxHei");
+            (vertical.contains(&y) && active(level)).then_some((
+                key,
+                [
+                    horizontal.start,
+                    vertical.start,
+                    horizontal.end,
+                    vertical.end,
+                ],
+            ))
         })
 }
 

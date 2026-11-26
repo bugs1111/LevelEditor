@@ -1433,12 +1433,9 @@ impl EditorApp {
                     press,
                     ctx.pixels_per_point(),
                 );
-                let hit = self.level_at_world(start).and_then(|candidate| {
-                    canvas::placements(project, key)
-                        .into_iter()
-                        .find(|(k, _)| *k == candidate)
-                });
-                if let Some((candidate, b)) = hit {
+                if let Some((candidate, b)) =
+                    canvas::placement_at(project, key, start, self.world_depth)
+                {
                     let clicked_same = self.selected == Some(candidate);
                     let additive = world_tools::world_selection_modifier(press_modifiers);
                     let was_selected = self.world_selection_contains(candidate);
