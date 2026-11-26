@@ -1135,14 +1135,52 @@ impl Scene<'_> {
             let world = transform.origin[axis] + px * transform.scale;
             screen_center[axis] + (world - self.view.center[axis]) * self.view.zoom
         };
+        let shifted_destination =
+            |tile: &Value, anchor: &Value, offsets: &[geometry::LayerTileOffset; 4]| {
+                let anchor = values(anchor);
+                let x = anchor.first().and_then(Value::as_f64).unwrap_or(0.) as f32;
+                if region.is_some_and(|r| x < r.left() || x >= r.right()) {
+                    return None;
+                }
+                let flips = tile["f"].as_i64().unwrap_or(0);
+                let offset = &offsets[(flips & 3) as usize];
+                let x = offset.apply(0, x);
+                let left = screen_axis(0, x);
+                if left > clip.right() {
+                    return None;
+                }
+                let right = screen_axis(0, x + tile_size);
+                if right < clip.left() {
+                    return None;
+                }
+                let y = anchor.get(1).and_then(Value::as_f64).unwrap_or(0.) as f32;
+                if region.is_some_and(|r| y < r.top() || y >= r.bottom()) {
+                    return None;
+                }
+                let y = offset.apply(1, y);
+                Some(Rect::from_min_max(
+                    egui::pos2(left, screen_axis(1, y)),
+                    egui::pos2(right, screen_axis(1, y + tile_size)),
+                ))
+            };
         for (index, group) in tile_groups.into_iter().enumerate() {
             let auto = index == 0;
             if auto && !self.options.render_auto {
                 continue;
             }
+            let offsets = (!unshifted).then(|| {
+                std::array::from_fn::<_, 4, _>(|flips| {
+                    geometry::LayerTileOffset::new(grid, tile_size, pivot, flips as i64, auto)
+                })
+            });
             for tile in group {
                 let anchor = tile_anchor(tile);
-                let dst = if unshifted {
+                let dst = if let Some(offsets) = &offsets {
+                    let Some(dst) = shifted_destination(tile, anchor, offsets) else {
+                        continue;
+                    };
+                    dst
+                } else {
                     // A zero pivot and matching grids make the destination independent of flips.
                     let anchor = values(anchor);
                     let x = anchor.first().and_then(Value::as_f64).unwrap_or(0.) as f32;
@@ -1155,33 +1193,14 @@ impl Scene<'_> {
                         continue;
                     }
                     let y = anchor.get(1).and_then(Value::as_f64).unwrap_or(0.) as f32;
-                    let dst = Rect::from_min_max(
+                    Rect::from_min_max(
                         egui::pos2(left, screen_axis(1, y)),
                         egui::pos2(right, screen_axis(1, y + tile_size)),
-                    );
-                    if !dst.intersects(clip) {
-                        continue;
-                    }
-                    dst
-                } else {
-                    let px = pair(anchor, [0.; 2]);
-                    if region.is_some_and(|r| {
-                        px[0] < r.left()
-                            || px[0] >= r.right()
-                            || px[1] < r.top()
-                            || px[1] >= r.bottom()
-                    }) {
-                        continue;
-                    }
-                    let flips = tile["f"].as_i64().unwrap_or(0);
-                    let dst = self.screen(transform.rect(geometry::layer_tile_rect(
-                        px, grid, tile_size, pivot, flips, auto,
-                    )));
-                    if !dst.intersects(clip) {
-                        continue;
-                    }
-                    dst
+                    )
                 };
+                if !dst.intersects(clip) {
+                    continue;
+                }
                 let mut source = [0.; 2];
                 let mut flips = 0;
                 let mut opacity = 1.;

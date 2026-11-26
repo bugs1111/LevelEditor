@@ -52,16 +52,22 @@ fn frame(
 #[test]
 #[ignore = "manual zoomed tile frame performance comparison"]
 fn benchmark_zoomed_dense_tile_frame() {
-    exercise_dense_tile_frames(false);
+    exercise_dense_tile_frames(false, [0.; 2]);
 }
 
 #[test]
 #[ignore = "manual tile frame control with varying atlas coordinates and opacity"]
 fn benchmark_varied_tile_styles_frame() {
-    exercise_dense_tile_frames(true);
+    exercise_dense_tile_frames(true, [0.; 2]);
 }
 
-fn exercise_dense_tile_frames(varied: bool) {
+#[test]
+#[ignore = "manual frame comparison with nonzero tile pivots"]
+fn benchmark_shifted_tile_frame() {
+    exercise_dense_tile_frames(true, [0.25, 0.75]);
+}
+
+fn exercise_dense_tile_frames(varied: bool, pivot: [f32; 2]) {
     use serde_json::json;
     use std::hash::{DefaultHasher, Hash, Hasher};
 
@@ -70,6 +76,8 @@ fn exercise_dense_tile_frames(varied: bool) {
     project.resize_level(key, 160 * 16, 160 * 16, 0, 0).unwrap();
     project.add_layer("Ground", "Tiles", 16).unwrap();
     project.json["defs"]["layers"][0]["tilesetDefUid"] = json!(100);
+    project.json["defs"]["layers"][0]["tilePivotX"] = json!(pivot[0]);
+    project.json["defs"]["layers"][0]["tilePivotY"] = json!(pivot[1]);
     project.json["defs"]["tilesets"] = json!([{
         "uid":100,"relPath":null,"embedAtlas":"LdtkIcons","tileGridSize":16
     }]);
@@ -97,7 +105,6 @@ fn exercise_dense_tile_frames(varied: bool) {
         zoom: 4.,
     };
     let (expected_count, expected) = frame(&ctx, &project, &view, &options, &mut assets);
-    assert_eq!(expected_count, 192);
     let mesh = |output: &egui::FullOutput| {
         output
             .shapes
@@ -110,14 +117,19 @@ fn exercise_dense_tile_frames(varied: bool) {
     };
     let expected = mesh(&expected);
     assert_eq!(expected.vertices.len(), expected_count * 4);
-    for (index, quad) in expected.vertices.as_chunks::<4>().0.iter().enumerate() {
-        let min = egui::pos2(
-            -12. + (index % 16) as f32 * 64.,
-            -34. + (index / 16) as f32 * 64.,
-        );
-        assert_eq!(quad[0].pos, min);
-        assert_eq!(quad[3].pos, min + egui::vec2(64., 64.));
+    if pivot == [0.; 2] {
+        assert_eq!(expected_count, 192);
+        for (index, quad) in expected.vertices.as_chunks::<4>().0.iter().enumerate() {
+            let min = egui::pos2(
+                -12. + (index % 16) as f32 * 64.,
+                -34. + (index / 16) as f32 * 64.,
+            );
+            assert_eq!(quad[0].pos, min);
+            assert_eq!(quad[3].pos, min + egui::vec2(64., 64.));
+        }
     }
+    let mut hasher = DefaultHasher::new();
+    format!("{expected:?}").hash(&mut hasher);
     let mut times = [Duration::ZERO; 5];
     for time in &mut times {
         let start = Instant::now();
@@ -128,8 +140,9 @@ fn exercise_dense_tile_frames(varied: bool) {
     }
     times.sort_unstable();
     eprintln!(
-        "Zoomed dense tile frame: median {:?}; samples {times:?}",
-        times[2]
+        "Zoomed dense tile frame: median {:?}; mesh {:016x}; cells {expected_count}; samples {times:?}",
+        times[2],
+        hasher.finish()
     );
 
     let view = Viewport {

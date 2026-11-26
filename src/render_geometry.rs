@@ -206,34 +206,63 @@ mod tests {
     }
 }
 
-pub(super) fn layer_tile_rect(
-    mut px: [f32; 2],
-    grid: f32,
-    tile_size: f32,
-    pivot: [f32; 2],
-    flips: i64,
-    is_auto: bool,
-) -> Rect {
-    for axis in 0..2 {
-        let flip = flips & (1 << axis) != 0;
-        px[axis] += if !is_auto {
-            pivot[0] * grid
-        } else {
-            pivot[axis] * grid
-        } + if flip { grid - tile_size } else { 0. };
-        if !is_auto {
-            px[axis] += if flip {
-                pivot[axis] * tile_size
-            } else {
-                -pivot[axis] * tile_size
-            };
+pub(super) struct LayerTileOffset {
+    grid: [f32; 2],
+    tile: Option<[f32; 2]>,
+}
+
+impl LayerTileOffset {
+    pub(super) fn new(
+        grid: f32,
+        tile_size: f32,
+        pivot: [f32; 2],
+        flips: i64,
+        is_auto: bool,
+    ) -> Self {
+        let flipped = |axis| flips & (1_i64 << axis) != 0;
+        Self {
+            grid: [0, 1].map(|axis| {
+                let pivot = if is_auto { pivot[axis] } else { pivot[0] };
+                pivot * grid + if flipped(axis) { grid - tile_size } else { 0. }
+            }),
+            tile: (!is_auto).then(|| {
+                [0, 1].map(|axis| {
+                    let pivot = if flipped(axis) {
+                        pivot[axis]
+                    } else {
+                        -pivot[axis]
+                    };
+                    pivot * tile_size
+                })
+            }),
         }
     }
-    Rect::from_min_size(px.into(), vec2(tile_size, tile_size))
+
+    pub(super) fn apply(&self, axis: usize, anchor: f32) -> f32 {
+        // Keep the two additions separate so pixels round as in the layer renderer.
+        let mut position = anchor + self.grid[axis];
+        if let Some(tile) = self.tile {
+            position += tile[axis];
+        }
+        position
+    }
 }
 #[cfg(test)]
 mod upstream_tests {
     use super::*;
+
+    fn layer_tile_rect(
+        px: [f32; 2],
+        grid: f32,
+        tile_size: f32,
+        pivot: [f32; 2],
+        flips: i64,
+        is_auto: bool,
+    ) -> Rect {
+        let offset = LayerTileOffset::new(grid, tile_size, pivot, flips, is_auto);
+        let min = [0, 1].map(|axis| offset.apply(axis, px[axis]));
+        Rect::from_min_size(min.into(), vec2(tile_size, tile_size))
+    }
     #[test]
     fn full_size_modes_keep_pivot_and_unscaled_dimensions() {
         let b = Rect::from_min_size([20., 30.].into(), vec2(12., 8.));
