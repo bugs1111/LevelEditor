@@ -158,54 +158,89 @@ fn group_marks(project: &Project, key: LevelKey, view: &Viewport, group: &Value)
 // Port of dn.heaps.filter.PixelOutline's four cardinal samples. This is not
 // Heaps Outline2D (the unrelated radial filter used for field labels).
 // https://github.com/deepnight/deepnightLibs/blob/master/src/dn/heaps/filter/PixelOutline.hx
+struct OutlineGrid {
+    width: usize,
+    x_steps: Vec<bool>,
+    y_steps: Vec<bool>,
+}
+
+impl OutlineGrid {
+    fn new(xs: &[f32], ys: &[f32]) -> Self {
+        let consecutive = |axis: &[f32]| {
+            axis.windows(2)
+                .map(|pair| pair[1] - pair[0] == 1.)
+                .collect()
+        };
+        Self {
+            width: xs.len(),
+            x_steps: consecutive(xs),
+            y_steps: consecutive(ys),
+        }
+    }
+
+    fn neighbor_alpha(&self, x: usize, y: usize, alpha: impl Fn(usize, usize) -> u8) -> u8 {
+        let mut max_alpha = 0;
+        if x > 0 && self.x_steps[x - 1] {
+            max_alpha = max_alpha.max(alpha(x - 1, y));
+        }
+        if self.x_steps.get(x) == Some(&true) {
+            max_alpha = max_alpha.max(alpha(x + 1, y));
+        }
+        if y > 0 && self.y_steps[y - 1] {
+            max_alpha = max_alpha.max(alpha(x, y - 1));
+        }
+        if self.y_steps.get(y) == Some(&true) {
+            max_alpha = max_alpha.max(alpha(x, y + 1));
+        }
+        max_alpha
+    }
+}
+
+const INNER_KNOCKOUT: f32 = 0.66;
+const INNER_COLOR: [f32; 3] = [1., 0.8, 0.];
+
+fn outline_coverage(current: u8, neighbor: u8, knockout: f32) -> (f32, f32) {
+    let current = f32::from(current) / 255.;
+    let edge = (1. - current) * (f32::from(neighbor) / 255.);
+    (edge, edge.max(knockout.min(current)))
+}
+
+fn pack_channel(value: f32) -> u8 {
+    (value.clamp(0., 1.) * 255.).round() as u8
+}
+
+fn outline_pixel(current: [u8; 4], neighbor: u8, color: [f32; 3], knockout: f32) -> [u8; 4] {
+    if current[3] == 0 && neighbor == 0 {
+        return [0; 4];
+    }
+    let (edge, alpha) = outline_coverage(current[3], neighbor, knockout);
+    let current = current.map(|value| f32::from(value) / 255.);
+    [
+        ((1. - edge) * current[0] + edge * color[0]) * alpha,
+        ((1. - edge) * current[1] + edge * color[1]) * alpha,
+        ((1. - edge) * current[2] + edge * color[2]) * alpha,
+        alpha,
+    ]
+    .map(pack_channel)
+}
+
 fn pixel_outline(
     input: &[[u8; 4]],
-    xs: &[f32],
-    ys: &[f32],
+    grid: &OutlineGrid,
     color: [f32; 3],
     knockout: f32,
 ) -> Vec<[u8; 4]> {
-    let (width, height) = (xs.len(), ys.len());
-    let consecutive = |axis: &[f32]| {
-        axis.windows(2)
-            .map(|pair| pair[1] - pair[0] == 1.)
-            .collect::<Vec<_>>()
-    };
-    let x_steps = consecutive(xs);
-    let y_steps = consecutive(ys);
+    let width = grid.width;
+    let alpha = |x: usize, y: usize| input[y * width + x][3];
     input
         .iter()
         .enumerate()
-        .map(|(index, current)| {
+        .map(|(index, &current)| {
             if current[3] == 255 && knockout == 1. {
-                return *current;
+                return current;
             }
-            let x = index % width;
-            let y = index / width;
-            let mut neighbour = 0_f32;
-            for (valid, other) in [
-                (x > 0 && x_steps[x - 1], index.wrapping_sub(1)),
-                (x + 1 < width && x_steps[x], index + 1),
-                (y > 0 && y_steps[y - 1], index.wrapping_sub(width)),
-                (y + 1 < height && y_steps[y], index + width),
-            ] {
-                if valid {
-                    neighbour = neighbour.max(f32::from(input[other][3]) / 255.);
-                }
-            }
-            if current[3] == 0 && neighbour == 0. {
-                return [0; 4];
-            }
-            let current = current.map(|v| f32::from(v) / 255.);
-            let edge = (1. - current[3]) * neighbour;
-            let alpha = edge.max(knockout.min(current[3]));
-            [
-                ((1. - edge) * current[0] + edge * color[0]) * alpha,
-                ((1. - edge) * current[1] + edge * color[1]) * alpha,
-                ((1. - edge) * current[2] + edge * color[2]) * alpha,
-                alpha,
-            ]
-            .map(|v| (v.clamp(0., 1.) * 255.).round() as u8)
+            let neighbor = grid.neighbor_alpha(index % width, index / width, alpha);
+            outline_pixel(current, neighbor, color, knockout)
         })
         .collect()
 }
@@ -216,7 +251,7 @@ fn bounds(mark: Mark) -> Rect {
         Mark::Circle(p, r, _) => Rect::from_center_size(p, Vec2::splat(r * 2.)),
     }
 }
-fn raster_pixels(marks: &[Mark], xs: &[f32], ys: &[f32]) -> Vec<[u8; 4]> {
+fn raster_marks(marks: &[Mark], xs: &[f32], ys: &[f32]) -> Vec<[u8; 4]> {
     let ([Some(&left), Some(&right)], [Some(&top), Some(&bottom)]) =
         ([xs.first(), xs.last()], [ys.first(), ys.last()])
     else {
@@ -279,9 +314,7 @@ fn raster_pixels(marks: &[Mark], xs: &[f32], ys: &[f32]) -> Vec<[u8; 4]> {
             }
         }
     }
-    let first = pixel_outline(&pixels, xs, ys, [1., 0.8, 0.], 0.66);
-    drop(pixels);
-    pixel_outline(&first, xs, ys, [0.; 3], 1.)
+    pixels
 }
 
 fn premultiplied([r, g, b, a]: [u8; 4]) -> Color32 {
@@ -291,9 +324,16 @@ fn premultiplied([r, g, b, a]: [u8; 4]) -> Color32 {
 fn raster(marks: &[Mark], rect: Rect, size: [usize; 2]) -> egui::ColorImage {
     let xs: Vec<_> = (0..size[0]).map(|x| rect.min.x + x as f32 + 0.5).collect();
     let ys: Vec<_> = (0..size[1]).map(|y| rect.min.y + y as f32 + 0.5).collect();
+    let grid = OutlineGrid::new(&xs, &ys);
+    let first = pixel_outline(
+        &raster_marks(marks, &xs, &ys),
+        &grid,
+        INNER_COLOR,
+        INNER_KNOCKOUT,
+    );
     egui::ColorImage::new(
         size,
-        raster_pixels(marks, &xs, &ys)
+        pixel_outline(&first, &grid, [0.; 3], 1.)
             .into_iter()
             .map(premultiplied)
             .collect(),
@@ -343,14 +383,39 @@ fn raster_sampled(
     for top in (0..size[1]).step_by(SAMPLE_STRIP_ROWS) {
         let count = SAMPLE_STRIP_ROWS.min(size[1] - top);
         let (ys, rows) = sample_axis(first.y + top as f32 * step, step, count);
-        let strip = raster_pixels(marks, &xs, &ys);
-        for row in rows {
-            let start = row * xs.len();
-            pixels.extend(
-                columns
-                    .iter()
-                    .map(|column| premultiplied(strip[start + column])),
-            );
+        let grid = OutlineGrid::new(&xs, &ys);
+        let strip = raster_marks(marks, &xs, &ys);
+        let samples = rows
+            .into_iter()
+            .flat_map(|y| columns.iter().map(move |&x| (x, y)));
+        // Closely spaced output texels share enough neighbors to reuse full passes.
+        if step < 3. {
+            let first = pixel_outline(&strip, &grid, INNER_COLOR, INNER_KNOCKOUT);
+            let second = pixel_outline(&first, &grid, [0.; 3], 1.);
+            pixels.extend(samples.map(|(x, y)| premultiplied(second[y * grid.width + x])));
+        } else {
+            // The outer pass needs the inner RGBA at the output texel and only
+            // the inner alpha at adjacent texels.
+            let alpha = |x: usize, y: usize| strip[y * grid.width + x][3];
+            let inner_alpha = |x, y| {
+                let neighbors = grid.neighbor_alpha(x, y, alpha);
+                pack_channel(outline_coverage(alpha(x, y), neighbors, INNER_KNOCKOUT).1)
+            };
+            pixels.extend(samples.map(|(x, y)| {
+                let neighbors = grid.neighbor_alpha(x, y, alpha);
+                let first = outline_pixel(
+                    strip[y * grid.width + x],
+                    neighbors,
+                    INNER_COLOR,
+                    INNER_KNOCKOUT,
+                );
+                let result = if first[3] == 255 {
+                    first
+                } else {
+                    outline_pixel(first, grid.neighbor_alpha(x, y, inner_alpha), [0.; 3], 1.)
+                };
+                premultiplied(result)
+            }));
         }
     }
     egui::ColorImage::new(size, pixels)
@@ -774,11 +839,12 @@ mod tests {
         let mut pixels = vec![[0_u8; 4]; 49];
         pixels[3 * 7 + 3] = [255, 204, 0, 255];
         let axis = [0., 1., 2., 3., 4., 5., 6.];
-        let yellow = pixel_outline(&pixels, &axis, &axis, [1., 0.8, 0.], 0.66);
+        let grid = OutlineGrid::new(&axis, &axis);
+        let yellow = pixel_outline(&pixels, &grid, INNER_COLOR, INNER_KNOCKOUT);
         assert_eq!(yellow[3 * 7 + 2], [255, 204, 0, 255]);
         assert_eq!(yellow[2 * 7 + 2], [0; 4]);
         assert_eq!(yellow[3 * 7 + 3][3], 168);
-        let black = pixel_outline(&yellow, &axis, &axis, [0.; 3], 1.);
+        let black = pixel_outline(&yellow, &grid, [0.; 3], 1.);
         assert_eq!(black[3 * 7 + 1], [0, 0, 0, 255]);
         assert_eq!(black[7 + 1], [0; 4]);
         assert_eq!(black[3 * 7 + 3][3], 168);
@@ -959,7 +1025,7 @@ mod interaction_tests {
         let dense = raster(&marks, area, [110, 360]);
         let first = egui::pos2(-4.4, -37.5);
         let size = [12, 45];
-        for step in [1.25, 3.25, 7.5] {
+        for step in [0.5, 1.25, 2.5, 3., 3.25, 4., 7.5] {
             let sampled = raster_sampled(&marks, size, first, step);
             for row in 0..size[1] {
                 for column in 0..size[0] {
