@@ -51,7 +51,7 @@ struct Spot {
     overlaps: bool,
 }
 
-fn container(p: &Project, world: Option<usize>) -> &Value {
+pub(super) fn container(p: &Project, world: Option<usize>) -> &Value {
     world
         .and_then(|i| p.json["worlds"].get(i))
         .unwrap_or(&p.json)

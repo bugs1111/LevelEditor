@@ -720,33 +720,12 @@ impl EditorApp {
                 );
             }
         });
-        let metadata = self
-            .project
-            .as_ref()
-            .map(|p| {
-                let world = current_world
-                    .and_then(|i| p.json["worlds"].get(i))
-                    .unwrap_or(&p.json);
-                let mut v = json!({});
-                for key in [
-                    "identifier",
-                    "worldLayout",
-                    "worldGridWidth",
-                    "worldGridHeight",
-                    "defaultLevelWidth",
-                    "defaultLevelHeight",
-                ] {
-                    v[key] = world[key].clone();
-                }
-                v
-            })
-            .unwrap();
-        let default_grid = self.project.as_ref().unwrap().json["defaultGridSize"]
-            .as_i64()
-            .unwrap_or(16);
+        let project = self.project.as_ref().unwrap();
+        let metadata = world_context::container(project, current_world);
+        let default_grid = project.json["defaultGridSize"].as_i64().unwrap_or(16);
         let patch = form(
             ui,
-            &metadata,
+            metadata,
             &[
                 P("identifier", "World identifier", W::Text),
                 P(
@@ -792,7 +771,12 @@ impl EditorApp {
             ui.label(locale::tr(ui, "Create a level in the World panel."));
             return;
         };
-        let Some(level) = self.project.as_ref().and_then(|p| p.level(key)).cloned() else {
+        let Some(level) = self
+            .project
+            .as_ref()
+            .and_then(|p| p.level(key))
+            .map(level_form_values)
+        else {
             return;
         };
         ui.label(format!("IID: {}", text(&level, "iid", "")));
@@ -1242,10 +1226,7 @@ impl EditorApp {
         owner: &Value,
     ) {
         const LABEL_WIDTH: f32 = 120.;
-        let fields = owner["fieldInstances"]
-            .as_array()
-            .cloned()
-            .unwrap_or_default();
+        let fields = canvas::values(&owner["fieldInstances"]);
         let has_fields = !fields.is_empty();
         ui.scope(|ui| {
             ui.spacing_mut().item_spacing = egui::vec2(2., 10.);
@@ -1257,7 +1238,7 @@ impl EditorApp {
                     continue;
                 };
                 ui.push_id((key.world, key.level, entity, uid), |ui| {
-                    let kind = text(&field, "__type", "");
+                    let kind = text(field, "__type", "");
                     let array = kind.starts_with("Array<");
                     let point_required = kind == "Point"
                         && field["__value"].is_null()
@@ -1292,7 +1273,7 @@ impl EditorApp {
                     let using_default = if array {
                         count == 0
                     } else {
-                        ui_fields::field_uses_default(&field, 0)
+                        ui_fields::field_uses_default(field, 0)
                     };
                     let background = ui.painter().add(egui::Shape::Noop);
                     let width = ui.available_width();
@@ -1306,7 +1287,7 @@ impl EditorApp {
                                 |ui| {
                                     ui.set_width(LABEL_WIDTH);
                                     ui.spacing_mut().item_spacing.y = 0.;
-                                    let name = text(&field, "__identifier", "Field");
+                                    let name = text(field, "__identifier", "Field");
                                     let label = if array {
                                         if let Some(max) = definition["arrayMaxLength"]
                                             .as_u64()
@@ -1428,7 +1409,7 @@ impl EditorApp {
                                                     ui,
                                                     key,
                                                     entity,
-                                                    &field,
+                                                    field,
                                                     &definition,
                                                 );
                                                 None
@@ -1436,7 +1417,7 @@ impl EditorApp {
                                                 field_value_editor(
                                                     ui,
                                                     self.project.as_ref().unwrap(),
-                                                    &field,
+                                                    field,
                                                     &definition,
                                                 )
                                             };
@@ -3384,6 +3365,30 @@ fn relative_path_patch(project: &Project, patch: &mut Value, key: &str) -> ldtk_
         patch[key] = json!(project.make_relative_file_path(path)?);
     }
     Ok(())
+}
+
+// The form can edit the project while drawing. Snapshot only the values its controls read.
+fn level_form_values(level: &Value) -> Value {
+    [
+        "iid",
+        "identifier",
+        "useAutoIdentifier",
+        "worldDepth",
+        "worldX",
+        "worldY",
+        "pxWid",
+        "pxHei",
+        "bgColor",
+        "bgRelPath",
+        "bgPos",
+        "bgPivotX",
+        "bgPivotY",
+        "fieldInstances",
+        "defUid",
+    ]
+    .into_iter()
+    .filter_map(|key| level.get(key).map(|value| (key, value.clone())))
+    .collect()
 }
 
 fn normalize_background_patch(level: &Value, patch: &mut Value) {

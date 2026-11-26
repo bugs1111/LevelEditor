@@ -476,6 +476,9 @@ fn depth_moves(depth: i64, other_depths: impl Iterator<Item = i64>) -> (bool, bo
     for other in other_depths {
         further |= other >= depth;
         closer |= other <= depth;
+        if further && closer {
+            break;
+        }
     }
     (further, closer)
 }
@@ -548,19 +551,13 @@ impl EditorApp {
             .as_array()
             .is_some_and(|flags| flags.contains(&json!("MultiWorlds")));
         let current_world = self.active_world;
-        let world = current_world
-            .and_then(|i| project.json["worlds"].get(i))
-            .unwrap_or(&project.json)
-            .clone();
-        let name = text(&world, "identifier", "World").to_owned();
-        let iid = if current_world.is_some() {
-            text(&world, "iid", "")
-        } else {
-            text(&world, "dummyWorldIid", "")
-        }
-        .to_owned();
-        let default_grid = number(&project.json, "defaultGridSize", 16.) as i64;
         if multi {
+            let name = text(
+                world_context::container(project, current_world),
+                "identifier",
+                "World",
+            )
+            .to_owned();
             let worlds = project.json["worlds"]
                 .as_array()
                 .into_iter()
@@ -666,17 +663,30 @@ impl EditorApp {
                 });
             });
         ui.add_space(16.);
+        let project = self.project.as_ref().unwrap();
+        let world = world_context::container(project, current_world);
+        let name = text(world, "identifier", "World");
+        let iid = text(
+            world,
+            if current_world.is_some() {
+                "iid"
+            } else {
+                "dummyWorldIid"
+            },
+            "",
+        );
+        let default_grid = number(&project.json, "defaultGridSize", 16.) as i64;
         let mut patch = json!({});
         let world_open = group(
             ui,
             "worldPanel_world",
-            properties_title(ui, "WORLD SETTINGS: \"{name}\"", &name),
+            properties_title(ui, "WORLD SETTINGS: \"{name}\"", name),
             |ui| {
-                iid_row(ui, &iid, WORLD_LABEL_WIDTH, "worldIid", "Copy world IID");
+                iid_row(ui, iid, WORLD_LABEL_WIDTH, "worldIid", "Copy world IID");
                 property_row(ui, "World identifier", WORLD_LABEL_WIDTH, |ui| {
                     ui.add_enabled_ui(multi, |ui| {
                         if let Some(next) =
-                            form_text_input(ui, "worldId", &name, ui.available_width())
+                            form_text_input(ui, "worldId", name, ui.available_width())
                         {
                             patch["identifier"] = json!(next);
                         }
@@ -688,7 +698,7 @@ impl EditorApp {
                     "World layout",
                     egui::vec2(WORLD_LABEL_WIDTH, 34.),
                     |ui| {
-                        let current = text(&world, "worldLayout", "Free");
+                        let current = text(world, "worldLayout", "Free");
                         if let Some(layout) =
                             ui_fields::enum_picker::show_text(ui, &WORLD_LAYOUTS, current)
                         {
@@ -786,7 +796,12 @@ impl EditorApp {
 
     fn source_level_form_contents(&mut self, ui: &mut egui::Ui, enabled: bool) {
         let Some(key) = self.selected else { return };
-        let Some(mut level) = self.project.as_ref().and_then(|p| p.level(key)).cloned() else {
+        let Some(mut level) = self
+            .project
+            .as_ref()
+            .and_then(|p| p.level(key))
+            .map(level_form_values)
+        else {
             return;
         };
         let project = self.project.as_ref().unwrap();
@@ -856,11 +871,9 @@ impl EditorApp {
                     );
                     let project = self.project.as_ref().unwrap();
                     let depths = project
-                        .level_keys_in_world(key.world)
-                        .filter(|other| *other != key)
-                        .filter_map(|other| {
-                            Some(project.level(other)?["worldDepth"].as_i64().unwrap_or(0))
-                        });
+                        .levels_in_world(key.world)
+                        .filter(|(other, _)| *other != key)
+                        .map(|(_, level)| level["worldDepth"].as_i64().unwrap_or(0));
                     let depth = level["worldDepth"].as_i64().unwrap_or(0);
                     let (further, closer) = depth_moves(depth, depths);
                     ui.vertical(|ui| {
