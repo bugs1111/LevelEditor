@@ -337,19 +337,17 @@ impl EditorApp {
             && !egui::Popup::is_any_open(ui.ctx())
         {
             let address = url.strip_prefix("https://").unwrap_or(url);
-            let mut tip = egui::Tooltip::for_widget(&response);
-            tip.popup = tip.popup.align(egui::emath::RectAlign::RIGHT_START).frame(
-                egui::Frame::new()
-                    .fill(Color32::from_rgb(66, 91, 131))
-                    .corner_radius(4)
-                    .inner_margin(egui::Margin::symmetric(18, 12)),
-            );
-            tip.show(|ui| {
+            chrome::source_tooltip_popup(
+                &response,
+                Some(egui::emath::RectAlign::RIGHT_START),
+                egui::Margin::symmetric(18, 12),
+            )
+            .show(|ui| {
                 ui.label(
                     RichText::new(address)
                         .monospace()
                         .size(9.33)
-                        .color(Color32::from_rgb(172, 214, 247)),
+                        .color(panels::source_controls::HELP_GREEN),
                 );
             });
         }

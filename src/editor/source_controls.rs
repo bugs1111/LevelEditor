@@ -1,5 +1,6 @@
 //! Shared native rendering of source form help and button treatments.
 use super::*;
+use crate::app::chrome::ActionTooltip as _;
 
 pub(in crate::app) fn css_ease_remaining(progress: f32) -> f32 {
     // Chromium's default CSS ease is cubic-bezier(0.25, 0.1, 0.25, 1).
@@ -965,7 +966,7 @@ pub(super) fn field_instance_label(
         false
     };
     if truncated && !help_hovered {
-        response.on_hover_text(name)
+        response.detail_tooltip(name)
     } else {
         response
     }
@@ -1688,6 +1689,21 @@ pub(in crate::app) fn underlined_link(label: egui::Label) -> impl egui::Widget {
     }
 }
 
+pub(in crate::app) fn hyperlink(ui: &mut egui::Ui, label: &str, url: &str) -> egui::Response {
+    let label = egui::Label::new(locale::tr(ui, label)).wrap();
+    let response = ui.add(underlined_link(label));
+    if response.clicked_with_open_in_background() {
+        ui.ctx().open_url(egui::OpenUrl::new_tab(url));
+    } else if response.clicked() {
+        ui.ctx().open_url(egui::OpenUrl::same_tab(url));
+    }
+    if ui.style().url_in_tooltip {
+        response.detail_tooltip(url)
+    } else {
+        response
+    }
+}
+
 pub(in crate::app) fn form_help_link(ui: &mut egui::Ui, width: f32, label: &str, url: &str) {
     ui.scope(|ui| {
         let normal = Color32::from_rgb(73, 141, 85);
@@ -1710,7 +1726,7 @@ pub(in crate::app) fn form_help_link(ui: &mut egui::Ui, width: f32, label: &str,
             egui::Button::new(RichText::new(title).color(Color32::WHITE).size(14.667)).truncate(),
         )
         .on_hover_cursor(egui::CursorIcon::PointingHand)
-        .on_hover_text(url);
+        .detail_tooltip(url);
         response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Link, true, title));
         if response.clicked() || response.middle_clicked() {
             ui.ctx().open_url(egui::OpenUrl::new_tab(url));
@@ -1766,6 +1782,50 @@ pub(in crate::app) fn checkbox(ui: &mut egui::Ui, value: &mut bool, label: &str)
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn truncated_project_field_name_has_a_shared_tooltip_with_literal_text() {
+        let ctx = egui::Context::default();
+        theme::configure(&ctx);
+        locale::set(&ctx, locale::Language::SimplifiedChinese);
+        ctx.style_mut(|style| {
+            style.interaction.tooltip_delay = 0.;
+            style.animation_time = 0.;
+        });
+        let name = r"**Example** field\nwith literal markers";
+        let pointer = egui::pos2(45., 20.);
+        let mut output = egui::FullOutput::default();
+        for frame in 0..5 {
+            output = ctx.run(
+                egui::RawInput {
+                    events: vec![egui::Event::PointerMoved(pointer)],
+                    time: Some(f64::from(frame) * 0.25),
+                    ..Default::default()
+                },
+                |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        field_instance_label(ui, name, 72., None, false, false);
+                    });
+                },
+            );
+        }
+        fn contains_tooltip_background(shape: &egui::Shape) -> bool {
+            match shape {
+                egui::Shape::Rect(rect) => rect.fill == Color32::from_rgb(60, 97, 72),
+                egui::Shape::Vec(shapes) => shapes.iter().any(contains_tooltip_background),
+                _ => false,
+            }
+        }
+        assert!(output.shapes.iter().any(|shape| {
+            matches!(&shape.shape, egui::Shape::Text(text) if text.galley.text() == name)
+        }));
+        assert!(
+            output
+                .shapes
+                .iter()
+                .any(|shape| contains_tooltip_background(&shape.shape))
+        );
+    }
 
     #[test]
     fn centered_help_card_keeps_wrapped_text_centered_as_the_card_grows() {

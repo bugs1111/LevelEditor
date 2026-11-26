@@ -327,6 +327,8 @@ pub(super) fn source_tooltip(response: &egui::Response, text: &str, keys: &[&str
 pub(super) trait ActionTooltip {
     fn action_tooltip(self, text: impl AsRef<str>) -> Self;
     fn disabled_action_tooltip(self, text: impl AsRef<str>) -> Self;
+    fn detail_tooltip(self, text: impl AsRef<str>) -> Self;
+    fn detail_tooltip_ui(self, contents: impl FnOnce(&mut egui::Ui)) -> Self;
 }
 
 impl ActionTooltip for egui::Response {
@@ -340,6 +342,27 @@ impl ActionTooltip for egui::Response {
     fn disabled_action_tooltip(self, text: impl AsRef<str>) -> Self {
         if !self.enabled() && egui::Tooltip::should_show_tooltip(&self, false) {
             show_source_tooltip(&self, text.as_ref(), &[], false);
+        }
+        self
+    }
+
+    fn detail_tooltip(self, text: impl AsRef<str>) -> Self {
+        let text = text.as_ref();
+        if text.is_empty() {
+            return self;
+        }
+        self.detail_tooltip_ui(|ui| {
+            ui.label(text);
+        })
+    }
+
+    fn detail_tooltip_ui(self, contents: impl FnOnce(&mut egui::Ui)) -> Self {
+        if self.enabled() && egui::Tooltip::should_show_tooltip(&self, false) {
+            source_tooltip_popup(&self, None, egui::Margin::symmetric(18, 12)).show(|ui| {
+                ui.set_max_width(250.);
+                ui.visuals_mut().override_text_color = Some(panels::source_controls::HELP_GREEN);
+                contents(ui);
+            });
         }
         self
     }
@@ -1550,7 +1573,7 @@ impl EditorApp {
                             }
                         }
                         ui.set_opacity(opacity);
-                        response.on_hover_text(text(def, "doc", ""));
+                        response.detail_tooltip(text(def, "doc", ""));
                         self.layer_context_menu(&menu_response, *index, *uid, auto, mac_context);
                         ui.add_space(1.);
                     }

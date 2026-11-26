@@ -1,4 +1,5 @@
 use super::*;
+use crate::app::chrome::ActionTooltip as _;
 use serde_json::json;
 mod home_layout;
 
@@ -832,7 +833,7 @@ impl EditorApp {
                                                 }
                                                 response
                                                     .clone()
-                                                    .on_hover_text(text(def, "doc", ""));
+                                                    .detail_tooltip(text(def, "doc", ""));
                                                 egui::Popup::context_menu(&response)
                                                     .frame(panels::source_controls::context_menu_frame(ui.style()))
                                                     .show(|ui| {
@@ -1953,7 +1954,7 @@ impl EditorApp {
                 } else if tagger {
                     if !panning && drag.is_none() {
                         let label = locale::format(ui, "Tile {id}", &[("id", &id.to_string())]);
-                        response.clone().on_hover_ui(|ui| {
+                        response.clone().detail_tooltip_ui(|ui| {
                             ui.strong(label);
                             let tags = def["enumTags"]
                                 .as_array()
@@ -1977,7 +1978,7 @@ impl EditorApp {
                         });
                     }
                 } else {
-                    response.clone().on_hover_text(locale::format(
+                    response.clone().detail_tooltip(locale::format(
                         ui,
                         "Tile #{id}  ({x}, {y})",
                         &[

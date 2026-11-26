@@ -72,7 +72,10 @@ fn recall_image(button: &egui::Response, images: &[PathBuf]) -> Option<PathBuf> 
                                 label,
                                 color,
                             );
-                        if response.on_hover_text(path.display().to_string()).clicked() {
+                        if response
+                            .detail_tooltip(path.display().to_string())
+                            .clicked()
+                        {
                             chosen = Some(path.clone());
                         }
                     }
@@ -184,7 +187,7 @@ impl EditorApp {
                 })
                 .inner;
             let pick = match &current {
-                Some(path) => pick.on_hover_text(path.display().to_string()),
+                Some(path) => pick.detail_tooltip(path.display().to_string()),
                 None => pick.action_tooltip(locale::tr(ui, "Pick an image")),
             };
             if pick.clicked() {

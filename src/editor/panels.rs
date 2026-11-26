@@ -86,7 +86,7 @@ fn embedded_tileset_notice(ui: &mut egui::Ui) {
                     .corner_radius(0.),
                 )
                 .on_hover_cursor(egui::CursorIcon::PointingHand)
-                .on_hover_text(PATREON);
+                .detail_tooltip(PATREON);
                 support.widget_info(|| {
                     egui::WidgetInfo::labeled(egui::WidgetType::Link, true, "Patreon")
                 });
@@ -103,8 +103,7 @@ fn embedded_tileset_notice(ui: &mut egui::Ui) {
                             RichText::new("FinalBossBlues")
                                 .font(FontId::new(15., egui::FontFamily::Name("body-bold".into()))),
                         );
-                        ui.visuals_mut().hyperlink_color = theme::ACCENT;
-                        ui.hyperlink_to(locale::tr(ui, "website"), WEBSITE);
+                        source_controls::hyperlink(ui, "website", WEBSITE);
                     },
                 );
             },

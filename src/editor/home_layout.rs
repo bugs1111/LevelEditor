@@ -1,5 +1,4 @@
 use super::*;
-use crate::app::chrome::ActionTooltip as _;
 
 const HELP: Color32 = Color32::from_rgb(121, 221, 138);
 const HELP_DARK: Color32 = Color32::from_rgb(60, 97, 72);
@@ -987,7 +986,7 @@ impl EditorApp {
                     }
                     if response
                         .clone()
-                        .on_hover_text(path.to_string_lossy())
+                        .detail_tooltip(path.to_string_lossy())
                         .on_hover_cursor(egui::CursorIcon::PointingHand)
                         .clicked()
                     {

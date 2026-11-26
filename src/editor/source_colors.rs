@@ -544,7 +544,7 @@ fn color_palette(ui: &mut egui::Ui, id: egui::Id, draft: &mut ColorDraft) {
                                     },
                                     StrokeKind::Inside,
                                 );
-                                if response.on_hover_text(format!("#{choice:06X}")).clicked() {
+                                if response.detail_tooltip(format!("#{choice:06X}")).clicked() {
                                     draft.assign([r, g, b]);
                                 }
                                 if index % 12 == 11 {
@@ -859,7 +859,7 @@ fn color_picker(
         }
     }
     (
-        response.on_hover_text(format!("#{}", hex(*color))),
+        response.detail_tooltip(format!("#{}", hex(*color))),
         validated,
     )
 }

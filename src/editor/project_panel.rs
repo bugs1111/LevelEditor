@@ -35,21 +35,6 @@ fn project_checkbox(ui: &mut egui::Ui, values: &Value, patch: &mut Value, key: &
     }
 }
 
-fn project_help_link(ui: &mut egui::Ui, label: &str, url: &str) -> egui::Response {
-    let label = egui::Label::new(locale::tr(ui, label)).wrap();
-    let response = ui.add(source_controls::underlined_link(label));
-    if response.clicked_with_open_in_background() {
-        ui.ctx().open_url(egui::OpenUrl::new_tab(url));
-    } else if response.clicked() {
-        ui.ctx().open_url(egui::OpenUrl::same_tab(url));
-    }
-    if ui.style().url_in_tooltip {
-        response.on_hover_text(url)
-    } else {
-        response
-    }
-}
-
 fn project_locate_button(ui: &mut egui::Ui, is_file: bool) -> bool {
     ui.scope(|ui| {
         ui.spacing_mut().button_padding = Vec2::splat(4.);
@@ -314,7 +299,7 @@ impl EditorApp {
                     });
                 }
             }
-            project_help_link(
+            source_controls::hyperlink(
                 ui,
                 "Learn more about this format",
                 "https://ldtk.io/go/simple",
@@ -397,7 +382,7 @@ impl EditorApp {
             {
                 locate = Some((dir.join("tiled"), false));
             }
-            project_help_link(
+            source_controls::hyperlink(
                 ui,
                 "Learn more about Tiled export limitations",
                 "https://ldtk.io/go/tiled",
@@ -453,7 +438,7 @@ impl EditorApp {
                     .truncate(),
                 );
                 let directory_button = match custom {
-                    Some(path) => directory_button.on_hover_text(path),
+                    Some(path) => directory_button.detail_tooltip(path),
                     None => {
                         directory_button.action_tooltip(locale::tr(ui, "Project backup folder"))
                     }
@@ -916,15 +901,16 @@ impl EditorApp {
                             "This project is NOT allowed to run user commands on your computer."
                         },
                     ));
-                    ui.link(locale::tr(
+                    let label = locale::tr(
                         ui,
                         if trusted {
                             "Remove authorization"
                         } else {
                             "Unblock it"
                         },
-                    ))
-                    .clicked()
+                    );
+                    ui.add(source_controls::underlined_link(egui::Label::new(label)))
+                        .clicked()
                 })
                 .inner;
             if clear {
@@ -1326,7 +1312,7 @@ mod tests {
                     |ctx| {
                         egui::CentralPanel::default().show(ctx, |ui| {
                             ui.horizontal(|ui| {
-                                id = Some(project_help_link(ui, LABEL, URL).id);
+                                id = Some(source_controls::hyperlink(ui, LABEL, URL).id);
                             });
                         });
                     },

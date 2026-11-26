@@ -346,7 +346,7 @@ impl EditorApp {
                                     ui.label(&release.notes);
                                 });
                         }
-                        ui.hyperlink_to(locale::tr(ui, "Release notes"), &release.page);
+                        source_controls::hyperlink(ui, "Release notes", &release.page);
                     }
                     State::Downloading {
                         version,
@@ -422,7 +422,7 @@ impl EditorApp {
                 .password(true)
                 .hint_text(locale::tr(ui, "Session token, or GH_TOKEN / GITHUB_TOKEN")),
         );
-        ui.hyperlink_to(locale::tr(ui, "Open Releases"), updater::RELEASES_URL);
+        source_controls::hyperlink(ui, "Open Releases", updater::RELEASES_URL);
         ui.add_space(6.);
         ui.horizontal_wrapped(|ui| {
             match snapshot {
@@ -562,6 +562,35 @@ mod tests {
             }],
         )
     }
+    #[test]
+    fn releases_link_uses_a_shared_underline_and_opens_the_release_page() {
+        let ctx = egui::Context::default();
+        theme::configure(&ctx);
+        ctx.style_mut(|style| style.animation_time = 0.);
+        let mut app = EditorApp::empty();
+        {
+            let shared = state(&ctx);
+            let mut dialog = shared.lock().unwrap();
+            dialog.open = true;
+            dialog.updater.state = State::Current("0.1.1".into());
+        }
+        let _ = frame(&mut app, &ctx, vec![]);
+        let output = frame(&mut app, &ctx, vec![]);
+        let link = output
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) if text.galley.text() == "Open Releases" => Some(text),
+                _ => None,
+            })
+            .expect("release link");
+        assert_eq!(link.underline, Stroke::new(1., theme::ACCENT));
+        let clicked = click(&mut app, &ctx, link.pos + link.galley.size() * 0.5);
+        assert!(clicked.platform_output.commands.iter().any(|command| {
+            matches!(command, egui::OutputCommand::OpenUrl(url) if url.url == updater::RELEASES_URL)
+        }));
+    }
+
     #[test]
     fn failed_banner_opens_error_details_and_can_retry_or_close() {
         let ctx = egui::Context::default();

@@ -596,7 +596,7 @@ fn file_path_editor(
             });
             let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
             let response = match path_text {
-                Some(path) => response.on_hover_text(path),
+                Some(path) => response.detail_tooltip(path),
                 None => response.action_tooltip(locale::tr(ui, "Choose…")),
             };
             if response.clicked() {

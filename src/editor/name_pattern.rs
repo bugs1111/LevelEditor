@@ -446,11 +446,10 @@ pub(super) fn show(
             );
         }
         reset = ui
-            .scope(|ui| {
-                ui.visuals_mut().hyperlink_color = theme::ACCENT;
-                ui.link(reset_label).clicked()
-            })
-            .inner;
+            .add(source_controls::underlined_link(egui::Label::new(
+                reset_label,
+            )))
+            .clicked();
     });
 
     let mut changed = false;
