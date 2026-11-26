@@ -2761,6 +2761,14 @@ fn tiled_entity_bounds_use_resized_dimensions_and_keep_the_anchor() {
         .unwrap();
     legacy.remove("width");
     legacy.remove("height");
+    project.json["defs"]["entities"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({"uid":actor,"width":99,"height":99}));
+    project.layer_mut(key, 0).unwrap()["entityInstances"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({"defUid":-1,"px":[32,48],"width":10,"height":12,"pivotX":1}));
 
     project.export_tiled(dir.path()).unwrap();
     let xml = fs::read_to_string(dir.path().join("Level_0.tmx")).unwrap();
@@ -2774,6 +2782,7 @@ fn tiled_entity_bounds_use_resized_dimensions_and_keep_the_anchor() {
     );
     assert!(xml.contains("name=\"__anchorX\" type=\"int\" value=\"64\""));
     assert!(xml.contains("name=\"__anchorY\" type=\"int\" value=\"80\""));
+    assert!(xml.contains("x=\"22\" y=\"48\" width=\"10\" height=\"12\""));
 
     project
         .export_tiled_format_with_report_progress(dir.path(), TiledFormat::Tmj, |_, _| {})
@@ -2785,6 +2794,7 @@ fn tiled_entity_bounds_use_resized_dimensions_and_keep_the_anchor() {
         |object: &Value| ["x", "y", "width", "height"].map(|key| object[key].as_i64().unwrap());
     assert_eq!(bounds(&objects[0]), [40, 40, 48, 40]);
     assert_eq!(bounds(&objects[1]), [24, 24, 16, 24]);
+    assert_eq!(bounds(&objects[2]), [22, 48, 10, 12]);
     assert_eq!(objects[0]["properties"][0]["value"], 64);
     assert_eq!(objects[0]["properties"][1]["value"], 80);
 }

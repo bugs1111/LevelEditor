@@ -56,6 +56,7 @@ impl TiledPaths<'_> {
 
 struct TiledMap<'a> {
     level: &'a Value,
+    entity_defs: &'a HashMap<i64, &'a Value>,
     pixels: [i64; 2],
     size: [i64; 2],
     grid: i64,
@@ -63,7 +64,7 @@ struct TiledMap<'a> {
 }
 
 impl<'a> TiledMap<'a> {
-    fn new(level: &'a Value, grid: i64) -> Result<Self> {
+    fn new(level: &'a Value, grid: i64, entity_defs: &'a HashMap<i64, &'a Value>) -> Result<Self> {
         let name = s(level, "identifier");
         let pixels = [n(level, "pxWid"), n(level, "pxHei")];
         if !pixels
@@ -95,11 +96,21 @@ impl<'a> TiledMap<'a> {
         }
         Ok(Self {
             level,
+            entity_defs,
             pixels,
             size,
             grid,
             layers,
         })
+    }
+
+    fn entity_rect(&self, entity: &Value) -> EntityRect {
+        let def = self
+            .entity_defs
+            .get(&n(entity, "defUid"))
+            .copied()
+            .unwrap_or(entity);
+        EntityRect::new(entity, def)
     }
 }
 
@@ -546,12 +557,18 @@ impl Project {
                 output_dir: dir,
             };
             let (tilesets, gids) = self.tiled_tilesets(&paths, &mut batch, format)?;
+            let mut entity_defs = HashMap::new();
+            for def in arr(&self.json["defs"]["entities"]) {
+                if let Some(uid) = def["uid"].as_i64() {
+                    entity_defs.entry(uid).or_insert(def);
+                }
+            }
             let extension = format.extension();
             for (index, level) in levels.enumerate() {
                 let (l, [x, y]) =
                     level.ok_or_else(|| Error::Invalid("missing external level".into()))?;
                 let name = safe_name(s(l, "identifier"))?;
-                let map = TiledMap::new(l, grid)?;
+                let map = TiledMap::new(l, grid, &entity_defs)?;
                 let filename = if total > 1 {
                     format!("{:04}_{name}.{extension}", index + 1)
                 } else {
@@ -619,8 +636,7 @@ impl Project {
                 layer.push('>');
                 layer_id += 1;
                 for e in arr(&li["entityInstances"]) {
-                    let ed = self.definition("entities", n(e, "defUid")).unwrap_or(e);
-                    let rect = EntityRect::new(e, ed);
+                    let rect = map.entity_rect(e);
                     let [ex, ey, width, height] = rect.bounds;
                     let name = xml(s(e, "__identifier"));
                     write!(layer, "<object id=\"{object_id}\" name=\"{name}\" type=\"{name}\" x=\"{ex}\" y=\"{ey}\" width=\"{width}\" height=\"{height}\"><properties>")

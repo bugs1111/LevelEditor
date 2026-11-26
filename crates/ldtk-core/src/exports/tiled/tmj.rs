@@ -1,5 +1,5 @@
 use super::{
-    EntityRect, TileStack, TiledGids, TiledMap, TiledPaths, arr, field_text, for_each_entity_field,
+    TileStack, TiledGids, TiledMap, TiledPaths, arr, field_text, for_each_entity_field,
     intgrid_gids, intgrid_name, n, num, s, tiled_layer_offset, tiled_tile_layers,
 };
 use crate::Project;
@@ -166,10 +166,7 @@ impl Project {
                     if index > 0 {
                         writer.write_all(b",")?;
                     }
-                    let def = self
-                        .definition("entities", n(entity, "defUid"))
-                        .unwrap_or(entity);
-                    let rect = EntityRect::new(entity, def);
+                    let rect = map.entity_rect(entity);
                     let [x, y, width, height] = rect.bounds;
                     let name = s(entity, "__identifier");
                     properties.clear();
