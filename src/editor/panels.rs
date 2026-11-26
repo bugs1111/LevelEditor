@@ -3336,21 +3336,29 @@ fn remap_options(
             clear_overrides: false,
         });
     collapsing(ui, "Existing tile references", |ui| {
-        ui.radio_value(
-            &mut options.mode,
-            ldtk_core::TilesetRemap::TileIds,
-            locale::tr(ui, "Keep tile numbers"),
-        );
-        ui.radio_value(
-            &mut options.mode,
-            ldtk_core::TilesetRemap::AtlasCoordinates,
-            locale::tr(ui, "Keep image positions"),
-        );
-        ui.radio_value(
-            &mut options.mode,
-            ldtk_core::TilesetRemap::Clear,
-            locale::tr(ui, "Clear affected tiles"),
-        );
+        use ldtk_core::TilesetRemap::{AtlasCoordinates, Clear, TileIds};
+        let labels = [
+            "Keep tile numbers",
+            "Keep image positions",
+            "Clear affected tiles",
+        ];
+        let choices = labels.map(|label| (locale::tr(ui, label), None));
+        let current = match options.mode {
+            TileIds => 0,
+            AtlasCoordinates => 1,
+            Clear => 2,
+        };
+        if let Some(index) = source_controls::form_select(
+            ui,
+            id.with("mode"),
+            30.,
+            &choices,
+            Some(current),
+            choices[current].0,
+            source_controls::FormSelectAppearance::Normal,
+        ) {
+            options.mode = [TileIds, AtlasCoordinates, Clear][index];
+        }
         source_controls::checkbox(
             ui,
             &mut options.allow_loss,
@@ -3392,6 +3400,70 @@ fn normalize_background_patch(level: &Value, patch: &mut Value) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tileset_remapping_uses_the_shared_keyboard_navigable_select() {
+        let ctx = egui::Context::default();
+        theme::configure(&ctx);
+        let draw = |events| {
+            let mut mode = ldtk_core::TilesetRemap::TileIds;
+            let output = ctx.run(
+                egui::RawInput {
+                    events,
+                    ..Default::default()
+                },
+                |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        ui.set_max_width(440.);
+                        let section = ui.make_persistent_id("Existing tile references");
+                        let mut state =
+                            egui::collapsing_header::CollapsingState::load_with_default_open(
+                                ctx, section, true,
+                            );
+                        state.set_open(true);
+                        state.store(ctx);
+                        mode =
+                            remap_options(ui, "test", false, ldtk_core::TilesetRemap::TileIds).mode;
+                    });
+                },
+            );
+            (output, mode)
+        };
+        draw(vec![]);
+        let (output, _) = draw(vec![]);
+        let button = output
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) if text.galley.text() == "Keep tile numbers" => {
+                    Some(text.visual_bounding_rect().center())
+                }
+                _ => None,
+            })
+            .expect("tileset remap mode");
+        for pressed in [true, false] {
+            draw(vec![
+                egui::Event::PointerMoved(button),
+                egui::Event::PointerButton {
+                    pos: button,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ]);
+        }
+        assert!(egui::Popup::is_any_open(&ctx));
+        for key in [Key::ArrowDown, Key::Enter] {
+            draw(vec![egui::Event::Key {
+                key,
+                physical_key: Some(key),
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            }]);
+        }
+        assert_eq!(draw(vec![]).1, ldtk_core::TilesetRemap::AtlasCoordinates);
+    }
 
     #[test]
     fn replacing_tileset_image_updates_pixels_and_name_in_the_same_undo() {

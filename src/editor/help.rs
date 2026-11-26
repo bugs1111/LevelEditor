@@ -692,25 +692,31 @@ impl EditorApp {
                 }
                 let button_pos = header.right_top() + egui::vec2(-52., 9.);
                 let button_size = egui::vec2(45., 42.);
-                let orange = Color32::from_rgb(235, 78, 0);
-                if ui
-                    .put(
-                        Rect::from_min_size(button_pos, button_size),
-                        egui::Button::new(RichText::new("×").size(24.).color(Color32::WHITE))
-                            .fill(orange),
-                    )
-                    .clicked()
-                {
+                let close = ui.place(
+                    Rect::from_min_size(button_pos, button_size),
+                    |ui: &mut egui::Ui| project_dialogs::button(ui, "×", button_size, false, 24.),
+                );
+                chrome::source_tooltip(&close, "Close", &[], true);
+                if close.clicked() {
                     open = false;
                 }
                 let others = ui
-                    .put(
+                    .place(
                         Rect::from_min_size(button_pos + egui::vec2(0., 44.), button_size),
-                        egui::Button::image(
-                            egui::Image::new(egui::include_image!("../../assets/icons/list.svg"))
-                                .fit_to_exact_size(Vec2::splat(20.)),
-                        )
-                        .fill(orange),
+                        |ui: &mut egui::Ui| {
+                            panels::source_controls::add_sized_button(
+                                ui,
+                                button_size,
+                                egui::Button::image(
+                                    egui::Image::new(egui::include_image!(
+                                        "../../assets/icons/list.svg"
+                                    ))
+                                    .fit_to_exact_size(Vec2::splat(20.)),
+                                )
+                                .fill(Color32::from_rgb(227, 77, 0))
+                                .corner_radius(2),
+                            )
+                        },
                     )
                     .action_tooltip(locale::tr(ui, "All updates"));
                 egui::Popup::menu(&others)
@@ -738,17 +744,14 @@ impl EditorApp {
                         }
                     });
 
-                ui.spacing_mut().scroll = egui::style::ScrollStyle {
-                    bar_width: 10.,
-                    bar_inner_margin: 0.,
-                    bar_outer_margin: 0.,
-                    ..egui::style::ScrollStyle::solid()
-                };
+                ui.spacing_mut().scroll = panels::source_controls::scroll_style();
+                let content_visuals = panels::source_controls::scroll_visuals(ui);
                 egui::ScrollArea::vertical()
                     .id_salt(("changelog-body", entry.version))
                     .max_height((height - header.height()).max(120.))
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
+                        *ui.visuals_mut() = content_visuals;
                         egui::Frame::new().inner_margin(20).show(ui, |ui| {
                             ui.spacing_mut().item_spacing.y = 8.;
                             let mut cache = cache.lock().unwrap();
@@ -1019,23 +1022,62 @@ mod tests {
         theme::configure(&ctx);
         ctx.data_mut(|data| data.insert_temp(egui::Id::new("release-notes-open"), true));
         let mut app = EditorApp::empty();
-        let mut found = false;
-        for _ in 0..3 {
-            let output = ctx.run(
+        ctx.style_mut(|style| style.animation_time = 0.);
+        let mut draw = |events| {
+            ctx.run(
                 egui::RawInput {
                     screen_rect: Some(Rect::from_min_size(
                         egui::Pos2::ZERO,
                         egui::vec2(1440., 900.),
                     )),
+                    events,
                     ..Default::default()
                 },
                 |ctx| app.changelog_dialog(ctx),
-            );
-            found |= output.shapes.iter().any(|shape| {
-                matches!(&shape.shape, egui::Shape::Text(text) if text.galley.text() == "Patch 1.5.4")
-            });
+            )
+        };
+        draw(vec![]);
+        let output = draw(vec![]);
+        assert!(output.shapes.iter().any(|shape| {
+            matches!(&shape.shape, egui::Shape::Text(text) if text.galley.text() == "Patch 1.5.4")
+        }));
+        let buttons = output
+            .shapes
+            .iter()
+            .filter_map(|shape| match &shape.shape {
+                egui::Shape::Rect(rect)
+                    if rect.stroke.color == Color32::from_white_alpha(56)
+                        && rect.rect.size() == egui::vec2(44., 41.) =>
+                {
+                    Some(rect.rect.center())
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            buttons.len(),
+            2,
+            "both header buttons have the shared border"
+        );
+        for (pos, opens_menu) in [(buttons[1], true), (buttons[0], false)] {
+            for pressed in [true, false] {
+                draw(vec![
+                    egui::Event::PointerMoved(pos),
+                    egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                ]);
+            }
+            if opens_menu {
+                assert!(egui::Popup::is_any_open(&ctx));
+                egui::Popup::close_all(&ctx);
+                draw(vec![]);
+            }
         }
-        assert!(found, "the preview patch is visible in the initial window");
+        assert!(!changelog_is_open(&ctx));
     }
 
     #[derive(Default)]

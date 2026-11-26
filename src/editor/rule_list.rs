@@ -835,7 +835,14 @@ impl EditorApp {
                         biome_anchor = Some(rect);
                     }
                     if group["usesWizard"] == true {
-                        if compact_button(ui, "EDIT", [27., GROUP_HEIGHT], SOURCE_ORANGE).clicked()
+                        if compact_button(
+                            ui,
+                            locale::tr(ui, "EDIT"),
+                            [27., GROUP_HEIGHT],
+                            SOURCE_ORANGE,
+                        )
+                        .action_tooltip(locale::tr(ui, "Edit rules"))
+                        .clicked()
                         {
                             self.begin_rule_wizard(ui.ctx(), view.uid, Some(gid));
                         }

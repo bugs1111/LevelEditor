@@ -268,15 +268,8 @@ impl EditorApp {
                     if left { anchor.left() } else { anchor.right() },
                     if below { anchor.bottom() } else { anchor.top() },
                 ));
-            let modal = egui::Modal::new(id)
+            let modal = project_dialogs::form_warning_dialog(id)
                 .area(area)
-                .backdrop_color(Color32::from_black_alpha(140))
-                .frame(
-                    egui::Frame::new()
-                        .fill(Color32::from_rgb(117, 18, 0))
-                        .stroke(Stroke::new(1_f32, orange))
-                        .inner_margin(20),
-                )
                 .show(ui.ctx(), |ui| {
                     ui.label(
                         RichText::new(locale::tr(ui, "Stop using this image?"))
@@ -285,18 +278,11 @@ impl EditorApp {
                     );
                     ui.add_space(12.);
                     ui.horizontal(|ui| {
-                        let confirm = source_controls::add_sized_button(
-                            ui,
-                            [82., 34.],
-                            egui::Button::new(locale::tr(ui, "CONFIRM")).fill(orange),
-                        )
-                        .clicked();
-                        let cancel = source_controls::add_sized_button(
-                            ui,
-                            [82., 34.],
-                            egui::Button::new(locale::tr(ui, "CANCEL")).fill(theme::LIGHT),
-                        )
-                        .clicked();
+                        let size = egui::vec2(82., 34.);
+                        let confirm =
+                            project_dialogs::button(ui, "CONFIRM", size, false, 13.333).clicked();
+                        let cancel =
+                            project_dialogs::button(ui, "CANCEL", size, true, 13.333).clicked();
                         (confirm, cancel)
                     })
                     .inner
@@ -386,6 +372,8 @@ mod tests {
         let mut app = EditorApp::empty();
         app.set_project(project);
         let ctx = egui::Context::default();
+        theme::configure(&ctx);
+        ctx.style_mut(|style| style.animation_time = 0.);
         let remove_pos = std::cell::Cell::new(egui::Pos2::ZERO);
         let mut draw = |events| {
             ctx.run(
@@ -441,6 +429,17 @@ mod tests {
             draw(pointer(viewport_remove, pressed));
         }
         let out = draw(vec![]);
+        let warning = project_dialogs::form_warning_dialog(egui::Id::NULL)
+            .frame
+            .unwrap();
+        assert!(out.shapes.iter().any(|shape| {
+            let egui::Shape::Vec(shapes) = &shape.shape else {
+                return false;
+            };
+            shapes.iter().any(|shape| matches!(shape,
+                egui::Shape::Rect(rect) if rect.fill == warning.fill && rect.stroke == warning.stroke
+            ))
+        }));
         let cancel = out
             .shapes
             .iter()

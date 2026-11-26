@@ -1804,30 +1804,38 @@ impl EditorApp {
             });
             return;
         }
-        let mut close = false;
-        let modal = egui::Modal::new(id)
-            .frame(project_dialogs::dialog_frame(16))
-            .show(ctx, |ui| {
-                ui.set_width(380.);
-                ui.label(locale::tr(ui, if options == RuleOptions::Advanced {
-                "Switch to advanced mode to edit these rules manually."
+        let (title, message) = if options == RuleOptions::Advanced {
+            (
+                "Switch to advanced mode",
+                "Switch to advanced mode to edit these rules manually.",
+            )
+        } else {
+            (
+                "Disable optional state",
+                "Removing the optional status clears this group's on/off state in all levels.",
+            )
+        };
+        let modal = project_dialogs::show_dialog(ctx, id, title, 412., |ui| {
+            ui.label(locale::tr(ui, message));
+            ui.horizontal_wrapped(|ui| {
+                let confirm = project_dialogs::action(ui, "Confirm", true).clicked();
+                let cancel = project_dialogs::action(ui, "Cancel", false).clicked();
+                (confirm, cancel)
+            })
+            .inner
+        });
+        let (confirm, cancel) = modal.inner;
+        if confirm {
+            let patch = if options == RuleOptions::Advanced {
+                json!({"usesWizard":false})
             } else {
-                "Removing the optional status clears this group's on/off state in all levels."
-            }));
-                if source_controls::button(ui, "Confirm").clicked() {
-                    let patch = if options == RuleOptions::Advanced {
-                        json!({"usesWizard":false})
-                    } else {
-                        json!({"isOptional":false})
-                    };
-                    self.edit_recoverable("Rule group changed", |p| {
-                        p.update_auto_rule_group(layer, gid, &patch)
-                    });
-                    close = true;
-                }
-                close |= source_controls::button(ui, "Cancel").clicked();
+                json!({"isOptional":false})
+            };
+            self.edit_recoverable("Rule group changed", |p| {
+                p.update_auto_rule_group(layer, gid, &patch)
             });
-        if close || modal.should_close() {
+        }
+        if confirm || cancel || modal.should_close() {
             ctx.data_mut(|data| data.remove::<RuleOptionsState>(id));
         }
     }
@@ -1836,6 +1844,51 @@ impl EditorApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rule_group_confirmations_use_the_shared_dialog_header_and_action_row() {
+        let ctx = egui::Context::default();
+        theme::configure(&ctx);
+        ctx.style_mut(|style| style.animation_time = 0.);
+        let mut project = Project::new();
+        let layer = project.add_layer("Ground", "IntGrid", 16).unwrap();
+        let group = project.add_auto_rule_group(layer, "Terrain").unwrap();
+        let mut app = EditorApp::empty();
+        app.set_project(project);
+        for (option, title) in [
+            (RuleOptions::Advanced, "Switch to advanced mode"),
+            (RuleOptions::RequireGroup, "Disable optional state"),
+        ] {
+            app.set_rule_options(&ctx, layer, group, None, option);
+            let mut draw = || {
+                ctx.run(egui::RawInput::default(), |ctx| {
+                    app.rule_options_dialog(ctx)
+                })
+            };
+            draw();
+            let output = draw();
+            let label = |name| {
+                output
+                    .shapes
+                    .iter()
+                    .find_map(|shape| match &shape.shape {
+                        egui::Shape::Text(text) if text.galley.text() == name => {
+                            Some(text.visual_bounding_rect().center())
+                        }
+                        _ => None,
+                    })
+                    .expect(name)
+            };
+            let heading = label(title);
+            assert!(output.shapes.iter().any(|shape| matches!(&shape.shape,
+                egui::Shape::Rect(rect) if rect.fill == theme::LIGHT
+                    && rect.rect.height() == 36. && rect.rect.contains(heading)
+            )));
+            let confirm = label("Confirm");
+            let cancel = label("Cancel");
+            assert!(confirm.x < cancel.x && (confirm.y - cancel.y).abs() < 2.);
+        }
+    }
 
     #[test]
     fn modulo_settings_preview_the_period_and_reset_it_as_one_edit() {
