@@ -399,8 +399,17 @@ impl Project {
                     return Ok(RgbaImage::from_pixel(w, h, background_color));
                 }
             };
-            if bg.dimensions() == (w, h) {
-                // All positioning modes sample the same pixel when the dimensions match.
+            let mode = s(l, "bgPos");
+            let repeat = mode == "Repeat";
+            let same_size = bg.dimensions() == (w, h);
+            let blend_source = same_size
+                || (repeat
+                    && bg.width() <= w
+                    && bg.height() <= h
+                    && u64::from(bg.width()) * u64::from(bg.height())
+                        <= u64::from(w) * u64::from(h) / 2);
+            if blend_source {
+                // Each repeat blends the same source pixel over the same base color.
                 for pixel in bg.pixels_mut() {
                     if pixel[3] != 255 {
                         let mut blended = background_color;
@@ -408,19 +417,20 @@ impl Project {
                         *pixel = blended;
                     }
                 }
+            }
+            if same_size {
+                // All positioning modes sample the same pixel when the dimensions match.
                 return Ok(bg);
             }
             let mut image = RgbaImage::from_pixel(w, h, background_color);
             let bw = bg.width() as f64;
             let bh = bg.height() as f64;
-            let mode = s(l, "bgPos");
             let ([sx, sy], [cw, ch]) =
                 background_image_layout([f64::from(w), f64::from(h)], [bw, bh], mode);
             let pivot_x = num(l, "bgPivotX", 0.5);
             let pivot_y = num(l, "bgPivotY", 0.5);
             let cx = pivot_x * (bw - cw);
             let cy = pivot_y * (bh - ch);
-            let repeat = mode == "Repeat";
             let (x, y) = if repeat {
                 ((w as f64 - bw) * pivot_x, (h as f64 - bh) * pivot_y)
             } else {
@@ -460,7 +470,13 @@ impl Project {
                         continue;
                     };
                     for &(dx, bx) in &columns {
-                        blend_rgba(image.get_pixel_mut(dx, dy), *bg.get_pixel(bx, by), 1.);
+                        let destination = image.get_pixel_mut(dx, dy);
+                        let source = *bg.get_pixel(bx, by);
+                        if blend_source {
+                            *destination = source;
+                        } else {
+                            blend_rgba(destination, source, 1.);
+                        }
                     }
                 }
             }

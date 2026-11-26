@@ -329,8 +329,14 @@ fn benchmark_dense_png_export() {
 #[test]
 #[ignore = "manual repeating PNG background performance comparison"]
 fn benchmark_repeating_png_background() {
+    benchmark_repeating_background("masked", &[0, 255, 255]);
+    benchmark_repeating_background("translucent", &[0, 64, 128, 192, 255]);
+}
+
+fn benchmark_repeating_background(case: &str, alpha: &[u8]) {
     use image::{Rgba, RgbaImage};
     use ldtk_core::exports::{PngExportMode, PngExportOptions};
+    use std::hash::{DefaultHasher, Hash, Hasher};
     use std::time::{Duration, Instant};
 
     let dir = tempfile::tempdir().unwrap();
@@ -352,7 +358,7 @@ fn benchmark_repeating_png_background() {
             (x * 3) as u8,
             (y * 5) as u8,
             121,
-            if (x + y).is_multiple_of(3) { 0 } else { 255 },
+            alpha[(x + y) as usize % alpha.len()],
         ])
     };
     RgbaImage::from_fn(source_width, source_height, pixels)
@@ -364,6 +370,7 @@ fn benchmark_repeating_png_background() {
         file_pattern: None,
     };
     let mut times = [Duration::ZERO; 5];
+    let mut fingerprint = None;
     for (run, time) in times.iter_mut().enumerate() {
         let start = Instant::now();
         let files = project
@@ -371,6 +378,10 @@ fn benchmark_repeating_png_background() {
             .unwrap();
         *time = start.elapsed();
         assert_eq!(files.len(), 1);
+        let mut hasher = DefaultHasher::new();
+        fs::read(&files[0]).unwrap().hash(&mut hasher);
+        let digest = hasher.finish();
+        assert_eq!(*fingerprint.get_or_insert(digest), digest);
         let output = image::open(&files[0]).unwrap().into_rgba8();
         assert_eq!(output.dimensions(), (width as u32, height as u32));
         let expected = |index: u32, output_size: i32, input_size: u32, pivot: f64| {
@@ -382,20 +393,21 @@ fn benchmark_repeating_png_background() {
                 expected(x, width, source_width, pivot_x),
                 expected(y, height, source_height, pivot_y),
             );
-            assert_eq!(
-                *pixel,
-                if src[3] == 0 {
-                    Rgba([16, 30, 40, 255])
-                } else {
-                    src
-                }
-            );
+            let rgb = [16, 30, 40];
+            let a = u32::from(src[3]);
+            let blend = |channel| {
+                let foreground = u32::from(src[channel]);
+                let background = rgb[channel];
+                ((foreground * a + background * (255 - a) + 127) / 255) as u8
+            };
+            assert_eq!(*pixel, Rgba([blend(0), blend(1), blend(2), 255]));
         }
     }
     times.sort_unstable();
     eprintln!(
-        "Repeating PNG background: median {:?}; samples {times:?}",
-        times[2]
+        "Repeating PNG background {case}: median {:?}; output {:016x}; samples {times:?}",
+        times[2],
+        fingerprint.unwrap()
     );
 }
 
@@ -2423,6 +2435,43 @@ fn png_full_size_background_keeps_alpha_blending_for_all_positions() {
             &[11, 22, 33, 255, 128, 48, 24, 255, 16, 32, 48, 255],
             "{mode}"
         );
+    }
+}
+
+#[test]
+fn png_repeat_preserves_alpha_and_fractional_pivots() {
+    let dir = tempfile::tempdir().unwrap();
+    image::RgbaImage::from_raw(
+        2,
+        2,
+        vec![
+            120, 0, 80, 128, 24, 26, 28, 255, 80, 90, 100, 0, 6, 7, 8, 255,
+        ],
+    )
+    .unwrap()
+    .save(dir.path().join("bg.png"))
+    .unwrap();
+    let mut project = Project::new();
+    project.path = Some(dir.path().join("map.ldtk"));
+    project.json["imageExportMode"] = json!("OneImagePerLevel");
+    let level = &mut project.json["levels"][0];
+    level["pxWid"] = json!(6);
+    level["pxHei"] = json!(4);
+    level["bgColor"] = json!("#10203080");
+    level["bgRelPath"] = json!("bg.png");
+    level["bgPos"] = json!("Repeat");
+    level["bgPivotX"] = json!(0.25);
+    level["bgPivotY"] = json!(0.75);
+
+    let files = project.export_png(dir.path().join("out")).unwrap();
+    let image = image::open(&files[0]).unwrap().into_rgba8();
+    assert_eq!(image.dimensions(), (6, 4));
+    let expected = [
+        [[24, 26, 28, 255], [85, 11, 69, 192]],
+        [[6, 7, 8, 255], [16, 32, 48, 128]],
+    ];
+    for (x, y, pixel) in image.enumerate_pixels() {
+        assert_eq!(pixel.0, expected[y as usize % 2][x as usize % 2]);
     }
 }
 
