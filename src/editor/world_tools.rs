@@ -609,18 +609,26 @@ impl EditorApp {
                 ),
             );
         }
-        let delta = match &self.gesture {
-            Some(tools::Gesture::WorldGroupMove {
-                anchor,
-                start,
-                end,
-                moved: true,
-                ..
-            }) => self.world_group_delta(*anchor, *start, *end),
-            _ => [0, 0],
-        };
-        for (key, bounds) in canvas::placements(project, selected) {
-            if self.world_selection_contains(key) {
+        if !self.world_selection.is_empty() {
+            let selected_iids: HashSet<_> =
+                self.world_selection.iter().map(String::as_str).collect();
+            let delta = match &self.gesture {
+                Some(tools::Gesture::WorldGroupMove {
+                    anchor,
+                    start,
+                    end,
+                    moved: true,
+                    ..
+                }) => self.world_group_delta(*anchor, *start, *end),
+                _ => [0, 0],
+            };
+            for (_, level, bounds) in canvas::iter_placements(project, selected) {
+                if !level["iid"]
+                    .as_str()
+                    .is_some_and(|iid| selected_iids.contains(iid))
+                {
+                    continue;
+                }
                 let area = Rect::from_two_pos(
                     screen([bounds[0] + delta[0] as f32, bounds[1] + delta[1] as f32]),
                     screen([bounds[2] + delta[0] as f32, bounds[3] + delta[1] as f32]),
@@ -928,14 +936,48 @@ mod tests {
             .chain((0..size - 1).filter(|i| i % 5 != 2))
             .map(|i| format!("level-{i}"))
             .collect();
+        let ctx = egui::Context::default();
+        let rect = Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1600., 900.));
+        let overlay_frame = |app: &EditorApp| {
+            let mut elapsed = std::time::Duration::ZERO;
+            let output = ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(rect),
+                    ..Default::default()
+                },
+                |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        let start = Instant::now();
+                        app.draw_world_selection(ui, rect);
+                        elapsed = start.elapsed();
+                    });
+                },
+            );
+            let outlines = output
+                .shapes
+                .iter()
+                .filter(|shape| {
+                    matches!(&shape.shape, egui::Shape::Rect(r)
+                    if r.stroke.color == Color32::from_rgba_unmultiplied(0, 255, 0, 204))
+                })
+                .count();
+            assert_eq!(outlines, app.world_selection.len());
+            elapsed
+        };
+        overlay_frame(&app);
         let mut marquee = [std::time::Duration::ZERO; 5];
         let mut hit = marquee;
-        for (marquee_time, hit_time) in marquee.iter_mut().zip(&mut hit) {
+        let mut selected_overlay = marquee;
+        let mut empty_overlay = marquee;
+        for index in 0..marquee.len() {
+            app.world_selection.clear();
+            empty_overlay[index] = overlay_frame(&app);
             app.world_selection = vec![format!("level-{}", size - 1)];
             let start = Instant::now();
             app.world_select_rectangle([-1., -1.], [size as f32 * 20., 20.], true);
-            *marquee_time = start.elapsed();
+            marquee[index] = start.elapsed();
             assert_eq!(app.world_selection, expected);
+            selected_overlay[index] = overlay_frame(&app);
             let start = Instant::now();
             for i in 0..64 {
                 if i % 8 == 0 {
@@ -953,10 +995,12 @@ mod tests {
                     Some(LevelKey { world: None, level })
                 );
             }
-            *hit_time = start.elapsed();
+            hit[index] = start.elapsed();
         }
         marquee.sort_unstable();
         hit.sort_unstable();
+        selected_overlay.sort_unstable();
+        empty_overlay.sort_unstable();
         eprintln!(
             "Large world marquee: median {:?}; samples {marquee:?}",
             marquee[2]
@@ -965,6 +1009,12 @@ mod tests {
             "Large world pointer hit: median {:?}; samples {hit:?}",
             hit[2]
         );
+        for (case, samples) in [("selected", selected_overlay), ("empty", empty_overlay)] {
+            eprintln!(
+                "World overlay {case}: median {:?}; samples {samples:?}",
+                samples[2]
+            );
+        }
     }
 
     fn marquee_frame(
@@ -1001,6 +1051,52 @@ mod tests {
             pressed,
             modifiers,
         }
+    }
+
+    #[test]
+    fn world_selection_overlay_draws_selected_levels_in_project_order() {
+        let mut app = editor();
+        let first = app.selected.unwrap();
+        let project = app.project.as_mut().unwrap();
+        project.json["worldLayout"] = json!("Free");
+        let second = project.add_level(None, "Second", 128, 128).unwrap();
+        project.move_level(second, 96, 0, 0).unwrap();
+        project.add_level(None, "Unselected", 128, 128).unwrap();
+        app.world_toggle_selection(second);
+        app.world_toggle_selection(first);
+
+        let ctx = egui::Context::default();
+        let rect = Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1200., 900.));
+        let output = marquee_frame(&mut app, &ctx, rect, egui::Modifiers::NONE, vec![]);
+        let fills: Vec<_> = output
+            .shapes
+            .iter()
+            .filter_map(|shape| match &shape.shape {
+                egui::Shape::Rect(r)
+                    if r.fill == Color32::from_rgba_unmultiplied(0, 255, 0, 38) =>
+                {
+                    Some(r.rect)
+                }
+                _ => None,
+            })
+            .collect();
+        let project = app.project.as_ref().unwrap();
+        let expected: Vec<_> = canvas::placements(project, first)
+            .into_iter()
+            .take(2)
+            .map(|(_, b)| {
+                Rect::from_two_pos(
+                    app.viewport
+                        .to_screen([b[0], b[1]], rect.min.into(), rect.size().into())
+                        .into(),
+                    app.viewport
+                        .to_screen([b[2], b[3]], rect.min.into(), rect.size().into())
+                        .into(),
+                )
+            })
+            .collect();
+        assert_eq!(fills, expected);
+        assert!(fills[0].intersects(fills[1]));
     }
 
     #[test]
