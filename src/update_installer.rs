@@ -103,6 +103,20 @@ fn copy_tree(source: &Path, target: &Path) -> Result<()> {
     }
     Ok(())
 }
+fn prepare_helper(exe: &Path, work: &Path, os: &str) -> Result<PathBuf> {
+    // The macOS main executable is signed together with its bundle. It can
+    // keep running while the helper renames that bundle to the backup.
+    if os == "macos" {
+        return Ok(exe.to_owned());
+    }
+    let helper = work.join(if os == "windows" {
+        "level-editor-update-helper.exe"
+    } else {
+        "level-editor-update-helper"
+    });
+    fs::copy(exe, &helper).map_err(|e| e.to_string())?;
+    Ok(helper)
+}
 pub(super) fn launch(prepared: &Prepared, reopen: Option<PathBuf>) -> Result<()> {
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
     let target = installed_root(&exe)?;
@@ -141,12 +155,7 @@ pub(super) fn launch(prepared: &Prepared, reopen: Option<PathBuf>) -> Result<()>
     }
     let result = (|| {
         plan.write(&plan_path)?;
-        let helper = prepared.work.join(if cfg!(windows) {
-            "level-editor-update-helper.exe"
-        } else {
-            "level-editor-update-helper"
-        });
-        fs::copy(&exe, &helper).map_err(|e| e.to_string())?;
+        let helper = prepare_helper(&exe, &prepared.work, std::env::consts::OS)?;
         let mut command = Command::new(helper);
         command
             .arg("--apply-update")
@@ -161,7 +170,7 @@ pub(super) fn launch(prepared: &Prepared, reopen: Option<PathBuf>) -> Result<()>
         }
         let mut child = command
             .spawn()
-            .map_err(|e| format!("Could not start the copied update helper: {e}"))?;
+            .map_err(|e| format!("Could not start the update helper: {e}"))?;
         let started = Instant::now();
         loop {
             match listener.accept() {
@@ -425,6 +434,18 @@ pub(super) fn prior_failure() -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn macos_helper_runs_in_the_installed_app_alongside_its_signature_resources() {
+        let dir = tempfile::tempdir().unwrap();
+        let contents = dir.path().join("Level Editor.app/Contents");
+        let installed = contents.join("MacOS/level-editor");
+        fs::create_dir_all(installed.parent().unwrap()).unwrap();
+        fs::write(&installed, b"packaged executable").unwrap();
+        assert_eq!(
+            prepare_helper(&installed, dir.path(), "macos").unwrap(),
+            installed
+        );
+    }
     fn package(root: &Path, bytes: &[u8]) {
         package_with_product(root, bytes, PRODUCT);
     }
@@ -610,38 +631,68 @@ mod tests {
         assert!(!plan.backup.exists());
     }
     #[test]
-    fn copied_rust_helper_waits_for_process_socket_close_then_replaces_and_restarts() {
+    fn update_helper_waits_for_process_socket_close_then_replaces_and_restarts() {
+        exercise_update_helper(None);
+    }
+    #[cfg(target_os = "macos")]
+    #[test]
+    #[ignore = "requires an extracted, notarized release ZIP"]
+    fn notarized_release_helper_confirms_restart_handshake() {
+        let bundle = std::env::var_os("LEVEL_EDITOR_TEST_NOTARIZED_BUNDLE").unwrap();
+        exercise_update_helper(Some(Path::new(&bundle)));
+    }
+    fn exercise_update_helper(release_bundle: Option<&Path>) {
         let dir = tempfile::tempdir().unwrap();
         let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
         listener.set_nonblocking(true).unwrap();
         let restart = dir.path().join("restarted.txt");
         let plan = Plan {
-            staged: dir.path().join("stage"),
-            target: dir.path().join("installed"),
+            staged: dir.path().join("Stage.app"),
+            target: dir.path().join("Level Editor.app"),
             backup: dir.path().join("backup"),
             reopen: Some(PathBuf::from("fixture_restarted_editor")),
             socket: listener.local_addr().unwrap().to_string(),
             nonce: "1".repeat(64),
         };
-        package(&plan.target, b"old installation");
         package(&plan.staged, b"new installation");
         let test_binary = std::env::current_exe().unwrap();
         fs::copy(&test_binary, executable(&plan.staged, PRODUCT)).unwrap();
-        let helper = dir.path().join(if cfg!(windows) {
-            "copied-helper.exe"
+        #[cfg(target_os = "macos")]
+        {
+            fs::write(
+                plan.staged.join("Contents/Info.plist"),
+                include_bytes!("../scripts/macos-info.plist"),
+            )
+            .unwrap();
+            assert!(
+                Command::new("/usr/bin/codesign")
+                    .args(["--force", "--sign", "-", "--options", "runtime"])
+                    .arg(&plan.staged)
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+        }
+        let source = if cfg!(target_os = "macos") {
+            let bundle = release_bundle.unwrap_or(&plan.staged);
+            copy_tree(bundle, &plan.target).unwrap();
+            executable(&plan.target, PRODUCT)
         } else {
-            "copied-helper"
-        });
-        fs::copy(test_binary, &helper).unwrap();
+            package(&plan.target, b"old installation");
+            test_binary
+        };
+        let helper = prepare_helper(&source, dir.path(), std::env::consts::OS).unwrap();
         let plan_path = dir.path().join("apply.json");
         plan.write(&plan_path).unwrap();
-        let mut child = Command::new(helper)
-            .args([
-                "--exact",
-                "updater::installer::tests::fixture_helper_child",
-                "--nocapture",
-            ])
-            .env("LDTK_UPDATE_FIXTURE_PLAN", &plan_path)
+        let mut command = Command::new(helper);
+        if release_bundle.is_some() {
+            command.arg("--apply-update").arg(&plan_path);
+        } else {
+            command
+                .args(["--exact", "updater::installer::tests::fixture_helper_child"])
+                .env("LDTK_UPDATE_FIXTURE_PLAN", &plan_path);
+        }
+        let mut child = command
             .env("LDTK_UPDATE_FIXTURE_RESTART", &restart)
             .stdout(Stdio::null())
             .spawn()
@@ -653,7 +704,7 @@ mod tests {
             }
             assert!(
                 start.elapsed() < Duration::from_secs(10),
-                "copied Rust helper did not connect"
+                "update helper did not connect"
             );
             std::thread::sleep(Duration::from_millis(10));
         };
@@ -664,10 +715,9 @@ mod tests {
         let mut nonce = [0; 64];
         socket.read_exact(&mut nonce).unwrap();
         assert_eq!(nonce.as_slice(), plan.nonce.as_bytes());
-        assert_eq!(
-            fs::read(executable(&plan.target, PRODUCT)).unwrap(),
-            b"old installation"
-        );
+        assert!(plan.target.exists());
+        assert!(plan.staged.exists());
+        assert!(!plan.backup.exists());
         assert!(
             !restart.exists(),
             "helper cannot install while the parent socket is alive"
@@ -683,6 +733,7 @@ mod tests {
             std::thread::sleep(Duration::from_millis(10));
         }
         assert_eq!(fs::read(restart).unwrap(), b"Rust process restarted");
+        assert!(!plan.staged.exists());
         assert!(!plan.backup.exists());
     }
 }

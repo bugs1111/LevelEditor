@@ -82,6 +82,8 @@ jobs:
           bundle="$verify_dir/Level Editor.app"
           codesign --verify --deep --strict "$bundle"
           syspolicy_check distribution "$bundle"
+          LEVEL_EDITOR_TEST_NOTARIZED_BUNDLE="$bundle" cargo test --locked --bin level-editor \
+            updater::installer::tests::notarized_release_helper_confirms_restart_handshake -- --ignored --exact
       - uses: actions/upload-artifact@v7
         with:
           name: release-${{ matrix.target }}
