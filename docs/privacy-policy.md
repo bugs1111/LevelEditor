@@ -10,7 +10,9 @@ Project files and backups remain in their saved locations until you remove them.
 
 ## Online help and support
 
-Opening the Help panel may fetch video thumbnails from YouTube. These HTTPS requests disclose your IP address and ordinary connection details to YouTube. The thumbnail requests do not include your projects or settings. The map editing features work without the thumbnail service.
+The Mac App Store edition does not send any network requests from the editor. Tutorial links open in your web browser.
+
+In the standalone edition, opening the Help panel may fetch video thumbnails from YouTube. These HTTPS requests disclose your IP address and ordinary connection details to YouTube. The thumbnail requests do not include your projects or settings. The map editing features work without the thumbnail service.
 
 Documentation, videos, and support links may open a site in your browser. Those sites handle the information you choose to share with them under their own policies. If you use the public issue tracker, the information you post is visible to other visitors.
 
