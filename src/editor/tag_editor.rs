@@ -182,7 +182,7 @@ pub(super) fn show(
                     rect.left_bottom(),
                     rect.left_top(),
                 ],
-                Stroke::new(1_f32, Color32::from_rgb(84, 93, 115)),
+                Stroke::new(1_f32, theme::LIGHT),
                 2.,
                 2.,
             ));

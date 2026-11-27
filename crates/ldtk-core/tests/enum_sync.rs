@@ -234,6 +234,59 @@ fn enum_rename_cannot_merge_two_definition_uids_and_orphan_fields() {
     assert_eq!(p.json, before);
 }
 #[test]
+fn biome_rule_only_reference_requires_resolution_for_its_own_enum() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("biomes.json");
+    let mut project = Project::new();
+    project.path = Some(dir.path().join("game.ldtk"));
+    fs::write(
+        &source,
+        r#"{"Terrain":["Grass","Forest"],"Other":["Grass","Forest"]}"#,
+    )
+    .unwrap();
+    project.sync_external_enums(&source).unwrap();
+    let field = project
+        .add_field_definition(None, "Biomes", "ExternEnum.Terrain", true)
+        .unwrap();
+    let layer = project.add_layer("Ground", "IntGrid", 16).unwrap();
+    project
+        .update_layer_properties(layer, &json!({"biomeFieldUid":field}))
+        .unwrap();
+    let group = project.add_auto_rule_group(layer, "Trees").unwrap();
+    project
+        .update_auto_rule_group(layer, group, &json!({"requiredBiomeValues":["Forest"]}))
+        .unwrap();
+
+    fs::write(
+        &source,
+        r#"{"Terrain":["Grass","Forest"],"Other":["Grass"]}"#,
+    )
+    .unwrap();
+    assert!(project.sync_external_enums(&source).unwrap().applied);
+
+    fs::write(
+        &source,
+        r#"{"Terrain":["Grass","Woods"],"Other":["Grass"]}"#,
+    )
+    .unwrap();
+    let before = project.json.clone();
+    let report = project.sync_external_enums(&source).unwrap();
+    assert!(report.requires_confirmation && !report.applied);
+    assert_eq!(project.json, before);
+    let renames = std::collections::BTreeMap::from([("Terrain.Forest".into(), "Woods".into())]);
+    assert!(
+        project
+            .apply_external_enum_sync(&source, &renames, false)
+            .unwrap()
+            .applied
+    );
+    assert_eq!(
+        project.layer_def(layer).unwrap()["autoRuleGroups"][0]["requiredBiomeValues"],
+        json!(["Woods"])
+    );
+}
+
+#[test]
 fn external_enum_resolutions_propagate_biomes_tile_tags_and_canonical_null_wrappers() {
     let t = tempfile::tempdir().unwrap();
     let path = t.path().join("state.json");

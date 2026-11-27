@@ -127,15 +127,9 @@ impl EditorApp {
         if force_scroll {
             area = area.anchor(egui::Align2::CENTER_TOP, Vec2::ZERO);
         }
-        let frame = egui::Frame::new()
-            .fill(theme::MEDIUM)
-            .stroke(Stroke::new(1_f32, theme::LIGHT))
-            .shadow(egui::epaint::Shadow {
-                offset: [0, 8],
-                blur: 32,
-                spread: 0,
-                color: Color32::from_black_alpha(153),
-            });
+        let frame = project_dialogs::dialog_frame(0)
+            .corner_radius(0)
+            .stroke(Stroke::new(1_f32, theme::LIGHT));
         let mut close = false;
         let modal = egui::Modal::new(id)
             .area(area)
@@ -248,20 +242,14 @@ impl EditorApp {
         let ctx = ui.ctx().clone();
         let mut patch = json!({});
         // Source dl.form columns size to the longest non-wrapping label plus its help badge.
-        let label_width = |label: &str| {
-            ui.painter()
-                .layout_no_wrap(
-                    locale::tr(ui, label).into(),
-                    FontId::proportional(12.667),
-                    theme::TEXT,
-                )
-                .size()
-                .x
-                + 32.
-        };
-        let left_width = label_width("\"Nearby levels\" tiles rendering distance")
-            .max(label_width("Fade LDtk window when not focused"));
-        let right_width = label_width("World view with mouse wheel");
+        let label_width =
+            |label, key| source_controls::property_label_intrinsic_width(ui, label, key);
+        let left_width = label_width(
+            "\"Nearby levels\" tiles rendering distance",
+            "nearbyTilesRenderingDist",
+        )
+        .max(label_width("Fade LDtk window when not focused", "blurMask"));
+        let right_width = label_width("World view with mouse wheel", "autoSwitchOnZoom");
         if let Some(version) = update_dialog::settings_update_version(ui.ctx()) {
             if source_controls::add_sized_button(
                 ui,
@@ -359,7 +347,8 @@ impl EditorApp {
                     let project = self.project.as_ref().and_then(|p| p.path.as_deref()).and_then(Path::to_str);
                     let executable = std::env::current_exe().ok();
                     let command = executable.as_deref().and_then(Path::to_str);
-                    let response = ui.add_enabled(
+                    let response = source_controls::add_enabled_button(
+                        ui,
                         project.is_some() && command.is_some(),
                         egui::Button::new(locale::tr(ui, "Copy MCP configuration")),
                     );

@@ -125,25 +125,15 @@ struct Action {
     layer_uids: Option<BTreeSet<i64>>,
     bounds: Option<[f32; 4]>,
 }
-fn identity(a: &[Value], b: &[Value]) -> Option<&'static str> {
-    ["iid", "uid", "defUid"].into_iter().find(|key| {
-        let valid = |xs: &[Value]| {
-            let mut ids = BTreeSet::new();
-            xs.iter().all(|v| {
-                v.get(*key)
-                    .is_some_and(|id| !id.is_null() && ids.insert(id.to_string()))
-            })
-        };
-        (!a.is_empty() || !b.is_empty()) && valid(a) && valid(b)
-    })
-}
-
-fn index_items<'a>(items: &'a [Value], key: &str) -> HashMap<&'a Value, &'a Value> {
-    let mut index = HashMap::with_capacity(items.len());
+fn index_items<'a>(items: &'a [Value], key: &str) -> Option<HashMap<&'a Value, &'a Value>> {
+    let mut index = HashMap::new();
     for item in items {
-        index.entry(&item[key]).or_insert(item);
+        let id = item.get(key)?;
+        if id.is_null() || index.insert(id, item).is_some() {
+            return None;
+        }
     }
-    index
+    Some(index)
 }
 
 fn diff(
@@ -164,20 +154,22 @@ fn diff(
             }
         }
         (Some(Value::Array(a)), Some(Value::Array(b))) => {
-            if let Some(key) = identity(a, b) {
-                let ids: BTreeMap<String, &Value> = a
-                    .iter()
-                    .chain(b)
-                    .map(|v| (v[key].to_string(), &v[key]))
-                    .collect();
-                let before = index_items(a, key);
-                let after = index_items(b, key);
-                for id in ids.into_values() {
-                    let old = before.get(id).copied();
-                    let new = after.get(id).copied();
-                    if old == new {
-                        continue;
+            let keyed = ["iid", "uid", "defUid"]
+                .into_iter()
+                .find_map(|key| Some((key, index_items(a, key)?, index_items(b, key)?)));
+            if let Some((key, mut before, after)) = keyed {
+                // Keep the edit order deterministic, sorting only items that actually changed.
+                let mut edits = BTreeMap::new();
+                for (id, new) in after {
+                    let old = before.remove(id);
+                    if old != Some(new) {
+                        edits.insert(id.to_string(), (id, old, Some(new)));
                     }
+                }
+                for (id, old) in before {
+                    edits.insert(id.to_string(), (id, Some(old), None));
+                }
+                for (id, old, new) in edits.into_values() {
                     path.push(Segment::Item(key.into(), id.clone()));
                     diff(old, new, path, out);
                     path.pop();

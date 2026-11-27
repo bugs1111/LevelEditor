@@ -1,7 +1,7 @@
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 
-pub(super) struct Settings {
+pub(crate) struct Settings {
     pub value: Value,
     pub path: Option<PathBuf>,
 }

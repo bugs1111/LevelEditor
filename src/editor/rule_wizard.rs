@@ -861,7 +861,8 @@ fn remap_value_row(ui: &mut egui::Ui, values: &[Value], old: i64, new: &mut i64,
         if *new == old {
             label = label.italics();
         }
-        let button = ui.add_sized(
+        let button = source_controls::add_sized_button(
+            ui,
             [width * 0.56 - 18., 34.],
             egui::Button::new(label).fill(new_color),
         );

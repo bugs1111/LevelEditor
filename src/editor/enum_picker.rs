@@ -415,7 +415,7 @@ fn show_popup(
                                     egui::RichText::new(locale::tr(ui, "Search"))
                                         .color(Color32::from_gray(117)),
                                 )
-                                .font(FontId::proportional(13.333))
+                                .font(theme::TextRole::FormValue.font())
                                 .text_color(Color32::WHITE)
                                 .background_color(theme::DARK)
                                 .margin(egui::vec2(8., 8.))

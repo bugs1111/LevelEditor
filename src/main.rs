@@ -39,6 +39,7 @@ fn main() -> eframe::Result {
     }
     let _open_files: platform_files::OpenFilesGuard = platform_files::install();
     let path = first.map(PathBuf::from);
+    let settings = app::Settings::load();
     let options = eframe::NativeOptions {
         viewport: eframe::egui::ViewportBuilder::default()
             // Match the original's normal window bounds when maximization is unavailable.
@@ -50,7 +51,7 @@ fn main() -> eframe::Result {
             )
             .with_title("Level Editor"),
         renderer: eframe::Renderer::Wgpu,
-        wgpu_options: app::native_gpu_config(),
+        wgpu_options: app::native_gpu_config(settings.bool("useBestGPU")),
         #[cfg(target_os = "macos")]
         event_loop_builder: Some(Box::new(platform_files::configure_quit)),
         ..Default::default()
@@ -58,10 +59,7 @@ fn main() -> eframe::Result {
     eframe::run_native(
         "Level Editor",
         options,
-        Box::new(move |cc| {
-            theme::configure(&cc.egui_ctx);
-            Ok(Box::new(app::EditorApp::new(cc, path)))
-        }),
+        Box::new(move |cc| Ok(Box::new(app::EditorApp::new(cc, path, settings)))),
     )
 }
 

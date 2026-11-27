@@ -557,8 +557,7 @@ pub(super) fn value_editor(
     if preview.is_empty() {
         preview = "(empty string)".into();
     }
-    if ui
-        .add_sized([240., 50.], egui::Button::new(preview).wrap())
+    if panels::source_controls::add_sized_button(ui, [240., 50.], egui::Button::new(preview).wrap())
         .clicked()
     {
         open(ui.ctx(), owner, source, title, mode, read_only);

@@ -50,7 +50,7 @@ fn surface_error_submits_pending_uploads_without_a_present() {
     // Queue writes retain staging allocations until a submit. Polling alone
     // cannot replace it when the painter skips a frame after acquisition fails.
     queue.write_buffer(&output, 0, &[1, 2, 3, 4]);
-    let config = native_gpu_config();
+    let config = native_gpu_config(true);
     assert!(matches!(
         (config.on_surface_error)(wgpu::SurfaceError::Timeout),
         egui_wgpu::SurfaceErrorAction::SkipFrame

@@ -98,14 +98,16 @@ fn keywords(raw: &str) -> String {
         .collect()
 }
 
-fn matching<'a>(entries: &'a [Entry], query: &str) -> impl Iterator<Item = (usize, &'a Entry)> {
-    let query = keywords(query);
-    entries.iter().enumerate().filter(move |(_, entry)| {
-        !query.is_empty()
-            && query
-                .split_whitespace()
-                .all(|word| entry.keywords.contains(word))
-    })
+fn matching<'a>(
+    entries: &'a [Entry],
+    normalized: &str,
+) -> impl Iterator<Item = (usize, &'a Entry)> {
+    let words: Vec<_> = normalized.split_whitespace().collect();
+    let entries = if normalized.is_empty() { &[] } else { entries };
+    entries
+        .iter()
+        .enumerate()
+        .filter(move |(_, entry)| words.iter().all(|word| entry.keywords.contains(word)))
 }
 
 fn values(value: &Value) -> &[Value] {
@@ -186,18 +188,26 @@ fn field_display<'a>(
     }
 }
 
+fn searchable_fields(definitions: &Value) -> HashMap<&Value, &Value> {
+    let mut fields = HashMap::new();
+    for def in values(definitions) {
+        if def["searchable"] == true {
+            fields.entry(&def["uid"]).or_insert(def);
+        }
+    }
+    fields
+}
+
 fn searchable_values<'a>(
     project: &'a Project,
     references: &'a OnceCell<EntityNames<'a>>,
     fields: &'a Value,
-    definitions: &'a Value,
+    definitions: &'a HashMap<&Value, &Value>,
 ) -> impl Iterator<Item = String> + 'a {
     values(fields)
         .iter()
         .filter_map(move |field| {
-            let def = values(definitions)
-                .iter()
-                .find(|def| def["uid"] == field["defUid"] && def["searchable"] == true)?;
+            let def = definitions.get(&field["defUid"])?;
             let kind = text(field, "__type", "");
             let kind = kind
                 .strip_prefix("Array<")
@@ -234,6 +244,13 @@ fn search_index(project: &Project) -> Vec<Entry> {
         };
 
     let defs = &project.json["defs"];
+    let level_fields = searchable_fields(&defs["levelFields"]);
+    let mut entity_fields = HashMap::new();
+    for entity in values(&defs["entities"]) {
+        entity_fields
+            .entry(&entity["uid"])
+            .or_insert_with(|| searchable_fields(&entity["fieldDefs"]));
+    }
     for (kind, panel) in [
         ("layers", Panel::Layers),
         ("entities", Panel::Entities),
@@ -278,10 +295,7 @@ fn search_index(project: &Project) -> Vec<Entry> {
             &[name, world_iid],
             Destination::World(world),
         );
-        for key in project.level_keys_in_world(world) {
-            let Some(level) = project.level(key) else {
-                continue;
-            };
+        for (key, level) in project.levels_in_world(world) {
             let level_name = text(level, "identifier", "Level");
             add(
                 Category::Level,
@@ -294,7 +308,7 @@ fn search_index(project: &Project) -> Vec<Entry> {
                 project,
                 &references,
                 &level["fieldInstances"],
-                &defs["levelFields"],
+                &level_fields,
             ) {
                 add(
                     Category::LevelField,
@@ -323,18 +337,11 @@ fn search_index(project: &Project) -> Vec<Entry> {
                     continue;
                 };
                 let name = text(entity, "__identifier", "Entity");
-                let def = values(&defs["entities"])
-                    .iter()
-                    .find(|def| def["uid"] == entity["defUid"]);
-                let display_values = def
-                    .map(|def| {
-                        searchable_values(
-                            project,
-                            &references,
-                            &entity["fieldInstances"],
-                            &def["fieldDefs"],
-                        )
-                        .collect::<Vec<_>>()
+                let display_values = entity_fields
+                    .get(&entity["defUid"])
+                    .map(|fields| {
+                        searchable_values(project, &references, &entity["fieldInstances"], fields)
+                            .collect::<Vec<_>>()
                     })
                     .unwrap_or_default();
                 let mut title = name.to_owned();
@@ -402,7 +409,7 @@ impl SearchIndex {
         self.rows.clear();
         let limit = if expanded { usize::MAX } else { PREVIEW_ROWS };
         let mut top = 0.;
-        for (entry, result) in matching(&self.entries, query).take(limit) {
+        for (entry, result) in matching(&self.entries, &keywords(query)).take(limit) {
             let (title, _) = result_labels(ui, result, width);
             let height = ROW_HEIGHT.max(title.size().y + 6.);
             self.rows.push(SearchRow { entry, top, height });
@@ -594,7 +601,7 @@ impl EditorApp {
     #[cfg(test)]
     fn search_results(&self, query: &str) -> Vec<Entry> {
         let index = self.project.as_ref().map(search_index).unwrap_or_default();
-        matching(&index, query)
+        matching(&index, &keywords(query))
             .map(|(_, entry)| entry.clone())
             .collect()
     }
@@ -610,10 +617,6 @@ impl EditorApp {
             return;
         }
         let opening = self.search_entries.is_none();
-        let index = self.search_entries.get_or_insert_with(|| SearchIndex {
-            entries: self.project.as_ref().map(search_index).unwrap_or_default(),
-            ..Default::default()
-        });
         let id = egui::Id::new("command-palette");
         let width = 733.333_f32.min(ctx.content_rect().width() - 16.).max(1.);
         let modal = egui::Modal::new(id)
@@ -651,6 +654,13 @@ impl EditorApp {
                     self.search_index = 0;
                     self.search_show_all = false;
                 }
+                if self.search.is_empty() {
+                    return None;
+                }
+                let index = self.search_entries.get_or_insert_with(|| SearchIndex {
+                    entries: self.project.as_ref().map(search_index).unwrap_or_default(),
+                    ..Default::default()
+                });
                 let layout_width = ui.available_width() - ui.spacing().scroll.allocated_width();
                 index.layout(ui, &self.search, self.search_show_all, layout_width);
                 let rows = &index.rows;
@@ -817,6 +827,45 @@ mod tests {
         );
     }
     use serde_json::json;
+
+    #[test]
+    fn palette_waits_for_a_search_term_and_ignores_enter_after_clearing_it() {
+        let mut app = EditorApp::empty();
+        app.set_project(Project::new());
+        app.command_palette = true;
+        let ctx = egui::Context::default();
+        theme::configure(&ctx);
+        let frame = |app: &mut EditorApp, events| {
+            let _ = ctx.run(
+                egui::RawInput {
+                    events,
+                    ..Default::default()
+                },
+                |ctx| app.palette_dialog(ctx),
+            );
+        };
+        frame(&mut app, vec![]);
+        assert!(
+            app.search_entries.is_none(),
+            "empty search indexed the project"
+        );
+        app.search = "level".into();
+        frame(&mut app, vec![]);
+        assert!(!app.search_entries.as_ref().unwrap().rows.is_empty());
+        app.search.clear();
+        frame(
+            &mut app,
+            vec![egui::Event::Key {
+                key: Key::Enter,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
+        );
+        assert!(app.command_palette);
+        assert!(app.search_results("").is_empty());
+    }
 
     #[test]
     fn selecting_a_world_result_uses_the_source_view_transition() {

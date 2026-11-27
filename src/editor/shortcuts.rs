@@ -859,7 +859,9 @@ impl EditorApp {
             || self.suggest_backups
             || self.command_open
             || self.crash.is_some()
-            || self.clicktrap
+            // Refocusing guards pointer clicks for two frames. Keyboard input is
+            // already valid as soon as the window has focus.
+            || !ctx.input(|input| input.focused)
         {
             return;
         }
@@ -1462,6 +1464,30 @@ mod tests {
     }
 
     #[test]
+    fn first_keyboard_shortcut_opens_level_settings_while_refocus_still_guards_clicks() {
+        for press_in_same_frame in [true, false] {
+            let (mut app, ctx) = keyboard_zoom_editor();
+            let mut events = vec![
+                egui::Event::WindowFocused(false),
+                egui::Event::WindowFocused(true),
+            ];
+            let press = key_event(Key::C, Key::C, true, egui::Modifiers::NONE);
+            if press_in_same_frame {
+                events.push(press.clone());
+            }
+            keyboard_zoom_frame(&mut app, &ctx, 2., true, events);
+            assert!(
+                app.clicktrap,
+                "refocusing must still consume the activating click"
+            );
+            if !press_in_same_frame {
+                keyboard_zoom_frame(&mut app, &ctx, 2.01, true, vec![press]);
+            }
+            assert_eq!(app.panel, Some(Panel::Level));
+        }
+    }
+
+    #[test]
     fn batched_blur_and_refocus_restore_shortcuts_without_a_click() {
         let (mut app, ctx) = keyboard_zoom_editor();
         ctx.data_mut(|data| {
@@ -1499,6 +1525,7 @@ mod tests {
             vec![
                 egui::Event::WindowFocused(true),
                 egui::Event::WindowFocused(false),
+                key_event(Key::C, Key::C, true, egui::Modifiers::NONE),
             ],
         );
         keyboard_zoom_frame(&mut app, &ctx, 3.05, false, vec![]);
@@ -1506,6 +1533,7 @@ mod tests {
             app.clicktrap,
             "the final blur guards the canvas until refocus"
         );
+        assert_eq!(app.panel, Some(Panel::Help));
     }
 
     #[test]

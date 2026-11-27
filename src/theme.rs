@@ -39,6 +39,7 @@ pub(crate) enum TextRole {
     StrongBody,
     OptionTitle,
     PropertyLabel,
+    FormValue,
     TooltipBody,
     TooltipHeading,
     NoticeBody,
@@ -54,6 +55,7 @@ impl TextRole {
             Self::StrongBody => (15., "body-bold"),
             Self::OptionTitle => (13., "body-bold"),
             Self::PropertyLabel => return FontId::proportional(12.667),
+            Self::FormValue => return FontId::proportional(13.333),
             Self::TooltipBody | Self::NoticeBody => return FontId::proportional(14.667),
             Self::TooltipHeading => (17.6, "heading"),
             Self::NoticeTitle => (14.667, "body-bold"),
@@ -63,9 +65,14 @@ impl TextRole {
     }
 }
 
+#[cfg(test)]
 pub fn configure(ctx: &egui::Context) {
+    configure_for_language(ctx, false);
+}
+
+pub(crate) fn configure_for_language(ctx: &egui::Context, chinese: bool) {
     ctx.set_theme(egui::Theme::Dark);
-    set_font_language(ctx, false);
+    set_font_language(ctx, chinese);
     let mut style = (*ctx.style()).clone();
     style.visuals = egui::Visuals::dark();
     style.visuals.panel_fill = DARK;

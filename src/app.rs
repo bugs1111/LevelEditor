@@ -82,6 +82,7 @@ mod selection_tools;
 mod services;
 #[path = "editor/settings.rs"]
 mod settings;
+pub(crate) use settings::Settings;
 #[path = "editor/shortcuts.rs"]
 mod shortcuts;
 #[path = "editor/text_editor.rs"]
@@ -174,9 +175,9 @@ fn resource_path_in(relative: &str, executable: Option<&Path>) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(relative)
 }
 
-pub fn native_gpu_config() -> eframe::egui_wgpu::WgpuConfiguration {
+pub fn native_gpu_config(use_best_gpu: bool) -> eframe::egui_wgpu::WgpuConfiguration {
     let setup = eframe::egui_wgpu::WgpuSetupCreateNew {
-        power_preference: if settings::Settings::load().bool("useBestGPU") {
+        power_preference: if use_best_gpu {
             eframe::wgpu::PowerPreference::HighPerformance
         } else {
             eframe::wgpu::PowerPreference::LowPower
@@ -423,8 +424,12 @@ impl EditorApp {
             && self.assets.stats().pending == 0
             && self.resource_checks.is_empty()
     }
-    pub fn new(cc: &eframe::CreationContext<'_>, path: Option<PathBuf>) -> Self {
-        let mut app = Self::empty();
+    pub fn new(
+        cc: &eframe::CreationContext<'_>,
+        path: Option<PathBuf>,
+        settings: Settings,
+    ) -> Self {
+        let mut app = Self::with_settings(settings);
         #[cfg(target_os = "linux")]
         {
             app.startup_window = Some(StartupWindow::NotYetMapped);
@@ -432,8 +437,7 @@ impl EditorApp {
         canvas::configure_gpu(cc.wgpu_render_state.as_ref());
         app.repaint = Some(cc.egui_ctx.clone());
         crate::platform_files::set_context(&cc.egui_ctx);
-        app.settings = settings::Settings::load();
-        locale::set(&cc.egui_ctx, app.settings.language());
+        locale::configure(&cc.egui_ctx, app.settings.language());
         app.random_state ^= std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_nanos() as u64)
@@ -483,7 +487,12 @@ impl EditorApp {
         });
     }
 
+    #[cfg(test)]
     fn empty() -> Self {
+        Self::with_settings(Settings::default())
+    }
+
+    fn with_settings(settings: Settings) -> Self {
         Self {
             project: None,
             history: History::default(),
@@ -548,7 +557,7 @@ impl EditorApp {
             new_name: String::new(),
             new_kind: "IntGrid".into(),
             new_grid: 16,
-            settings: settings::Settings::default(),
+            settings,
             clipboard: None,
             selection: None,
             stamp: None,

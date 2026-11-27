@@ -295,7 +295,7 @@ fn world_selector(
 
 fn form_text_box(value: &mut String) -> egui::TextEdit<'_> {
     egui::TextEdit::singleline(value)
-        .font(FontId::proportional(13.333))
+        .font(theme::TextRole::FormValue.font())
         .margin(egui::Margin::symmetric(9, 0))
         .vertical_align(egui::Align::Center)
 }

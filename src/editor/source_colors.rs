@@ -695,7 +695,7 @@ fn color_picker(
                                 [if allow_null { 182. } else { 228. }, 44.],
                                 egui::TextEdit::singleline(&mut text)
                                     .hint_text("rrggbb")
-                                    .font(FontId::proportional(13.333))
+                                    .font(theme::TextRole::FormValue.font())
                                     .text_color(Color32::WHITE)
                                     .vertical_align(egui::Align::Center)
                                     .margin(egui::Margin {

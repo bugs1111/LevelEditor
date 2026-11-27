@@ -108,7 +108,8 @@ impl Project {
             .find(|found| found.entity["iid"] == iid)
     }
 
-    pub(crate) fn iter_entities(&self) -> impl Iterator<Item = EntityMatch<'_>> {
+    /// Visit entities in level, layer and instance order, resolving external levels.
+    pub fn iter_entities(&self) -> impl Iterator<Item = EntityMatch<'_>> {
         self.iter_level_keys().flat_map(|level| {
             self.level(level)
                 .and_then(|level| level["layerInstances"].as_array())

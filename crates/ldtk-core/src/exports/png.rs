@@ -355,24 +355,36 @@ impl Project {
         }
         batch.publish()
     }
-    fn png_name(&self, key: LevelKey, li: &Value, pattern: &str) -> Result<String> {
-        let l = self.level(key).unwrap();
-        let world = key
-            .world
-            .and_then(|w| self.json["worlds"].get(w))
-            .map(|w| s(w, "identifier"))
-            .unwrap_or("World");
-        let idx = arr(&self.json["defs"]["layers"])
-            .iter()
-            .take_while(|d| n(d, "uid") != n(li, "layerDefUid"))
-            .filter(|d| s(d, "type") != "Entities")
-            .count();
-        let result = pattern
-            .replace("%level_name", s(l, "identifier"))
-            .replace("%layer_name", s(li, "__identifier"))
-            .replace("%world", world)
-            .replace("%level_idx", &format!("{:04}", key.level))
-            .replace("%layer_idx", &format!("{idx:02}"));
+    fn png_name(
+        &self,
+        key: LevelKey,
+        level_name: &str,
+        li: &Value,
+        pattern: &str,
+    ) -> Result<String> {
+        let mut result = pattern
+            .replace("%level_name", level_name)
+            .replace("%layer_name", s(li, "__identifier"));
+        if result.contains("%world") {
+            let world = key
+                .world
+                .and_then(|w| self.json["worlds"].get(w))
+                .map(|w| s(w, "identifier"))
+                .unwrap_or("World");
+            result = result.replace("%world", world);
+        }
+        if result.contains("%level_idx") {
+            result = result.replace("%level_idx", &format!("{:04}", key.level));
+        }
+        if result.contains("%layer_idx") {
+            let uid = n(li, "layerDefUid");
+            let idx = arr(&self.json["defs"]["layers"])
+                .iter()
+                .take_while(|d| n(d, "uid") != uid)
+                .filter(|d| s(d, "type") != "Entities")
+                .count();
+            result = result.replace("%layer_idx", &format!("{idx:02}"));
+        }
         safe_name(&result)?;
         Ok(result)
     }
@@ -584,25 +596,31 @@ impl<'a> PngRenderer<'a> {
             (options.mode != PngExportMode::OneImagePerLayer).then(|| RgbaImage::new(w, h))
         };
         let mut premultiplied = false;
+        let layer_files = options.mode != PngExportMode::OneImagePerLevel;
+        let layer_pattern = options
+            .file_pattern
+            .as_deref()
+            .unwrap_or("%level_name__%layer_name");
         for li in arr(&l["layerInstances"]).iter().rev() {
-            let def = project.layer_def(n(li, "layerDefUid")).unwrap_or(li);
             let typ = s(li, "__type");
             let tiles = typ == "Tiles"
                 || typ == "AutoLayer"
                 || (typ == "IntGrid" && li["__tilesetDefUid"].as_i64().is_some());
-            let pattern = options.file_pattern.as_deref().unwrap_or(
-                if options.mode == PngExportMode::OneImagePerLevel {
-                    "%level_name"
-                } else {
-                    "%level_name__%layer_name"
-                },
-            );
-            let file = project.png_name(key, li, pattern)?;
+            if !(tiles || layer_files && typ == "IntGrid") {
+                continue;
+            }
+            let file = layer_files
+                .then(|| project.png_name(key, name, li, layer_pattern))
+                .transpose()?;
+            let def = project.layer_def(n(li, "layerDefUid")).unwrap_or(li);
             if tiles {
                 let opacity = num(def, "displayOpacity", 1.).clamp(0., 1.);
-                let layer_file = options.mode != PngExportMode::OneImagePerLevel;
-                let (image, area, placeholder) =
-                    self.render_tile_layer(l, li, if layer_file { opacity } else { 1. })?;
+                let (image, area, placeholder) = self.render_tile_layer(
+                    (w, h),
+                    li,
+                    def,
+                    if layer_files { opacity } else { 1. },
+                )?;
                 if let Some(combined) = &mut combined {
                     if placeholder && opacity > 0. && !premultiplied {
                         premultiply(combined);
@@ -615,11 +633,13 @@ impl<'a> PngRenderer<'a> {
                     };
                     composite(combined, &image, area, alpha, premultiplied);
                 }
-                if layer_file {
+                if let Some(file) = &file {
                     batch.add_png(dir.join(format!("{file}.png")), &image)?;
                 }
             }
-            if typ == "IntGrid" && options.mode != PngExportMode::OneImagePerLevel {
+            if typ == "IntGrid"
+                && let Some(file) = &file
+            {
                 let img = intgrid_image(li, def)?;
                 batch.add_png(dir.join(format!("{file}-int.png")), &img)?;
             }
@@ -631,6 +651,7 @@ impl<'a> PngRenderer<'a> {
                 let li = arr(&l["layerInstances"]).first().unwrap_or(l);
                 project.png_name(
                     key,
+                    name,
                     li,
                     options.file_pattern.as_deref().unwrap_or("%level_name"),
                 )?
@@ -644,13 +665,12 @@ impl<'a> PngRenderer<'a> {
 
     fn render_tile_layer(
         &mut self,
-        l: &Value,
+        (w, h): (u32, u32),
         li: &Value,
+        def: &Value,
         placeholder_opacity: f64,
     ) -> Result<(RgbaImage, PaintedArea, bool)> {
-        let (w, h) = dimensions(l)?;
         let mut img = RgbaImage::new(w, h);
-        let def = self.project.layer_def(n(li, "layerDefUid")).unwrap_or(li);
         let classic = s(li, "__type") == "Tiles";
         let uid = li["__tilesetDefUid"]
             .as_i64()

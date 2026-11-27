@@ -1,8 +1,8 @@
 use eframe::egui::{self, FontData, FontDefinitions, FontFamily};
 use std::{
-    borrow::Cow,
-    path::PathBuf,
-    sync::{Arc, LazyLock, OnceLock},
+    collections::HashMap,
+    path::{Path, PathBuf},
+    sync::{Arc, LazyLock, Mutex, OnceLock, Weak},
 };
 
 const BUNDLED_CJK: &[u8] = include_bytes!("../../assets/fonts/LevelEditorCJK-Regular.otf");
@@ -48,12 +48,22 @@ fn font_definitions(chinese: bool) -> FontDefinitions {
             }
         }
     }
-    static SYMBOLS: LazyLock<Option<Vec<u8>>> = LazyLock::new(load_system_symbols);
-    if let Some(bytes) = &*SYMBOLS {
-        fonts.font_data.insert(
-            "system-symbols".into(),
-            Arc::new(FontData::from_static(bytes)),
-        );
+    static MONOSPACE: LazyLock<Option<SystemFace>> = LazyLock::new(system_monospace);
+    if let Some(face) = MONOSPACE.as_ref() {
+        fonts
+            .font_data
+            .insert("system-monospace".into(), Arc::new(face.font_data()));
+        fonts
+            .families
+            .entry(FontFamily::Monospace)
+            .or_default()
+            .insert(0, "system-monospace".into());
+    }
+    static SYMBOLS: LazyLock<Option<SystemFace>> = LazyLock::new(load_system_symbols);
+    if let Some(face) = SYMBOLS.as_ref() {
+        fonts
+            .font_data
+            .insert("system-symbols".into(), Arc::new(face.font_data()));
         for family in fonts.families.values_mut() {
             family.push("system-symbols".into());
         }
@@ -61,7 +71,40 @@ fn font_definitions(chinese: bool) -> FontDefinitions {
     with_priorities(fonts, chinese)
 }
 
-fn load_system_symbols() -> Option<Vec<u8>> {
+struct SystemFace {
+    bytes: Arc<Vec<u8>>,
+    index: u32,
+}
+
+impl SystemFace {
+    fn load(path: &Path, select: impl FnOnce(&[u8]) -> Option<u32>) -> Option<Self> {
+        // A collection can supply several roles. Keep a single buffer per file while
+        // any accepted face uses it, and release rejected candidates immediately.
+        static FILES: LazyLock<Mutex<HashMap<PathBuf, Weak<Vec<u8>>>>> =
+            LazyLock::new(Mutex::default);
+        let bytes = {
+            let mut files = FILES.lock().unwrap();
+            if let Some(bytes) = files.get(path).and_then(Weak::upgrade) {
+                bytes
+            } else {
+                let bytes = Arc::new(std::fs::read(path).ok()?);
+                files.insert(path.to_owned(), Arc::downgrade(&bytes));
+                bytes
+            }
+        };
+        let index = select(&bytes)?;
+        Some(Self { bytes, index })
+    }
+
+    fn font_data(&'static self) -> FontData {
+        FontData {
+            index: self.index,
+            ..FontData::from_static(&self.bytes)
+        }
+    }
+}
+
+fn load_system_symbols() -> Option<SystemFace> {
     let symbols = if cfg!(target_os = "macos") {
         PathBuf::from("/System/Library/Fonts/Apple Symbols.ttf")
     } else if cfg!(target_os = "windows") {
@@ -69,22 +112,19 @@ fn load_system_symbols() -> Option<Vec<u8>> {
     } else {
         PathBuf::from("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf")
     };
-    let bytes = std::fs::read(symbols).ok()?;
-    ttf_parser::Face::parse(&bytes, 0).ok()?;
-    Some(bytes)
+    SystemFace::load(&symbols, |bytes| {
+        ttf_parser::Face::parse(bytes, 0).ok().map(|_| 0)
+    })
 }
 
 fn cached_system_font(chinese: bool, weight: usize) -> Option<FontData> {
     // Egui copies owned font bytes when creating its atlas. Lend it the cached face instead.
-    static FACES: [[OnceLock<Option<FontData>>; 3]; 2] =
+    static FACES: [[OnceLock<Option<SystemFace>>; 3]; 2] =
         [const { [const { OnceLock::new() }; 3] }; 2];
     let face = FACES[usize::from(chinese)][weight]
         .get_or_init(|| system_font(chinese, weight))
         .as_ref()?;
-    Some(FontData {
-        font: Cow::Borrowed(&face.font),
-        ..*face
-    })
+    Some(face.font_data())
 }
 
 pub(crate) fn set_font_language(ctx: &egui::Context, chinese: bool) {
@@ -179,19 +219,16 @@ fn with_priorities(mut fonts: FontDefinitions, chinese: bool) -> FontDefinitions
 
 #[cfg(any(target_os = "linux", target_os = "windows"))]
 fn load_font(
-    path: &std::path::Path,
+    path: &Path,
     indices: impl IntoIterator<Item = u32>,
     chinese: bool,
     weight: usize,
-) -> Option<FontData> {
-    let bytes = std::fs::read(path).ok()?;
-    let index = indices.into_iter().find(|&index| {
-        ttf_parser::Face::parse(&bytes, index)
-            .is_ok_and(|face| suitable_face(&face, chinese, weight))
-    })?;
-    Some(FontData {
-        index,
-        ..FontData::from_owned(bytes)
+) -> Option<SystemFace> {
+    SystemFace::load(path, |bytes| {
+        indices.into_iter().find(|&index| {
+            ttf_parser::Face::parse(bytes, index)
+                .is_ok_and(|face| suitable_face(&face, chinese, weight))
+        })
     })
 }
 
@@ -212,22 +249,12 @@ fn suitable_face(face: &ttf_parser::Face<'_>, chinese: bool, weight: usize) -> b
 }
 
 #[cfg(target_os = "linux")]
-fn system_font(chinese: bool, weight: usize) -> Option<FontData> {
-    use std::path::Path;
+fn system_font(chinese: bool, weight: usize) -> Option<SystemFace> {
     let lang = if chinese { "zh-cn" } else { "en" };
     let weight_name = ["regular", "bold", "light"][weight];
-    if let Ok(output) = std::process::Command::new("fc-match")
-        .args([
-            "-f",
-            "%{file}\t%{index}",
-            &format!("sans-serif:lang={lang}:weight={weight_name}"),
-        ])
-        .output()
-        && output.status.success()
-        && let Ok(result) = std::str::from_utf8(&output.stdout)
-        && let Some((path, index)) = result.rsplit_once('\t')
-        && let Ok(index) = index.parse::<u32>()
-        && let Some(font) = load_font(Path::new(path), [index & 0xffff], chinese, weight)
+    if let Some((path, index)) =
+        fontconfig_match(&format!("sans-serif:lang={lang}:weight={weight_name}"))
+        && let Some(font) = load_font(&path, [index], chinese, weight)
     {
         return Some(font);
     }
@@ -253,12 +280,56 @@ fn system_font(chinese: bool, weight: usize) -> Option<FontData> {
     load_font(Path::new(path), [index], chinese, weight)
 }
 
+#[cfg(target_os = "linux")]
+fn fontconfig_match(pattern: &str) -> Option<(PathBuf, u32)> {
+    let output = std::process::Command::new("fc-match")
+        .args(["-f", "%{file}\t%{index}", pattern])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let (path, index) = std::str::from_utf8(&output.stdout)
+        .ok()?
+        .rsplit_once('\t')?;
+    Some((path.into(), index.parse::<u32>().ok()? & 0xffff))
+}
+
+fn system_monospace() -> Option<SystemFace> {
+    fn load(path: &Path, requested: Option<u32>) -> Option<SystemFace> {
+        SystemFace::load(path, |bytes| {
+            let count = ttf_parser::fonts_in_collection(bytes).unwrap_or(1);
+            let mut indices = requested.map_or(0..count, |index| index..index + 1);
+            indices.find(|&index| {
+                ttf_parser::Face::parse(bytes, index)
+                    .is_ok_and(|face| face.is_monospaced() && suitable_face(&face, false, REGULAR))
+            })
+        })
+    }
+    #[cfg(target_os = "linux")]
+    if let Some((path, index)) = fontconfig_match("monospace:lang=en:weight=regular")
+        && let Some(face) = load(&path, Some(index))
+    {
+        return Some(face);
+    }
+    if cfg!(target_os = "macos") {
+        load(Path::new("/System/Library/Fonts/Menlo.ttc"), None)
+    } else if cfg!(target_os = "windows") {
+        load(&windows_font_directory().join("consola.ttf"), None)
+    } else {
+        load(
+            Path::new("/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf"),
+            None,
+        )
+    }
+}
+
 fn windows_font_directory() -> PathBuf {
     PathBuf::from(std::env::var_os("WINDIR").unwrap_or_else(|| "C:/Windows".into())).join("Fonts")
 }
 
 #[cfg(target_os = "windows")]
-fn system_font(chinese: bool, weight: usize) -> Option<FontData> {
+fn system_font(chinese: bool, weight: usize) -> Option<SystemFace> {
     let files = if chinese {
         ["msyh.ttc", "msyhbd.ttc", "msyhl.ttc"]
     } else {
@@ -274,7 +345,7 @@ fn system_font(chinese: bool, weight: usize) -> Option<FontData> {
 }
 
 #[cfg(target_os = "macos")]
-fn system_font(chinese: bool, weight: usize) -> Option<FontData> {
+fn system_font(chinese: bool, weight: usize) -> Option<SystemFace> {
     use core_foundation::{
         base::{CFType, CFTypeRef, TCFType},
         string::{CFString, CFStringRef},
@@ -303,21 +374,18 @@ fn system_font(chinese: bool, weight: usize) -> Option<FontData> {
             return None;
         }
         let url = unsafe { CFURL::wrap_under_create_rule(url.cast()) };
-        let bytes = std::fs::read(url.to_path()?).ok()?;
-        let index = (0..ttf_parser::fonts_in_collection(&bytes).unwrap_or(1)).find(|&index| {
-            ttf_parser::Face::parse(&bytes, index).is_ok_and(|face| {
-                suitable_face(&face, chinese, weight)
-                    && name.is_none_or(|name| {
-                        face.names().into_iter().any(|entry| {
-                            entry.name_id == ttf_parser::name_id::POST_SCRIPT_NAME
-                                && entry.to_string().as_deref() == Some(name)
+        SystemFace::load(&url.to_path()?, |bytes| {
+            (0..ttf_parser::fonts_in_collection(bytes).unwrap_or(1)).find(|&index| {
+                ttf_parser::Face::parse(bytes, index).is_ok_and(|face| {
+                    suitable_face(&face, chinese, weight)
+                        && name.is_none_or(|name| {
+                            face.names().into_iter().any(|entry| {
+                                entry.name_id == ttf_parser::name_id::POST_SCRIPT_NAME
+                                    && entry.to_string().as_deref() == Some(name)
+                            })
                         })
-                    })
+                })
             })
-        })?;
-        Some(FontData {
-            index,
-            ..FontData::from_owned(bytes)
         })
     };
 
@@ -356,7 +424,7 @@ fn system_font(chinese: bool, weight: usize) -> Option<FontData> {
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
-fn system_font(_: bool, _: usize) -> Option<FontData> {
+fn system_font(_: bool, _: usize) -> Option<SystemFace> {
     None
 }
 
@@ -409,6 +477,32 @@ mod tests {
             english.families[&FontFamily::Monospace][0],
             chinese.families[&FontFamily::Monospace][0],
         );
+        if let Some(mono) = english.font_data.get("system-monospace") {
+            assert_eq!(
+                english.families[&FontFamily::Monospace][0],
+                "system-monospace"
+            );
+            let face = ttf_parser::Face::parse(&mono.font, mono.index).unwrap();
+            assert!(face.is_monospaced() && suitable_face(&face, false, REGULAR));
+        }
+    }
+
+    #[test]
+    fn system_faces_share_file_bytes_and_release_them_with_the_last_face() {
+        let path =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/fonts/RobotoCondensed-Regular.ttf");
+        let load = || {
+            SystemFace::load(&path, |bytes| {
+                ttf_parser::Face::parse(bytes, 0).ok().map(|_| 0)
+            })
+            .unwrap()
+        };
+        let first = load();
+        let second = load();
+        assert!(Arc::ptr_eq(&first.bytes, &second.bytes));
+        let bytes = Arc::downgrade(&first.bytes);
+        drop((first, second));
+        assert!(bytes.upgrade().is_none());
     }
 
     #[test]

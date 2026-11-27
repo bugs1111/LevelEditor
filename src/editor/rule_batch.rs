@@ -61,14 +61,7 @@ impl EditorApp {
                             }
                         });
                         ui.add_space(16.);
-                        ui.horizontal_top(|ui| {
-                            ui.spacing_mut().item_spacing.x = 8.;
-                            ui.add_sized(
-                                [110., 34.],
-                                egui::Label::new(RichText::new(locale::tr(ui, "\"Out-of-bounds\" policy")).size(13.333))
-                                    .wrap()
-                                    .halign(egui::Align::Max),
-                            );
+                        source_controls::form_row_wrapped_sized(ui, "\"Out-of-bounds\" policy", "outOfBoundsValue", egui::vec2(110., 34.), |ui| {
                             let mut choices = vec![
                                 (None, locale::tr(ui, "-- Pick a value --").to_owned()),
                                 (Some(None), locale::tr(ui, "This rule should not apply when reading cells outside of layer bounds (default)").to_owned()),
@@ -82,30 +75,10 @@ impl EditorApp {
                                 Some((Some(Some(id)), label))
                             }));
                             let selected = choices.iter().position(|(value, _)| *value == state.value).unwrap_or(0);
-                            let (rect, response) = ui.allocate_exact_size(
-                                egui::vec2(width - 118., 29.),
-                                Sense::click(),
-                            );
-                            let painter = ui.painter();
-                            painter.rect(
-                                rect, 3., theme::LIGHT,
-                                Stroke::new(1_f32, Color32::from_rgb(115, 127, 157)),
-                                StrokeKind::Inside,
-                            );
-                            painter.with_clip_rect(rect.shrink2(egui::vec2(8., 0.))).text(
-                                rect.left_center() + egui::vec2(10., 0.),
-                                Align2::LEFT_CENTER,
-                                &choices[selected].1,
-                                FontId::proportional(13.333),
-                                Color32::WHITE,
-                            );
-                            let arrow = rect.right_center() - egui::vec2(9., 0.);
-                            painter.add(egui::Shape::line(
-                                vec![arrow + egui::vec2(-4., -2.), arrow + egui::vec2(0., 2.), arrow + egui::vec2(4., -2.)],
-                                Stroke::new(1.5_f32, Color32::WHITE),
-                            ));
-                            let options = choices.iter().map(|(_, label)| (label.as_str(), Color32::WHITE)).collect::<Vec<_>>();
-                            if let Some(picked) = source_controls::select_popup(&response, id.with("value"), selected, &options) {
+                            let options: Vec<_> = choices.iter().map(|(_, label)| (label.as_str(), None)).collect();
+                            if let Some(picked) = source_controls::form_select(
+                                ui, id.with("value"), 29., &options, Some(selected), &choices[selected].1, source_controls::FormSelectAppearance::Normal,
+                            ) {
                                 state.value = choices[picked].0;
                             }
                         });
@@ -179,43 +152,58 @@ mod tests {
         assert!(ctx.data(|d| d.get_temp::<PolicyDialog>(dialog_id()).is_none()));
         assert_eq!(app.project.as_ref().unwrap().json, before);
         app.begin_group_policy(&ctx, layer, group);
-        ctx.data_mut(|d| {
-            d.insert_temp(
-                dialog_id(),
-                PolicyDialog {
-                    layer,
-                    group,
-                    value: Some(Some(0)),
-                },
-            )
-        });
         run(&mut app, vec![]);
-        let out = run(&mut app, vec![]);
-        let point = out
-            .shapes
-            .iter()
-            .find_map(|s| match &s.shape {
-                egui::Shape::Text(t)
-                    if t.galley.job.text.eq_ignore_ascii_case("Apply to all rules") =>
-                {
-                    Some(t.pos + t.galley.rect.center().to_vec2())
-                }
-                _ => None,
-            })
-            .unwrap();
-        for pressed in [true, false] {
-            run(
-                &mut app,
-                vec![
-                    egui::Event::PointerMoved(point),
-                    egui::Event::PointerButton {
-                        pos: point,
-                        button: egui::PointerButton::Primary,
-                        pressed,
-                        modifiers: Default::default(),
-                    },
-                ],
-            );
+        for name in ["-- Pick a value --", "Empty cells", "Apply to all rules"] {
+            let out = run(&mut app, vec![]);
+            if name == "-- Pick a value --" {
+                assert!(out.shapes.iter().any(|shape| matches!(&shape.shape,
+                    egui::Shape::Text(text)
+                        if text.galley.text().replace('\n', " ") == "\"Out-of-bounds\" policy"
+                            && text.galley.job.sections[0].format.font_id == theme::TextRole::PropertyLabel.font()
+                )));
+            }
+            if name == "Empty cells" {
+                let (clip, label) = out
+                    .shapes
+                    .iter()
+                    .find_map(|shape| match &shape.shape {
+                        egui::Shape::Text(text)
+                            if text.galley.text().starts_with("This rule should not apply") =>
+                        {
+                            Some((shape.clip_rect, text.visual_bounding_rect()))
+                        }
+                        _ => None,
+                    })
+                    .expect("visible default policy option");
+                assert!(
+                    label.right() <= clip.right() + 1.,
+                    "default option clipped: {label:?} in {clip:?}"
+                );
+            }
+            let point = out
+                .shapes
+                .iter()
+                .find_map(|s| match &s.shape {
+                    egui::Shape::Text(t) if t.galley.text().eq_ignore_ascii_case(name) => {
+                        Some(t.pos + t.galley.rect.center().to_vec2())
+                    }
+                    _ => None,
+                })
+                .unwrap_or_else(|| panic!("missing {name}"));
+            for pressed in [true, false] {
+                run(
+                    &mut app,
+                    vec![
+                        egui::Event::PointerMoved(point),
+                        egui::Event::PointerButton {
+                            pos: point,
+                            button: egui::PointerButton::Primary,
+                            pressed,
+                            modifiers: Default::default(),
+                        },
+                    ],
+                );
+            }
         }
         for uid in [a, b] {
             let copy = app

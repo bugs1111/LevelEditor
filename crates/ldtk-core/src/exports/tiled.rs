@@ -32,7 +32,7 @@ impl TiledFormat {
 
 enum TiledTilesets {
     Xml(String),
-    Json(Vec<Value>),
+    JsonEntries(Vec<u8>),
 }
 
 struct TiledPaths<'a> {
@@ -215,7 +215,7 @@ impl TiledTilesets {
                 })?;
                 out.push_str("</tileset>");
             }
-            Self::Json(out) => {
+            Self::JsonEntries(out) => {
                 let mut tiles = Vec::new();
                 for_each_tile_property_set(custom_data, |id, values| {
                     let properties: Vec<_> = values
@@ -237,7 +237,11 @@ impl TiledTilesets {
                 if !tiles.is_empty() {
                     set["tiles"] = tiles.into();
                 }
-                out.push(set);
+                if !out.is_empty() {
+                    out.push(b',');
+                }
+                serde_json::to_writer(out, &set)
+                    .expect("writing a JSON value to a Vec is infallible");
             }
         }
         Ok(())
@@ -424,7 +428,7 @@ impl Project {
         let dir = paths.output_dir;
         let mut tilesets = match format {
             TiledFormat::Tmx => TiledTilesets::Xml(String::new()),
-            TiledFormat::Tmj => TiledTilesets::Json(Vec::new()),
+            TiledFormat::Tmj => TiledTilesets::JsonEntries(Vec::new()),
         };
         let mut gids = TiledGids::default();
         let mut gid = 1u32;
@@ -587,7 +591,7 @@ impl Project {
                         parts.push(b"</map>");
                         batch.add_parts(path, &parts)?;
                     }
-                    TiledTilesets::Json(tilesets) => {
+                    TiledTilesets::JsonEntries(tilesets) => {
                         batch.add_writer(path, |writer| {
                             self.write_tiled_map_json(writer, &map, &gids, tilesets, &paths)
                         })?;

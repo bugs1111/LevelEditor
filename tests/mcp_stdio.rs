@@ -194,6 +194,76 @@ fn mcp_level_lookup_tracks_reindexed_levels_after_reload() {
 }
 
 #[test]
+fn entity_lookup_tracks_placement_limits_removals_and_external_reload() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("entities.ldtk");
+    let mut project = Project::new();
+    let first = project.level_keys()[0];
+    let second = project.add_level(None, "Second", 64, 64).unwrap();
+    project.add_layer("Actors", "Entities", 16).unwrap();
+    let actor = project.add_entity_def("Actor", 16, 16).unwrap();
+    let definition = &mut project.json["defs"]["entities"][0];
+    definition["maxCount"] = json!(1);
+    definition["limitScope"] = json!("PerWorld");
+    definition["limitBehavior"] = json!("MoveLastOne");
+    assert!(project.add_entity(first, 0, actor, 0, 0).unwrap());
+    project.set_external_levels(true).unwrap();
+    project.save(&path).unwrap();
+    let original = &project.layer(first, 0).unwrap()["entityInstances"][0];
+    let read = json!({"entity_iid":original["iid"]});
+    let first_iid = &project.level(first).unwrap()["iid"];
+    let second_iid = &project.level(second).unwrap()["iid"];
+    let layer_iid = &project.layer(second, 0).unwrap()["iid"];
+
+    let mut client = Client::start(&path);
+    client.initialize(PROTOCOL);
+    client.initialized();
+    assert_eq!(
+        client.tool("get_entity", read.clone())["level_iid"],
+        *first_iid
+    );
+    let placed = client.tool(
+        "add_entity",
+        json!({
+            "level_iid":second_iid,"layer_iid":layer_iid,"def_uid":actor,"x":16,"y":32
+        }),
+    );
+    assert_eq!(placed["entity_iid"], original["iid"]);
+    let moved = client.tool("get_entity", read.clone());
+    assert_eq!(moved["level_iid"], *second_iid);
+    assert_eq!(moved["entity"]["px"], json!([16, 32]));
+    assert_eq!(
+        client.tool(
+            "remove_entity",
+            json!({
+                "level_iid":second_iid,"layer_iid":layer_iid,"entity_iid":original["iid"]
+            })
+        )["changed"],
+        true
+    );
+    assert_eq!(client.call("get_entity", read.clone())["isError"], true);
+
+    // When an external writer duplicates an IID, the first level still wins.
+    let external = dir.path().join(
+        project.json["levels"][1]["externalRelPath"]
+            .as_str()
+            .unwrap(),
+    );
+    let mut document: Value = serde_json::from_slice(&fs::read(&external).unwrap()).unwrap();
+    document["layerInstances"][0]["entityInstances"] = json!([original]);
+    fs::write(&external, serde_json::to_vec(&document).unwrap()).unwrap();
+    client.tool("reload_project", json!({"discard_changes":true}));
+    assert_eq!(
+        client.call("get_entity", json!({"entity_iid":"missing"}))["isError"],
+        true
+    );
+    let reloaded = client.tool("get_entity", read);
+    assert_eq!(reloaded["level_iid"], *first_iid);
+    assert_eq!(reloaded["entity"], *original);
+    client.close();
+}
+
+#[test]
 fn layer_response_preserves_escaped_json_for_every_protocol() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("escaping.ldtk");
@@ -1032,6 +1102,19 @@ fn batches_manual_tile_paint_and_erase_with_sequential_results() {
         let tool = tools.iter().find(|tool| tool["name"] == name).expect(name);
         assert_eq!(tool["inputSchema"]["properties"]["cells"]["type"], "array");
     }
+    for name in ["paint_tile", "paint_tile_cells"] {
+        let tool = tools.iter().find(|tool| tool["name"] == name).expect(name);
+        let properties = &tool["inputSchema"]["properties"];
+        let fields = if name == "paint_tile" {
+            properties
+        } else {
+            &properties["cells"]["items"]["properties"]
+        };
+        for field in ["tile_id", "src_x", "src_y", "flips"] {
+            assert_eq!(fields[field]["minimum"], 0, "{name}.{field}");
+        }
+        assert_eq!(fields["flips"]["maximum"], 3, "{name}.flips");
+    }
     let batch_args = |cells| {
         let mut args = target.clone();
         args["cells"] = cells;
@@ -1051,12 +1134,16 @@ fn batches_manual_tile_paint_and_erase_with_sequential_results() {
         );
     }
     let erase = json!({"x":2,"y":0});
-    assert_eq!(
-        batch.call(
-            "erase_tile_cells",
-            batch_args(json!([erase, {"x":32,"y":0}]))
-        )["isError"],
-        true
+    let error = batch.call(
+        "erase_tile_cells",
+        batch_args(json!([erase, {"x":32,"y":0}])),
+    );
+    assert_eq!(error["isError"], true);
+    assert!(
+        error["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("cells[1]")
     );
     assert_eq!(batch.tool("project_info", json!({}))["dirty"], false);
     assert_eq!(batch.tool("get_layer", target.clone()), initial);

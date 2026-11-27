@@ -319,7 +319,7 @@ fn offset_label(ui: &mut egui::Ui, text: &str, width: f32, align: egui::Align) {
         alignment,
         locale::tr(ui, text),
         FontId::proportional(13.333),
-        Color32::from_rgb(193, 207, 235),
+        theme::TEXT,
     );
 }
 
@@ -630,7 +630,7 @@ impl EditorApp {
                             .rect_stroke(
                                 guidance.inner,
                                 0.,
-                                Stroke::new(1_f32, rule_guidance::GREEN),
+                                Stroke::new(1_f32, theme::HELP_TEXT),
                                 StrokeKind::Inside,
                             );
                     } else {
@@ -902,9 +902,9 @@ impl EditorApp {
                 ui,
                 [width, 31.],
                 egui::Button::new(
-                    RichText::new(locale::tr(ui, "Enable help")).color(rule_guidance::GREEN),
+                    RichText::new(locale::tr(ui, "Enable help")).color(theme::HELP_TEXT),
                 )
-                .fill(rule_guidance::GREEN_DARK),
+                .fill(theme::HELP_FILL),
             )
             .clicked()
             {
@@ -1457,14 +1457,7 @@ impl EditorApp {
                     let (line, _) = ui.allocate_exact_size(egui::vec2(400., 1.), Sense::hover());
                     ui.painter().hline(line.x_range(), line.top(), Stroke::new(1_f32, theme::LIGHT));
                     ui.add_space(8.);
-                    ui.horizontal(|ui| {
-                        ui.add_sized([120., 30.], egui::Label::new(
-                            RichText::new(locale::tr(ui, "Checkboard mode")).size(13.333),
-                        ));
-                        ui.add_sized([28., 30.], egui::Label::new("?")).action_tooltip(
-                            locale::tr(ui, "Enabling this will alternate the resulting tiles like a checkboard."),
-                        );
-                        ui.add_space(8.);
+                    source_controls::form_row(ui, "Checkboard mode", "checker", 148., |ui| {
                         ui.spacing_mut().interact_size.y = 30.;
                         let choices = [
                             ("None", "Off", true),
@@ -1474,7 +1467,7 @@ impl EditorApp {
                         let label = choices.iter().find(|(value, _, _)| *value == checker)
                             .map_or("Off", |(_, label, _)| *label);
                         source_controls::form_combo("checker").width(244.)
-                            .selected_text(RichText::new(locale::tr(ui, label)).size(13.333))
+                            .selected_text(RichText::new(locale::tr(ui, label)).font(theme::TextRole::FormValue.font()))
                             .show_ui(ui, |ui| {
                                 for (value, label, enabled) in choices {
                                     if ui.add_enabled(enabled, egui::Button::selectable(
@@ -1582,12 +1575,7 @@ impl EditorApp {
             ] {
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 0.;
-                    ui.add_sized(
-                        [52., 33.],
-                        egui::Label::new(RichText::new(locale::tr(ui, label)).size(13.333))
-                            .halign(egui::Align::Max),
-                    );
-                    ui.add_space(8.);
+                    source_controls::property_label_with_width(ui, label, key, 60.);
                     if let Some(value) =
                         source_controls::number_input_sized(ui, key, &current, style, width)
                     {

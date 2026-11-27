@@ -139,7 +139,7 @@ impl Project {
         writer: &mut impl Write,
         map: &TiledMap<'_>,
         gids: &TiledGids,
-        tilesets: &[Value],
+        tilesets: &[u8],
         paths: &TiledPaths<'_>,
     ) -> io::Result<()> {
         let grid = map.grid;
@@ -254,9 +254,9 @@ impl Project {
         if !background.is_empty() {
             header["backgroundcolor"] = json!(background);
         }
-        writer.write_all(b"],\"tilesets\":")?;
-        serde_json::to_writer(&mut *writer, tilesets)?;
-        writer.write_all(b",")?;
+        writer.write_all(b"],\"tilesets\":[")?;
+        writer.write_all(tilesets)?;
+        writer.write_all(b"],")?;
         let header = serde_json::to_vec(&header)?;
         writer.write_all(&header[1..])
     }

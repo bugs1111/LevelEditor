@@ -172,7 +172,7 @@ pub(in crate::app) fn number_input_sized(
         let text = preview.as_mut().unwrap_or(draft);
         let mut edit = egui::TextEdit::singleline(text)
             .id(id)
-            .font(FontId::proportional(13.333))
+            .font(theme::TextRole::FormValue.font())
             .vertical_align(egui::Align::Center)
             .margin(egui::Margin {
                 left: 8,
@@ -641,7 +641,7 @@ fn form_row_inner<R>(
             );
             ui.painter().set(
                 background,
-                egui::Shape::rect_filled(rect, 3., Color32::from_rgb(60, 97, 72)),
+                egui::Shape::rect_filled(rect, 3., theme::HELP_FILL),
             );
             ui.painter().rect_stroke(
                 rect.expand(2.),
@@ -899,7 +899,7 @@ fn help_badge(ui: &mut egui::Ui, help: &str, below: bool) -> egui::Response {
         rect,
         8.,
         if hovered {
-            Color32::from_rgb(121, 221, 138)
+            HELP_TEXT
         } else {
             Color32::from_rgba_unmultiplied(84, 93, 115, 115)
         },
@@ -1102,7 +1102,7 @@ pub(in crate::app) fn form_select(
         }
     }
     let previous_style = ui.style().clone();
-    let font = FontId::proportional(13.333);
+    let font = theme::TextRole::FormValue.font();
     let text_height = ui.fonts_mut(|fonts| fonts.row_height(&font));
     let spacing = ui.spacing_mut();
     spacing.interact_size.y = height;
@@ -1195,8 +1195,32 @@ pub(in crate::app) fn form_select(
                     highlighted = index;
                 }
             }
+            // Size the open menu to its labels independently of the closed field.
+            let mut width = ui.available_width();
             let mut indent = 9.;
-            for (index, &(name, heading)) in options.iter().enumerate() {
+            let rows: Vec<_> = options
+                .iter()
+                .map(|&(name, heading)| {
+                    let heading = heading.map(|text| {
+                        indent = 30.;
+                        let font = theme::TextRole::OptionTitle.font();
+                        let galley =
+                            ui.painter()
+                                .layout_no_wrap(text.to_owned(), font, Color32::WHITE);
+                        width = width.max(11. + galley.size().x + 9.);
+                        galley
+                    });
+                    let label = ui.painter().layout_no_wrap(
+                        name.to_owned(),
+                        font.clone(),
+                        Color32::PLACEHOLDER,
+                    );
+                    width = width.max(indent + label.size().x + 9.);
+                    (name, heading, label, indent)
+                })
+                .collect();
+            ui.set_min_width(width.min(screen.width() - 2.));
+            for (index, (name, heading, label, indent)) in rows.into_iter().enumerate() {
                 if let Some(heading) = heading {
                     let (rect, _) = ui.allocate_exact_size(
                         egui::vec2(ui.available_width(), ROW_HEIGHT),
@@ -1204,14 +1228,11 @@ pub(in crate::app) fn form_select(
                     );
                     ui.painter()
                         .with_clip_rect(rect.intersect(ui.clip_rect()))
-                        .text(
-                            rect.left_center() + egui::vec2(11., 0.),
-                            Align2::LEFT_CENTER,
+                        .galley(
+                            rect.left_center() + egui::vec2(11., -heading.size().y * 0.5),
                             heading,
-                            FontId::new(13.333, egui::FontFamily::Name("body-bold".into())),
                             Color32::WHITE,
                         );
-                    indent = 30.;
                 }
                 let (rect, response) = ui.allocate_exact_size(
                     egui::vec2(ui.available_width(), ROW_HEIGHT),
@@ -1233,11 +1254,10 @@ pub(in crate::app) fn form_select(
                         response.scroll_to_me(None);
                     }
                 }
-                painter.text(
-                    rect.left_center() + egui::vec2(indent, 0.),
-                    Align2::LEFT_CENTER,
-                    name,
-                    font.clone(),
+                let truncated = indent + label.size().x > rect.width();
+                painter.galley(
+                    rect.left_center() + egui::vec2(indent, -label.size().y * 0.5),
+                    label,
                     if active {
                         Color32::WHITE
                     } else {
@@ -1247,6 +1267,8 @@ pub(in crate::app) fn form_select(
                 if response.clicked() {
                     selected = Some(index);
                     ui.close();
+                } else if truncated {
+                    response.detail_tooltip(name);
                 }
             }
             ui.data_mut(|data| data.insert_temp(highlighted_id, highlighted));
@@ -1403,7 +1425,7 @@ pub(super) fn searchable_select_button(
             rect.left_center() + egui::vec2(5., 0.),
             Align2::LEFT_CENTER,
             title,
-            FontId::proportional(13.33),
+            theme::TextRole::FormValue.font(),
             ui.visuals().text_color(),
         );
     let arrow = rect.right_center() - egui::vec2(8., 0.);
@@ -1491,7 +1513,7 @@ fn select_popup_contents(
                 egui::TextEdit::singleline(&mut search)
                     .id(search_id)
                     .hint_text(locale::tr(ui, "Search"))
-                    .font(FontId::proportional(13.333))
+                    .font(theme::TextRole::FormValue.font())
                     .margin(egui::Margin::symmetric(9, 0))
                     .vertical_align(egui::Align::Center),
             );

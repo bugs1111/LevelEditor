@@ -129,11 +129,19 @@ fn locale_id() -> egui::Id {
     egui::Id::new("interface-language")
 }
 
+pub(super) fn configure(ctx: &egui::Context, language: Language) {
+    ctx.data_mut(|data| data.insert_temp(locale_id(), language));
+    crate::theme::configure_for_language(ctx, language == Language::SimplifiedChinese);
+}
+
 pub(super) fn set(ctx: &egui::Context, language: Language) {
     let changed = ctx.data_mut(|data| {
         let previous = data.get_temp::<Language>(locale_id()).unwrap_or_default();
+        if previous == language {
+            return false;
+        }
         data.insert_temp(locale_id(), language);
-        previous != language
+        true
     });
     if changed {
         crate::theme::set_font_language(ctx, language == Language::SimplifiedChinese);

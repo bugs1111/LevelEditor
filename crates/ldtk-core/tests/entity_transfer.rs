@@ -89,6 +89,25 @@ fn identifier_filter_rejects_excluded_tags_atomically_and_tag_filter_preserves_s
     assert!(p.move_entities_between_layers(from, from, "all.*").is_err());
     assert_eq!(p.json, before);
 }
+
+#[test]
+fn empty_transfer_preserves_loaded_optional_fields() {
+    let (p, from, to, _, _) = sample();
+    let mut document = p.json;
+    document["levels"][0]["layerInstances"][0]["entityInstances"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("__worldX");
+    let mut loaded = Project::from_json(document.clone()).unwrap();
+    assert_eq!(
+        loaded
+            .move_entities_between_layers(from, to, "tag.unknown")
+            .unwrap(),
+        0
+    );
+    assert_eq!(loaded.json, document);
+}
+
 #[test]
 fn batch_transfer_preflights_every_destination_and_supports_external_worlds() {
     let (mut p, from, to, a, _) = sample();

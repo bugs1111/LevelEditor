@@ -516,7 +516,8 @@ fn main() -> eframe::Result {
         })
         .unwrap_or(1.);
     assert!(settle_seconds.is_finite() && settle_seconds >= 1.);
-    let mut wgpu_options = app::native_gpu_config();
+    let settings = app::Settings::load();
+    let mut wgpu_options = app::native_gpu_config(settings.bool("useBestGPU"));
     let vsync = std::env::var_os("LDTK_SMOKE_NO_VSYNC").is_none();
     if !vsync {
         wgpu_options.present_mode = eframe::wgpu::PresentMode::AutoNoVsync;
@@ -536,12 +537,11 @@ fn main() -> eframe::Result {
         "LevelEditor runtime verification",
         options,
         Box::new(move |cc| {
-            theme::configure(&cc.egui_ctx);
             if let Some(state) = &cc.wgpu_render_state {
                 eprintln!("GPU adapter: {:?}", state.adapter.get_info());
             }
             Ok(Box::new(Smoke {
-                app: app::EditorApp::new(cc, path),
+                app: app::EditorApp::new(cc, path, settings),
                 frames: 0,
                 started: Instant::now(),
                 captured: false,

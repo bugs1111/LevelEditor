@@ -1,8 +1,6 @@
 use super::*;
 use source_controls::{help_card as card, help_paragraph as paragraph};
 
-pub(super) use crate::theme::HELP_TEXT as GREEN;
-pub(super) const GREEN_DARK: Color32 = Color32::from_rgb(60, 97, 72);
 pub(super) const MUTED: Color32 = Color32::from_rgb(115, 127, 157);
 pub(super) const EDITOR_WIDTH: f32 = 662.;
 const SIDE_WIDTH: f32 = 400.;
@@ -60,7 +58,11 @@ pub(super) fn explanation(ui: &mut egui::Ui, width: f32, selected: Option<String
         locale::tr(ui, "Move your cursor over a cell in the pattern to get more explanations about its meaning.")
     });
     egui::Frame::new()
-        .fill(if active { GREEN_DARK } else { theme::DARK })
+        .fill(if active {
+            theme::HELP_FILL
+        } else {
+            theme::DARK
+        })
         .corner_radius(3)
         .inner_margin(16)
         .show(ui, |ui| {
@@ -71,7 +73,7 @@ pub(super) fn explanation(ui: &mut egui::Ui, width: f32, selected: Option<String
                 egui::Layout::left_to_right(egui::Align::Center),
                 |ui| {
                     let label = RichText::new(message).size(13.333).color(if active {
-                        GREEN
+                        theme::HELP_TEXT
                     } else {
                         MUTED
                     });
@@ -127,7 +129,7 @@ fn guide_text(message: &str, size: f32) -> RichText {
             size,
             egui::FontFamily::Name("panel-title".into()),
         ))
-        .color(GREEN)
+        .color(theme::HELP_TEXT)
 }
 
 fn output_help(ui: &mut egui::Ui, width: f32, height: f32) {

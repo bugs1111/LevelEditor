@@ -247,8 +247,15 @@ fn gamemaker_tiles(
         GameMakerCells::Dense(vec![EMPTY_CELL; area])
     };
     for tile in grid_tiles {
-        let x = tile["px"][0].as_i64().unwrap_or(0).div_euclid(grid);
-        let y = tile["px"][1].as_i64().unwrap_or(0).div_euclid(grid);
+        let px = &tile["px"];
+        let (Some(px_x), Some(px_y)) = (px[0].as_i64(), px[1].as_i64()) else {
+            return Err(Error::Invalid(format!(
+                "invalid GameMaker tile position in layer {}",
+                s(instance, "__identifier")
+            )));
+        };
+        let x = px_x.div_euclid(grid);
+        let y = px_y.div_euclid(grid);
         if (0..width as i64).contains(&x) && (0..height as i64).contains(&y) {
             let index = x as usize + y as usize * width;
             let cell = match &mut tiles {

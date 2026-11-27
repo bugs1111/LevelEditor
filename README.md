@@ -76,6 +76,8 @@ scripts/package-macos
 
 默认跟随系统界面语言。没有对应翻译时使用英文。按 F12 打开应用设置，在「常规 → 界面语言」选择跟随系统、English 或简体中文，设置会立即生效并在下次启动时保留。
 
+中文界面的正文优先使用能同时显示汉字和拉丁字母的系统字体，英文界面优先使用系统西文字体。代码和命令优先使用系统等宽字体。缺少合适字体或字形时，编辑器使用备用字体。
+
 ## 让 AI 助手编辑关卡（MCP）
 
 打开已保存的工程后，按 F12，在「高级选项 → AI 助手（MCP）」复制客户端配置。
@@ -161,6 +163,7 @@ scripts/cargo run --release --example native_smoke -- examples/topdown/Typical_T
 | 标题、正文和标签 | 普通正文沿用 egui 的 `Body`。绘制对话框标题、分区标题、强调正文和属性标签时，使用 [主题中的 TextRole](src/theme.rs)。属性行使用 [form_row / property_label](src/editor/source_controls.rs)，测量、换行和绘制共用同一字号。 |
 | 对话框和按钮 | 使用 [show_dialog 和 action](src/editor/project_dialogs.rs) 提供标题栏、主次操作和按钮状态。普通页面使用 [source_controls 的按钮](src/editor/source_controls.rs)。 |
 | 编辑框和复选框 | 单行和多行字段使用 [ui_fields 的缓冲输入控件](src/editor/ui_fields.rs)。工具文案使用 [checkbox](src/editor/source_controls.rs)，用户定义的枚举值等项目内容使用同文件的 `literal_checkbox` 保留原文。 |
+| 表单下拉框 | 使用 [form_select](src/editor/source_controls.rs) 统一选项字重、分组、键盘导航和长文本的菜单宽度。 |
 | 悬停提示 | 操作与快捷键使用 [chrome 的 source_tooltip / ActionTooltip](src/editor/chrome.rs)，字段帮助使用 [help_tooltip](src/editor/source_controls.rs)。项目名、路径等原文使用 `detail_tooltip`。 |
 | 短时通知（Toast） | 保存结果、操作警告等使用 [report_canvas_notice](src/editor/notifications.rs)，图层或视图切换的简短反馈使用同文件的快速通知入口。通知模块负责位置、消失时间和动画。 |
 

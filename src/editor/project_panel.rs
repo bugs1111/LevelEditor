@@ -38,7 +38,8 @@ fn project_checkbox(ui: &mut egui::Ui, values: &Value, patch: &mut Value, key: &
 fn project_locate_button(ui: &mut egui::Ui, is_file: bool) -> bool {
     ui.scope(|ui| {
         ui.spacing_mut().button_padding = Vec2::splat(4.);
-        ui.add_sized(
+        source_controls::add_sized_button(
+            ui,
             [30., 30.],
             egui::Button::image(
                 egui::Image::new(egui::include_image!("../../assets/icons/locate.svg"))

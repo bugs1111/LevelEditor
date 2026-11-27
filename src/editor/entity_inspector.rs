@@ -480,7 +480,7 @@ impl EditorApp {
                 .inner_margin(8)
                 .corner_radius(3)
                 .show(ui, |ui| {
-                    ui.colored_label(Color32::from_rgb(121, 221, 138), doc);
+                    ui.colored_label(theme::HELP_TEXT, doc);
                 });
             ui.add_space(8.);
         }

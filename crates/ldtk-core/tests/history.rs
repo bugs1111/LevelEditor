@@ -170,6 +170,37 @@ fn level_insertion_after_commit_does_not_redirect_entity_undo() {
     assert_eq!(p.json["levels"][1]["worldX"], 0);
 }
 #[test]
+fn mixed_array_edits_follow_unique_ids_through_undo_and_redo() {
+    let mut p = Project::new();
+    // Projects may carry extension data. A repeated key cannot identify its items.
+    let before = json!([
+        {"iid":"shared","uid":1,"value":10},
+        {"iid":"shared","uid":2,"value":20},
+        {"iid":"third","uid":3,"value":30}
+    ]);
+    let after = json!([
+        {"iid":"third","uid":3,"value":31},
+        {"iid":"shared","uid":4,"value":40},
+        {"iid":"shared","uid":2,"value":20}
+    ]);
+    p.json["extensionItems"] = before.clone();
+    let mut history = History::default();
+    history.begin_project(&p);
+    p.json["extensionItems"] = after.clone();
+    assert!(history.commit(&p));
+    // A later update to the unchanged item must follow it across the reorder.
+    p.json["extensionItems"][2]["value"] = json!(21);
+    let mut expected = before;
+    expected[1]["value"] = json!(21);
+    assert!(history.undo(&mut p));
+    assert_eq!(p.json["extensionItems"], expected);
+    let mut expected = after;
+    expected[2]["value"] = json!(21);
+    assert!(history.redo(&mut p));
+    assert_eq!(p.json["extensionItems"], expected);
+}
+
+#[test]
 fn undo_structural_addition_preserves_later_level() {
     let mut p = Project::new();
     let mut h = History::default();

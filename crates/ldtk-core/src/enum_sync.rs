@@ -577,10 +577,6 @@ impl Project {
             return Ok(report);
         }
         for (id, enum_uid, from, to) in removals {
-            remap_field_values(&mut candidate.json, &id, enum_uid, &from, to.as_deref());
-            for level in candidate.external_levels.values_mut() {
-                remap_field_values(level, &id, enum_uid, &from, to.as_deref());
-            }
             let biome_fields: BTreeSet<_> = arr(&candidate.json["defs"]["levelFields"])
                 .iter()
                 .filter(|f| enum_type(f, &id, enum_uid))
@@ -592,12 +588,21 @@ impl Project {
                     .is_some_and(|f| biome_fields.contains(&f))
                 {
                     for group in layer["autoRuleGroups"].as_array_mut().into_iter().flatten() {
-                        replace_value(&mut group["requiredBiomeValues"], &from, to.as_deref());
-                        if let Some(values) = group["requiredBiomeValues"].as_array_mut() {
+                        let required = &mut group["requiredBiomeValues"];
+                        if !allow_removals && to.is_none() && contains(required, &from) {
+                            report.requires_confirmation = true;
+                            return Ok(report);
+                        }
+                        replace_value(required, &from, to.as_deref());
+                        if let Some(values) = required.as_array_mut() {
                             values.retain(|v| !v.is_null());
                         }
                     }
                 }
+            }
+            remap_field_values(&mut candidate.json, &id, enum_uid, &from, to.as_deref());
+            for level in candidate.external_levels.values_mut() {
+                remap_field_values(level, &id, enum_uid, &from, to.as_deref());
             }
             for tileset in candidate.json["defs"]["tilesets"].as_array_mut().unwrap() {
                 if tileset["tagsSourceEnumUid"] == enum_uid {

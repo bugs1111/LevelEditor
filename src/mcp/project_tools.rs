@@ -66,10 +66,45 @@ pub(super) struct LayerSummary<'a> {
     tileset_uid: &'a Value,
 }
 
+type EntityPosition = (LevelKey, usize, usize);
+
+#[derive(Default)]
+struct EntityIndex {
+    positions: HashMap<String, EntityPosition>,
+    complete: bool,
+}
+
+impl EntityIndex {
+    fn find(&mut self, project: &Project, iid: &str) -> Option<EntityPosition> {
+        let cached = self.positions.get(iid).copied();
+        if cached.is_some() || self.complete {
+            return cached;
+        }
+        // The first lookup can stop at its match. On a later miss, finish the
+        // index so a sequence of different queries scans the project at most twice.
+        let first_lookup = self.positions.is_empty();
+        for found in project.iter_entities() {
+            let Some(entity_iid) = found.entity["iid"].as_str() else {
+                continue;
+            };
+            let position = (found.level, found.layer_index, found.entity_index);
+            self.positions
+                .entry(entity_iid.to_owned())
+                .or_insert(position);
+            if first_lookup && entity_iid == iid {
+                return Some(position);
+            }
+        }
+        self.complete = true;
+        self.positions.get(iid).copied()
+    }
+}
+
 pub(super) struct Session {
     path: PathBuf,
     project: Project,
     level_keys: OnceCell<HashMap<String, LevelKey>>,
+    entity_index: EntityIndex,
     snapshot: Option<FilesystemSnapshot>,
     dirty: bool,
 }
@@ -81,6 +116,7 @@ impl Session {
             path,
             project,
             level_keys: OnceCell::new(),
+            entity_index: EntityIndex::default(),
             snapshot: Some(snapshot),
             dirty: false,
         })
@@ -102,7 +138,7 @@ impl Session {
                         .reload_with_snapshot()
                         .map_err(|error| error.to_string())?,
                 );
-                self.level_keys.take();
+                self.reset_lookup_indexes();
                 self.dirty = false;
                 Ok(self.info())
             }
@@ -127,22 +163,7 @@ impl Session {
                     layer: self.project.layer(key, layer),
                 });
             }
-            "get_entity" => {
-                let iid = args["entity_iid"].as_str().unwrap();
-                let found = self
-                    .project
-                    .entity_by_iid(iid)
-                    .ok_or_else(|| format!("Entity IID not found: {iid}"))?;
-                let level = self.project.level(found.level).expect("resolved level");
-                let layer = &level["layerInstances"][found.layer_index];
-                return Ok(ToolPayload::Entity {
-                    entity: found.entity,
-                    level_iid: &level["iid"],
-                    layer_iid: &layer["iid"],
-                    layer_offset_px: ["__pxTotalOffsetX", "__pxTotalOffsetY"]
-                        .map(|field| layer[field].as_i64().unwrap_or(0)),
-                });
-            }
+            "get_entity" => return self.get_entity(args["entity_iid"].as_str().unwrap()),
             "get_int_grid_region" => return self.get_int_grid_region(args),
             "save_project" => self.save(),
             _ => self.edit(name, args),
@@ -280,6 +301,27 @@ impl Session {
         Ok((key, index))
     }
 
+    fn get_entity(&mut self, iid: &str) -> Result<ToolPayload<'_>, String> {
+        let (key, layer_index, entity_index) = self
+            .entity_index
+            .find(&self.project, iid)
+            .ok_or_else(|| format!("Entity IID not found: {iid}"))?;
+        let level = self.project.level(key).expect("indexed level");
+        let layer = &level["layerInstances"][layer_index];
+        Ok(ToolPayload::Entity {
+            entity: &layer["entityInstances"][entity_index],
+            level_iid: &level["iid"],
+            layer_iid: &layer["iid"],
+            layer_offset_px: ["__pxTotalOffsetX", "__pxTotalOffsetY"]
+                .map(|field| layer[field].as_i64().unwrap_or(0)),
+        })
+    }
+
+    fn reset_lookup_indexes(&mut self) {
+        self.level_keys.take();
+        self.entity_index = EntityIndex::default();
+    }
+
     fn get_int_grid_region(&self, args: &Arguments) -> Result<ToolPayload<'_>, String> {
         let (key, index) = self.layer_key(args)?;
         let layer = self.project.layer(key, index).expect("resolved layer");
@@ -298,17 +340,12 @@ impl Session {
                 .checked_add(length - 1)
                 .ok_or("Requested region is outside the layer bounds.")
         };
-        let dimensions = ["__cWid", "__cHei"];
-        in_bounds(layer, dimensions, x, y)?;
-        in_bounds(layer, dimensions, last(x, width)?, last(y, height)?)?;
-        let dimension = |name| {
-            layer[name]
-                .as_i64()
-                .and_then(|n| usize::try_from(n).ok())
-                .ok_or("Invalid IntGrid layer dimensions.")
+        let bounds = dimensions(layer, ["__cWid", "__cHei"]);
+        in_bounds(bounds, x, y)?;
+        in_bounds(bounds, last(x, width)?, last(y, height)?)?;
+        let [Ok(columns), Ok(rows)] = bounds.map(usize::try_from) else {
+            return Err("Invalid IntGrid layer dimensions.".into());
         };
-        let columns = dimension("__cWid")?;
-        let rows = dimension("__cHei")?;
         let csv = layer["intGridCsv"]
             .as_array()
             .ok_or("intGridCsv must be an array.")?;
@@ -349,13 +386,13 @@ impl Session {
         let changed = match name {
             "paint_int_grid" => {
                 let (x, y) = coordinates();
-                in_bounds(layer, ["__cWid", "__cHei"], x, y)?;
+                in_bounds(dimensions(layer, ["__cWid", "__cHei"]), x, y)?;
                 self.project
                     .paint_int_grid(key, index, x, y, integer(args, "value"))
             }
             "paint_tile" | "erase_tile" => {
                 let (x, y) = coordinates();
-                in_bounds(layer, ["__cWid", "__cHei"], x, y)?;
+                in_bounds(dimensions(layer, ["__cWid", "__cHei"]), x, y)?;
                 let erase = name == "erase_tile";
                 let (tile, src, flips) = if erase {
                     (0, [0, 0], 0)
@@ -368,7 +405,7 @@ impl Session {
             "add_entity" => {
                 let (x, y) = coordinates();
                 let level = self.project.level(key).expect("resolved level");
-                in_bounds(level, ["pxWid", "pxHei"], x, y)?;
+                in_bounds(dimensions(level, ["pxWid", "pxHei"]), x, y)?;
                 let position = layer_local_position(layer, x, y)?;
                 let changed = self.project.place_entity(
                     key,
@@ -396,7 +433,7 @@ impl Session {
                 } else {
                     let (x, y) = coordinates();
                     let level = self.project.level(key).expect("resolved level");
-                    in_bounds(level, ["pxWid", "pxHei"], x, y)?;
+                    in_bounds(dimensions(level, ["pxWid", "pxHei"]), x, y)?;
                     let [local_x, local_y] = layer_local_position(layer, x, y)?;
                     if entity["px"] == json!([local_x, local_y]) {
                         Ok(false)
@@ -410,6 +447,10 @@ impl Session {
             _ => unreachable!("registered editing tool"),
         }
         .map_err(|error| error.to_string())?;
+        // Placement rules may also remove or relocate entities in other levels.
+        if changed && matches!(name, "add_entity" | "remove_entity") {
+            self.entity_index = EntityIndex::default();
+        }
         self.dirty |= changed;
         let mut result = json!({"changed":changed,"dirty":self.dirty});
         if let Some(iid) = placed_iid {
@@ -429,11 +470,11 @@ impl Session {
             .project
             .layer(key, layer_index)
             .expect("resolved layer");
+        let bounds = dimensions(layer, ["__cWid", "__cHei"]);
         let cells = items(&args["cells"]).enumerate().map(|(index, cell)| {
             let cell = cell.as_object().expect("validated cell");
             let (x, y) = (integer(cell, "x"), integer(cell, "y"));
-            in_bounds(layer, ["__cWid", "__cHei"], x, y)
-                .map_err(|error| format!("cells[{index}]: {error}"))?;
+            in_bounds(bounds, x, y).map_err(|error| format!("cells[{index}]: {error}"))?;
             Ok(([x, y], cell))
         });
         let count = match name {
@@ -498,7 +539,7 @@ impl Session {
         match reload {
             Ok(snapshot) => {
                 self.snapshot = Some(snapshot);
-                self.level_keys = OnceCell::new();
+                self.reset_lookup_indexes();
                 Ok(json!({"saved":true,"dirty":false}))
             }
             Err(error) => {
@@ -538,13 +579,12 @@ fn layer_local_position(layer: &Value, x: i32, y: i32) -> Result<[i32; 2], &'sta
     Ok([local(x, "__pxTotalOffsetX")?, local(y, "__pxTotalOffsetY")?])
 }
 
-fn in_bounds(value: &Value, dimensions: [&str; 2], x: i32, y: i32) -> Result<(), String> {
-    if [x, y].into_iter().zip(dimensions).all(|(position, field)| {
-        position >= 0
-            && value[field]
-                .as_i64()
-                .is_some_and(|limit| i64::from(position) < limit)
-    }) {
+fn dimensions(value: &Value, fields: [&str; 2]) -> [i64; 2] {
+    fields.map(|field| value[field].as_i64().unwrap_or(0))
+}
+
+fn in_bounds([width, height]: [i64; 2], x: i32, y: i32) -> Result<(), String> {
+    if x >= 0 && y >= 0 && i64::from(x) < width && i64::from(y) < height {
         Ok(())
     } else {
         Err(format!(

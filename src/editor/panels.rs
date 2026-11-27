@@ -101,7 +101,7 @@ fn embedded_tileset_notice(ui: &mut egui::Ui) {
                         ui.label(RichText::new(locale::tr(ui, "Image by")).size(15.));
                         ui.label(
                             RichText::new("FinalBossBlues")
-                                .font(FontId::new(15., egui::FontFamily::Name("body-bold".into()))),
+                                .font(theme::TextRole::StrongBody.font()),
                         );
                         source_controls::hyperlink(ui, "website", WEBSITE);
                     },

@@ -1,7 +1,5 @@
 use super::*;
 
-const HELP: Color32 = Color32::from_rgb(121, 221, 138);
-const HELP_DARK: Color32 = Color32::from_rgb(60, 97, 72);
 const HELP_DARKER: Color32 = Color32::from_rgb(39, 63, 47);
 
 fn child(ui: &mut egui::Ui, rect: Rect, id: &str) -> egui::Ui {
@@ -558,7 +556,7 @@ impl EditorApp {
     ) {
         egui::Frame::new()
             .fill(HELP_DARKER)
-            .stroke(Stroke::new(1_f32, HELP))
+            .stroke(Stroke::new(1_f32, theme::HELP_TEXT))
             .corner_radius(3)
             .inner_margin(4)
             .show(ui, |ui| {
@@ -573,7 +571,7 @@ impl EditorApp {
                         egui::Align2::LEFT_CENTER,
                         locale::tr(ui, "Example projects to discover LDtk"),
                         FontId::proportional(13.333),
-                        HELP,
+                        theme::HELP_TEXT,
                     );
                     let close = ui
                         .scope(|ui| {
@@ -586,7 +584,7 @@ impl EditorApp {
                                     ))
                                     .fit_to_exact_size(Vec2::splat(23.)),
                                 )
-                                .fill(HELP_DARK)
+                                .fill(theme::HELP_FILL)
                                 .corner_radius(0)
                                 .stroke(Stroke::new(1_f32, Color32::from_rgb(94, 171, 107))),
                             )
@@ -608,7 +606,7 @@ impl EditorApp {
                     }
                 });
                 egui::Frame::new()
-                    .fill(HELP_DARK)
+                    .fill(theme::HELP_FILL)
                     .inner_margin(egui::Margin {
                         left: 4,
                         right: 4,
@@ -873,7 +871,7 @@ impl EditorApp {
                     let text_color = if missing {
                         Color32::from_rgb(255, 163, 134)
                     } else if sample {
-                        HELP
+                        theme::HELP_TEXT
                     } else {
                         mix_color(color, Color32::WHITE, if files { 0.4 } else { 0.6 })
                     };
@@ -1577,7 +1575,9 @@ mod tests {
             .shapes
             .iter()
             .find_map(|shape| match &shape.shape {
-                egui::Shape::Rect(r) if r.stroke.color == HELP && r.rect.width() > 500. => {
+                egui::Shape::Rect(r)
+                    if r.stroke.color == theme::HELP_TEXT && r.rect.width() > 500. =>
+                {
                     Some(r.rect)
                 }
                 _ => None,
@@ -1587,7 +1587,9 @@ mod tests {
             .shapes
             .iter()
             .find_map(|shape| match &shape.shape {
-                egui::Shape::Rect(r) if r.fill == HELP_DARK && r.rect.width() < 50. => Some(r.rect),
+                egui::Shape::Rect(r) if r.fill == theme::HELP_FILL && r.rect.width() < 50. => {
+                    Some(r.rect)
+                }
                 _ => None,
             })
             .expect("examples close button");

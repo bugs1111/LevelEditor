@@ -1730,6 +1730,58 @@ fn png_renders_intgrid_pixels() {
     assert_eq!(image.get_pixel(0, 0).0, [255, 0, 0, 255]);
     assert_eq!(image.get_pixel(1, 0).0, [0, 255, 0, 255]);
 }
+
+#[test]
+fn layers_and_levels_validates_names_only_for_emitted_layer_images() {
+    use ldtk_core::exports::{PngExportMode, PngExportOptions};
+
+    let directory = tempfile::tempdir().unwrap();
+    let mut project = Project::new();
+    project.add_layer("Actors", "Entities", 16).unwrap();
+    let options = PngExportOptions {
+        mode: PngExportMode::LayersAndLevels,
+        include_background: true,
+        file_pattern: Some(String::new()),
+    };
+    let outputs = project
+        .export_png_with_options(directory.path(), &options)
+        .unwrap();
+    assert_eq!(
+        outputs,
+        [
+            directory.path().join("Level_0_bg.png"),
+            directory.path().join("Level_0.png"),
+        ]
+    );
+    project.add_layer("Ground", "IntGrid", 16).unwrap();
+    let error = project
+        .export_png_with_options(directory.path(), &options)
+        .unwrap_err();
+    assert!(error.to_string().contains("unsafe export name"));
+}
+
+#[test]
+fn png_file_pattern_uses_world_local_level_indices_and_renderable_layer_order() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut project = Project::new();
+    let world = project.add_world("Forest").unwrap();
+    project.add_level(Some(world), "Entrance", 32, 32).unwrap();
+    project.add_level(Some(world), "Clearing", 32, 32).unwrap();
+    project.add_layer("Ground", "IntGrid", 16).unwrap();
+    project.add_layer("Actors", "Entities", 16).unwrap();
+    project.add_layer("Cover", "IntGrid", 16).unwrap();
+    project.json["pngFilePattern"] =
+        json!("%world-%level_idx-%level_name-%layer_idx-%layer_name-%layer_idx");
+    project.json["imageExportMode"] = json!("OneImagePerLayer");
+
+    let outputs = project.export_png(directory.path()).unwrap();
+    for (level, name) in [("0000", "Entrance"), ("0001", "Clearing")] {
+        for (index, layer) in [("00", "Cover"), ("01", "Ground")] {
+            let file = format!("Forest-{level}-{name}-{index}-{layer}-{index}-int.png");
+            assert!(outputs.contains(&directory.path().join(file)));
+        }
+    }
+}
 #[test]
 fn intgrid_png_uses_first_palette_match_and_preserves_transparent_cells() {
     let mut p = project();
@@ -1876,7 +1928,7 @@ fn sparse_gamemaker_layers_keep_empty_cells_and_the_first_tile_in_each_stack() {
 }
 
 #[test]
-fn gamemaker_rejects_invalid_tile_dimensions_and_ids_without_replacing_outputs() {
+fn gamemaker_rejects_invalid_tile_data_without_replacing_outputs() {
     let mut p = project();
     p.json["defs"]["tilesets"] = json!([{"uid":42,"identifier":"Atlas"}]);
     let layer = &mut p.json["levels"][0]["layerInstances"][0];
@@ -1893,6 +1945,9 @@ fn gamemaker_rejects_invalid_tile_dimensions_and_ids_without_replacing_outputs()
         ("__cHei", json!(-1)),
         ("__gridSize", json!(0)),
         ("gridTiles", json!([{"px":[0,0],"t":1_u32 << 19}])),
+        ("gridTiles", json!([{"px":[0],"t":1},{"px":[0,0],"t":17}])),
+        ("gridTiles", json!([{"px":["0",0],"t":1}])),
+        ("gridTiles", json!([{"px":[u64::MAX,0],"t":1}])),
     ] {
         let layer = &mut p.json["levels"][0]["layerInstances"][0];
         *layer = valid.clone();

@@ -17,7 +17,13 @@ fn compatible(entity: &Value, layer: &Value) -> bool {
     !matches("excludedTags")
         && (layer["requiredTags"].as_array().is_none_or(Vec::is_empty) || matches("requiredTags"))
 }
-fn plan(project: &Project, source: i64, target: i64, filter: &str) -> Result<Vec<Transfer>> {
+fn plan(
+    project: &Project,
+    source: i64,
+    target: i64,
+    filter: &str,
+    mut transfers: Option<&mut Vec<Transfer>>,
+) -> Result<usize> {
     if source == target {
         return Err(invalid("origin and destination layers must differ"));
     }
@@ -50,8 +56,22 @@ fn plan(project: &Project, source: i64, target: i64, filter: &str) -> Result<Vec
             ));
         }
     }
-    let mut transfers = Vec::new();
-    for key in project.level_keys() {
+    let mut selected_by_uid = HashMap::with_capacity(entities.len());
+    for entity in entities {
+        selected_by_uid.entry(&entity["uid"]).or_insert_with(|| {
+            // The original tag filter bypasses the destination layer's tag constraints.
+            match kind {
+                "all" => compatible(entity, target_def),
+                "id" => entity["identifier"] == value,
+                "tag" => entity["tags"]
+                    .as_array()
+                    .is_some_and(|tags| tags.iter().any(|tag| tag == value)),
+                _ => unreachable!("validated filter kind"),
+            }
+        });
+    }
+    let mut count = 0;
+    for key in project.iter_level_keys() {
         let level = project
             .level(key)
             .ok_or_else(|| invalid("every external level must be loaded"))?;
@@ -65,25 +85,19 @@ fn plan(project: &Project, source: i64, target: i64, filter: &str) -> Result<Vec
             .as_array()
             .ok_or_else(|| invalid("origin entity array missing"))?;
         let mut indices = Vec::new();
+        let previously_matched = count;
         for (index, instance) in source_entities.iter().enumerate() {
-            let entity = entities
-                .iter()
-                .find(|d| d["uid"] == instance["defUid"])
+            let selected = selected_by_uid
+                .get(&instance["defUid"])
                 .ok_or_else(|| invalid("entity definition missing"))?;
-            // The original tag-filter branch intentionally does not apply destination-tag filtering.
-            let selected = match kind {
-                "all" => compatible(entity, target_def),
-                "id" => entity["identifier"] == value,
-                "tag" => entity["tags"]
-                    .as_array()
-                    .is_some_and(|tags| tags.iter().any(|tag| tag == value)),
-                _ => false,
-            };
-            if selected {
-                indices.push(index);
+            if *selected {
+                count += 1;
+                if transfers.is_some() {
+                    indices.push(index);
+                }
             }
         }
-        if indices.is_empty() {
+        if count == previously_matched {
             continue;
         }
         let target_index = layers
@@ -93,14 +107,16 @@ fn plan(project: &Project, source: i64, target: i64, filter: &str) -> Result<Vec
         if !layers[target_index]["entityInstances"].is_array() {
             return Err(invalid("destination entity array missing"));
         }
-        transfers.push(Transfer {
-            key,
-            source: source_index,
-            target: target_index,
-            indices,
-        });
+        if let Some(transfers) = &mut transfers {
+            transfers.push(Transfer {
+                key,
+                source: source_index,
+                target: target_index,
+                indices,
+            });
+        }
     }
-    Ok(transfers)
+    Ok(count)
 }
 impl Project {
     /// Source filter grammar: `all.*`, `id.EntityIdentifier`, or `tag.entityTag`.
@@ -111,9 +127,12 @@ impl Project {
         target: i64,
         filter: &str,
     ) -> Result<usize> {
+        let mut transfers = Vec::new();
+        let count = plan(self, source, target, filter, Some(&mut transfers))?;
+        if count == 0 {
+            return Ok(0);
+        }
         self.edit_document(|p| {
-            let transfers = plan(p, source, target, filter)?;
-            let count = transfers.iter().map(|t| t.indices.len()).sum();
             for transfer in transfers {
                 let layers = p.level_mut(transfer.key).expect("validated level")["layerInstances"]
                     .as_array_mut()
@@ -133,7 +152,7 @@ impl Project {
                         retained.push(entity);
                     }
                 }
-                layers[transfer.source]["entityInstances"] = json!(retained);
+                layers[transfer.source]["entityInstances"] = Value::Array(retained);
                 layers[transfer.target]["entityInstances"]
                     .as_array_mut()
                     .expect("validated destination")
@@ -149,9 +168,6 @@ impl Project {
         target: i64,
         filter: &str,
     ) -> Result<usize> {
-        Ok(plan(self, source, target, filter)?
-            .iter()
-            .map(|t| t.indices.len())
-            .sum())
+        plan(self, source, target, filter, None)
     }
 }

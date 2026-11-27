@@ -26,6 +26,14 @@ enum Response<'a> {
 struct SmallIntegerFormatter<'a>(&'a [String; 256]);
 
 impl Formatter for SmallIntegerFormatter<'_> {
+    fn write_i64<W: Write + ?Sized>(&mut self, writer: &mut W, value: i64) -> io::Result<()> {
+        if value >= 0 {
+            self.write_u64(writer, value as u64)
+        } else {
+            CompactFormatter.write_i64(writer, value)
+        }
+    }
+
     fn write_u64<W: Write + ?Sized>(&mut self, writer: &mut W, value: u64) -> io::Result<()> {
         if value < self.0.len() as u64 {
             writer.write_all(self.0[value as usize].as_bytes())
