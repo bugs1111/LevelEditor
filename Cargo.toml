@@ -1,6 +1,6 @@
 [package]
 name = "level-editor"
-version = "0.1.11"
+version = "0.1.12"
 edition = "2024"
 license = "MIT"
 description = "Level Editor, a native Rust port of the LDtk level editor"

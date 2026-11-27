@@ -1811,7 +1811,7 @@ dependencies = [
 
 [[package]]
 name = "level-editor"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "cc",
  "core-foundation 0.10.1",
