@@ -298,27 +298,6 @@ fn source_checkbox(ui: &mut egui::Ui, value: &mut bool, label: &str) -> egui::Re
     source_controls::checkbox(ui, value, label)
 }
 
-fn source_text(
-    ui: &mut egui::Ui,
-    key: impl std::hash::Hash,
-    current: &str,
-    width: f32,
-) -> Option<String> {
-    let id = ui.make_persistent_id(key);
-    let (mut original, mut draft) = ui
-        .data_mut(|d| d.get_temp::<(String, String)>(id))
-        .unwrap_or_else(|| (current.into(), current.into()));
-    if original != current {
-        original = current.into();
-        draft = current.into();
-    }
-    let response = ui.add_sized([width, 33.], egui::TextEdit::singleline(&mut draft).id(id));
-    let commit = (response.lost_focus()
-        || response.has_focus() && ui.input(|i| i.key_pressed(Key::Enter)))
-        && draft != current;
-    ui.data_mut(|d| d.insert_temp(id, (original, draft.clone())));
-    commit.then_some(draft)
-}
 pub(super) fn section(
     ui: &mut egui::Ui,
     title: impl Into<egui::WidgetText>,
@@ -368,7 +347,7 @@ pub(super) fn section(
                 ui,
                 Some(egui::TextWrapMode::Truncate),
                 (rect.width() - 24.).max(0.),
-                FontId::new(17.333, egui::FontFamily::Name("panel-title".into())),
+                theme::TextRole::SectionTitle.font(),
             );
             response.widget_info(|| {
                 egui::WidgetInfo::selected(

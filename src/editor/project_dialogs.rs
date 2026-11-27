@@ -180,7 +180,16 @@ pub(super) fn show_dialog<R>(
 }
 
 pub(super) fn action(ui: &mut egui::Ui, label: &str, primary: bool) -> egui::Response {
-    button(ui, label, egui::vec2(112., 34.), !primary, 13.333)
+    action_with_width(ui, label, primary, 112.)
+}
+
+pub(super) fn action_with_width(
+    ui: &mut egui::Ui,
+    label: &str,
+    primary: bool,
+    width: f32,
+) -> egui::Response {
+    button(ui, label, egui::vec2(width, 34.), !primary, 13.333)
 }
 
 pub(super) fn form_warning_dialog(id: egui::Id) -> egui::Modal {
@@ -221,7 +230,7 @@ pub(super) fn dialog_title(ui: &mut egui::Ui, title: &str, width: f32, fill: Col
     ui.painter().rect_filled(header, 0., fill);
     let mut job = egui::text::LayoutJob::simple_singleline(
         locale::tr(ui, title).to_owned(),
-        FontId::new(20., egui::FontFamily::Name("panel-title".into())),
+        theme::TextRole::DialogTitle.font(),
         Color32::WHITE,
     );
     job.wrap.max_width = (width - 40.).max(0.);

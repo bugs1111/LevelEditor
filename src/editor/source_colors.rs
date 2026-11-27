@@ -119,8 +119,7 @@ impl EditorApp {
             ctx.data_mut(|d| d.remove_temp::<&'static str>(active_color_id().with("notice")))
         {
             if message == "Pasted color" {
-                self.quick_notification =
-                    Some((locale::tr_ctx(ctx, message).into(), None, Instant::now()));
+                self.notify_quick(locale::tr_ctx(ctx, message).into());
                 ctx.request_repaint();
             } else {
                 self.status = message.into();

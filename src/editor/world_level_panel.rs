@@ -454,10 +454,8 @@ fn group(
 fn properties_title(ui: &egui::Ui, template: &str, name: &str) -> egui::text::LayoutJob {
     let title = locale::tr(ui, template);
     let (before, after) = title.split_once("{name}").unwrap_or((title, ""));
-    let normal = egui::TextFormat::simple(
-        FontId::new(17.333, egui::FontFamily::Name("panel-title".into())),
-        Color32::PLACEHOLDER,
-    );
+    let normal =
+        egui::TextFormat::simple(theme::TextRole::SectionTitle.font(), Color32::PLACEHOLDER);
     let highlight = egui::TextFormat::simple(
         FontId::new(17.333, egui::FontFamily::Name("heading".into())),
         Color32::WHITE,

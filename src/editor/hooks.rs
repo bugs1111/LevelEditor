@@ -119,7 +119,8 @@ impl EditorApp {
             620.,
             |ui| {
                 ui.label(
-                    RichText::new(locale::tr(ui, "This project contains custom commands")).strong(),
+                    RichText::new(locale::tr(ui, "This project contains custom commands"))
+                        .font(theme::TextRole::StrongBody.font()),
                 );
                 ui.label(locale::tr(
                     ui,
@@ -133,12 +134,19 @@ impl EditorApp {
                         }
                     });
                 ui.horizontal_wrapped(|ui| {
-                    let size = egui::vec2(170., 34.);
-                    let allow =
-                        project_dialogs::button(ui, "Allow project commands", size, false, 13.333);
-                    let block =
-                        project_dialogs::button(ui, "Block project commands", size, true, 13.333);
-                    let cancel = project_dialogs::button(ui, "Cancel", size, true, 13.333);
+                    let allow = project_dialogs::action_with_width(
+                        ui,
+                        "Allow project commands",
+                        true,
+                        170.,
+                    );
+                    let block = project_dialogs::action_with_width(
+                        ui,
+                        "Block project commands",
+                        false,
+                        170.,
+                    );
+                    let cancel = project_dialogs::action_with_width(ui, "Cancel", false, 170.);
                     if allow.clicked() {
                         Some(Some(true))
                     } else if block.clicked() {

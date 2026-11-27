@@ -209,7 +209,7 @@ fn sidebar_guide(ui: &mut egui::Ui, kind: &str, empty: bool) {
             _ => return,
         }
     };
-    let color = Color32::from_rgb(121, 221, 138);
+    let color = theme::HELP_TEXT;
     let font = FontId::new(13.2, egui::FontFamily::Name("panel-title".into()));
     let guide = egui::Frame::new()
         .fill(SIDEBAR_GUIDE_FILL)
@@ -247,8 +247,7 @@ fn sidebar_guide(ui: &mut egui::Ui, kind: &str, empty: bool) {
                     let height = if keys.is_empty() { 16.15625 } else { 20.0625 };
                     let (rect, _) =
                         ui.allocate_exact_size(egui::vec2(width, height), Sense::hover());
-                    ui.painter()
-                        .rect_filled(rect, 3., Color32::from_rgb(60, 97, 72));
+                    ui.painter().rect_filled(rect, 3., theme::HELP_FILL);
                     let mut x = rect.left() + 1.;
                     for (key, w) in keys.iter().zip(key_widths) {
                         let cap =
@@ -304,7 +303,7 @@ pub(super) fn source_tooltip_popup<'a>(
         .gap(if placement.is_some() { 10. } else { 8. });
     tooltip.popup = tooltip.popup.align(align).frame(
         egui::Frame::new()
-            .fill(Color32::from_rgb(60, 97, 72))
+            .fill(theme::HELP_FILL)
             .corner_radius(4)
             .inner_margin(padding)
             .shadow(egui::epaint::Shadow {
@@ -359,8 +358,11 @@ impl ActionTooltip for egui::Response {
     fn detail_tooltip_ui(self, contents: impl FnOnce(&mut egui::Ui)) -> Self {
         if self.enabled() && egui::Tooltip::should_show_tooltip(&self, false) {
             source_tooltip_popup(&self, None, egui::Margin::symmetric(18, 12)).show(|ui| {
-                ui.set_max_width(250.);
-                ui.visuals_mut().override_text_color = Some(panels::source_controls::HELP_GREEN);
+                ui.set_max_width(theme::TOOLTIP_TEXT_WIDTH);
+                ui.style_mut()
+                    .text_styles
+                    .insert(egui::TextStyle::Body, theme::TextRole::TooltipBody.font());
+                ui.visuals_mut().override_text_color = Some(theme::HELP_TEXT);
                 contents(ui);
             });
         }
@@ -381,14 +383,14 @@ fn show_source_tooltip(response: &egui::Response, text: &str, keys: &[&str], rig
             .map_or((None, text), |(heading, body)| (Some(heading), body.trim()));
         let body = ui.painter().layout(
             body.replace("\\n", "\n\n"),
-            FontId::proportional(14.666667),
-            Color32::from_rgb(121, 221, 138),
-            250.,
+            theme::TextRole::TooltipBody.font(),
+            theme::HELP_TEXT,
+            theme::TOOLTIP_TEXT_WIDTH,
         );
         let heading = heading.map(|heading| {
             ui.painter().layout_no_wrap(
                 heading.into(),
-                FontId::new(17.6, egui::FontFamily::Name("heading".into())),
+                theme::TextRole::TooltipHeading.font(),
                 Color32::WHITE,
             )
         });
@@ -431,8 +433,7 @@ fn show_source_tooltip(response: &egui::Response, text: &str, keys: &[&str], rig
             body.clone(),
             Color32::from_black_alpha(128),
         );
-        ui.painter()
-            .galley(body_pos, body, Color32::from_rgb(121, 221, 138));
+        ui.painter().galley(body_pos, body, theme::HELP_TEXT);
         let mut x = rect.right() - keys_width;
         for (key, width) in keys.iter().zip(key_widths) {
             paint_shortcut(
@@ -1019,7 +1020,7 @@ impl EditorApp {
         } else {
             "Zen mode: off"
         };
-        self.quick_notification = Some((locale::tr_ctx(ctx, label).into(), None, Instant::now()));
+        self.notify_quick(locale::tr_ctx(ctx, label).into());
     }
 
     fn layer_context_menu(

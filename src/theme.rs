@@ -11,6 +11,57 @@ pub const MEDIUM: Color32 = Color32::from_rgb(0x2e, 0x33, 0x3f);
 pub const LIGHT: Color32 = Color32::from_rgb(0x54, 0x5d, 0x73);
 pub const TEXT: Color32 = Color32::from_rgb(0xc1, 0xcf, 0xeb);
 pub const ACCENT: Color32 = Color32::from_rgb(0xff, 0xcc, 0x00);
+pub const HELP_TEXT: Color32 = Color32::from_rgb(121, 221, 138);
+pub const HELP_FILL: Color32 = Color32::from_rgb(60, 97, 72);
+pub const TOOLTIP_TEXT_WIDTH: f32 = 250.;
+
+/// Background and accent for each kind of toast.
+pub(crate) mod notice {
+    use super::*;
+
+    pub const ERROR: (Color32, Color32) = (Color32::from_rgb(87, 0, 0), Color32::RED);
+    pub const SUCCESS: (Color32, Color32) = (
+        Color32::from_rgb(22, 62, 38),
+        Color32::from_rgb(66, 183, 113),
+    );
+    pub const WARNING: (Color32, Color32) = (
+        Color32::from_rgb(69, 48, 6),
+        Color32::from_rgb(203, 141, 19),
+    );
+    pub const INFO: (Color32, Color32) = (DARK, LIGHT);
+    pub const CLIPBOARD: (Color32, Color32) = (Color32::BLACK, Color32::BLACK);
+}
+
+/// Text drawn by editor controls that have a more specific role than egui's Body or Heading.
+pub(crate) enum TextRole {
+    DialogTitle,
+    SectionTitle,
+    StrongBody,
+    OptionTitle,
+    PropertyLabel,
+    TooltipBody,
+    TooltipHeading,
+    NoticeBody,
+    NoticeTitle,
+    QuickNotice,
+}
+
+impl TextRole {
+    pub(crate) fn font(self) -> FontId {
+        let (size, family) = match self {
+            Self::DialogTitle => (20., "panel-title"),
+            Self::SectionTitle => (17.333, "panel-title"),
+            Self::StrongBody => (15., "body-bold"),
+            Self::OptionTitle => (13., "body-bold"),
+            Self::PropertyLabel => return FontId::proportional(12.667),
+            Self::TooltipBody | Self::NoticeBody => return FontId::proportional(14.667),
+            Self::TooltipHeading => (17.6, "heading"),
+            Self::NoticeTitle => (14.667, "body-bold"),
+            Self::QuickNotice => (40., "panel-title"),
+        };
+        FontId::new(size, FontFamily::Name(family.into()))
+    }
+}
 
 pub fn configure(ctx: &egui::Context) {
     ctx.set_theme(egui::Theme::Dark);

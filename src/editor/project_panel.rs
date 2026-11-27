@@ -70,8 +70,7 @@ fn project_advanced_option(
     ui.spacing_mut().icon_spacing = 11.;
     let response = ui
         .scope(|ui| {
-            ui.style_mut().override_font_id =
-                Some(FontId::new(13., egui::FontFamily::Name("body-bold".into())));
+            ui.style_mut().override_font_id = Some(theme::TextRole::OptionTitle.font());
             ui.visuals_mut().override_text_color = Some(Color32::WHITE);
             source_checkbox(ui, checked, label)
         })
@@ -1130,7 +1129,7 @@ impl EditorApp {
                 header.left_center() + egui::vec2(24., 0.),
                 Align2::LEFT_CENTER,
                 title,
-                FontId::new(17., egui::FontFamily::Name("panel-title".into())),
+                theme::TextRole::SectionTitle.font(),
                 ink,
             );
             section.show_body_unindented(ui, |ui| {

@@ -188,7 +188,7 @@ impl EditorApp {
                             header.min + egui::vec2(72., 26.5),
                             Align2::LEFT_CENTER,
                             locale::tr(ui, "APPLICATION SETTINGS"),
-                            FontId::new(20., egui::FontFamily::Name("panel-title".into())),
+                            theme::TextRole::DialogTitle.font(),
                             Color32::WHITE,
                         );
                         egui::Frame::new()
@@ -729,7 +729,7 @@ mod tests {
             );
             assert_eq!(
                 text.galley.job.sections[0].format.font_id,
-                FontId::new(17.333, egui::FontFamily::Name("panel-title".into()))
+                theme::TextRole::SectionTitle.font()
             );
             let bottom = text.pos.y + text.galley.size().y;
             assert!(output.shapes.iter().any(|shape| matches!(&shape.shape,egui::Shape::LineSegment {points,stroke} if stroke.color==Color32::from_rgb(255,204,0) && points[0].y>=bottom && points[0].y<=bottom+4. && (points[1].x-points[0].x).abs()>=380.)));

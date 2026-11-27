@@ -347,7 +347,7 @@ impl EditorApp {
                     RichText::new(address)
                         .monospace()
                         .size(9.33)
-                        .color(panels::source_controls::HELP_GREEN),
+                        .color(theme::HELP_TEXT),
                 );
             });
         }

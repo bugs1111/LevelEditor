@@ -1,6 +1,7 @@
 //! Shared native rendering of source form help and button treatments.
 use super::*;
 use crate::app::chrome::ActionTooltip as _;
+use crate::theme::HELP_TEXT;
 
 pub(in crate::app) fn css_ease_remaining(progress: f32) -> f32 {
     // Chromium's default CSS ease is cubic-bezier(0.25, 0.1, 0.25, 1).
@@ -413,8 +414,6 @@ pub(super) fn pivot_grid_sized(ui: &mut egui::Ui, pivot: [f64; 2], cell: f32) ->
     selected
 }
 
-pub(in crate::app) const HELP_GREEN: Color32 = Color32::from_rgb(121, 221, 138);
-
 const HELP_CARD_MARGIN: egui::Margin = egui::Margin {
     left: 61,
     right: 11,
@@ -431,7 +430,7 @@ pub(in crate::app) fn help_paragraph(ui: &mut egui::Ui, message: &str) {
         egui::Label::new(
             RichText::new(locale::tr(ui, message))
                 .font(help_paragraph_font())
-                .color(HELP_GREEN),
+                .color(HELP_TEXT),
         )
         .wrap(),
     );
@@ -466,7 +465,7 @@ pub(in crate::app) fn centered_help_card(
     let paragraph = ui.painter().layout(
         locale::tr(ui, message).into(),
         help_paragraph_font(),
-        HELP_GREEN,
+        HELP_TEXT,
         (width - margin.sum().x).max(1.),
     );
     let height = height.max(paragraph.size().y + margin.sum().y);
@@ -475,7 +474,7 @@ pub(in crate::app) fn centered_help_card(
     ui.painter().galley(
         rect.left_center() + egui::vec2(f32::from(margin.left), -paragraph.size().y * 0.5),
         paragraph,
-        HELP_GREEN,
+        HELP_TEXT,
     );
 }
 
@@ -489,7 +488,7 @@ fn paint_help_card(ui: &egui::Ui, rect: Rect, icon_center_y: f32) {
     ];
     ui.painter().extend(egui::Shape::dashed_line(
         &points,
-        Stroke::new(1_f32, HELP_GREEN),
+        Stroke::new(1_f32, HELP_TEXT),
         2.,
         2.,
     ));
@@ -536,10 +535,7 @@ pub(in crate::app) fn form_heading_line(ui: &mut egui::Ui, name: &str) {
     let response = ui.label(
         RichText::new(locale::tr(ui, name).to_uppercase())
             .color(theme::ACCENT)
-            .font(FontId::new(
-                17.333,
-                egui::FontFamily::Name("panel-title".into()),
-            )),
+            .font(theme::TextRole::SectionTitle.font()),
     );
     ui.painter().hline(
         ui.max_rect().x_range(),
@@ -684,7 +680,6 @@ fn help_text(key: &str, label: &str) -> Option<&'static str> {
         .or_else(|| HELP[label].as_str())
 }
 pub(in crate::app) const PROPERTY_LABEL_WIDTH: f32 = 124.;
-const PROPERTY_LABEL_FONT_SIZE: f32 = 12.667;
 pub(in crate::app) fn property_label(ui: &mut egui::Ui, label: &str, key: &str) {
     property_label_with_width(ui, label, key, PROPERTY_LABEL_WIDTH);
 }
@@ -721,7 +716,7 @@ pub(in crate::app) fn property_label_intrinsic_width(ui: &egui::Ui, label: &str,
     ui.painter()
         .layout_no_wrap(
             locale::tr(ui, label).to_owned(),
-            FontId::proportional(PROPERTY_LABEL_FONT_SIZE),
+            theme::TextRole::PropertyLabel.font(),
             ui.visuals().text_color(),
         )
         .size()
@@ -749,7 +744,7 @@ fn property_label_layout(
     let (info, reserve) = property_label_help(label, key);
     let width = ui.available_width().min(label_size.x);
     let text_width = (width - reserve).max(0.);
-    let font = FontId::proportional(PROPERTY_LABEL_FONT_SIZE);
+    let font = theme::TextRole::PropertyLabel.font();
     let color = if left_aligned {
         Color32::WHITE
     } else {
@@ -843,7 +838,7 @@ fn property_label_layout(
         Rect::from_min_max(rect.min, egui::pos2(right, rect.bottom())).intersect(ui.clip_rect()),
     );
     if highlighted && !left_aligned {
-        painter.galley_with_override_text_color(position, galley, HELP_GREEN);
+        painter.galley_with_override_text_color(position, galley, HELP_TEXT);
     } else {
         painter.galley(position, galley, color);
     }
@@ -867,7 +862,7 @@ pub(in crate::app) fn help_tooltip(
             },
         )
         .show(|ui| {
-            ui.set_max_width(250.);
+            ui.set_max_width(theme::TOOLTIP_TEXT_WIDTH);
             ui.spacing_mut().item_spacing.y = 0.;
             let text = locale::tr(ui, help).replace("\\n", "\n");
             for (row, paragraph) in text.lines().enumerate() {
@@ -882,11 +877,11 @@ pub(in crate::app) fn help_tooltip(
                         0.,
                         egui::TextFormat {
                             font_id: if bold {
-                                FontId::new(17.6, egui::FontFamily::Name("heading".into()))
+                                theme::TextRole::TooltipHeading.font()
                             } else {
-                                FontId::proportional(14.667)
+                                theme::TextRole::TooltipBody.font()
                             },
-                            color: if bold { Color32::WHITE } else { HELP_GREEN },
+                            color: if bold { Color32::WHITE } else { HELP_TEXT },
                             ..Default::default()
                         },
                     );
@@ -947,7 +942,7 @@ pub(super) fn field_instance_label(
         ui,
         Some(egui::TextWrapMode::Truncate),
         (width - reserve).max(0.),
-        FontId::proportional(PROPERTY_LABEL_FONT_SIZE),
+        theme::TextRole::PropertyLabel.font(),
     );
     let truncated = galley.elided;
     ui.painter().galley(
@@ -1746,6 +1741,20 @@ pub(in crate::app) fn add_enabled_button(
 pub(in crate::app) const CHECKBOX_WIDTH: f32 = 24.;
 
 pub(in crate::app) fn checkbox(ui: &mut egui::Ui, value: &mut bool, label: &str) -> egui::Response {
+    let response = literal_checkbox(ui, value, locale::tr(ui, label));
+    if let Some(help) = help_text(label, label) {
+        help_tooltip(response, help, false)
+    } else {
+        response
+    }
+}
+
+/// Use for project data such as enum identifiers, which may also be translation keys.
+pub(in crate::app) fn literal_checkbox(
+    ui: &mut egui::Ui,
+    value: &mut bool,
+    label: &str,
+) -> egui::Response {
     ui.scope(|ui| {
         ui.spacing_mut().icon_width = CHECKBOX_WIDTH;
         ui.spacing_mut().icon_width_inner = 18.;
@@ -1765,12 +1774,7 @@ pub(in crate::app) fn checkbox(ui: &mut egui::Ui, value: &mut bool, label: &str)
             state.bg_stroke = Stroke::new(1_f32, Color32::GRAY);
             state.corner_radius = 2.into();
         }
-        let response = ui.checkbox(value, locale::tr(ui, label));
-        let response = if let Some(help) = help_text(label, label) {
-            help_tooltip(response, help, false)
-        } else {
-            response
-        };
+        let response = ui.checkbox(value, label);
         if !response.enabled() {
             disabled_hatch(ui, response.rect);
         }
@@ -1782,6 +1786,45 @@ pub(in crate::app) fn checkbox(ui: &mut egui::Ui, value: &mut bool, label: &str)
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn checkboxes_translate_tool_labels_and_keep_project_values_literal() {
+        let ctx = egui::Context::default();
+        theme::configure(&ctx);
+        locale::set(&ctx, locale::Language::SimplifiedChinese);
+        let mut literal_value = false;
+        let mut render = |input, focus: bool| {
+            ctx.run(input, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    checkbox(ui, &mut false, "Array");
+                    let response = literal_checkbox(ui, &mut literal_value, "Array");
+                    if focus {
+                        response.request_focus();
+                    }
+                });
+            })
+        };
+        let output = render(egui::RawInput::default(), true);
+        for expected in ["数组", "Array"] {
+            assert!(output.shapes.iter().any(|shape| {
+                matches!(&shape.shape, egui::Shape::Text(text) if text.galley.text() == expected)
+            }), "missing checkbox label {expected}");
+        }
+        let _ = render(
+            egui::RawInput {
+                events: vec![egui::Event::Key {
+                    key: Key::Space,
+                    physical_key: None,
+                    pressed: true,
+                    repeat: false,
+                    modifiers: egui::Modifiers::NONE,
+                }],
+                ..Default::default()
+            },
+            false,
+        );
+        assert!(literal_value, "Space must toggle the focused checkbox");
+    }
 
     #[test]
     fn truncated_project_field_name_has_a_shared_tooltip_with_literal_text() {

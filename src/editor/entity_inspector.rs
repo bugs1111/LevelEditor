@@ -352,7 +352,7 @@ impl EditorApp {
             rect.left_center() + egui::vec2(24., 0.),
             egui::Align2::LEFT_CENTER,
             locale::tr(ui, "EXTRA ENTITY INFOS"),
-            FontId::new(17.333, egui::FontFamily::Name("panel-title".into())),
+            theme::TextRole::SectionTitle.font(),
             if hover || extra_open {
                 Color32::BLACK
             } else {

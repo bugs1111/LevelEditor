@@ -443,6 +443,7 @@ pub(super) fn pivot_editor(
 }
 
 pub(super) fn tags(ui: &mut egui::Ui, label: &str, value: &Value) -> Option<Value> {
+    use super::panels::source_controls;
     let mut text = value
         .as_array()
         .map(|a| {
@@ -452,19 +453,22 @@ pub(super) fn tags(ui: &mut egui::Ui, label: &str, value: &Value) -> Option<Valu
                 .join(", ")
         })
         .unwrap_or_default();
-    let mut result = None;
-    ui.horizontal(|ui| {
-        ui.label(label);
-        if ui.text_edit_singleline(&mut text).changed() {
-            result = Some(json!(
-                text.split(',')
-                    .map(str::trim)
-                    .filter(|s| !s.is_empty())
-                    .collect::<Vec<_>>()
-            ));
-        }
-    });
-    result
+    source_controls::form_row_wrapped(
+        ui,
+        label,
+        label,
+        source_controls::PROPERTY_LABEL_WIDTH,
+        |ui| {
+            ui.text_edit_singleline(&mut text).changed().then(|| {
+                json!(
+                    text.split(',')
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty())
+                        .collect::<Vec<_>>()
+                )
+            })
+        },
+    )
 }
 
 pub(super) fn scalar_editor(

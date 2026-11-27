@@ -1,7 +1,7 @@
 use super::*;
 use source_controls::{help_card as card, help_paragraph as paragraph};
 
-pub(super) use source_controls::HELP_GREEN as GREEN;
+pub(super) use crate::theme::HELP_TEXT as GREEN;
 pub(super) const GREEN_DARK: Color32 = Color32::from_rgb(60, 97, 72);
 pub(super) const MUTED: Color32 = Color32::from_rgb(115, 127, 157);
 pub(super) const EDITOR_WIDTH: f32 = 662.;

@@ -70,11 +70,11 @@ impl EditorApp {
         }
         let mut patch = json!({});
         row_width(ui, "Entity identifier", 108., |ui| {
-            if let Some(name) = source_text(
+            if let Some(name) = ui_fields::buffered_text_sized(
                 ui,
                 ("entity-name", uid),
                 text(&def, "identifier", ""),
-                (ui.available_width() - 150.).max(80.),
+                egui::vec2((ui.available_width() - 150.).max(80.), 33.),
             ) {
                 patch["identifier"] = json!(name);
             }
@@ -365,7 +365,7 @@ impl EditorApp {
                     let help = ui.add(
                         egui::Image::new(egui::include_image!("../../assets/icons/help.svg"))
                             .fit_to_exact_size(Vec2::splat(32.))
-                            .tint(source_controls::HELP_GREEN),
+                            .tint(theme::HELP_TEXT),
                     );
                     source_controls::help_tooltip(
                         help.on_hover_cursor(egui::CursorIcon::Help),

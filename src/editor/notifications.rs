@@ -231,9 +231,12 @@ impl EditorApp {
             let edge_width = (4. + 4. * compact_remaining).round();
             let horizontal = left + right + edge_width + 1.;
             let max_text_width = (screen.width() - horizontal - 10.).max(1.);
-            let body_font = FontId::proportional(14.67 * zoom);
+            let mut body_font = theme::TextRole::NoticeBody.font();
+            body_font.size *= zoom;
             let title_font = if subtitle.is_some() {
-                FontId::new(14.67 * zoom, egui::FontFamily::Name("body-bold".into()))
+                let mut font = theme::TextRole::NoticeTitle.font();
+                font.size *= zoom;
+                font
             } else {
                 body_font.clone()
             };
@@ -311,19 +314,21 @@ impl EditorApp {
                     | CanvasNotice::CannotEditBackup
                     | CanvasNotice::NothingToSelect
                     | CanvasNotice::SymmetricRule
-                    | CanvasNotice::LocateMissingPath => ([87, 0, 0], [255, 0, 0]),
+                    | CanvasNotice::LocateMissingPath => theme::notice::ERROR,
                     CanvasNotice::SavedProject(_)
                     | CanvasNotice::ValueReset
-                    | CanvasNotice::EnteredFullscreen => ([22, 62, 38], [66, 183, 113]),
+                    | CanvasNotice::EnteredFullscreen => theme::notice::SUCCESS,
                     CanvasNotice::SavedTileSelection
                     | CanvasNotice::LinkOpened
                     | CanvasNotice::LinkCopied
-                    | CanvasNotice::LocatingFile => ([30, 34, 41], [84, 93, 115]),
-                    CanvasNotice::ClipboardCopied(_) => ([0, 0, 0], [0, 0, 0]),
-                    _ => ([69, 48, 6], [203, 141, 19]),
+                    | CanvasNotice::LocatingFile => theme::notice::INFO,
+                    CanvasNotice::ClipboardCopied(_) => theme::notice::CLIPBOARD,
+                    _ => theme::notice::WARNING,
                 };
-                let shade = |channels: [u8; 3]| {
-                    let [r, g, b] = channels.map(|v| (f32::from(v) * brightness).round() as u8);
+                let shade = |color: Color32| {
+                    let [r, g, b, _] = color
+                        .to_array()
+                        .map(|v| (f32::from(v) * brightness).round() as u8);
                     Color32::from_rgb(r, g, b).gamma_multiply(opacity)
                 };
                 let corners = egui::CornerRadius {
@@ -459,10 +464,7 @@ impl EditorApp {
                                     }
                                     ui.label(
                                         RichText::new(name)
-                                            .font(FontId::new(
-                                                40.,
-                                                egui::FontFamily::Name("panel-title".into()),
-                                            ))
+                                            .font(theme::TextRole::QuickNotice.font())
                                             .color(theme::ACCENT),
                                     );
                                 });
@@ -612,17 +614,22 @@ impl EditorApp {
                 .fixed_pos(rect.left_bottom() + egui::vec2(44.0, -48.0))
                 .order(egui::Order::Foreground)
                 .show(ctx, |ui| {
+                    let (fill, edge) = if self.status_error {
+                        theme::notice::ERROR
+                    } else {
+                        theme::notice::INFO
+                    };
                     egui::Frame::new()
-                        .fill(if self.status_error {
-                            Color32::from_rgb(120, 45, 30)
-                        } else {
-                            theme::MEDIUM
-                        })
+                        .fill(fill)
+                        .stroke(Stroke::new(1., edge))
                         .corner_radius(3)
                         .inner_margin(8)
                         .show(ui, |ui| {
                             ui.set_max_width((rect.width() - 90.0).min(700.0));
-                            ui.label(locale::tr(ui, &self.status));
+                            ui.label(
+                                RichText::new(locale::tr(ui, &self.status))
+                                    .font(theme::TextRole::NoticeBody.font()),
+                            );
                         });
                 });
         }

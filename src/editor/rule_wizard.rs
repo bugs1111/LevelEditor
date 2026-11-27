@@ -464,7 +464,7 @@ impl EditorApp {
         ui.painter().rect_stroke(
             important,
             1.,
-            Stroke::new(1_f32, source_controls::HELP_GREEN),
+            Stroke::new(1_f32, theme::HELP_TEXT),
             StrokeKind::Inside,
         );
     }

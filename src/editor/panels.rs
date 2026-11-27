@@ -416,7 +416,7 @@ impl EditorApp {
                 let mut enabled = self.project.as_ref().unwrap().json["flags"]
                     .as_array()
                     .is_some_and(|a| a.contains(&json!(flag)));
-                if ui.checkbox(&mut enabled, flag).changed() {
+                if source_controls::checkbox(ui, &mut enabled, flag).changed() {
                     if flag == "MultiWorlds" {
                         if enabled
                             && self
@@ -1667,7 +1667,7 @@ impl EditorApp {
                         }
                     }
                 });
-            ui.checkbox(&mut array, locale::tr(ui, "Array"));
+            source_controls::checkbox(ui, &mut array, "Array");
         });
         if old != (kind.clone(), array) {
             self.edit_recoverable("Field type converted", |p| {
@@ -2785,7 +2785,7 @@ impl EditorApp {
                                     .is_some_and(|ids| ids.contains(&json!(self.tile_id)))
                         })
                     });
-                    if ui.checkbox(&mut enabled, id).changed() {
+                    if source_controls::literal_checkbox(ui, &mut enabled, id).changed() {
                         self.mark_tileset_tiles(uid, id, &[self.tile_id], enabled);
                     }
                 }
