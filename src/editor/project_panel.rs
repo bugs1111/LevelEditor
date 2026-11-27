@@ -969,6 +969,7 @@ impl EditorApp {
                     }
                     let run = ui
                         .add_enabled_ui(trust != Some(false), |ui| {
+                            ui.spacing_mut().button_padding.y = 0.;
                             source_controls::add_sized_button(
                                 ui,
                                 [run_width, height],
@@ -2105,6 +2106,7 @@ mod tests {
     #[test]
     fn source_project_command_add_is_undoable() {
         let (mut app, ctx) = editor();
+        ctx.style_mut(|style| style.spacing.button_padding.y = 9.);
         let before = app.project.as_ref().unwrap().json.clone();
         let output = frame(&mut app, &ctx, vec![]);
         let pos = egui::pos2(400., label(&output, "Custom commands").unwrap().center().y);

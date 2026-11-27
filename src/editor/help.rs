@@ -694,7 +694,10 @@ impl EditorApp {
                 let button_size = egui::vec2(45., 42.);
                 let close = ui.place(
                     Rect::from_min_size(button_pos, button_size),
-                    |ui: &mut egui::Ui| project_dialogs::button(ui, "×", button_size, false, 24.),
+                    |ui: &mut egui::Ui| {
+                        ui.spacing_mut().button_padding.y = 0.;
+                        project_dialogs::button(ui, "×", button_size, false, 24.)
+                    },
                 );
                 chrome::source_tooltip(&close, "Close", &[], true);
                 if close.clicked() {
@@ -1022,7 +1025,10 @@ mod tests {
         theme::configure(&ctx);
         ctx.data_mut(|data| data.insert_temp(egui::Id::new("release-notes-open"), true));
         let mut app = EditorApp::empty();
-        ctx.style_mut(|style| style.animation_time = 0.);
+        ctx.style_mut(|style| {
+            style.animation_time = 0.;
+            style.spacing.button_padding.y = 9.;
+        });
         let mut draw = |events| {
             ctx.run(
                 egui::RawInput {
