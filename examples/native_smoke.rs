@@ -517,6 +517,7 @@ fn main() -> eframe::Result {
         .unwrap_or(1.);
     assert!(settle_seconds.is_finite() && settle_seconds >= 1.);
     let settings = app::Settings::load();
+    let window_placement = settings.window_placement();
     let mut wgpu_options = app::native_gpu_config(settings.bool("useBestGPU"));
     let vsync = std::env::var_os("LDTK_SMOKE_NO_VSYNC").is_none();
     if !vsync {
@@ -525,7 +526,7 @@ fn main() -> eframe::Result {
     let surface_errors = observe_surface_errors(&mut wgpu_options);
     let final_errors = surface_errors.clone();
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default().with_inner_size([1440., 900.]),
+        viewport: window_placement.viewport().with_inner_size([1440., 900.]),
         renderer: eframe::Renderer::Wgpu,
         vsync,
         wgpu_options,
@@ -541,7 +542,7 @@ fn main() -> eframe::Result {
                 eprintln!("GPU adapter: {:?}", state.adapter.get_info());
             }
             Ok(Box::new(Smoke {
-                app: app::EditorApp::new(cc, path, settings),
+                app: app::EditorApp::new(cc, path, settings, window_placement),
                 frames: 0,
                 started: Instant::now(),
                 captured: false,

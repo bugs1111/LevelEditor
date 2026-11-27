@@ -240,7 +240,6 @@ struct DeferredAutoPaint {
     prior_selection: Option<Value>,
 }
 
-#[cfg(target_os = "linux")]
 #[derive(Clone, Copy)]
 enum StartupWindow {
     NotYetMapped,
@@ -307,7 +306,7 @@ pub struct EditorApp {
     external_changes: Option<Vec<PathBuf>>,
     status: String,
     published_window_title: String,
-    #[cfg(target_os = "linux")]
+    window_placement: settings::WindowPlacement,
     startup_window: Option<StartupWindow>,
     allow_close: bool,
     frame_time: f32,
@@ -428,10 +427,10 @@ impl EditorApp {
         cc: &eframe::CreationContext<'_>,
         path: Option<PathBuf>,
         settings: Settings,
+        window_placement: settings::WindowPlacement,
     ) -> Self {
-        let mut app = Self::with_settings(settings);
-        #[cfg(target_os = "linux")]
-        {
+        let mut app = Self::with_settings(settings, window_placement);
+        if app.window_placement.maximized || app.settings.bool("startFullScreen") {
             app.startup_window = Some(StartupWindow::NotYetMapped);
         }
         canvas::configure_gpu(cc.wgpu_render_state.as_ref());
@@ -443,10 +442,6 @@ impl EditorApp {
             .map(|d| d.as_nanos() as u64)
             .unwrap_or(1);
         app.apply_initial_preferences(&cc.egui_ctx);
-        if !cfg!(target_os = "linux") && app.settings.bool("startFullScreen") {
-            cc.egui_ctx
-                .send_viewport_cmd(egui::ViewportCommand::Fullscreen(true));
-        }
         let path = path.or_else(|| {
             app.settings
                 .bool("openLastProject")
@@ -489,10 +484,10 @@ impl EditorApp {
 
     #[cfg(test)]
     fn empty() -> Self {
-        Self::with_settings(Settings::default())
+        Self::with_settings(Settings::default(), settings::WindowPlacement::default())
     }
 
-    fn with_settings(settings: Settings) -> Self {
+    fn with_settings(settings: Settings, window_placement: settings::WindowPlacement) -> Self {
         Self {
             project: None,
             history: History::default(),
@@ -549,7 +544,7 @@ impl EditorApp {
             external_changes: None,
             status: "Open a project or create a new one.".into(),
             published_window_title: String::new(),
-            #[cfg(target_os = "linux")]
+            window_placement,
             startup_window: None,
             allow_close: false,
             frame_time: 0.0,
@@ -1436,20 +1431,24 @@ impl EditorApp {
         rect
     }
 
-    #[cfg(target_os = "linux")]
-    fn update_startup_window(&mut self, ctx: &egui::Context) {
+    fn update_window_placement(&mut self, ctx: &egui::Context, native_maximized: Option<bool>) {
         use StartupWindow::{EnteringFullscreen, Mapping, Maximizing, NotYetMapped};
-        let Some(stage) = self.startup_window else {
-            return;
-        };
+        let zoom = ctx.zoom_factor();
         let (focused, maximized, fullscreen) = ctx.input(|input| {
             let viewport = input.viewport();
+            let maximized = native_maximized.or(viewport.maximized);
+            if self.startup_window.is_none() {
+                self.window_placement.observe(&input.raw, zoom, maximized);
+            }
             (
                 viewport.focused == Some(true),
-                viewport.maximized == Some(true),
+                maximized == Some(true),
                 viewport.fullscreen == Some(true),
             )
         });
+        let Some(stage) = self.startup_window else {
+            return;
+        };
         let now = Instant::now();
         // Window managers without maximization support must still get an initial view.
         let wait = std::time::Duration::from_millis(250);
@@ -1461,15 +1460,13 @@ impl EditorApp {
         };
         self.startup_window = match stage {
             NotYetMapped => Some(Mapping(now + wait)),
-            Mapping(_) if focused && maximized => finish_maximizing(),
-            Mapping(_) if focused => {
+            Mapping(_) if !self.window_placement.maximized || maximized => finish_maximizing(),
+            Mapping(deadline) if focused || now >= deadline => {
                 // X11 can discard maximization requested before eframe maps the window.
                 ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(true));
                 Some(Maximizing(now + wait))
             }
-            Mapping(deadline) | Maximizing(deadline) if maximized || now >= deadline => {
-                finish_maximizing()
-            }
+            Maximizing(deadline) if maximized || now >= deadline => finish_maximizing(),
             EnteringFullscreen(deadline) if fullscreen || now >= deadline => None,
             _ => Some(stage),
         };
@@ -1480,8 +1477,11 @@ impl EditorApp {
 
     fn update_frame(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         locale::set(ctx, self.settings.language());
-        #[cfg(target_os = "linux")]
-        self.update_startup_window(ctx);
+        #[cfg(target_os = "macos")]
+        let native_maximized = settings::window_maximized(frame);
+        #[cfg(not(target_os = "macos"))]
+        let native_maximized = None;
+        self.update_window_placement(ctx, native_maximized);
         if self.update_installing(ctx) {
             self.update_dialog(ctx);
             return;
@@ -1707,6 +1707,7 @@ impl eframe::App for EditorApp {
                 std::thread::yield_now();
             }
         }
+        self.settings.value["windowPlacement"] = serde_json::json!(self.window_placement);
         self.persist_preferences();
         app_log::flush();
     }

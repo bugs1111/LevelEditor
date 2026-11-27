@@ -40,11 +40,10 @@ fn main() -> eframe::Result {
     let _open_files: platform_files::OpenFilesGuard = platform_files::install();
     let path = first.map(PathBuf::from);
     let settings = app::Settings::load();
+    let window_placement = settings.window_placement();
     let options = eframe::NativeOptions {
-        viewport: eframe::egui::ViewportBuilder::default()
-            // Match the original's normal window bounds when maximization is unavailable.
-            .with_inner_size([800.0, 600.0])
-            .with_maximized(true)
+        viewport: window_placement
+            .viewport()
             .with_app_id("io.ldtk.rust-port")
             .with_icon(
                 eframe::icon_data::from_png_bytes(APP_ICON).expect("bundled Level Editor icon"),
@@ -59,7 +58,14 @@ fn main() -> eframe::Result {
     eframe::run_native(
         "Level Editor",
         options,
-        Box::new(move |cc| Ok(Box::new(app::EditorApp::new(cc, path, settings)))),
+        Box::new(move |cc| {
+            Ok(Box::new(app::EditorApp::new(
+                cc,
+                path,
+                settings,
+                window_placement,
+            )))
+        }),
     )
 }
 

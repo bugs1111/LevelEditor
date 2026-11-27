@@ -621,7 +621,7 @@ impl EditorApp {
                     };
                     egui::Frame::new()
                         .fill(fill)
-                        .stroke(Stroke::new(1., edge))
+                        .stroke(Stroke::new(1_f32, edge))
                         .corner_radius(3)
                         .inner_margin(8)
                         .show(ui, |ui| {

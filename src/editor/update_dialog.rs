@@ -584,7 +584,7 @@ mod tests {
                 _ => None,
             })
             .expect("release link");
-        assert_eq!(link.underline, Stroke::new(1., theme::ACCENT));
+        assert_eq!(link.underline, Stroke::new(1_f32, theme::ACCENT));
         let clicked = click(&mut app, &ctx, link.pos + link.galley.size() * 0.5);
         assert!(clicked.platform_output.commands.iter().any(|command| {
             matches!(command, egui::OutputCommand::OpenUrl(url) if url.url == updater::RELEASES_URL)

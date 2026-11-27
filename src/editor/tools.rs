@@ -1284,10 +1284,7 @@ impl EditorApp {
             self.camera_drag = None;
             return;
         }
-        #[cfg(target_os = "linux")]
         let fitting_ready = self.startup_window.is_none();
-        #[cfg(not(target_os = "linux"))]
-        let fitting_ready = true;
         if self.fit
             && fitting_ready
             && let (Some(project), Some(key)) = (&self.project, self.selected)

@@ -301,10 +301,10 @@ mod tests {
     }
 
     #[test]
-    #[cfg(target_os = "linux")]
     fn startup_fits_the_level_after_the_requested_window_state_arrives() {
         let mut app = editor();
         app.fit = true;
+        app.window_placement.maximized = true;
         app.startup_window = Some(StartupWindow::NotYetMapped);
         app.settings.value["startFullScreen"] = json!(true);
         let ctx = egui::Context::default();

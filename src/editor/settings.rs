@@ -1,6 +1,75 @@
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 
+/// Normal window bounds in OS logical pixels, independent of editor UI zoom.
+#[derive(Default, serde::Deserialize, serde::Serialize)]
+#[serde(default)]
+pub(crate) struct WindowPlacement {
+    size: Option<[f32; 2]>,
+    position: Option<[f32; 2]>,
+    pub(super) maximized: bool,
+}
+
+impl WindowPlacement {
+    pub(crate) fn viewport(&self) -> eframe::egui::ViewportBuilder {
+        let mut viewport = eframe::egui::ViewportBuilder::default().with_inner_size(
+            self.size
+                .filter(|s| s.iter().all(|&v| v.is_finite() && v > 0.))
+                .unwrap_or([800., 600.]),
+        );
+        if let Some(position) = self.position.filter(|p| p.iter().all(|v| v.is_finite())) {
+            viewport = viewport.with_position(position);
+        }
+        viewport
+    }
+
+    pub(super) fn observe(
+        &mut self,
+        input: &eframe::egui::RawInput,
+        zoom: f32,
+        maximized: Option<bool>,
+    ) {
+        let viewport = input.viewport();
+        if viewport.minimized == Some(true) || viewport.fullscreen == Some(true) {
+            return;
+        }
+        // Wayland exposes the client size but leaves global positions to the compositor.
+        #[cfg(target_os = "linux")]
+        let inner = viewport.inner_rect.or(input.screen_rect);
+        #[cfg(not(target_os = "linux"))]
+        let inner = viewport.inner_rect;
+        let Some(inner) = inner.filter(|r| r.is_positive() && r.is_finite()) else {
+            return;
+        };
+        if let Some(maximized) = maximized {
+            self.maximized = maximized;
+        }
+        if self.maximized {
+            return;
+        }
+        self.size = Some((inner.size() * zoom).into());
+        if let Some(outer) = viewport.outer_rect {
+            self.position = Some((outer.min * zoom).into());
+        }
+    }
+}
+
+// egui-winit only queries this flag at window creation on macOS. Read it from
+// our titled native window so a later zoom or unzoom preserves the normal frame.
+#[cfg(target_os = "macos")]
+pub(super) fn window_maximized(frame: &eframe::Frame) -> Option<bool> {
+    use objc2_app_kit::NSView;
+    use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+
+    let handle = frame.window_handle().ok()?;
+    let RawWindowHandle::AppKit(handle) = handle.as_raw() else {
+        return None;
+    };
+    // The frame owns this view, and eframe calls update on AppKit's main thread.
+    let view = unsafe { handle.ns_view.cast::<NSView>().as_ref() };
+    Some(view.window()?.isZoomed())
+}
+
 pub(crate) struct Settings {
     pub value: Value,
     pub path: Option<PathBuf>,
@@ -22,6 +91,10 @@ impl Default for Settings {
     }
 }
 impl Settings {
+    pub(crate) fn window_placement(&self) -> WindowPlacement {
+        serde::Deserialize::deserialize(&self.value["windowPlacement"]).unwrap_or_default()
+    }
+
     pub fn load() -> Self {
         if let Some(root) = std::env::var_os("LDTK_CONFIG_DIR") {
             return Self::load_at(Some(PathBuf::from(root).join("settings.json")));
@@ -281,6 +354,53 @@ impl Settings {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use eframe::egui::{RawInput, Rect, ViewportId, pos2, vec2};
+
+    #[test]
+    fn window_placement_keeps_normal_bounds_across_move_maximize_and_exit() {
+        let mut placement = WindowPlacement::default();
+        let mut raw = RawInput::default();
+        let viewport = raw.viewports.get_mut(&ViewportId::ROOT).unwrap();
+        viewport.inner_rect = Some(Rect::from_min_size(pos2(-190., 65.), vec2(480., 320.)));
+        viewport.outer_rect = Some(Rect::from_min_size(pos2(-192., 45.), vec2(484., 342.)));
+        placement.observe(&raw, 1.5, Some(false));
+
+        let viewport = raw.viewports.get_mut(&ViewportId::ROOT).unwrap();
+        viewport.outer_rect = viewport.outer_rect.map(|r| r.translate(vec2(38., 20.)));
+        placement.observe(&raw, 1.5, Some(false));
+        let viewport = raw.viewports.get_mut(&ViewportId::ROOT).unwrap();
+        viewport.inner_rect = Some(Rect::from_min_size(pos2(0., 0.), vec2(960., 600.)));
+        placement.observe(&raw, 1.5, Some(true));
+        raw.viewports.get_mut(&ViewportId::ROOT).unwrap().fullscreen = Some(true);
+        placement.observe(&raw, 1.5, Some(false));
+        let viewport = raw.viewports.get_mut(&ViewportId::ROOT).unwrap();
+        viewport.fullscreen = Some(false);
+        viewport.minimized = Some(true);
+        placement.observe(&raw, 1.5, Some(false));
+
+        let temp = tempfile::tempdir().unwrap();
+        let path = Some(temp.path().join("settings.json"));
+        let mut settings = Settings::load_at(path.clone());
+        settings.value["windowPlacement"] = json!(placement);
+        settings.save().unwrap();
+        let saved = Settings::load_at(path).window_placement();
+        assert!(saved.maximized);
+        assert_eq!(saved.viewport().position, Some(pos2(-231., 97.5)));
+        assert_eq!(saved.viewport().inner_size, Some(vec2(720., 480.)));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn window_size_is_remembered_when_the_compositor_owns_position() {
+        let raw = RawInput {
+            screen_rect: Some(Rect::from_min_size(pos2(0., 0.), vec2(700., 410.))),
+            ..Default::default()
+        };
+        let mut placement = WindowPlacement::default();
+        placement.observe(&raw, 2., Some(false));
+        assert_eq!(placement.viewport().inner_size, Some(vec2(1400., 820.)));
+        assert_eq!(placement.viewport().position, None);
+    }
 
     #[test]
     fn default_settings_load_the_previous_profile_and_save_under_level_editor() {

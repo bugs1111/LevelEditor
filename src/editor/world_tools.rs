@@ -627,7 +627,7 @@ impl EditorApp {
                 options.coarse_tessellation_culling && !options.debug_paint_clip_rects
             });
             let fill = Color32::from_rgba_unmultiplied(0, 255, 0, 38);
-            let stroke = Stroke::new(3., Color32::from_rgba_unmultiplied(0, 255, 0, 204));
+            let stroke = Stroke::new(3_f32, Color32::from_rgba_unmultiplied(0, 255, 0, 204));
             let shapes = canvas::iter_placements(project, selected)
                 .filter_map(|(_, level, bounds)| {
                     if !selected_iids.contains(level["iid"].as_str()?) {

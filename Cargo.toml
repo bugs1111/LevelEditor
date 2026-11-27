@@ -37,7 +37,7 @@ core-foundation = "0.10"
 wgpu = { version = "27", default-features = false, features = ["std", "metal", "wgsl"] }
 winit = { version = "=0.30.13", default-features = false }
 objc2 = "=0.6.5"
-objc2-app-kit = { version = "=0.3.2", default-features = false, features = ["NSApplication", "NSResponder"] }
+objc2-app-kit = { version = "=0.3.2", default-features = false, features = ["NSApplication", "NSResponder", "NSView", "NSWindow"] }
 objc2-foundation = { version = "=0.3.2", default-features = false, features = ["std", "NSArray", "NSLocale", "NSObject", "NSAppleEventManager", "NSAppleEventDescriptor", "NSURL", "NSString", "NSDate", "NSError", "NSRunLoop", "objc2-core-services"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
