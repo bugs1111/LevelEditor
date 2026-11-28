@@ -90,10 +90,25 @@ pub(super) fn show(
     };
     let width = ui.available_width().max(20.);
     let icon = current_value.and_then(|value| enum_icon(project, enumeration, value));
-    let button = egui::Button::opt_image_and_text(icon, Some(label.into()))
+    let color = current_value
+        .filter(|_| !using_default)
+        .and_then(|v| v["color"].as_u64())
+        .map(|rgb| Color32::from_rgb((rgb >> 16) as u8, (rgb >> 8) as u8, rgb as u8));
+    let mut caption = RichText::new(label);
+    if let Some(color) = color {
+        caption = caption.color(color.lerp_to_gamma(Color32::WHITE, 0.7));
+    }
+    let button = match icon {
+        Some(icon) => egui::Button::new((icon, caption)),
+        None => egui::Button::new(caption),
+    };
+    let mut button = button
         .right_text("▾")
-        .min_size(egui::vec2(width, 27.))
+        .min_size(egui::vec2(width, 33.))
         .truncate();
+    if let Some(color) = color {
+        button = button.fill(color.lerp_to_gamma(Color32::BLACK, 0.5));
+    }
     let button = ui.add(button);
     let picker = begin(&button)?;
     let show_null = field["canBeNull"] == true || current_value.is_none();
@@ -289,10 +304,8 @@ fn show_popup(
         if let Some((key, project_iid)) = options.grid.as_ref() {
             let layout = ctx.data(|data| data.get_temp::<Value>(picker_id().with("layouts")));
             if let Some(layout) = layout {
-                let settings = super::super::settings::Settings {
-                    value: json!({"uiStates":layout}),
-                    path: None,
-                };
+                let settings =
+                    super::super::settings::Settings::in_memory(json!({"uiStates":layout}));
                 picker.columns = settings.ui_state_int(key, *project_iid, 1).clamp(1, 10) as usize;
             }
         }

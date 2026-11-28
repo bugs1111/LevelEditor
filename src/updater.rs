@@ -11,8 +11,9 @@ use std::{
         atomic::{AtomicBool, Ordering},
         mpsc,
     },
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::Duration,
 };
+use tempfile::TempDir;
 
 #[path = "update_installer.rs"]
 mod installer;
@@ -61,7 +62,6 @@ pub fn environment_token() -> Option<String> {
 pub fn prior_install_failure() -> Option<String> {
     installer::prior_failure()
 }
-#[derive(Clone)]
 pub struct Release {
     pub version: String,
     pub notes: String,
@@ -71,24 +71,34 @@ pub struct Release {
     sha256: String,
     size: u64,
 }
-#[derive(Clone)]
-pub struct Prepared {
-    pub version: String,
-    work: PathBuf,
+struct Prepared {
+    version: String,
+    work: TempDir,
     root: PathBuf,
+}
+#[cfg(test)]
+impl Prepared {
+    fn fixture() -> Self {
+        let work = unique_work().unwrap();
+        Self {
+            version: "1.1.0".into(),
+            root: work.path().to_owned(),
+            work,
+        }
+    }
 }
 #[derive(Clone)]
 pub enum State {
     Idle,
     Checking,
     Current(String),
-    Available(Release),
+    Available(Arc<Release>),
     Downloading {
         version: String,
         done: u64,
         total: u64,
     },
-    Ready(Prepared),
+    Ready(String),
     Installing,
     Restarting,
     Cancelled,
@@ -98,10 +108,11 @@ enum Event {
     Checked(Result<Option<Release>>),
     Progress(u64, u64),
     Prepared(Result<Prepared>),
-    InstallReady(Result<()>),
+    InstallReady(std::result::Result<(), (Prepared, String)>),
 }
 pub struct Updater {
     pub state: State,
+    prepared: Option<Prepared>,
     receiver: Option<mpsc::Receiver<Event>>,
     cancel: Arc<AtomicBool>,
     #[cfg(test)]
@@ -115,6 +126,7 @@ impl Default for Updater {
     fn default() -> Self {
         Self {
             state: State::Idle,
+            prepared: None,
             receiver: None,
             cancel: Arc::new(AtomicBool::new(false)),
             #[cfg(test)]
@@ -133,8 +145,7 @@ impl Drop for Updater {
 }
 impl Updater {
     pub fn shutdown(&mut self) {
-        if let State::Ready(prepared) = &self.state {
-            cleanup_work(&prepared.work);
+        if self.prepared.take().is_some() {
             self.state = State::Cancelled;
         } else if matches!(self.state, State::Checking | State::Downloading { .. }) {
             self.cancel();
@@ -143,16 +154,19 @@ impl Updater {
     #[cfg(test)]
     pub(crate) fn ready_fixture() -> Self {
         let mut updater = Self::default();
-        updater.state = State::Ready(Prepared {
-            version: "1.1.0".into(),
-            work: PathBuf::new(),
-            root: PathBuf::new(),
-        });
+        updater.set_ready(Prepared::fixture());
         updater.test_install = true;
         updater
     }
     pub fn busy(&self) -> bool {
         self.receiver.is_some()
+    }
+    pub fn has_prepared_update(&self) -> bool {
+        self.prepared.is_some()
+    }
+    fn set_ready(&mut self, prepared: Prepared) {
+        self.state = State::Ready(prepared.version.clone());
+        self.prepared = Some(prepared);
     }
     #[cfg(test)]
     pub(crate) fn failed_fixture(error: &str) -> Self {
@@ -177,19 +191,14 @@ impl Updater {
         if self.busy() {
             return;
         }
-        let old_work = match &self.state {
-            State::Ready(prepared) => Some(prepared.work.clone()),
-            _ => None,
-        };
+        let previous = self.prepared.take();
         self.state = State::Checking;
         let (sender, receiver) = mpsc::channel();
         self.receiver = Some(receiver);
         self.cancel = Arc::new(AtomicBool::new(false));
         let cancel = self.cancel.clone();
         std::thread::spawn(move || {
-            if let Some(work) = old_work {
-                cleanup_work(&work);
-            }
+            drop(previous);
             cleanup_pending_work();
             let result = check_release(&feed, env!("CARGO_PKG_VERSION"), token, &cancel);
             let _ = sender.send(Event::Checked(result));
@@ -200,9 +209,10 @@ impl Updater {
         if self.busy() {
             return;
         }
-        let State::Available(release) = self.state.clone() else {
+        let State::Available(release) = &self.state else {
             return;
         };
+        let release = Arc::clone(release);
         self.state = State::Downloading {
             version: release.version.clone(),
             done: 0,
@@ -228,7 +238,7 @@ impl Updater {
         if self.busy() {
             return;
         }
-        let State::Ready(prepared) = self.state.clone() else {
+        let Some(prepared) = self.prepared.take() else {
             return;
         };
         #[cfg(test)]
@@ -241,7 +251,14 @@ impl Updater {
         let (sender, receiver) = mpsc::channel();
         self.receiver = Some(receiver);
         std::thread::spawn(move || {
-            let result = installer::launch(&prepared, reopen);
+            let result = match installer::launch(&prepared, reopen) {
+                Ok(()) => {
+                    // The helper still needs the plan in this directory after we exit.
+                    let _ = prepared.work.keep();
+                    Ok(())
+                }
+                Err(error) => Err((prepared, error)),
+            };
             let _ = sender.send(Event::InstallReady(result));
             wake();
         });
@@ -271,7 +288,7 @@ impl Updater {
                         State::Cancelled
                     } else {
                         match result {
-                            Ok(Some(release)) => State::Available(release),
+                            Ok(Some(release)) => State::Available(Arc::new(release)),
                             Ok(None) => State::Current(env!("CARGO_PKG_VERSION").into()),
                             Err(error) => State::Failed(error),
                         }
@@ -279,23 +296,23 @@ impl Updater {
                 }
                 Event::Prepared(result) => {
                     self.receiver = None;
-                    self.state = match result {
-                        Ok(prepared) if !self.cancel.load(Ordering::Relaxed) => {
-                            State::Ready(prepared)
+                    if self.cancel.load(Ordering::Relaxed) {
+                        self.state = State::Cancelled;
+                    } else {
+                        match result {
+                            Ok(prepared) => self.set_ready(prepared),
+                            Err(error) => self.state = State::Failed(error),
                         }
-                        Ok(prepared) => {
-                            let _ = fs::remove_dir_all(prepared.work);
-                            State::Cancelled
-                        }
-                        Err(_) if self.cancel.load(Ordering::Relaxed) => State::Cancelled,
-                        Err(error) => State::Failed(error),
-                    };
+                    }
                 }
                 Event::InstallReady(result) => {
                     self.receiver = None;
                     self.state = match result {
                         Ok(()) => State::Restarting,
-                        Err(error) => State::Failed(error),
+                        Err((prepared, error)) => {
+                            self.prepared = Some(prepared);
+                            State::Failed(error)
+                        }
                     };
                 }
             }
@@ -531,15 +548,11 @@ fn check_release(
         size,
     }))
 }
-fn unique_work() -> Result<PathBuf> {
-    let stamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|e| e.to_string())?
-        .as_nanos();
-    let path =
-        std::env::temp_dir().join(format!("{UPDATE_DIR_PREFIX}{}-{stamp}", std::process::id()));
-    fs::create_dir(&path).map_err(|e| format!("Cannot create update staging directory: {e}"))?;
-    Ok(path)
+fn unique_work() -> Result<TempDir> {
+    tempfile::Builder::new()
+        .prefix(UPDATE_DIR_PREFIX)
+        .tempdir()
+        .map_err(|e| format!("Cannot create update staging directory: {e}"))
 }
 fn is_update_work_name(name: &std::ffi::OsStr) -> bool {
     name.to_str().is_some_and(|name| {
@@ -555,11 +568,6 @@ fn safe_work(work: &Path) -> bool {
         && work
             .symlink_metadata()
             .is_ok_and(|m| m.is_dir() && !m.file_type().is_symlink())
-}
-fn cleanup_work(work: &Path) {
-    if safe_work(work) {
-        let _ = fs::remove_dir_all(work);
-    }
 }
 fn cleanup_pending_work() {
     let Ok(entries) = fs::read_dir(std::env::temp_dir()) else {
@@ -639,58 +647,52 @@ fn stage_release(
     mut progress: impl FnMut(u64, u64),
 ) -> Result<Prepared> {
     let work = unique_work()?;
-    let result = (|| {
-        let http = Http::new(feed, token);
-        let mut response = http.get(&release.url, true, cancel)?;
-        let archive = work.join(&release.asset);
-        let mut file = OpenOptions::new()
-            .create_new(true)
-            .write(true)
-            .open(&archive)
+    let http = Http::new(feed, token);
+    let mut response = http.get(&release.url, true, cancel)?;
+    let archive = work.path().join(&release.asset);
+    let mut file = OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(&archive)
+        .map_err(|e| e.to_string())?;
+    let mut hash = Sha256::new();
+    let mut done = 0_u64;
+    let mut buffer = [0_u8; 64 * 1024];
+    let mut last = std::time::Instant::now();
+    let mut reader = response.body_mut().as_reader();
+    progress(0, release.size);
+    loop {
+        cancelled(cancel)?;
+        let count = reader
+            .read(&mut buffer)
+            .map_err(|_| "Failed to read the update archive; retry the download".to_owned())?;
+        if count == 0 {
+            break;
+        }
+        done += count as u64;
+        if done > release.size {
+            return Err("Downloaded update exceeds its declared size".into());
+        }
+        file.write_all(&buffer[..count])
             .map_err(|e| e.to_string())?;
-        let mut hash = Sha256::new();
-        let mut done = 0_u64;
-        let mut buffer = [0_u8; 64 * 1024];
-        let mut last = std::time::Instant::now();
-        let mut reader = response.body_mut().as_reader();
-        progress(0, release.size);
-        loop {
-            cancelled(cancel)?;
-            let count = reader
-                .read(&mut buffer)
-                .map_err(|_| "Failed to read the update archive; retry the download".to_owned())?;
-            if count == 0 {
-                break;
-            }
-            done += count as u64;
-            if done > release.size {
-                return Err("Downloaded update exceeds its declared size".into());
-            }
-            file.write_all(&buffer[..count])
-                .map_err(|e| e.to_string())?;
-            hash.update(&buffer[..count]);
-            if last.elapsed() >= Duration::from_millis(40) {
-                progress(done, release.size);
-                last = std::time::Instant::now();
-            }
+        hash.update(&buffer[..count]);
+        if last.elapsed() >= Duration::from_millis(40) {
+            progress(done, release.size);
+            last = std::time::Instant::now();
         }
-        file.sync_all().map_err(|e| e.to_string())?;
-        if done != release.size || format!("{:x}", hash.finalize()) != release.sha256 {
-            return Err("Update SHA-256/size verification failed. Nothing was installed.".into());
-        }
-        progress(done, release.size);
-        let root = extract(&archive, &work, cancel)?;
-        fs::remove_file(&archive).map_err(|e| e.to_string())?;
-        Ok(Prepared {
-            version: release.version.clone(),
-            work: work.clone(),
-            root,
-        })
-    })();
-    if result.is_err() {
-        let _ = fs::remove_dir_all(&work);
     }
-    result
+    file.sync_all().map_err(|e| e.to_string())?;
+    if done != release.size || format!("{:x}", hash.finalize()) != release.sha256 {
+        return Err("Update SHA-256/size verification failed. Nothing was installed.".into());
+    }
+    progress(done, release.size);
+    let root = extract(&archive, work.path(), cancel)?;
+    fs::remove_file(&archive).map_err(|e| e.to_string())?;
+    Ok(Prepared {
+        version: release.version.clone(),
+        work,
+        root,
+    })
 }
 fn marker_path(root: &Path, product: &str) -> PathBuf {
     let marker = format!("{product}-install.json");
@@ -1003,7 +1005,6 @@ mod tests {
             fs::read(executable(&prepared.root, PRODUCT)).unwrap(),
             b"fixture-new-executable"
         );
-        fs::remove_dir_all(prepared.work).unwrap();
     }
     #[test]
     fn private_release_check_download_sha_and_executable_staging_use_native_http() {
@@ -1058,7 +1059,6 @@ mod tests {
                 0
             );
         }
-        fs::remove_dir_all(prepared.work).unwrap();
     }
     #[test]
     fn current_semver_skips_asset_download_and_404_explains_private_access() {
@@ -1160,14 +1160,11 @@ mod tests {
     fn checking_again_removes_an_abandoned_ready_stage_and_success_cleanup_is_scoped() {
         let server = Server::new();
         publish(&server, &archive(), env!("CARGO_PKG_VERSION"));
-        let old = unique_work().unwrap();
+        let prepared = Prepared::fixture();
+        let old = prepared.work.path().to_owned();
         fs::write(old.join("unused-stage"), b"old").unwrap();
         let mut updater = Updater::default();
-        updater.state = State::Ready(Prepared {
-            version: "1.1.0".into(),
-            root: old.clone(),
-            work: old.clone(),
-        });
+        updater.set_ready(prepared);
         updater.check_feed(server.feed(), None, || {});
         for _ in 0..200 {
             updater.poll();
@@ -1178,7 +1175,7 @@ mod tests {
         }
         assert!(matches!(updater.state, State::Current(_)));
         assert!(!old.exists());
-        let success = unique_work().unwrap();
+        let success = unique_work().unwrap().keep();
         fs::create_dir(success.join("old-package")).unwrap();
         fs::write(success.join("old-package/exe"), b"old").unwrap();
         fs::write(success.join("cleanup-pending"), b"installed").unwrap();
@@ -1193,15 +1190,50 @@ mod tests {
         assert!(unrelated.path().join("cleanup-pending").exists());
     }
     #[test]
+    fn closing_with_a_completed_download_waiting_in_the_queue_releases_its_files() {
+        let prepared = Prepared::fixture();
+        let work = prepared.work.path().to_owned();
+        let (sender, receiver) = mpsc::channel();
+        let mut updater = Updater::default();
+        updater.receiver = Some(receiver);
+        sender.send(Event::Prepared(Ok(prepared))).unwrap();
+        drop(updater);
+        assert!(!work.exists(), "unclaimed verified download left on disk");
+    }
+
+    #[test]
+    fn a_failed_install_can_retry_the_verified_package_without_another_download() {
+        let prepared = Prepared::fixture();
+        let work = prepared.work.path().to_owned();
+        let mut updater = Updater::default();
+        updater.set_ready(prepared);
+        // The test binary is outside an installed package, so preparation fails
+        // before starting a helper or modifying an installation.
+        for _ in 0..2 {
+            let (wake, completed) = mpsc::channel();
+            updater.install(None, move || {
+                let _ = wake.send(());
+            });
+            assert!(
+                matches!(updater.state, State::Installing),
+                "retry skipped installation"
+            );
+            completed.recv_timeout(Duration::from_secs(5)).unwrap();
+            updater.poll();
+            assert!(matches!(updater.state, State::Failed(_)));
+            assert!(work.exists());
+        }
+        drop(updater);
+        assert!(!work.exists());
+    }
+
+    #[test]
     fn closing_with_a_ready_update_cleans_only_the_uninstalled_stage() {
-        let work = unique_work().unwrap();
+        let prepared = Prepared::fixture();
+        let work = prepared.work.path().to_owned();
         fs::write(work.join("downloaded-application"), b"fixture").unwrap();
         let mut updater = Updater::default();
-        updater.state = State::Ready(Prepared {
-            version: "1.1.0".into(),
-            work: work.clone(),
-            root: work.clone(),
-        });
+        updater.set_ready(prepared);
         drop(updater);
         assert!(!work.exists());
         let installing = unique_work().unwrap();
@@ -1209,10 +1241,9 @@ mod tests {
         updater.state = State::Installing;
         drop(updater);
         assert!(
-            installing.exists(),
+            installing.path().exists(),
             "an install in progress must retain its helper workspace"
         );
-        cleanup_work(&installing);
     }
     /// Explicit release acceptance only: requires network access, GH_TOKEN or
     /// GITHUB_TOKEN and a published stable release with this host's Rust asset.
@@ -1229,8 +1260,9 @@ mod tests {
         let prepared = stage_release(&feed, &release, Some(token), &cancel, |_, _| {})
             .expect("live Rust asset verification/staging failed");
         validate_root(&prepared.root).unwrap();
-        cleanup_work(&prepared.work);
-        assert!(!prepared.work.exists());
+        let work = prepared.work.path().to_owned();
+        drop(prepared);
+        assert!(!work.exists());
     }
     #[test]
     fn cross_origin_asset_redirect_does_not_forward_the_session_token() {

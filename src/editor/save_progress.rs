@@ -355,6 +355,7 @@ mod tests {
         tx.send(Ok(services::SavedProject {
             project,
             report: ldtk_core::SaveReport::default(),
+            renamed_from: None,
         }))
         .unwrap();
 

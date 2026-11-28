@@ -266,8 +266,8 @@ fn for_each_tile_property_set(
 ) -> Result<()> {
     for data in custom_data {
         let id = n(data, "tileId");
-        let raw = s(data, "data").replace("\\\\", "\\").replace("\\n", "\n");
-        let value = serde_json::from_str::<Value>(&raw)
+        let (_, parsed) = crate::ldtk_string::tile_data_json(s(data, "data"));
+        let value = parsed
             .map_err(|e| Error::Invalid(format!("invalid Tiled custom data for tile {id}: {e}")))?;
         if let Value::Object(mut values) = value {
             values.retain(|_, value| !value.is_array() && !value.is_object());
@@ -307,6 +307,10 @@ fn write_xml(out: &mut impl fmt::Write, text: &str) -> fmt::Result {
             b'"' => "&quot;",
             b'<' => "&lt;",
             b'>' => "&gt;",
+            // Literal whitespace in XML attributes is normalized to spaces by readers.
+            b'\t' => "&#9;",
+            b'\n' => "&#10;",
+            b'\r' => "&#13;",
             _ => continue,
         };
         out.write_str(&text[start..index])?;
@@ -366,64 +370,18 @@ impl Project {
         mut progress: impl FnMut(usize, usize),
     ) -> Result<ExportReport> {
         let mut warnings = Vec::new();
-        let defs = arr(&self.json["defs"]["layers"]);
-        let grids: std::collections::BTreeSet<_> = defs.iter().map(|d| n(d, "gridSize")).collect();
-        if grids.len() > 1 {
-            warnings.push("Tiled supports one grid size per map; layers with incompatible grid size are discarded".into());
-        }
-        for td in arr(&self.json["defs"]["tilesets"]) {
-            if !td["embedAtlas"].is_null() {
-                warnings.push(format!(
-                    "Embedded tileset {} is skipped by Tiled export",
-                    s(td, "identifier")
-                ));
-            }
-            if n(td, "padding") != 0 {
-                warnings.push(format!(
-                    "Tileset {} has padding, which is not supported by Tiled export",
-                    s(td, "identifier")
-                ));
-            }
-            if td["relPath"]
-                .as_str()
-                .and_then(|s| Path::new(s).extension())
-                .and_then(|s| s.to_str())
-                .is_some_and(|e| {
-                    e.eq_ignore_ascii_case("ase") || e.eq_ignore_ascii_case("aseprite")
-                })
-            {
-                warnings.push(format!("Aseprite atlas {} is not supported by Tiled; convert the referenced atlas to PNG",s(td,"identifier")));
-            }
-        }
-        let first = self.tiled_world_index();
-        if self.iter_level_keys().any(|k| k.world != first) {
-            warnings.push(
-                "Tiled export includes the first world only, matching the original exporter".into(),
-            );
-        }
-        for key in self.iter_level_keys() {
-            if let Some(l) = self.level(key) {
-                for li in arr(&l["layerInstances"]) {
-                    let grid = n(li, "__gridSize").max(1);
-                    if arr(&li["autoLayerTiles"]).iter().any(|t| {
-                        t["px"][0].as_i64().unwrap_or(0) % grid != 0
-                            || t["px"][1].as_i64().unwrap_or(0) % grid != 0
-                    }) {
-                        warnings.push(format!("Layer {} in {} contains tiles not aligned with the grid; Tiled shifts these tiles",s(li,"__identifier"),s(l,"identifier")));
-                    }
-                }
-            }
-        }
-        Ok(ExportReport {
-            outputs: self.export_tiled_with_progress(dir, format, &mut progress)?,
-            warnings,
-        })
+        let outputs =
+            self.export_tiled_with_progress(dir, format, &mut progress, &mut |message| {
+                warnings.push(message.to_string())
+            })?;
+        Ok(ExportReport { outputs, warnings })
     }
     fn tiled_tilesets(
         &self,
         paths: &TiledPaths<'_>,
         batch: &mut ExportBatch<'_>,
         format: TiledFormat,
+        warn: &mut dyn FnMut(fmt::Arguments<'_>),
     ) -> Result<(TiledTilesets, TiledGids)> {
         let dir = paths.output_dir;
         let mut tilesets = match format {
@@ -433,9 +391,32 @@ impl Project {
         let mut gids = TiledGids::default();
         let mut gid = 1u32;
         for td in arr(&self.json["defs"]["tilesets"]) {
+            let name = s(td, "identifier");
+            if !td["embedAtlas"].is_null() {
+                warn(format_args!(
+                    "Embedded tileset {name} is skipped by Tiled export"
+                ));
+                continue;
+            }
             let Some(rel) = td["relPath"].as_str() else {
                 continue;
             };
+            if n(td, "padding") != 0 {
+                warn(format_args!(
+                    "Tileset {name} has padding, which is not supported by Tiled export"
+                ));
+            }
+            if Path::new(rel)
+                .extension()
+                .and_then(|ext| ext.to_str())
+                .is_some_and(|ext| {
+                    ext.eq_ignore_ascii_case("ase") || ext.eq_ignore_ascii_case("aseprite")
+                })
+            {
+                warn(format_args!(
+                    "Aseprite atlas {name} is not supported by Tiled; convert the referenced atlas to PNG"
+                ));
+            }
             let size = n(td, "tileGridSize").max(1);
             let cols = (n(td, "pxWid") + size - 1) / size;
             let count = cols * ((n(td, "pxHei") + size - 1) / size);
@@ -444,7 +425,7 @@ impl Project {
             tilesets.add(
                 Tileset {
                     gid,
-                    name: s(td, "identifier"),
+                    name,
                     size,
                     columns: cols,
                     count,
@@ -482,18 +463,16 @@ impl Project {
                 })?;
             let filename = format!("{name}.intgrid.png");
             let path = dir.join(&filename);
-            if !batch.seen.contains(&path) {
-                let mut image = RgbaImage::new(width, size);
-                for (i, v) in values.iter().enumerate() {
-                    let fill = color(s(v, "color"));
-                    for y in 0..size {
-                        for x in 0..size {
-                            image.put_pixel(i as u32 * size + x, y, fill);
-                        }
+            let mut image = RgbaImage::new(width, size);
+            for (i, v) in values.iter().enumerate() {
+                let fill = color(s(v, "color"));
+                for y in 0..size {
+                    for x in 0..size {
+                        image.put_pixel(i as u32 * size + x, y, fill);
                     }
                 }
-                batch.add_png(path, &image)?;
             }
+            batch.add_png(path, &image)?;
             gids.intgrids
                 .insert(n(d, "uid"), IntGridGids::new(values, gid));
             tilesets.add(
@@ -517,13 +496,14 @@ impl Project {
 
     /// TMX deliberately exports the first world only, matching upstream's limitation.
     pub fn export_tiled(&self, dir: impl AsRef<Path>) -> Result<Vec<PathBuf>> {
-        self.export_tiled_with_progress(dir, TiledFormat::Tmx, &mut |_, _| {})
+        self.export_tiled_with_progress(dir, TiledFormat::Tmx, &mut |_, _| {}, &mut |_| {})
     }
     fn export_tiled_with_progress(
         &self,
         dir: impl AsRef<Path>,
         format: TiledFormat,
         progress: &mut impl FnMut(usize, usize),
+        warn: &mut dyn FnMut(fmt::Arguments<'_>),
     ) -> Result<Vec<PathBuf>> {
         let dir = dir.as_ref();
         let mut batch = ExportBatch::new(self);
@@ -532,6 +512,11 @@ impl Project {
         let mut counts = HashMap::new();
         for size in sizes.clone() {
             *counts.entry(size).or_insert(0) += 1;
+        }
+        if counts.len() > 1 {
+            warn(format_args!(
+                "Tiled supports one grid size per map; layers with incompatible grid size are discarded"
+            ));
         }
         let mut grid = sizes
             .next()
@@ -547,6 +532,14 @@ impl Project {
         }
         let grid = grid.max(1);
         let first_world = self.tiled_world_index();
+        if self
+            .world_indices()
+            .any(|world| world != first_world && self.level_keys_in_world(world).len() > 0)
+        {
+            warn(format_args!(
+                "Tiled export includes the first world only, matching the original exporter"
+            ));
+        }
         let levels = self.positioned_levels(first_world);
         let mut maps = Vec::new();
         let total = levels.len();
@@ -560,7 +553,7 @@ impl Project {
                     .unwrap_or(Path::new(".")),
                 output_dir: dir,
             };
-            let (tilesets, gids) = self.tiled_tilesets(&paths, &mut batch, format)?;
+            let (tilesets, gids) = self.tiled_tilesets(&paths, &mut batch, format, warn)?;
             let mut entity_defs = HashMap::new();
             for def in arr(&self.json["defs"]["entities"]) {
                 if let Some(uid) = def["uid"].as_i64() {
@@ -580,9 +573,15 @@ impl Project {
                 };
                 let path = dir.join(&filename);
                 let mut world_map = json!({"fileName":filename,"x":x,"y":y});
+                let mut warn_shift = |layer: &str| {
+                    warn(format_args!(
+                        "Layer {layer} in {name} contains tiles not aligned with the grid; Tiled shifts these tiles"
+                    ));
+                };
                 match &tilesets {
                     TiledTilesets::Xml(tilesets) => {
-                        let (header, layers) = self.tiled_map_xml(&map, &gids, &paths)?;
+                        let (header, layers) =
+                            self.tiled_map_xml(&map, &gids, &paths, &mut warn_shift)?;
                         let mut parts = Vec::with_capacity(layers.len() + 3);
                         parts.extend([header.as_bytes(), tilesets.as_bytes()]);
                         for layer in &layers {
@@ -593,7 +592,14 @@ impl Project {
                     }
                     TiledTilesets::JsonEntries(tilesets) => {
                         batch.add_writer(path, |writer| {
-                            self.write_tiled_map_json(writer, &map, &gids, tilesets, &paths)
+                            self.write_tiled_map_json(
+                                writer,
+                                &map,
+                                &gids,
+                                tilesets,
+                                &paths,
+                                &mut warn_shift,
+                            )
                         })?;
                         world_map["width"] = map.pixels[0].into();
                         world_map["height"] = map.pixels[1].into();
@@ -621,6 +627,7 @@ impl Project {
         map: &TiledMap<'_>,
         gids: &TiledGids,
         paths: &TiledPaths<'_>,
+        warn_shift: &mut dyn FnMut(&str),
     ) -> Result<(String, Vec<TmxLayer>)> {
         let grid = map.grid;
         let mut layers = Vec::new();
@@ -685,7 +692,9 @@ impl Project {
                 layer_id += 1;
             }
             let area = cw * ch;
-            for (name, data) in tiled_tile_layers(li, def, [cw, ch], grid, &gids.atlases) {
+            for (name, data) in
+                tiled_tile_layers(li, def, [cw, ch], grid, &gids.atlases, warn_shift)
+            {
                 let mut layer = TmxLayer::default();
                 match data {
                     TileStack::Dense(data) => write_tmx_layer(
@@ -827,13 +836,7 @@ fn field_text<'a>(raw_type: &str, v: &'a Value) -> Cow<'a, str> {
             n(v, "w"),
             n(v, "h")
         )),
-        "String" | "Multilines" => match v.as_str() {
-            Some(text) if text.contains('\\') => {
-                Cow::Owned(text.replace("\\\\", "\\").replace("\\n", "\n"))
-            }
-            Some(text) => Cow::Borrowed(text),
-            None => Cow::Borrowed("null"),
-        },
+        "String" | "Multilines" => crate::ldtk_string::unescape(v.as_str().unwrap_or("null")),
         "FilePath" => Cow::Borrowed("null"),
         _ => property_text(v),
     }
@@ -887,6 +890,7 @@ fn tiled_tile_layers<'a>(
     [cw, ch]: [usize; 2],
     grid: i64,
     gids: &BTreeMap<i64, u32>,
+    warn_shift: &mut dyn FnMut(&str),
 ) -> impl Iterator<Item = (Cow<'a, str>, TileStack)> + use<'a> {
     let typ = s(li, "__type");
     let name = s(li, "__identifier");
@@ -901,11 +905,14 @@ fn tiled_tile_layers<'a>(
     let area = cw * ch;
     // Sparse ground needs both the stored cells and an index of occupied positions.
     let sparse_ground = area > 256 && tiles.len() <= area / 16;
-    let (ground, stacks) = match td_uid.and_then(|uid| gids.get(&uid)).copied() {
+    let (ground, stacks, shifted) = match td_uid.and_then(|uid| gids.get(&uid)).copied() {
         Some(base) if sparse_ground => collect_tiled_stacks::<true>(tiles, [cw, ch], grid, base),
         Some(base) => collect_tiled_stacks::<false>(tiles, [cw, ch], grid, base),
-        None => (None, Vec::new()),
+        None => (None, Vec::new(), false),
     };
+    if shifted {
+        warn_shift(name);
+    }
     let single = stacks.is_empty();
     ground
         .into_iter()
@@ -927,19 +934,24 @@ fn collect_tiled_stacks<const SPARSE: bool>(
     [cw, ch]: [usize; 2],
     grid: i64,
     base: u32,
-) -> (Option<TileStack>, Vec<TileStack>) {
+) -> (Option<TileStack>, Vec<TileStack>, bool) {
     let area = cw * ch;
     let mut dense = Vec::new();
     let mut sparse = Vec::new();
     let mut has_tiles = false;
+    let mut shifted = false;
     let mut stacks = Vec::<TileStack>::new();
     let mut next_stack = HashMap::new();
     for tile in tiles {
-        let x = tile["px"][0].as_i64().unwrap_or(0) / grid;
-        let y = tile["px"][1].as_i64().unwrap_or(0) / grid;
+        let pos = &tile["px"];
+        let px = pos[0].as_i64().unwrap_or(0);
+        let py = pos[1].as_i64().unwrap_or(0);
+        let x = px / grid;
+        let y = py / grid;
         if x < 0 || y < 0 || x >= cw as i64 || y >= ch as i64 {
             continue;
         }
+        shifted = shifted || px % grid != 0 || py % grid != 0;
         let coord = x as usize + y as usize * cw;
         let f = n(tile, "f");
         let gid = (base + n(tile, "t") as u32)
@@ -979,7 +991,7 @@ fn collect_tiled_stacks<const SPARSE: bool>(
     } else {
         (!dense.is_empty()).then_some(TileStack::Dense(dense))
     };
-    (ground, stacks)
+    (ground, stacks, shifted)
 }
 
 const EMPTY_TILE_BLOCK_BYTES: usize = 64 * 1024;

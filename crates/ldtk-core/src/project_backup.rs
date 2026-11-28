@@ -236,6 +236,99 @@ fn backup_directory(path: &Path, relative: Option<&str>) -> PathBuf {
         .unwrap_or_else(|| path.with_extension("").join("backups"))
 }
 
+pub(super) const STAGING_PREFIX: &str = ".level-editor-backup-";
+
+/// Keep relocated levels apart from both declared paths and the folder used for renamed levels.
+pub(super) fn relocation_directory(project: &Project, original: &Path) -> String {
+    let occupied: HashSet<_> = project
+        .iter_level_keys()
+        .filter_map(|key| project.level_stub(key)?["externalRelPath"].as_str())
+        .filter_map(|rel| {
+            rel.split(['/', '\\'])
+                .find(|part| !part.is_empty() && *part != ".")
+        })
+        .chain(original.file_name().and_then(|s| s.to_str()))
+        .chain(original.file_stem().and_then(|s| s.to_str()))
+        .map(str::to_ascii_lowercase)
+        .collect();
+    let mut name = String::from("external-levels");
+    for suffix in 1.. {
+        if !occupied.contains(&name) {
+            break;
+        }
+        name = format!("external-levels-{suffix}");
+    }
+    name
+}
+
+pub(super) fn stage_backup(directory: &Path) -> Result<tempfile::TempDir> {
+    fs::create_dir_all(directory).map_err(|source| Error::Io {
+        path: directory.into(),
+        source,
+    })?;
+    tempfile::Builder::new()
+        .prefix(STAGING_PREFIX)
+        .tempdir_in(directory)
+        .map_err(|source| Error::Io {
+            path: directory.into(),
+            source,
+        })
+}
+
+/// Keep the directory lock until the caller finishes rotating published backups.
+pub(super) fn publish_backup(
+    staged: tempfile::TempDir,
+    id: &str,
+    crash: bool,
+) -> Result<(PathBuf, fs::File)> {
+    let directory = staged.path().parent().expect("backup staging parent");
+    let lock_path = directory.join(".level-editor-backups.lock");
+    let lock = fs::File::options()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(&lock_path)
+        .and_then(|lock| {
+            lock.lock()?;
+            Ok(lock)
+        })
+        .map_err(|source| Error::Io {
+            path: lock_path,
+            source,
+        })?;
+    let timestamp = backup_timestamp();
+    let mut last = 0_u64;
+    let read_error = |source| Error::Io {
+        path: directory.into(),
+        source,
+    };
+    for entry in fs::read_dir(directory).map_err(read_error)? {
+        let filename = entry.map_err(read_error)?.file_name();
+        if let Some(name) = filename.to_str().and_then(parse_backup_name)
+            && name.prefix.eq_ignore_ascii_case(id)
+            && name.timestamp == timestamp
+        {
+            last = last.max(name.sequence);
+        }
+    }
+    let marker = if crash { "_crash" } else { "" };
+    let mut name = format!("{id}_{timestamp}{marker}");
+    if last > 0 {
+        let next = last
+            .checked_add(1)
+            .ok_or_else(|| Error::Invalid("backup sequence overflow".into()))?;
+        name.push_str(&format!("_{next:04}"));
+    }
+    let destination = directory.join(name);
+    fs::rename(staged.path(), &destination).map_err(|source| Error::Io {
+        path: destination.clone(),
+        source,
+    })?;
+    let _ = staged.keep();
+    Ok((destination, lock))
+}
+
 fn discover_backups(path: &Path, id: &str, relative: Option<&str>) -> Result<Vec<BackupInfo>> {
     let dir = backup_directory(path, relative);
     if !dir.exists() {
@@ -250,17 +343,27 @@ fn discover_backups(path: &Path, id: &str, relative: Option<&str>) -> Result<Vec
             path: dir.clone(),
             source,
         })?;
-        let name = entry.file_name().to_string_lossy().into_owned();
-        let matches_iid = valid_backup_name(&name, id);
-        if !entry.file_type().is_ok_and(|kind| kind.is_dir())
-            || !(matches_iid || valid_backup_name(&name, "backup"))
+        let file_name = entry.file_name();
+        let Some(name) = file_name.to_str().and_then(parse_backup_name) else {
+            continue;
+        };
+        let matches_iid = name.prefix == id;
+        if !(matches_iid || name.prefix == "backup")
+            || !entry.file_type().is_ok_and(|kind| kind.is_dir())
         {
             continue;
         }
-        for file in fs::read_dir(entry.path()).map_err(|source| Error::Io {
-            path: entry.path(),
-            source,
-        })? {
+        let files = match fs::read_dir(entry.path()) {
+            Ok(files) => files,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+            Err(source) => {
+                return Err(Error::Io {
+                    path: entry.path(),
+                    source,
+                });
+            }
+        };
+        for file in files {
             let file = file.map_err(|source| Error::Io {
                 path: entry.path(),
                 source,
@@ -279,39 +382,32 @@ fn discover_backups(path: &Path, id: &str, relative: Option<&str>) -> Result<Vec
             }
             let belongs = match read_backup_metadata(&path) {
                 Ok(metadata) => metadata.iid.as_deref() == Some(id),
+                Err(Error::Io { source, .. }) if source.kind() == io::ErrorKind::NotFound => false,
                 Err(_) => matches_iid,
             };
             if belongs {
-                let prefix = if name.starts_with("backup_") {
-                    7
-                } else {
-                    id.len() + 1
-                };
-                out.push(BackupInfo {
-                    path,
-                    timestamp: name[prefix..prefix + 19].into(),
-                    crash: name[prefix + 19..].starts_with("_crash"),
-                });
+                out.push((
+                    name.sequence,
+                    BackupInfo {
+                        path,
+                        timestamp: name.timestamp.into(),
+                        crash: name.crash,
+                    },
+                ));
             }
         }
     }
-    out.sort_by(|a, b| {
+    out.sort_by(|(a_seq, a), (b_seq, b)| {
         b.timestamp
             .cmp(&a.timestamp)
+            .then_with(|| b_seq.cmp(a_seq))
             .then_with(|| b.path.cmp(&a.path))
     });
-    Ok(out)
+    Ok(out.into_iter().map(|(_, backup)| backup).collect())
 }
 
 fn is_crash_backup(path: &Path, iid: &str) -> bool {
-    path.parent()
-        .and_then(Path::file_name)
-        .and_then(|name| name.to_str())
-        .is_some_and(|name| {
-            [iid, "backup"].into_iter().any(|id| {
-                valid_backup_name(name, id) && name[id.len() + 20..].starts_with("_crash")
-            })
-        })
+    backup_file_name(path, iid).is_some_and(|name| name.crash)
 }
 
 fn remove_restored_crash(
@@ -416,18 +512,15 @@ impl Project {
     pub fn is_backup(&self) -> bool {
         self.path
             .as_ref()
-            .is_some_and(|path| backup_file(path, self.json["iid"].as_str().unwrap_or("")))
+            .and_then(|path| backup_file_name(path, self.json["iid"].as_str().unwrap_or("")))
+            .is_some()
     }
     /// Local date and GMT offset shown when previewing a saved backup.
     #[cfg(any(unix, windows))]
     pub fn backup_date_label(&self) -> Option<String> {
         let path = self.path.as_ref()?;
-        let name = path.parent()?.file_name()?.to_str()?;
         let iid = self.json["iid"].as_str().unwrap_or("");
-        let prefix = [iid, "backup"]
-            .into_iter()
-            .find(|id| valid_backup_name(name, id))?;
-        BackupInfo::date_label(&name[prefix.len() + 1..])
+        BackupInfo::date_label(backup_file_name(path, iid)?.timestamp)
     }
     pub fn list_backups(&self) -> Result<Vec<BackupInfo>> {
         let Some(path) = &self.path else {
@@ -495,10 +588,28 @@ impl Project {
         // Capture the original before any replacement, independently of the backed-up settings.
         let mut safety = restored.clone();
         safety.path = Some(original.clone());
-        safety.backup_with_progress(crash.then_some(backup.as_path()), &mut |_, _, _| {})?;
-        restored.save_document(&original, false)?;
+        let safety_copy = safety.write_backup(&mut |_, _, _| {})?;
+        let saved = restored.save_document(&original, false);
+        // Keep the recovery source on failure and keep at least the pre-restore copy on success.
+        let rotation = if safety_copy.is_some() {
+            safety.rotate_backups(1, (crash || saved.is_err()).then_some(backup.as_path()))
+        } else {
+            Ok(())
+        };
+        saved?;
+        let cleanup = if crash {
+            remove_restored_crash(&backup, &original, &recovery_levels)
+        } else {
+            Ok(())
+        };
+        drop(safety_copy);
         let mut report = restored.configured_exports_report();
-        if crash && let Err(error) = remove_restored_crash(&backup, &original, &recovery_levels) {
+        if let Err(error) = rotation {
+            report.warnings.push(format!(
+                "Project restored; could not prune older backups: {error}"
+            ));
+        }
+        if let Err(error) = cleanup {
             report.warnings.push(format!(
                 "Project restored; could not remove crash backup: {error}"
             ));
@@ -784,13 +895,7 @@ fn rewrite_moved_resources(value: &mut Value, old: &Path, new: &Path, base: &Pat
     }
     match value {
         Value::Object(o) => {
-            let file = o
-                .get("__type")
-                .and_then(Value::as_str)
-                .is_some_and(|t| t.contains("FilePath"))
-                || o.get("type")
-                    .and_then(Value::as_str)
-                    .is_some_and(|t| t == "F_Path" || t == "F_File");
+            let file = is_file_path_field(o);
             let level = o.contains_key("layerInstances");
             for (k, v) in o {
                 if matches!(

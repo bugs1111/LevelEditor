@@ -141,6 +141,7 @@ impl Project {
         gids: &TiledGids,
         tilesets: &[u8],
         paths: &TiledPaths<'_>,
+        warn_shift: &mut dyn FnMut(&str),
     ) -> io::Result<()> {
         let grid = map.grid;
         writer.write_all(b"{\"layers\":[")?;
@@ -225,7 +226,7 @@ impl Project {
                     nonzero_gids(intgrid_gids(cells, area, palette)),
                 )?;
             }
-            for (name, stack) in tiled_tile_layers(li, def, size, grid, &gids.atlases) {
+            for (name, stack) in tiled_tile_layers(li, def, size, grid, &gids.atlases, warn_shift) {
                 let id = next_layer(writer, &mut layer_id)?;
                 match stack {
                     TileStack::Dense(data) => write_tile_layer(

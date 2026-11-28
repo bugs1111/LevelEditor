@@ -182,7 +182,7 @@ fn value_wrapper(kind: &str, value: &Value, depth: usize) -> Value {
     if let Some(s) = raw.as_str() {
         let mut s = s.to_owned();
         for _ in 0..depth {
-            s = s.replace('\\', "\\\\").replace('\n', "\\n");
+            s = crate::ldtk_string::escape(&s);
         }
         raw = json!(s);
     }

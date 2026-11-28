@@ -44,6 +44,7 @@ impl Project {
         let minify = snapshot.json["minifyJson"] == true;
         let mut outputs = Vec::new();
         let mut paths = BTreeSet::from([PathBuf::from(filename)]);
+        let mut relocation_directory = None;
         for (index, key) in snapshot.level_keys().into_iter().enumerate() {
             let Some(rel) = external_path(snapshot.level_stub(key).expect("enumerated level"))?
                 .map(str::to_owned)
@@ -67,7 +68,9 @@ impl Project {
             {
                 PathBuf::from(&rel)
             } else {
-                PathBuf::from(stem).join(format!("external-{index:04}.ldtkl"))
+                let folder = relocation_directory
+                    .get_or_insert_with(|| recovery::relocation_directory(self, &original));
+                Path::new(folder).join(format!("external-{index:04}.ldtkl"))
             };
             if !paths.insert(target.clone()) {
                 return Err(Error::Invalid(format!(
@@ -95,46 +98,16 @@ impl Project {
             compatibility.project_output(&mut snapshot.json, &snapshot.grid_presence);
         }
         outputs.push((PathBuf::from(filename), encode(&snapshot.json, minify)?));
-        fs::create_dir_all(&directory).map_err(|source| Error::Io {
-            path: directory.clone(),
-            source,
-        })?;
-        let name = format!("{id}_{}_crash", backup_timestamp());
-        let mut destination = directory.join(&name);
-        let mut suffix = 2;
-        loop {
-            match fs::create_dir(&destination) {
-                Ok(()) => break,
-                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-                    destination = directory.join(format!("{name}_{suffix:04}"));
-                    suffix += 1;
-                }
-                Err(source) => {
-                    return Err(Error::Io {
-                        path: destination,
-                        source,
-                    });
-                }
-            }
+        let pending_backup = recovery::stage_backup(&directory)?;
+        let outputs: Vec<_> = outputs
+            .into_iter()
+            .map(|(rel, bytes)| (pending_backup.path().join(rel), bytes))
+            .collect();
+        for (path, _) in &outputs {
+            ensure_parent_directory(path)?;
         }
-        let publish = (|| {
-            let outputs: Vec<_> = outputs
-                .into_iter()
-                .map(|(rel, bytes)| (destination.join(rel), bytes))
-                .collect();
-            for (path, _) in &outputs {
-                let parent = path.parent().expect("recovery file parent");
-                fs::create_dir_all(parent).map_err(|source| Error::Io {
-                    path: parent.into(),
-                    source,
-                })?;
-            }
-            atomic_save(outputs)
-        })();
-        if let Err(error) = publish {
-            let _ = fs::remove_dir_all(&destination);
-            return Err(error);
-        }
+        atomic_save(outputs)?;
+        let (destination, _lock) = recovery::publish_backup(pending_backup, id, true)?;
         Ok(destination.join(filename))
     }
 }

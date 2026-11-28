@@ -1,5 +1,6 @@
 use super::*;
 use crate::app::chrome::ActionTooltip as _;
+use ldtk_core::ldtk_string::unescape;
 use serde_json::json;
 
 #[path = "enum_picker.rs"]
@@ -59,13 +60,11 @@ pub(super) fn pick_file(ui: &egui::Ui, ui_id: &str, extensions: &[&str]) -> Opti
         .data_mut(|d| d.get_temp::<DialogContext>(dialog_context_id()));
     let mut dialog = FileDialog::new();
     if !extensions.is_empty() {
-        dialog = dialog.add_filter("File", extensions);
+        dialog = dialog.add_filter(locale::tr(ui, "File"), extensions);
     }
     if let Some(context) = &context {
-        let settings = super::settings::Settings {
-            value: json!({"lastUiDirs":context.directories}),
-            path: None,
-        };
+        let settings =
+            super::settings::Settings::in_memory(json!({"lastUiDirs":context.directories}));
         if let Some(dir) = settings.ui_dir(context.project.as_deref(), ui_id, None) {
             dialog = dialog.set_directory(dir);
         }
@@ -144,8 +143,9 @@ fn buffered_text_kind(
     }
     let edit = if multiline {
         egui::TextEdit::multiline(&mut draft)
+            .margin(egui::Margin::same(panels::source_controls::FORM_TEXT_INSET))
     } else {
-        egui::TextEdit::singleline(&mut draft)
+        panels::source_controls::form_text_box(&mut draft)
     };
     ui_commit::prepare_editor(ui.ctx(), id);
     let mut edit = edit.id(id);
@@ -749,11 +749,7 @@ fn scalar_editor_inner(
             current = json!(v);
         }
         "String" => {
-            let decoded = current
-                .as_str()
-                .unwrap_or("")
-                .replace("\\\\", "\\")
-                .replace("\\n", "\n");
+            let decoded = unescape(current.as_str().unwrap_or(""));
             let (initial, hint) = if using_default {
                 let hint = if current.is_null() {
                     locale::tr(ui, "(null)")
@@ -764,7 +760,7 @@ fn scalar_editor_inner(
                 };
                 ("", Some(hint))
             } else {
-                (decoded.as_str(), None)
+                (decoded.as_ref(), None)
             };
             let size = (!null_toggle).then(|| egui::vec2(ui.available_width().max(20.), 32.));
             if let Some(v) = buffered_text_kind(ui, "field-text", initial, false, size, hint) {
@@ -773,11 +769,7 @@ fn scalar_editor_inner(
             }
         }
         "Multilines" => {
-            let decoded = current
-                .as_str()
-                .unwrap_or("")
-                .replace("\\\\", "\\")
-                .replace("\\n", "\n");
+            let decoded = unescape(current.as_str().unwrap_or(""));
             if let Some(v) = text_editor::value_editor(
                 ui,
                 "field-text",
@@ -988,6 +980,7 @@ fn enum_icon(project: &Project, definition: &Value, value: &Value) -> Option<egu
         number(tileset, "pxWid", 1.).max(1.),
         number(tileset, "pxHei", 1.).max(1.),
     );
+    let tile_size = egui::vec2(number(tile, "w", 16.), number(tile, "h", 16.)).max(Vec2::splat(1.));
     Some(
         image
             .uv(Rect::from_min_size(
@@ -995,12 +988,10 @@ fn enum_icon(project: &Project, definition: &Value, value: &Value) -> Option<egu
                     number(tile, "x", 0.) / size.x,
                     number(tile, "y", 0.) / size.y,
                 ),
-                egui::vec2(
-                    number(tile, "w", 16.) / size.x,
-                    number(tile, "h", 16.) / size.y,
-                ),
+                tile_size / size,
             ))
-            .fit_to_exact_size(egui::vec2(20., 20.))
+            .maintain_aspect_ratio(false)
+            .fit_to_exact_size(tile_size * (20. / tile_size.max_elem()))
             .texture_options(egui::TextureOptions::NEAREST),
     )
 }
@@ -1116,7 +1107,7 @@ fn instance_scalar_editor(
                 text(definition, "editorTextSuffix", "")
             )
         } else if let Some(value) = value.as_str() {
-            format!("\"{}\"", value.replace("\\\\", "\\").replace("\\n", "\n"))
+            format!("\"{}\"", unescape(value))
         } else {
             value.to_string()
         };
@@ -1820,7 +1811,7 @@ mod tests {
             let ctx = egui::Context::default();
             theme::configure(&ctx);
             focus(&ctx, &mut p, uid);
-            for text in ["hello", " ", "world"] {
+            for text in ["hello", " ", r"world C:\new\notes"] {
                 assert!(!frame(&ctx, &mut p, uid, vec![egui::Event::Text(text.into())]).1);
             }
             frame(
@@ -1835,7 +1826,7 @@ mod tests {
             );
             assert_eq!(
                 p.level(LEVEL).unwrap()["fieldInstances"][0]["__value"],
-                "hello world"
+                r"hello world C:\\new\\notes"
             );
         }
     }

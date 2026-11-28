@@ -1,7 +1,9 @@
 //! LDtk public field values and the original ValueWrapper editor representation.
+use crate::ldtk_string::{escape, unescape};
 use crate::workflow::{EntityReferences, alloc_uid, invalid, valid_identifier, visit_fields_mut};
 use crate::{Error, LevelKey, Project, Result};
 use serde_json::{Value, json};
+use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 /// One source editor array action, preserving every untouched ValueWrapper.
@@ -15,12 +17,6 @@ pub enum FieldArrayEdit {
     Reset { index: usize },
 }
 
-fn escape(s: &str) -> String {
-    s.replace('\\', "\\\\").replace('\n', "\\n")
-}
-fn unescape(s: &str) -> String {
-    s.replace("\\\\", "\\").replace("\\n", "\n")
-}
 fn base(d: &Value) -> &str {
     let s = d["__type"].as_str().unwrap_or("");
     s.strip_prefix("Array<")
@@ -120,12 +116,13 @@ fn type_data(p: &Project, kind: &str, is_array: bool) -> Result<(String, Value)>
 }
 fn wrapper_value(v: &Value, depth: usize) -> Value {
     let mut value = v["params"][0].clone();
-    if let Some(s) = value.as_str() {
-        let mut s = s.to_owned();
+    if let Value::String(s) = &mut value {
         for _ in 0..depth {
-            s = unescape(&s);
+            match unescape(s) {
+                Cow::Owned(decoded) => *s = decoded,
+                Cow::Borrowed(_) => break,
+            }
         }
-        value = json!(s);
     }
     value
 }
@@ -1719,11 +1716,7 @@ fn normalize_input(d: &Value, mut value: Value, parse: bool) -> Result<Value> {
             if raw.is_empty() {
                 return Ok(Value::Null);
             }
-            let mut raw = if parse {
-                raw.replace("\\r", " ").replace("\\n", " ")
-            } else {
-                raw.to_owned()
-            };
+            let mut raw = raw.to_owned();
             if parse
                 && base(d) == "String"
                 && let Some(pattern) = d["regex"].as_str()

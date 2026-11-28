@@ -204,7 +204,7 @@ pub(super) fn show(
             ui_commit::prepare_editor(ui.ctx(), draft_id);
             let response = ui.add_sized(
                 [80., 27.],
-                egui::TextEdit::singleline(&mut draft.value).id(draft_id),
+                source_controls::form_text_box(&mut draft.value).id(draft_id),
             );
             ui_commit::track_editor(ui.ctx(), &response);
             if draft.focus {

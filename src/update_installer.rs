@@ -2,7 +2,7 @@ use super::*;
 use std::{
     net::{TcpListener, TcpStream},
     process::{Command, Stdio},
-    time::Instant,
+    time::{Instant, SystemTime},
 };
 
 struct Plan {
@@ -124,9 +124,10 @@ pub(super) fn launch(prepared: &Prepared, reopen: Option<PathBuf>) -> Result<()>
     let parent = target
         .parent()
         .ok_or("Installation has no parent directory")?;
+    let work = prepared.work.path();
     let nonce = format!(
         "{:x}",
-        Sha256::digest(prepared.work.as_os_str().to_string_lossy().as_bytes())
+        Sha256::digest(work.as_os_str().to_string_lossy().as_bytes())
     );
     let staged = parent.join(format!(".level-editor-stage-{}", &nonce[..16]));
     let backup = parent.join(format!(".level-editor-backup-{}", &nonce[..16]));
@@ -144,7 +145,7 @@ pub(super) fn launch(prepared: &Prepared, reopen: Option<PathBuf>) -> Result<()>
             .to_string(),
         nonce,
     };
-    let plan_path = prepared.work.join("apply-update.json");
+    let plan_path = work.join("apply-update.json");
     // Prepare beside the installation before quitting, so permission/copy failures
     // leave the running editor and previous application untouched.
     if let Err(error) = copy_tree(&prepared.root, &staged) {
@@ -155,7 +156,7 @@ pub(super) fn launch(prepared: &Prepared, reopen: Option<PathBuf>) -> Result<()>
     }
     let result = (|| {
         plan.write(&plan_path)?;
-        let helper = prepare_helper(&exe, &prepared.work, std::env::consts::OS)?;
+        let helper = prepare_helper(&exe, work, std::env::consts::OS)?;
         let mut command = Command::new(helper);
         command
             .arg("--apply-update")

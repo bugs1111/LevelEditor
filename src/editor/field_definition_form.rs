@@ -41,6 +41,70 @@ pub(super) fn source_file_types(raw: &str) -> Value {
     json!(values)
 }
 
+const FIELD_BADGE_WIDTH: f32 = 32.;
+const FIELD_SELECT_HEIGHT: f32 = 32.;
+
+fn field_type_caption(kind: &str, array: bool) -> String {
+    let name = kind
+        .strip_prefix("LocalEnum.")
+        .or_else(|| kind.strip_prefix("ExternEnum."));
+    let caption = name.map_or_else(|| kind.to_owned(), |name| format!("Enum.{name}"));
+    if array {
+        format!("Array<{caption}>")
+    } else {
+        caption
+    }
+}
+
+fn field_type_badge(ui: &mut egui::Ui, kind: &str, array: bool) {
+    let (badge, color) = match kind {
+        "Int" | "Float" => ("123", "#50b3cb"),
+        "Bool" => ("", "#cd88dd"),
+        "String" | "Multilines" => ("Abc", "#bd5f32"),
+        "Color" => ("#", "#99d367"),
+        "Tile" => ("Tile", "#99d367"),
+        "Point" => ("XY", "#7779c9"),
+        "FilePath" => ("File", "#7779c9"),
+        "EntityRef" => ("Ref", "#7779c9"),
+        _ => ("Enu", "#ff4b4b"),
+    };
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(FIELD_BADGE_WIDTH, 22.), Sense::hover());
+    let edge = theme::color(color);
+    let ink = tint(edge, Color32::WHITE, 0.5);
+    let painter = ui.painter();
+    painter.add(
+        egui::Shadow {
+            color: Color32::from_black_alpha(128),
+            blur: 4,
+            ..Default::default()
+        }
+        .as_shape(rect, 3),
+    );
+    painter.rect_filled(rect, 3., tint(edge, Color32::BLACK, 0.4));
+    if array {
+        for x in [rect.left() + 1., rect.right() - 1.] {
+            painter.vline(x, rect.y_range(), Stroke::new(2_f32, Color32::WHITE));
+        }
+    } else {
+        painter.rect_stroke(rect, 3., Stroke::new(1_f32, edge), StrokeKind::Inside);
+    }
+    if kind == "Bool" {
+        source_controls::paint_checkmark(
+            painter,
+            Rect::from_center_size(rect.center(), Vec2::splat(16.)),
+            ink,
+        );
+    } else {
+        painter.text(
+            rect.center(),
+            Align2::CENTER_CENTER,
+            badge,
+            FontId::new(10.667, theme::TextRole::StrongBody.font().family),
+            ink,
+        );
+    }
+}
+
 impl EditorApp {
     pub(super) fn source_field_list(&mut self, ui: &mut egui::Ui, owner: Option<i64>, height: f32) {
         let fields = self
@@ -109,17 +173,6 @@ impl EditorApp {
                             let kind = text(field, "__type", "Int")
                                 .trim_start_matches("Array<")
                                 .trim_end_matches('>');
-                            let (badge, color) = match kind {
-                                "Int" | "Float" => ("123", "#50b3cb"),
-                                "Bool" => ("", "#cd88dd"),
-                                "String" | "Multilines" => ("Abc", "#bd5f32"),
-                                "Color" => ("#", "#99d367"),
-                                "Tile" => ("Tile", "#99d367"),
-                                "Point" => ("XY", "#7779c9"),
-                                "FilePath" => ("File", "#7779c9"),
-                                "EntityRef" => ("Ref", "#7779c9"),
-                                _ => ("Enu", "#ff4b4b"),
-                            };
                             let item = egui::Frame::new()
                                 .fill(if selected {
                                     theme::ACCENT
@@ -129,7 +182,6 @@ impl EditorApp {
                                 .inner_margin(egui::Margin::symmetric(5, 4))
                                 .show(ui, |ui| {
                                     ui.horizontal(|ui| {
-                                        let badge_width = 34.;
                                         let menu_size = egui::vec2(18., 30.);
                                         ui.add(
                                             egui::Label::new(RichText::new("≡").color(
@@ -143,7 +195,7 @@ impl EditorApp {
                                         )
                                         .dnd_set_drag_payload((owner, uid));
                                         let name_width = ui.available_width()
-                                            - badge_width
+                                            - FIELD_BADGE_WIDTH
                                             - menu_size.x
                                             - 2. * ui.spacing().item_spacing.x;
                                         let (rect, response) = ui.allocate_exact_size(
@@ -189,31 +241,7 @@ impl EditorApp {
                                             );
                                             self.field_uid = Some(uid);
                                         }
-                                        egui::Frame::new()
-                                            .fill(theme::color(color).gamma_multiply(0.7))
-                                            .corner_radius(3.)
-                                            .inner_margin(4)
-                                            .show(ui, |ui| {
-                                                ui.set_width(badge_width - 8.);
-                                                if kind == "Bool" {
-                                                    let (rect, _) = ui.allocate_exact_size(
-                                                        egui::vec2(20., 20.),
-                                                        Sense::hover(),
-                                                    );
-                                                    ui.painter().add(egui::epaint::Shape::line(
-                                                        vec![
-                                                            rect.min + egui::vec2(3., 10.),
-                                                            rect.min + egui::vec2(8., 15.),
-                                                            rect.min + egui::vec2(17., 5.),
-                                                        ],
-                                                        Stroke::new(3_f32, Color32::WHITE),
-                                                    ));
-                                                } else {
-                                                    ui.label(
-                                                        RichText::new(badge).color(Color32::WHITE),
-                                                    );
-                                                }
-                                            });
+                                        field_type_badge(ui, kind, field["isArray"] == true);
                                         source_definition_menu(
                                             ui,
                                             Some(menu_size),
@@ -271,7 +299,7 @@ fn field_display_select<'a>(
         .or_else(|| options.clone().next())
         .map_or("", |(_, label)| label);
     ui.allocate_ui_with_layout(
-        egui::vec2(width, 32.),
+        egui::vec2(width, FIELD_SELECT_HEIGHT),
         egui::Layout::left_to_right(egui::Align::Center),
         |ui| {
             ui.set_max_width(width);
@@ -314,9 +342,9 @@ impl EditorApp {
                 StrokeKind::Inside,
             );
             painter.text(
-                rect.left_center() + egui::vec2(8., 0.),
+                rect.left_center() + egui::vec2(source_controls::FORM_TEXT_INSET.into(), 0.),
                 Align2::LEFT_CENTER,
-                public,
+                field_type_caption(kind, array),
                 FontId::monospace(14.),
                 theme::TEXT.gamma_multiply(0.6),
             );
@@ -402,10 +430,7 @@ impl EditorApp {
                             |ui, draft, id| {
                                 ui.add_sized(
                                     [width, 33.],
-                                    egui::TextEdit::singleline(draft)
-                                        .id(id)
-                                        .vertical_align(egui::Align::Center)
-                                        .hint_text(hint),
+                                    source_controls::form_text_box(draft).id(id).hint_text(hint),
                                 )
                             },
                         )
@@ -946,11 +971,11 @@ impl EditorApp {
                 | "RefLinkBetweenCenters"
         );
         let color = !matches!(current, "Hidden" | "EntityTile" | "LevelTile");
-        source_controls::form_row_wrapped(
+        source_controls::form_row_wrapped_sized(
             ui,
             "Display in editor",
             "editorDisplayMode",
-            FIELD_LABEL_WIDTH,
+            egui::vec2(FIELD_LABEL_WIDTH, FIELD_SELECT_HEIGHT),
             |ui| {
                 ui.spacing_mut().item_spacing.x = 4.;
                 ui.horizontal_wrapped(|ui| {
@@ -1229,7 +1254,8 @@ impl EditorApp {
                         theme::ACCENT,
                         locale::tr(ui, "Converting changes existing values and defaults. Values incompatible with the chosen type will be cleared."),
                     );
-                    let label = if kind.contains('.') { kind } else { locale::tr(ui, kind) };
+                    let caption = field_type_caption(kind, array);
+                    let label = locale::tr(ui, &caption);
                     ui.label(locale::format(ui, "Convert to {kind}", &[("kind", label)]));
                     if project_dialogs::action(ui, "Convert all values", true).clicked() {
                         apply = chosen.clone();

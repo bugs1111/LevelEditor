@@ -135,7 +135,7 @@ fn default_tileset_row_opens_the_library_and_reports_bound_tile_size() {
     app.panel = Some(Panel::Layers);
     frame(&mut app, &ctx, vec![]);
     let out = frame(&mut app, &ctx, vec![]);
-    let picker = label(&out, "⚙ Internal icons by FinalBossBlues");
+    let picker = label(&out, "⚙ Internal icons");
     let size = label(&out, "16px tiles");
     assert!(size.left() > picker.right());
     assert!((size.center().y - picker.center().y).abs() <= 2.);
@@ -234,7 +234,7 @@ fn layer_tileset_pickers_create_internal_icons_once_and_undo_assignment() {
         let closed = frame(app, &ctx, vec![]);
         click(app, &ctx, label(&closed, placeholder).center());
         let opened = frame(app, &ctx, vec![]);
-        let icons = labels(&opened, "⚙ Internal icons by FinalBossBlues");
+        let icons = labels(&opened, "⚙ Internal icons");
         assert_eq!(icons.len(), 1);
         click(app, &ctx, icons[0].center());
         layer(app, uid)["tilesetDefUid"].as_i64().unwrap()
@@ -444,11 +444,7 @@ fn intgrid_icon_tileset_picker_groups_atlases_and_clears_old_icons() {
     let before = project.json.clone();
     frame(&mut app, &ctx, vec![]);
     let out = frame(&mut app, &ctx, vec![]);
-    click(
-        &mut app,
-        &ctx,
-        label(&out, "⚙ Internal icons by FinalBossBlues").center(),
-    );
+    click(&mut app, &ctx, label(&out, "⚙ Internal icons").center());
     let opened = frame(&mut app, &ctx, vec![]);
     assert!(label(&opened, "Untagged").top() < label(&opened, "icons").top());
     click(&mut app, &ctx, label(&opened, "Replacement").center());

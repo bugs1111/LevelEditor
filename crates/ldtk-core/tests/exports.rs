@@ -524,7 +524,7 @@ fn benchmark_tiled_entity_properties_export() {
         let xml = fs::read_to_string(map).unwrap();
         assert_eq!(xml.matches("name=\"Actor &amp; Companion\"").count(), count);
         assert_eq!(
-            xml.matches("name=\"Item_47\" value=\"物品47 &lt; &amp; &gt; &quot;\n\"")
+            xml.matches("name=\"Item_47\" value=\"物品47 &lt; &amp; &gt; &quot;&#10;\"")
                 .count(),
             count
         );
@@ -1451,7 +1451,7 @@ fn tmj_exports_typed_properties_unsigned_gids_and_world() {
                     {"__identifier":"rate","__type":"Float","__value":1.25},
                     {"__identifier":"alive","__type":"Bool","__value":true},
                     {"__identifier":"tint","__type":"Color","__value":"#a1b2c3"},
-                    {"__identifier":"lines","__type":"Array<String>","__value":["甲\\n乙","引号\""]}
+                    {"__identifier":"lines","__type":"Array<String>","__value":["甲\\n乙",r"C:\\new\\notes","引号\""]}
                 ]
             }, {"__identifier":"Player","defUid":8,"px":[0,0]}]
         }),
@@ -1507,7 +1507,8 @@ fn tmj_exports_typed_properties_unsigned_gids_and_world() {
             json!({"name":"alive","type":"bool","value":true}),
             json!({"name":"tint","type":"color","value":"#ffa1b2c3"}),
             json!({"name":"lines_0","type":"string","value":"甲\n乙"}),
-            json!({"name":"lines_1","type":"string","value":"引号\""}),
+            json!({"name":"lines_1","type":"string","value":r"C:\new\notes"}),
+            json!({"name":"lines_2","type":"string","value":"引号\""}),
         ]
     );
     assert_eq!(objects[1]["id"], 2);
@@ -1758,6 +1759,28 @@ fn layers_and_levels_validates_names_only_for_emitted_layer_images() {
         .export_png_with_options(directory.path(), &options)
         .unwrap_err();
     assert!(error.to_string().contains("unsafe export name"));
+}
+
+#[test]
+fn per_level_png_layer_tokens_follow_the_first_project_definition() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut project = Project::new();
+    project
+        .resize_level(project.level_keys()[0], 16, 16, 0, 0)
+        .unwrap();
+    project.add_layer("Ground", "IntGrid", 16).unwrap();
+    project.add_layer("Cover", "IntGrid", 16).unwrap();
+    project.json["imageExportMode"] = json!("OneImagePerLevel");
+    project.json["pngFilePattern"] = json!("%level_name-%layer_idx-%layer_name");
+    project.json["levels"][0]["layerInstances"]
+        .as_array_mut()
+        .unwrap()
+        .reverse();
+    let path = dir.path().join("tiles.ldtk");
+    fs::write(&path, project.json.to_string()).unwrap();
+    let project = Project::load(&path).unwrap();
+    let outputs = project.export_png(dir.path()).unwrap();
+    assert_eq!(outputs, [dir.path().join("Level_0-00-Cover.png")]);
 }
 
 #[test]
@@ -2087,6 +2110,51 @@ fn png_export_preserves_files_created_after_outputs_were_staged() {
     assert!(!new.exists());
     assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 2);
     assert!(matches!(result, Err(ldtk_core::Error::FilesChanged(paths)) if paths == [collision]));
+}
+
+#[test]
+fn tiled_rejects_conflicting_intgrid_palette_files_before_publishing() {
+    use ldtk_core::exports::TiledFormat;
+    for format in [TiledFormat::Tmx, TiledFormat::Tmj] {
+        let dir = tempfile::tempdir().unwrap();
+        let mut project = project();
+        let export =
+            |p: &Project| p.export_tiled_format_with_report_progress(dir.path(), format, |_, _| {});
+        let previous: Vec<_> = export(&project)
+            .unwrap()
+            .outputs
+            .into_iter()
+            .map(|path| (path.clone(), fs::read(path).unwrap()))
+            .collect();
+
+        // A loaded project can contain two distinct definitions with the same identifier.
+        let mut other = project.json["defs"]["layers"][0].clone();
+        other["uid"] = json!(42);
+        other["intGridValues"] = json!([{"value":1,"color":"#0000ff"}]);
+        project.json["defs"]["layers"]
+            .as_array_mut()
+            .unwrap()
+            .push(other);
+        project.json["defs"]["layers"][0]["intGridValues"][0]["color"] = json!("#ffffff");
+        let instances = project.json["levels"][0]["layerInstances"]
+            .as_array_mut()
+            .unwrap();
+        let mut instance = instances[0].clone();
+        instance["layerDefUid"] = json!(42);
+        instances.push(instance);
+        let source = dir.path().join("Untitled.ldtk");
+        fs::write(&source, project.json.to_string()).unwrap();
+        let error = export(&Project::load(source).unwrap())
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("duplicate export output") && error.contains("Solid.intgrid.png"),
+            "{error}"
+        );
+        for (path, bytes) in previous {
+            assert_eq!(fs::read(path).unwrap(), bytes);
+        }
+    }
 }
 
 #[test]
@@ -2670,6 +2738,86 @@ fn configured_png_export_uses_level_color_for_unavailable_backgrounds() {
 }
 
 #[test]
+fn tiled_shift_warnings_match_written_layers_in_both_formats() {
+    use ldtk_core::exports::TiledFormat;
+
+    let directory = tempfile::tempdir().unwrap();
+    let mut p = project();
+    p.path = Some(directory.path().join("scene.ldtk"));
+    p.json["defs"]["tilesets"] = json!([
+        {"uid":7,"identifier":"BuiltIn","embedAtlas":"LdtkIcons","relPath":"stale.png","tileGridSize":16,"pxWid":16,"pxHei":16},
+        {"uid":8,"identifier":"Terrain","relPath":"terrain.png","tileGridSize":16,"pxWid":16,"pxHei":16}
+    ]);
+    let layer = |uid, name, grid, atlas, px| {
+        json!({
+            "layerDefUid":uid,"__identifier":name,"__type":"AutoLayer","__gridSize":grid,
+            "__cWid":2,"__cHei":1,"__tilesetDefUid":atlas,"autoLayerTiles":[{"px":[px,0],"t":0}]
+        })
+    };
+    p.json["defs"]["layers"] = json!([
+        {"uid":1,"identifier":"Paint","type":"AutoLayer","gridSize":16},
+        {"uid":2,"identifier":"SmallGrid","type":"AutoLayer","gridSize":8},
+        {"uid":3,"identifier":"BuiltInLayer","type":"AutoLayer","gridSize":16},
+        {"uid":4,"identifier":"Outside","type":"AutoLayer","gridSize":16}
+    ]);
+    let mut first = p.json["levels"][0].clone();
+    first["layerInstances"] = json!([
+        layer(1, "Paint", 16, 8, 17),
+        layer(2, "SmallGrid", 8, 8, 1),
+        layer(3, "BuiltInLayer", 16, 7, 1),
+        layer(4, "Outside", 16, 8, 33)
+    ]);
+    let mut omitted = first.clone();
+    omitted["identifier"] = json!("LaterLevel");
+    p.json["levels"] = json!([]);
+    p.json["worlds"] = json!([{"levels":[first]}, {"levels":[omitted]}]);
+
+    for (format, ext) in [(TiledFormat::Tmx, "tmx"), (TiledFormat::Tmj, "tmj")] {
+        let output = directory.path().join(ext);
+        let report = p
+            .export_tiled_format_with_report_progress(&output, format, |_, _| {})
+            .unwrap();
+        let shifts: Vec<_> = report
+            .warnings
+            .iter()
+            .filter(|message| message.contains("not aligned"))
+            .collect();
+        assert_eq!(
+            shifts,
+            [
+                "Layer Paint in Level_0 contains tiles not aligned with the grid; Tiled shifts these tiles"
+            ]
+        );
+        assert!(
+            report
+                .warnings
+                .iter()
+                .any(|message| message.contains("Embedded tileset BuiltIn"))
+        );
+        assert!(
+            report
+                .warnings
+                .iter()
+                .any(|message| message.contains("first world only"))
+        );
+        let map = fs::read_to_string(output.join(format!("Level_0.{ext}"))).unwrap();
+        assert!(!output.join(format!("LaterLevel.{ext}")).exists());
+        if format == TiledFormat::Tmx {
+            assert!(map.contains(r#"name="Paint""#) && map.contains(">0,1</data>"));
+            assert!(!map.contains("BuiltIn") && !map.contains("SmallGrid"));
+        } else {
+            let map: Value = serde_json::from_str(&map).unwrap();
+            let layers = map["layers"].as_array().unwrap();
+            assert_eq!(layers.len(), 1);
+            assert_eq!(layers[0]["name"], "Paint");
+            assert_eq!(layers[0]["data"], json!([0, 1]));
+            assert_eq!(map["tilesets"].as_array().unwrap().len(), 1);
+            assert_eq!(map["tilesets"][0]["name"], "Terrain");
+        }
+    }
+}
+
+#[test]
 fn tiled_reports_source_format_limitations() {
     let mut p = project();
     p.json["defs"]["layers"]
@@ -2698,20 +2846,81 @@ fn tiled_custom_data_emits_scalar_properties_and_rejects_malformed_json() {
     assert!(p.export_tiled(t.path().join("bad")).is_err());
 }
 #[test]
+fn tiled_tile_custom_data_preserves_json_escapes_in_both_formats() {
+    use ldtk_core::exports::TiledFormat;
+    let mut p = project();
+    p.json["defs"]["tilesets"] = json!([{
+        "uid":7,"identifier":"Atlas","relPath":"atlas.png","pxWid":16,"pxHei":16,"tileGridSize":16,
+        "customData":[{"tileId":0,"data":null}]
+    }]);
+    let dir = tempfile::tempdir().unwrap();
+    for stored in [
+        r#"{\n "hint":"甲\\n乙", "path":"C:\\\\new"\n}"#,
+        "{\n \"hint\":\"甲\\n乙\", \"path\":\"C:\\\\new\"\n}",
+        r#"{"hint":"甲\n乙","path":"C:\\new"}"#,
+    ] {
+        p.json["defs"]["tilesets"][0]["customData"][0]["data"] = json!(stored);
+        let project_path = dir.path().join("tiles.ldtk");
+        p.save(&project_path).unwrap();
+        let reopened = Project::load(&project_path).unwrap();
+        for format in [TiledFormat::Tmx, TiledFormat::Tmj] {
+            reopened
+                .export_tiled_format_with_report_progress(dir.path(), format, |_, _| {})
+                .unwrap();
+        }
+        let xml = fs::read_to_string(dir.path().join("Level_0.tmx")).unwrap();
+        assert!(xml.contains(r#"name="hint" value="甲&#10;乙""#));
+        assert!(xml.contains(r#"name="path" value="C:\new""#));
+        let map: serde_json::Value =
+            serde_json::from_slice(&fs::read(dir.path().join("Level_0.tmj")).unwrap()).unwrap();
+        let props = map["tilesets"][0]["tiles"][0]["properties"]
+            .as_array()
+            .unwrap();
+        assert!(
+            props
+                .iter()
+                .any(|p| p["name"] == "hint" && p["value"] == "甲\n乙")
+        );
+        assert!(
+            props
+                .iter()
+                .any(|p| p["name"] == "path" && p["value"] == r"C:\new")
+        );
+    }
+    p.json["defs"]["tilesets"][0]["customData"][0]["data"] = json!("{broken");
+    for (format, file) in [
+        (TiledFormat::Tmx, "Level_0.tmx"),
+        (TiledFormat::Tmj, "Level_0.tmj"),
+    ] {
+        let map = dir.path().join(file);
+        let before = fs::read(&map).unwrap();
+        let error = p
+            .export_tiled_format_with_report_progress(dir.path(), format, |_, _| {})
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("invalid Tiled custom data for tile 0")
+        );
+        assert_eq!(fs::read(map).unwrap(), before);
+    }
+}
+
+#[test]
 fn tiled_entity_fields_match_source_point_tile_string_and_pivot_conversions() {
     let mut p = project();
     p.json["defs"]["entities"] = json!([{"uid":2,"width":16,"height":16,"pivotX":1,"pivotY":1}]);
     p.json["defs"]["layers"][0]["type"] = json!("Entities");
     let li = &mut p.json["levels"][0]["layerInstances"][0];
     li["__type"] = json!("Entities");
-    li["entityInstances"] = json!([{"__identifier":"Player","defUid":2,"px":[16,16],"fieldInstances":[{"__identifier":"tile","__type":"Tile","__value":{"tilesetUid":9,"x":1,"y":2,"w":3,"h":4}},{"__identifier":"point","__type":"Point","__value":null},{"__identifier":"text","__type":"String","__value":"a\\nb"}]}]);
+    li["entityInstances"] = json!([{"__identifier":"Player","defUid":2,"px":[16,16],"fieldInstances":[{"__identifier":"tile","__type":"Tile","__value":{"tilesetUid":9,"x":1,"y":2,"w":3,"h":4}},{"__identifier":"point","__type":"Point","__value":null},{"__identifier":"text","__type":"String","__value":"甲\\n乙\tA\r\nB: C:\\\\new\\\\notes"}]}]);
     let t = tempfile::tempdir().unwrap();
     p.export_tiled(t.path()).unwrap();
     let xml = fs::read_to_string(t.path().join("Level_0.tmx")).unwrap();
     assert!(xml.contains("name=\"__cx\" type=\"int\" value=\"0\""));
     assert!(xml.contains("name=\"tile\" type=\"tile\" value=\"1,2,3,4\""));
     assert!(xml.contains("name=\"point\" value=\"null\""));
-    assert!(xml.contains("name=\"text\" value=\"a\nb\""));
+    assert!(xml.contains("name=\"text\" value=\"甲&#10;乙&#9;A&#13;&#10;B: C:\\new\\notes\""));
 }
 #[test]
 fn tiled_layer_offsets_preserve_entity_and_tile_positions_in_both_formats() {
@@ -3015,6 +3224,58 @@ fn check_configured_export_switch(from_simplified: bool) {
     assert!(retried.outputs.contains(&first_output) && retried.outputs.contains(&blocked_output));
     assert!(first_output.is_file() && blocked_output.is_file());
     assert!(previous_files.iter().all(|(file, _)| !file.exists()));
+}
+
+#[test]
+fn configured_export_cleanup_preserves_backups_inside_the_output_directory() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("game.json");
+    let simplified = dir.path().join("game/simplified");
+    let mut project = project();
+    project.json["iid"] = json!("backup_custom");
+    project.json["backupRelPath"] = json!("game/simplified");
+    project.json["simplifiedExport"] = json!(true);
+    project.save_with_exports(&path).unwrap();
+    let backup = project.backup().unwrap().unwrap().join("game.json");
+    let crash = project.write_crash_recovery(dir.path()).unwrap();
+    let backup_bytes = fs::read(&backup).unwrap();
+    let crash_bytes = fs::read(&crash).unwrap();
+    fs::write(simplified.join("obsolete.json"), b"obsolete export").unwrap();
+
+    project.json["levels"][0]["identifier"] = json!("Renamed");
+    project.json["backupOnSave"] = json!(true);
+    let other_window = Project::load(&path).unwrap();
+    let mut exported_during_backup = false;
+    let report = project
+        .save_with_labeled_operation_progress(&path, |stage, done, total, _| {
+            if stage == ldtk_core::SaveStage::Backup && done + 1 == total {
+                assert!(
+                    other_window
+                        .configured_exports_report()
+                        .export_errors
+                        .is_empty()
+                );
+                exported_during_backup = true;
+            }
+        })
+        .unwrap();
+    assert!(exported_during_backup);
+    assert!(
+        report.export_errors.is_empty(),
+        "{:?}",
+        report.export_errors
+    );
+    assert!(simplified.join("Renamed/data.json").is_file());
+    assert!(!simplified.join("Level_0").exists());
+    assert!(!simplified.join("obsolete.json").exists());
+    assert_eq!(fs::read(backup).unwrap(), backup_bytes);
+    assert_eq!(fs::read(&crash).unwrap(), crash_bytes);
+    let backups = project.list_backups().unwrap();
+    assert!(
+        backups
+            .iter()
+            .any(|entry| entry.path == crash && entry.crash)
+    );
 }
 
 #[test]

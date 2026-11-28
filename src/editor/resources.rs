@@ -801,8 +801,12 @@ mod tests {
         let (tx, rx) = mpsc::channel();
         app.saving = Some(rx);
         std::fs::write(&values, r#"{"State":["Idle","Run"]}"#).unwrap();
-        tx.send(Ok(services::SavedProject { project: p, report }))
-            .unwrap();
+        tx.send(Ok(services::SavedProject {
+            project: p,
+            report,
+            renamed_from: None,
+        }))
+        .unwrap();
         app.poll_services(&egui::Context::default());
         assert_eq!(
             app.project.as_ref().unwrap().json["defs"]["externalEnums"][0]["values"][1]["id"],

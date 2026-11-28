@@ -9,6 +9,7 @@ pub(crate) use fonts::use_reference_layout_fonts;
 pub const DARK: Color32 = Color32::from_rgb(0x1e, 0x22, 0x29);
 pub const MEDIUM: Color32 = Color32::from_rgb(0x2e, 0x33, 0x3f);
 pub const LIGHT: Color32 = Color32::from_rgb(0x54, 0x5d, 0x73);
+pub const GROUP_BAR: Color32 = Color32::from_rgb(115, 127, 157);
 pub const TEXT: Color32 = Color32::from_rgb(0xc1, 0xcf, 0xeb);
 pub const ACCENT: Color32 = Color32::from_rgb(0xff, 0xcc, 0x00);
 pub const HELP_TEXT: Color32 = Color32::from_rgb(121, 221, 138);

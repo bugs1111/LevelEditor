@@ -131,7 +131,7 @@ fn directory_color_key() -> egui::Id {
 }
 impl EditorApp {
     pub(super) fn edit_recent_directory_color(&mut self, ctx: &egui::Context, path: &Path) {
-        let color = self.settings.dir_color(path);
+        let (color, _) = self.settings.dir_color(path);
         ctx.data_mut(|data| {
             data.insert_temp(
                 directory_color_key(),
@@ -1014,7 +1014,7 @@ impl EditorApp {
             return;
         };
         let data = data.trim();
-        if (!data.is_empty()).then_some(data) == tile_custom_data(tileset, tile) {
+        if (!data.is_empty()).then_some(data) == tile_custom_data(tileset, tile).as_deref() {
             return;
         }
         let mut entries = tileset["customData"]
@@ -1023,7 +1023,7 @@ impl EditorApp {
             .unwrap_or_default();
         entries.retain(|entry| entry["tileId"] != tile);
         if !data.is_empty() {
-            entries.push(json!({"tileId":tile,"data":data}));
+            entries.push(json!({"tileId":tile,"data":ldtk_core::ldtk_string::escape(data)}));
             entries.sort_by_key(|entry| entry["tileId"].as_i64());
         }
         self.edit("Tile data changed", |project| {
@@ -1954,28 +1954,24 @@ impl EditorApp {
                 } else if tagger {
                     if !panning && drag.is_none() {
                         let label = locale::format(ui, "Tile {id}", &[("id", &id.to_string())]);
-                        response.clone().detail_tooltip_ui(|ui| {
-                            ui.strong(label);
-                            let tags = def["enumTags"]
-                                .as_array()
-                                .into_iter()
-                                .flatten()
-                                .filter_map(|tag| {
-                                    tag["tileIds"]
-                                        .as_array()?
-                                        .iter()
-                                        .any(|value| *value == id)
-                                        .then(|| tag["enumValueId"].as_str())
-                                        .flatten()
-                                })
-                                .collect::<Vec<_>>();
-                            if !tags.is_empty() {
-                                ui.label(tags.join(" + "));
-                            }
-                            if let Some(data) = tile_custom_data(&def, id) {
-                                ui.label(format!("\"{data}\""));
-                            }
-                        });
+                        let tags = def["enumTags"]
+                            .as_array()
+                            .into_iter()
+                            .flatten()
+                            .filter_map(|tag| {
+                                tag["tileIds"]
+                                    .as_array()?
+                                    .iter()
+                                    .any(|value| *value == id)
+                                    .then(|| tag["enumValueId"].as_str())
+                                    .flatten()
+                            })
+                            .collect::<Vec<_>>()
+                            .join(" + ");
+                        let data = tile_custom_data(&def, id)
+                            .map(|data| format!("\"{data}\""))
+                            .unwrap_or_default();
+                        chrome::pointer_detail_tooltip(ctx, pos, label, &[tags, data]);
                     }
                 } else {
                     response.clone().detail_tooltip(locale::format(
@@ -2043,7 +2039,9 @@ impl EditorApp {
                     text_editor::open(
                         ctx,
                         data_dialog,
-                        tile_custom_data(&def, action.0).unwrap_or_default(),
+                        tile_custom_data(&def, action.0)
+                            .as_deref()
+                            .unwrap_or_default(),
                         &title,
                         "LangJson",
                         false,
@@ -2142,12 +2140,13 @@ impl EditorApp {
 
 const TILE_CUSTOM_DATA_HELP: &str = "You can enter any kind of data here, which will be associated to this tile and stored in the project JSON. This data could either be numbers, text, JSON, XML etc. Basically, any tile related info you would like to pass to your game engine.";
 
-pub(super) fn tile_custom_data(tileset: &Value, tile: i32) -> Option<&str> {
+pub(super) fn tile_custom_data(tileset: &Value, tile: i32) -> Option<std::borrow::Cow<'_, str>> {
     tileset["customData"]
         .as_array()?
         .iter()
         .find(|entry| entry["tileId"] == tile)?["data"]
         .as_str()
+        .map(ldtk_core::ldtk_string::tile_data_text)
 }
 
 pub(super) fn entity_allowed(entity: &Value, layer: &Value) -> bool {

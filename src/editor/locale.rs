@@ -29,6 +29,88 @@ impl Language {
     pub(super) fn format(self, text: &str, values: &[(&str, &str)]) -> String {
         format_translated(self.translate(text), values)
     }
+
+    pub(super) fn update_error(self, error: &str) -> String {
+        // The standalone installer can leave a diagnostic for the next editor process.
+        // Translate its message when displayed, keeping the original OS detail intact.
+        self.diagnostic_with_detail(
+            error,
+            &[
+                "Update helper exited before the restart handshake ({detail})",
+                "Could not start the update helper: {detail}",
+                "Cannot start the local update handshake: {detail}",
+                "Cannot prepare this installation for replacement: {detail}",
+                "Cannot create update staging directory: {detail}",
+                "Invalid update ZIP: {detail}",
+            ],
+        )
+    }
+
+    pub(super) fn restore_warning(self, warning: &str) -> String {
+        if self == Self::SimplifiedChinese {
+            for template in [
+                "Project restored; could not prune older backups: {detail}",
+                "Project restored; could not remove crash backup: {detail}",
+            ] {
+                if let Some(detail) = warning.strip_prefix(template.trim_end_matches("{detail}")) {
+                    let detail = self
+                        .diagnostic_with_detail(detail, &["unrecognized recovery file: {detail}"]);
+                    return self.format(template, &[("detail", &detail)]);
+                }
+            }
+        }
+        self.translate(warning).to_owned()
+    }
+
+    fn diagnostic_with_detail(self, error: &str, templates: &[&str]) -> String {
+        if self == Self::SimplifiedChinese {
+            for template in templates {
+                let (prefix, suffix) = template.split_once("{detail}").unwrap();
+                if let Some(detail) = error
+                    .strip_prefix(prefix)
+                    .and_then(|s| s.strip_suffix(suffix))
+                {
+                    return self.format(template, &[("detail", detail)]);
+                }
+            }
+        }
+        self.translate(error).to_owned()
+    }
+
+    pub(super) fn project_error(self, error: &ldtk_core::Error) -> String {
+        use ldtk_core::Error;
+        if self == Self::English {
+            return error.to_string();
+        }
+        match error {
+            Error::Io { .. } => error.to_string(),
+            Error::Json { path, source } => self.format(
+                "Invalid JSON in {path}: {error}",
+                &[
+                    ("path", &path.to_string_lossy()),
+                    ("error", &source.to_string()),
+                ],
+            ),
+            Error::Invalid(detail) => self.format(
+                "Invalid LDtk data: {error}",
+                &[("error", self.translate(detail))],
+            ),
+            Error::Unsupported(detail) => self.format(
+                "Unsupported operation: {error}",
+                &[("error", self.translate(detail))],
+            ),
+            Error::FilesChanged(paths) => {
+                let paths = paths
+                    .iter()
+                    .map(|p| p.to_string_lossy())
+                    .collect::<Vec<_>>();
+                self.format(
+                    "Files changed outside the editor: {paths}",
+                    &[("paths", &paths.join("、"))],
+                )
+            }
+        }
+    }
 }
 
 static SYSTEM_LANGUAGE: LazyLock<Language> = LazyLock::new(|| {
@@ -148,10 +230,13 @@ pub(super) fn set(ctx: &egui::Context, language: Language) {
     }
 }
 
-pub(super) fn tr_ctx<'a>(ctx: &egui::Context, text: &'a str) -> &'a str {
+pub(super) fn language(ctx: &egui::Context) -> Language {
     ctx.data(|data| data.get_temp::<Language>(locale_id()))
         .unwrap_or_default()
-        .translate(text)
+}
+
+pub(super) fn tr_ctx<'a>(ctx: &egui::Context, text: &'a str) -> &'a str {
+    language(ctx).translate(text)
 }
 
 pub(super) fn tr<'a>(ui: &egui::Ui, text: &'a str) -> &'a str {

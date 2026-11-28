@@ -369,6 +369,132 @@ fn backup_includes_saved_external_documents_and_limit_and_watcher_detects_change
     assert_eq!(snapshot.changed_files().unwrap(), vec![path]);
 }
 #[test]
+fn failed_external_backup_cleans_up_before_retry() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("map.ldtk");
+    let mut project = Project::new();
+    project.add_level(None, "Second", 32, 32).unwrap();
+    project.set_external_levels(true).unwrap();
+    project.save(&path).unwrap();
+    let previous = project.backup().unwrap().unwrap();
+    let backups = previous.parent().unwrap();
+    let contents = || {
+        fs::read_dir(backups)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect::<std::collections::BTreeSet<_>>()
+    };
+    let original_contents = contents();
+    let missing = dir.path().join(
+        project.json["levels"][1]["externalRelPath"]
+            .as_str()
+            .unwrap(),
+    );
+    let bytes = fs::read(&missing).unwrap();
+    fs::remove_file(&missing).unwrap();
+
+    assert!(project.backup().is_err());
+    assert_eq!(contents(), original_contents);
+    assert!(Project::load(previous.join("map.ldtk")).is_ok());
+    fs::write(&missing, bytes).unwrap();
+    let retried = project.backup().unwrap().unwrap();
+    assert_ne!(previous, retried);
+    assert_eq!(
+        Project::load(retried.join("map.ldtk"))
+            .unwrap()
+            .level_keys()
+            .len(),
+        2
+    );
+}
+
+#[test]
+fn rapid_backup_rotation_keeps_the_latest_saved_bytes() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("map.ldtk");
+    let mut project = Project::new();
+    project.json["backupLimit"] = json!(1);
+    for revision in 0..4 {
+        project.json["revision"] = json!(revision);
+        project.save(&path).unwrap();
+        let backup = project.backup().unwrap().unwrap();
+        assert_eq!(
+            fs::read(backup.join("map.ldtk")).unwrap(),
+            fs::read(&path).unwrap()
+        );
+        assert_eq!(project.list_backups().unwrap().len(), 1);
+    }
+}
+
+#[test]
+fn automatic_and_crash_backups_are_listed_in_publication_order() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("map.ldtk");
+    let mut project = Project::new();
+    project.save(&path).unwrap();
+    let first = project.backup().unwrap().unwrap().join("map.ldtk");
+    let crash = project.write_crash_recovery(dir.path()).unwrap();
+    let newest = project.backup().unwrap().unwrap().join("map.ldtk");
+    let paths: Vec<_> = project
+        .list_backups()
+        .unwrap()
+        .into_iter()
+        .map(|entry| entry.path)
+        .collect();
+    assert_eq!(paths, [newest, crash, first]);
+}
+
+#[test]
+fn simultaneous_backups_reserve_separate_directories() {
+    use std::sync::Barrier;
+    let dir = tempfile::tempdir().unwrap();
+    let paths: Vec<_> = (0..8)
+        .map(|i| {
+            let path = dir.path().join(format!("copy-{i}.ldtk"));
+            let mut project = Project::new();
+            project.json["iid"] = json!("shared-project");
+            project.json["backupRelPath"] = json!("backups");
+            project.save(&path).unwrap();
+            path
+        })
+        .collect();
+    let save_all = |limit| {
+        let ready = Barrier::new(paths.len());
+        let projects: Vec<_> = paths
+            .iter()
+            .map(|path| Project::load(path).unwrap())
+            .collect();
+        std::thread::scope(|scope| {
+            let ready = &ready;
+            let jobs: Vec<_> = projects
+                .into_iter()
+                .map(|mut project| {
+                    scope.spawn(move || {
+                        project.json["backupLimit"] = json!(limit);
+                        ready.wait();
+                        project.backup().unwrap().unwrap()
+                    })
+                })
+                .collect();
+            jobs.into_iter()
+                .map(|job| job.join().unwrap())
+                .collect::<Vec<_>>()
+        })
+    };
+    for (path, backup) in paths.iter().zip(save_all(10)) {
+        assert_eq!(fs::read_dir(&backup).unwrap().count(), 1);
+        assert_eq!(
+            fs::read(backup.join(path.file_name().unwrap())).unwrap(),
+            fs::read(path).unwrap()
+        );
+    }
+    save_all(1);
+    let backups = Project::list_backups_at(&paths[0]).unwrap();
+    assert_eq!(backups.len(), 1);
+    assert!(Project::load(&backups[0].path).is_ok());
+}
+
+#[test]
 fn enabled_external_levels_are_created_from_inline_documents() {
     let t = tempfile::tempdir().unwrap();
     let path = t.path().join("game.ldtk");
@@ -929,6 +1055,97 @@ fn every_original_project_can_migrate_twice_without_further_changes() {
     }
 }
 #[test]
+fn saved_backup_preserves_external_levels_with_conflicting_relocated_names() {
+    check_backup_external_names(false);
+}
+
+#[test]
+fn crash_backup_preserves_external_levels_with_conflicting_relocated_names() {
+    check_backup_external_names(true);
+}
+
+fn check_backup_external_names(crash: bool) {
+    let dir = tempfile::tempdir().unwrap();
+    let base = dir.path().join("maps");
+    fs::create_dir(&base).unwrap();
+    let original = base.join("map.ldtk");
+    let mut project = Project::new();
+    for name in ["Cave", "Forest", "Town"] {
+        project.add_level(None, name, 32, 32).unwrap();
+    }
+    project.set_external_levels(true).unwrap();
+    project.save(&original).unwrap();
+
+    let paths = [
+        "../forest/Room.ldtkl",
+        if crash {
+            "map/external-0000.ldtkl"
+        } else {
+            "map/external-0000-Room.ldtkl"
+        },
+        "../cave/Room.ldtkl",
+        if crash {
+            "external-levels/external-0000.ldtkl"
+        } else {
+            "external-levels/external-0000-Room.ldtkl"
+        },
+    ];
+    let mut root = project.json.clone();
+    let mut originals = Vec::new();
+    for (i, relative) in paths.iter().enumerate() {
+        let stub = &mut root["levels"][i];
+        let bytes = fs::read(base.join(stub["externalRelPath"].as_str().unwrap())).unwrap();
+        let target = base.join(relative);
+        fs::create_dir_all(target.parent().unwrap()).unwrap();
+        fs::write(&target, &bytes).unwrap();
+        originals.push(bytes);
+        stub["externalRelPath"] = json!(relative);
+    }
+    let root_bytes = serde_json::to_vec(&root).unwrap();
+    fs::write(&original, &root_bytes).unwrap();
+    let project = Project::load(&original).unwrap();
+    let backup = if crash {
+        project.write_crash_recovery(dir.path()).unwrap()
+    } else {
+        project.backup().unwrap().unwrap().join("map.ldtk")
+    };
+    let archived = Project::load(&backup).unwrap();
+    assert_eq!(fs::read(&original).unwrap(), root_bytes);
+    for (i, key) in project.level_keys().into_iter().enumerate() {
+        assert_eq!(fs::read(base.join(paths[i])).unwrap(), originals[i]);
+        let relative = archived.json["levels"][i]["externalRelPath"]
+            .as_str()
+            .unwrap();
+        assert!(
+            std::path::Path::new(relative)
+                .components()
+                .all(|c| matches!(c, std::path::Component::Normal(_)))
+        );
+        if !paths[i].starts_with("..") {
+            assert_eq!(relative, paths[i]);
+        }
+        if !crash {
+            assert_eq!(
+                fs::read(backup.with_file_name(relative)).unwrap(),
+                originals[i]
+            );
+        }
+        assert_eq!(
+            archived.level(key).unwrap()["iid"],
+            project.level(key).unwrap()["iid"]
+        );
+    }
+    Project::restore_backup(&backup, &original).unwrap();
+    let restored = Project::load(&original).unwrap();
+    for key in project.level_keys() {
+        assert_eq!(
+            restored.level(key).unwrap()["iid"],
+            project.level(key).unwrap()["iid"]
+        );
+    }
+}
+
+#[test]
 fn backup_reads_the_saved_external_layout_before_unsaved_storage_changes() {
     let t = tempfile::tempdir().unwrap();
     let path = t.path().join("game.ldtk");
@@ -965,8 +1182,8 @@ fn save_as_backs_up_an_existing_destination_before_overwrite() {
     assert!(backups.is_dir());
     let folder = fs::read_dir(backups)
         .unwrap()
-        .next()
-        .unwrap()
+        .map(Result::unwrap)
+        .find(|entry| entry.file_type().unwrap().is_dir())
         .unwrap()
         .path();
     let backup = Project::load(folder.join("B.ldtk")).unwrap();
@@ -1459,6 +1676,53 @@ fn backups_in_one_second_do_not_overwrite_each_other() {
     );
     assert_eq!(p.list_backups().unwrap().len(), 2);
 }
+#[test]
+fn failed_restore_keeps_the_selected_backup_until_retry_succeeds() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("map.ldtk");
+    let mut project = Project::new();
+    project.json["backupRelPath"] = json!("history");
+    project.json["backupLimit"] = json!(1);
+    project.json["backupOnSave"] = json!(false);
+    project.set_external_levels(true).unwrap();
+    project.save(&path).unwrap();
+    let backup = project.backup().unwrap().unwrap().join("map.ldtk");
+    let archived = fs::read(&backup).unwrap();
+    let external = project.external_levels.keys().next().unwrap().clone();
+    let archived_level = fs::read(backup.with_file_name(&external)).unwrap();
+
+    project.set_external_levels(false).unwrap();
+    project.json["levels"][0]["identifier"] = json!("Current");
+    project.save(&path).unwrap();
+    let current = fs::read(&path).unwrap();
+    let blocked = path.with_extension("");
+    if blocked.is_dir() {
+        fs::remove_dir(&blocked).unwrap();
+    }
+    fs::write(&blocked, b"blocks external levels").unwrap();
+
+    for _ in 0..2 {
+        assert!(Project::restore_backup(&backup, &path).is_err());
+        assert_eq!(fs::read(&path).unwrap(), current);
+        assert_eq!(fs::read(&backup).unwrap(), archived);
+        assert_eq!(
+            fs::read(backup.with_file_name(&external)).unwrap(),
+            archived_level
+        );
+        assert_eq!(project.list_backups().unwrap().len(), 2);
+    }
+    fs::remove_file(blocked).unwrap();
+    Project::restore_backup(&backup, &path).unwrap();
+    let restored = Project::load(&path).unwrap();
+    assert_eq!(
+        restored.level(restored.level_keys()[0]).unwrap()["identifier"],
+        "Level_0"
+    );
+    let backups = restored.list_backups().unwrap();
+    assert_eq!(backups.len(), 1);
+    assert_eq!(fs::read(&backups[0].path).unwrap(), current);
+}
+
 #[test]
 fn restoring_backup_can_recover_a_corrupt_original_and_preserves_its_raw_bytes() {
     let t = tempfile::tempdir().unwrap();

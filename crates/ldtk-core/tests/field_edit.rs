@@ -47,6 +47,43 @@ fn fields_encode_original_editor_wrappers_for_all_types() {
     }
 }
 #[test]
+fn literal_backslashes_and_newlines_round_trip_through_defaults_edits_and_disk() {
+    let mut project = Project::new();
+    let path = tempfile::tempdir().unwrap();
+    let file = path.path().join("text.ldtk");
+    let literal = r"C:\new\readme\notes";
+    let encoded_literal = r"C:\\new\\readme\\notes";
+    let multiline = format!("{literal}\n第二行");
+    let encoded_multiline = format!("{encoded_literal}\\n第二行");
+    for (index, (kind, input, expected)) in [
+        ("String", literal, encoded_literal),
+        ("Multilines", multiline.as_str(), encoded_multiline.as_str()),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let uid = project
+            .add_field_definition(None, kind, kind, false)
+            .unwrap();
+        project.set_field_default(uid, json!(input)).unwrap();
+        assert_eq!(
+            project.level(K).unwrap()["fieldInstances"][index]["__value"],
+            expected
+        );
+        project
+            .set_field_editor_value(K, None, uid, json!(input))
+            .unwrap();
+        project.save(&file).unwrap();
+        project = Project::load(&file).unwrap();
+        project.refresh_derived_data().unwrap();
+        assert_eq!(
+            project.level(K).unwrap()["fieldInstances"][index]["__value"],
+            expected
+        );
+    }
+}
+
+#[test]
 fn tile_default_enables_optional_and_follows_the_current_tileset() {
     let mut p = Project::new();
     let plain = p

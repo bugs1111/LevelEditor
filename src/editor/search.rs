@@ -146,11 +146,7 @@ fn field_display<'a>(
 ) -> String {
     match kind {
         "String" | "Text" | "Multilines" | "FilePath" => {
-            let decoded = value
-                .as_str()
-                .unwrap_or("")
-                .replace("\\\\", "\\")
-                .replace("\\n", "\n");
+            let decoded = ldtk_core::ldtk_string::unescape(value.as_str().unwrap_or(""));
             // The browser collapses whitespace when displaying field values.
             format!("\"{decoded}\"")
                 .split_ascii_whitespace()
@@ -1110,7 +1106,7 @@ mod tests {
         let note = concat!(
             "NorthLift\nHarbormaster keeps the gate open when fog covers the breakwater. ",
             "Follow the warm lanterns along the river and find the little stone bridge. ",
-            "The last waypoint is MeadowVault beyond the orchard and the abandoned mill."
+            r"The last waypoint is MeadowVault beyond the orchard. See C:\new\notes."
         );
         project
             .set_field_value(key, None, field, note.into())
@@ -1121,6 +1117,7 @@ mod tests {
         let matches = app.search_results("Harbormaster MeadowVault");
         assert_eq!(matches.len(), 1);
         assert!(matches[0].title.contains("NorthLift Harbormaster"));
+        assert!(matches[0].title.contains(r"C:\new\notes"));
 
         app.search = "MeadowVault".into();
         app.command_palette = true;

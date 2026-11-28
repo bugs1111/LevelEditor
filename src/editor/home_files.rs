@@ -338,7 +338,13 @@ impl EditorApp {
             }
         }
     }
-    pub(super) fn recent_path_menu(&mut self, ui: &mut egui::Ui, path: &Path, file: bool) {
+    pub(super) fn recent_path_menu(
+        &mut self,
+        ui: &mut egui::Ui,
+        path: &Path,
+        file: bool,
+        assigned: bool,
+    ) {
         enum RecentAction {
             Open,
             Locate,
@@ -366,13 +372,6 @@ impl EditorApp {
                 "Clear all folder history",
             )
         };
-        let assigned = self.settings.value["recentDirColors"]
-            .as_array()
-            .is_some_and(|colors| {
-                colors
-                    .iter()
-                    .any(|color| color["path"].as_str() == directory.to_str())
-            });
         let color = egui::include_image!("../../assets/icons/color.svg");
         let font = FontId::proportional(13.333);
         let rows: Vec<_> = [
@@ -473,19 +472,10 @@ impl EditorApp {
                 }
                 RecentAction::AssignColor => self.edit_recent_directory_color(ui.ctx(), directory),
                 RecentAction::ResetColor => self.settings.force_dir_color(directory, None),
-                RecentAction::Remove => self.remove_recent(history, path),
-                RecentAction::Clear => {
-                    self.settings.value[history] = serde_json::json!([]);
-                    let _ = self.settings.save();
-                }
+                RecentAction::Remove => self.settings.remove_recent(history, path),
+                RecentAction::Clear => self.settings.clear_recent(history),
             }
         }
-    }
-    pub(super) fn remove_recent(&mut self, kind: &str, path: &Path) {
-        if let Some(entries) = self.settings.value[kind].as_array_mut() {
-            entries.retain(|entry| entry.as_str() != path.to_str());
-        }
-        let _ = self.settings.save();
     }
 }
 

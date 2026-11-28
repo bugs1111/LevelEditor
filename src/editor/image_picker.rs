@@ -192,8 +192,10 @@ impl EditorApp {
             };
             if pick.clicked() {
                 let project_path = self.project.as_ref().and_then(|p| p.path.clone());
-                let mut dialog = FileDialog::new()
-                    .add_filter("Images", &["png", "gif", "jpg", "jpeg", "aseprite", "ase"]);
+                let mut dialog = FileDialog::new().add_filter(
+                    locale::tr(ui, "Images"),
+                    &["png", "gif", "jpg", "jpeg", "aseprite", "ase"],
+                );
                 if let Some(dir) = self.settings.ui_dir(
                     project_path.as_deref(),
                     "PickImage",

@@ -7,6 +7,7 @@ pub(super) enum Continuation {
     AfterSave(Option<String>),
 }
 pub(super) struct HookFlow {
+    project_iid: String,
     commands: VecDeque<String>,
     cwd: Option<PathBuf>,
     continuation: Continuation,
@@ -51,19 +52,16 @@ impl EditorApp {
         cwd: Option<PathBuf>,
         continuation: Continuation,
     ) {
-        let trust = self
-            .project
-            .as_ref()
-            .and_then(|p| self.settings.trust_state(text(&p.json, "iid", "")));
-        if commands.is_empty() || trust == Some(false) {
+        let Some(project) = self.project.as_ref().filter(|_| !commands.is_empty()) else {
             self.hook_continuation(ctx, continuation);
             return;
-        }
+        };
         self.hook_flow = Some(HookFlow {
+            project_iid: text(&project.json, "iid", "").to_owned(),
             commands,
             cwd,
             continuation,
-            waiting_trust: trust.is_none(),
+            waiting_trust: false,
         });
         self.poll_hooks(ctx);
     }
@@ -97,11 +95,20 @@ impl EditorApp {
             self.hook_flow = Some(flow);
             return;
         }
-        if let Some(command) = flow.commands.pop_front() {
-            self.start_command(command, flow.cwd.clone());
-            self.hook_flow = Some(flow);
-        } else {
+        if flow.commands.is_empty() || !self.refresh_command_trust() {
             self.hook_continuation(ctx, flow.continuation);
+            return;
+        }
+        match self.settings.trust_state(&flow.project_iid) {
+            Some(false) => self.hook_continuation(ctx, flow.continuation),
+            Some(true) => {
+                self.start_command(flow.commands.pop_front().unwrap(), flow.cwd.clone());
+                self.hook_flow = Some(flow);
+            }
+            None => {
+                flow.waiting_trust = true;
+                self.hook_flow = Some(flow);
+            }
         }
     }
 
@@ -162,11 +169,12 @@ impl EditorApp {
         )
         .inner;
         if let Some(decision) = decision {
-            if let Some(trust) = decision
-                && let Some(project) = &self.project
-            {
-                self.settings
-                    .set_trusted(text(&project.json, "iid", ""), trust);
+            if let Some(trusted) = decision {
+                let iid = flow.project_iid.clone();
+                let saved = self.change_command_trust(&iid, Some(trusted));
+                if trusted && !saved {
+                    return;
+                }
             }
             if let Some(flow) = &mut self.hook_flow {
                 flow.waiting_trust = false;
@@ -176,6 +184,33 @@ impl EditorApp {
             }
             self.poll_hooks(ctx);
         }
+    }
+
+    pub(super) fn refresh_command_trust(&mut self) -> bool {
+        let result = self.settings.refresh_trust();
+        self.command_trust_result(result)
+    }
+
+    pub(super) fn change_command_trust(&mut self, iid: &str, trusted: Option<bool>) -> bool {
+        let result = self.settings.set_trust(iid, trusted);
+        if !self.command_trust_result(result) {
+            return false;
+        }
+        self.set_operation_status("Project command permissions saved.");
+        true
+    }
+
+    fn command_trust_result(&mut self, result: std::io::Result<()>) -> bool {
+        if let Err(error) = result {
+            let label = self
+                .settings
+                .language()
+                .translate("Project command permissions");
+            self.status = format!("{label}: {error}");
+            self.status_error = true;
+            return false;
+        }
+        true
     }
 
     pub(super) fn save_async_at(
@@ -199,7 +234,7 @@ impl EditorApp {
         self.save_attempt = Some(path.clone());
         let progress = Arc::new(Mutex::new(save_progress::SaveProgress::default()));
         self.saving_progress = Some(progress.clone());
-        self.status = "Saving project…".into();
+        self.set_operation_status("Saving project…");
         let repaint = self.repaint.clone();
         std::thread::spawn(move || {
             let names = project
@@ -227,11 +262,51 @@ impl EditorApp {
                         }
                     },
                 )
-                .map(|report| services::SavedProject { project, report });
+                .map(|report| services::SavedProject {
+                    project,
+                    report,
+                    renamed_from: None,
+                });
             let _ = tx.send(result);
             if let Some(ctx) = repaint {
                 ctx.request_repaint();
             }
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_queued_hook_observes_a_block_applied_from_another_window() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = Some(directory.path().join("settings.json"));
+        let mut other = settings::Settings::load_at(path.clone());
+        let mut app = EditorApp::empty();
+        let project = Project::new();
+        let iid = text(&project.json, "iid", "").to_owned();
+        other.set_trust(&iid, Some(true)).unwrap();
+        app.settings = settings::Settings::load_at(path);
+        app.project = Some(project);
+        app.command_open = true;
+        let ctx = egui::Context::default();
+        app.queue_hook_commands(
+            &ctx,
+            VecDeque::from(["echo sample".to_owned()]),
+            None,
+            Continuation::None,
+        );
+        assert!(app.hook_flow.is_some());
+        other.set_trust(&iid, Some(false)).unwrap();
+        app.command_open = false;
+        app.poll_hooks(&ctx);
+        assert!(
+            app.hook_flow.is_none(),
+            "a blocked queue must finish before dispatch"
+        );
+        assert_eq!(app.settings.trust_state(&iid), Some(false));
+        assert!(app.command_result.is_none() && !app.command_open);
     }
 }

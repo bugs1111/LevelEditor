@@ -359,12 +359,13 @@ impl Project {
         &self,
         key: LevelKey,
         level_name: &str,
-        li: &Value,
+        layer_name: &str,
+        layer_index: usize,
         pattern: &str,
     ) -> Result<String> {
         let mut result = pattern
             .replace("%level_name", level_name)
-            .replace("%layer_name", s(li, "__identifier"));
+            .replace("%layer_name", layer_name);
         if result.contains("%world") {
             let world = key
                 .world
@@ -377,13 +378,7 @@ impl Project {
             result = result.replace("%level_idx", &format!("{:04}", key.level));
         }
         if result.contains("%layer_idx") {
-            let uid = n(li, "layerDefUid");
-            let idx = arr(&self.json["defs"]["layers"])
-                .iter()
-                .take_while(|d| n(d, "uid") != uid)
-                .filter(|d| s(d, "type") != "Entities")
-                .count();
-            result = result.replace("%layer_idx", &format!("{idx:02}"));
+            result = result.replace("%layer_idx", &format!("{layer_index:02}"));
         }
         safe_name(&result)?;
         Ok(result)
@@ -509,14 +504,28 @@ impl Project {
 /// Keep the two most recent atlases when both fit in the decoded pixel budget.
 pub(super) struct PngRenderer<'a> {
     project: &'a Project,
+    layer_definitions: HashMap<i64, (&'a Value, usize)>,
+    renderable_layer_count: usize,
     last_atlas: Option<(i64, RgbaImage)>,
     previous_atlas: Option<(i64, RgbaImage)>,
 }
 
 impl<'a> PngRenderer<'a> {
     pub(super) fn new(project: &'a Project) -> Self {
+        let mut layer_definitions = HashMap::new();
+        let mut renderable_layer_count = 0;
+        for def in arr(&project.json["defs"]["layers"]) {
+            if let Some(uid) = def["uid"].as_i64() {
+                layer_definitions
+                    .entry(uid)
+                    .or_insert((def, renderable_layer_count));
+            }
+            renderable_layer_count += usize::from(s(def, "type") != "Entities");
+        }
         Self {
             project,
+            layer_definitions,
+            renderable_layer_count,
             last_atlas: None,
             previous_atlas: None,
         }
@@ -609,10 +618,16 @@ impl<'a> PngRenderer<'a> {
             if !(tiles || layer_files && typ == "IntGrid") {
                 continue;
             }
+            let (def, layer_index) = self
+                .layer_definitions
+                .get(&n(li, "layerDefUid"))
+                .copied()
+                .unwrap_or((li, self.renderable_layer_count));
             let file = layer_files
-                .then(|| project.png_name(key, name, li, layer_pattern))
+                .then(|| {
+                    project.png_name(key, name, s(li, "__identifier"), layer_index, layer_pattern)
+                })
                 .transpose()?;
-            let def = project.layer_def(n(li, "layerDefUid")).unwrap_or(li);
             if tiles {
                 let opacity = num(def, "displayOpacity", 1.).clamp(0., 1.);
                 let (image, area, placeholder) = self.render_tile_layer(
@@ -648,11 +663,16 @@ impl<'a> PngRenderer<'a> {
             let filename = if simple {
                 "_composite".into()
             } else if options.mode == PngExportMode::OneImagePerLevel {
-                let li = arr(&l["layerInstances"]).first().unwrap_or(l);
+                let layer_name = project.json["defs"]["layers"]
+                    .get(0)
+                    .and_then(|def| def["identifier"].as_str())
+                    .or_else(|| l["layerInstances"].get(0)?.get("__identifier")?.as_str())
+                    .unwrap_or("");
                 project.png_name(
                     key,
                     name,
-                    li,
+                    layer_name,
+                    0,
                     options.file_pattern.as_deref().unwrap_or("%level_name"),
                 )?
             } else {

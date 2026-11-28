@@ -322,7 +322,7 @@ impl EditorApp {
             let mut name = text(&def, "identifier", "");
             ui.add_sized(
                 [ui.available_width(), 30.],
-                egui::TextEdit::singleline(&mut name).text_color(GROUP_BAR),
+                source_controls::form_text_box(&mut name).text_color(GROUP_BAR),
             );
         });
         self.source_external_enum_values(ui, def);

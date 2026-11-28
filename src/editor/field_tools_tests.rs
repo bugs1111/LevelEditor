@@ -753,6 +753,7 @@ fn restoring_level_history_cancels_point_picking_but_keeps_the_reference_picker(
 fn entity_inspector_link_array_paints_the_target_icon_and_location() {
     let mut f = fixture(true);
     let ctx = egui::Context::default();
+    theme::configure(&ctx);
     let project = f.app.project.as_mut().unwrap();
     let actor = project.json["defs"]["entities"][0]["uid"].as_i64().unwrap();
     let atlas = project.ensure_embedded_icons().unwrap();

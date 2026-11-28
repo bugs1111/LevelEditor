@@ -467,7 +467,7 @@ impl Project {
                 Ok((absolute(&base.join(relative))?, has_parent_components))
             })
             .collect::<Result<Vec<_>>>()?;
-        if backup_file(&path, self.json["iid"].as_str().unwrap_or("")) {
+        if backup_file_name(&path, self.json["iid"].as_str().unwrap_or("")).is_some() {
             return Err(Error::Unsupported(
                 "backup files are read-only; restore the backup or save as a new project".into(),
             ));
@@ -684,7 +684,7 @@ impl Project {
         if make_backup && candidate.json["backupOnSave"].as_bool().unwrap_or(false) {
             verify_files()?;
             candidate.path = Some(path.clone());
-            candidate.backup_with_progress(None, &mut |done, total, label| {
+            candidate.backup_with_progress(&mut |done, total, label| {
                 progress(SaveStage::Backup, done, total, label);
             })?;
         }
@@ -2445,14 +2445,26 @@ impl Project {
 
     /// Copy the currently saved project and external documents, retaining backupLimit copies.
     pub fn backup(&self) -> Result<Option<PathBuf>> {
-        self.backup_with_progress(None, &mut |_, _, _| {})
+        self.backup_with_progress(&mut |_, _, _| {})
     }
 
     fn backup_with_progress(
         &self,
-        restoring_from: Option<&Path>,
         progress: &mut impl FnMut(usize, usize, Option<&str>),
     ) -> Result<Option<PathBuf>> {
+        let Some((directory, rotation_lock, total)) = self.write_backup(progress)? else {
+            return Ok(None);
+        };
+        self.rotate_backups(0, None)?;
+        drop(rotation_lock);
+        progress(total, total, None);
+        Ok(Some(directory))
+    }
+
+    fn write_backup(
+        &self,
+        progress: &mut impl FnMut(usize, usize, Option<&str>),
+    ) -> Result<Option<(PathBuf, fs::File, usize)>> {
         let Some(path) = &self.path else {
             return Ok(None);
         };
@@ -2466,17 +2478,8 @@ impl Project {
         if id.contains('/') || id.contains('\\') {
             return Err(Error::Invalid("unsafe backup project IID".into()));
         }
-        let name = format!("{}_{}", id, backup_timestamp());
-        let mut destination = directory.join(&name);
-        let mut suffix = 2;
-        while destination.exists() {
-            destination = directory.join(format!("{name}_{suffix:04}"));
-            suffix += 1;
-        }
-        fs::create_dir_all(&destination).map_err(|source| Error::Io {
-            path: destination.clone(),
-            source,
-        })?;
+        let pending_backup = recovery::stage_backup(&directory)?;
+        let destination = pending_backup.path();
         let original = fs::read(path).map_err(|source| Error::Io {
             path: path.clone(),
             source,
@@ -2487,7 +2490,7 @@ impl Project {
         let corrupt = saved_json.is_none();
         let mut saved = saved_json.unwrap_or_else(|| self.clone());
         let mut staged = StagedSave::default();
-        let mut remapped = false;
+        let mut relocation_directory = None;
         let mut loose_levels = Vec::new();
         if corrupt {
             let old_dir = base.join(stem.as_ref());
@@ -2561,9 +2564,10 @@ impl Project {
                     .components()
                     .any(|c| c == Component::ParentDir)
                 {
-                    remapped = true;
+                    let folder = relocation_directory
+                        .get_or_insert_with(|| recovery::relocation_directory(&saved, path));
                     let rel = format!(
-                        "{stem}/external-{index:04}-{}",
+                        "{folder}/external-{index:04}-{}",
                         source.file_name().unwrap_or_default().to_string_lossy()
                     );
                     saved.level_stub_mut(key).expect("enumerated level")["externalRelPath"] =
@@ -2580,7 +2584,7 @@ impl Project {
         }
         let filename = path.file_name().expect("project filename");
         progress(done, total, filename.to_str());
-        let root = if remapped {
+        let root = if relocation_directory.is_some() {
             encode(&saved.json, saved.json["minifyJson"] == true)?
         } else {
             original
@@ -2588,20 +2592,23 @@ impl Project {
         staged.add(destination.join(filename), &root, false)?;
         staged.publish()?;
         progress(done + 1, total, None);
+        let (destination, rotation_lock) = recovery::publish_backup(pending_backup, id, false)?;
+        Ok(Some((destination, rotation_lock, total)))
+    }
+
+    fn rotate_backups(&self, minimum: usize, protected: Option<&Path>) -> Result<()> {
         let mut backups = self.list_backups()?;
         let mut directories = BTreeSet::new();
         backups.retain(|backup| directories.insert(backup.path.parent().unwrap().to_path_buf()));
-        let mut limit = self.json["backupLimit"].as_u64().unwrap_or(10) as usize;
-        if let Some(source) = restoring_from.and_then(Path::parent) {
+        let limit = self.json["backupLimit"].as_u64().unwrap_or(10) as usize;
+        if let Some(source) = protected.and_then(Path::parent) {
             backups.retain(|backup| !same_existing_file(backup.path.parent().unwrap(), source));
-            limit = limit.max(1);
         }
-        for backup in backups.into_iter().skip(limit) {
+        for backup in backups.into_iter().skip(limit.max(minimum)) {
             let old = backup.path.parent().unwrap().to_path_buf();
             fs::remove_dir_all(&old).map_err(|source| Error::Io { path: old, source })?;
         }
-        progress(total, total, None);
-        Ok(Some(destination))
+        Ok(())
     }
 }
 pub(crate) fn relative_to(path: &Path, base: &Path) -> Result<String> {
@@ -2619,17 +2626,21 @@ pub(crate) fn relative_to(path: &Path, base: &Path) -> Result<String> {
     }
     Ok(out.to_string_lossy().replace('\\', "/"))
 }
+fn is_file_path_field(object: &serde_json::Map<String, Value>) -> bool {
+    matches!(
+        object.get("__type").and_then(Value::as_str),
+        Some("FilePath" | "Array<FilePath>")
+    ) || matches!(
+        object.get("type").and_then(Value::as_str),
+        Some("F_Path" | "F_File")
+    )
+}
+
 pub(crate) fn rebase_paths(value: &mut Value, old: &Path, new: &Path) -> Result<()> {
     match value {
         Value::Object(o) => {
             let is_level = o.contains_key("layerInstances") && o.contains_key("identifier");
-            let file = o
-                .get("__type")
-                .and_then(Value::as_str)
-                .is_some_and(|t| t.contains("FilePath"))
-                || o.get("type")
-                    .and_then(Value::as_str)
-                    .is_some_and(|t| t == "F_Path" || t == "F_File");
+            let file = is_file_path_field(o);
             for (k, v) in o {
                 if matches!(
                     k.as_str(),
@@ -2995,32 +3006,41 @@ impl Project {
 #[path = "project_migrate.rs"]
 mod migrate;
 
-fn valid_backup_name(name: &str, id: &str) -> bool {
-    let Some(date) = name.strip_prefix(&format!("{id}_")) else {
-        return false;
+struct BackupName<'a> {
+    prefix: &'a str,
+    timestamp: &'a str,
+    crash: bool,
+    sequence: u64,
+}
+
+// <project IID or "backup">_YYYY-MM-DD_HH-MM-SS[_crash][_NNNN]
+fn parse_backup_name(name: &str) -> Option<BackupName<'_>> {
+    let (without_number, sequence) = match name.rsplit_once('_') {
+        Some((base, digits)) if digits.len() >= 4 && digits.bytes().all(|c| c.is_ascii_digit()) => {
+            (base, digits.parse().ok()?)
+        }
+        _ => (name, 1),
     };
-    if date.len() < 19 || !date.as_bytes()[..19].is_ascii() {
-        return false;
-    }
-    let suffix = &date[19..];
-    let suffix = suffix.strip_prefix("_crash").unwrap_or(suffix);
-    let numbered = suffix
-        .strip_prefix('_')
-        .is_some_and(|digits| digits.len() == 4 && digits.bytes().all(|c| c.is_ascii_digit()));
-    if !suffix.is_empty() && !numbered {
-        return false;
-    }
-    date[..19].bytes().enumerate().all(|(i, c)| match i {
+    let base = without_number
+        .strip_suffix("_crash")
+        .unwrap_or(without_number);
+    let (prefix, date) = base.split_at_checked(base.len().checked_sub(19)?)?;
+    let prefix = prefix.strip_suffix('_')?;
+    let valid = date.bytes().enumerate().all(|(i, c)| match i {
         4 | 7 | 13 | 16 => c == b'-',
         10 => c == b'_',
         _ => c.is_ascii_digit(),
+    });
+    valid.then_some(BackupName {
+        prefix,
+        timestamp: date,
+        crash: without_number.ends_with("_crash"),
+        sequence,
     })
 }
-fn backup_file(path: &Path, id: &str) -> bool {
-    path.parent()
-        .and_then(|p| p.file_name())
-        .and_then(|s| s.to_str())
-        .is_some_and(|name| valid_backup_name(name, id) || valid_backup_name(name, "backup"))
+fn backup_file_name<'a>(path: &'a Path, id: &str) -> Option<BackupName<'a>> {
+    parse_backup_name(path.parent()?.file_name()?.to_str()?)
+        .filter(|name| name.prefix == id || name.prefix == "backup")
 }
 #[path = "project_crash.rs"]
 mod crash;
@@ -3169,7 +3189,13 @@ fn prune_export_directory(
             source,
         })?;
         if kind.is_dir() {
-            prune_export_directory(&path, keep, extensions, is_referenced)?;
+            // Backups can live in a managed export tree, even after its backup setting changes.
+            let backup = entry.file_name();
+            if !backup.to_str().is_some_and(|name| {
+                name.starts_with(recovery::STAGING_PREFIX) || parse_backup_name(name).is_some()
+            }) {
+                prune_export_directory(&path, keep, extensions, is_referenced)?;
+            }
         } else if kind.is_file()
             && path
                 .extension()

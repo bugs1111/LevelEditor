@@ -332,7 +332,7 @@ impl EditorApp {
                     if let Some(path) = app_log::path(self.settings.path.as_deref()) {
                         let path_width = (ui.available_width()-76.).max(40.);
                         let mut display = path.display().to_string();
-                        ui.add_sized([path_width,30.], egui::TextEdit::singleline(&mut display).interactive(false));
+                        ui.add_sized([path_width,30.], source_controls::form_text_box(&mut display).interactive(false));
                         text_editor::log_editor(ui,&path);
                         ui.scope(|ui| {
                             ui.spacing_mut().button_padding = egui::vec2(4.,2.);

@@ -445,9 +445,8 @@ impl EditorApp {
                 }
                 let response = ui.add_sized(
                     size,
-                    egui::TextEdit::singleline(draft)
+                    source_controls::form_text_box(draft)
                         .id(id)
-                        .vertical_align(egui::Align::Center)
                         .hint_text(&fallback),
                 );
                 close = response.lost_focus() || ui.input(|i| i.key_pressed(Key::Enter));
@@ -588,11 +587,10 @@ impl EditorApp {
                 let hint = locale::tr(ui, "Optional value identifier");
                 ui.add_sized(
                     [width, 32.],
-                    egui::TextEdit::singleline(draft)
+                    source_controls::form_text_box(draft)
                         .id(editor_id)
                         .background_color(Color32::BLACK.lerp_to_gamma(color, 0.3))
                         .horizontal_align(egui::Align::Center)
-                        .vertical_align(egui::Align::Center)
                         .hint_text(RichText::new(hint).italics().color(theme::LIGHT)),
                 )
             },

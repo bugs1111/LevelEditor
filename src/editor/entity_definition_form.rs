@@ -106,9 +106,7 @@ impl EditorApp {
                 }
             });
             row(ui, "Documentation", |ui| {
-                let mut doc = text(&def, "doc", "")
-                    .replace("\\\\", "\\")
-                    .replace("\\n", "\n");
+                let mut doc = ldtk_core::ldtk_string::unescape(text(&def, "doc", "")).into_owned();
                 if ui
                     .add_sized(
                         [ui.available_width(), 32.],
@@ -116,7 +114,7 @@ impl EditorApp {
                     )
                     .changed()
                 {
-                    patch["doc"] = json!(doc.replace('\\', "\\\\").replace('\n', "\\n"));
+                    patch["doc"] = json!(ldtk_core::ldtk_string::escape(&doc));
                 }
             });
             row(ui, "Tags", |ui| {

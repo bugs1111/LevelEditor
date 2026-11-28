@@ -1,7 +1,7 @@
 use super::Project;
 use serde_json::Value;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct LevelKey {
     pub world: Option<usize>,
     pub level: usize,
@@ -56,9 +56,27 @@ impl Project {
         &self,
         world: Option<usize>,
     ) -> impl DoubleEndedIterator<Item = (LevelKey, &Value)> {
+        self.levels_in_world_from(world, 0)
+    }
+
+    /// Visit available level documents starting at this slot, then continue into later worlds.
+    pub fn iter_levels_from(&self, start: LevelKey) -> impl Iterator<Item = (LevelKey, &Value)> {
+        self.world_indices()
+            .skip(start.world.map_or(0, |i| i.saturating_add(1)))
+            .flat_map(move |world| {
+                self.levels_in_world_from(world, if world == start.world { start.level } else { 0 })
+            })
+    }
+
+    fn levels_in_world_from(
+        &self,
+        world: Option<usize>,
+        start: usize,
+    ) -> impl DoubleEndedIterator<Item = (LevelKey, &Value)> {
         self.level_stubs_in_world(world)
             .iter()
             .enumerate()
+            .skip(start)
             .filter_map(move |(level, stub)| {
                 self.resolve_level_stub(stub)
                     .map(|data| (LevelKey { world, level }, data))
@@ -97,10 +115,8 @@ impl Project {
     }
 
     pub fn level_by_iid(&self, iid: &str) -> Option<(LevelKey, &Value)> {
-        self.iter_level_keys().find_map(|key| {
-            let level = self.level(key)?;
-            (level["iid"] == iid).then_some((key, level))
-        })
+        self.iter_levels_from(LevelKey::default())
+            .find(|(_, level)| level["iid"] == iid)
     }
 
     pub fn entity_by_iid(&self, iid: &str) -> Option<EntityMatch<'_>> {
@@ -110,26 +126,46 @@ impl Project {
 
     /// Visit entities in level, layer and instance order, resolving external levels.
     pub fn iter_entities(&self) -> impl Iterator<Item = EntityMatch<'_>> {
-        self.iter_level_keys().flat_map(|level| {
-            self.level(level)
-                .and_then(|level| level["layerInstances"].as_array())
-                .into_iter()
-                .flatten()
-                .enumerate()
-                .flat_map(move |(layer_index, layer)| {
-                    layer["entityInstances"]
-                        .as_array()
-                        .into_iter()
-                        .flatten()
-                        .enumerate()
-                        .map(move |(entity_index, entity)| EntityMatch {
-                            level,
-                            layer_index,
-                            entity_index,
-                            entity,
-                        })
-                })
-        })
+        self.iter_entities_after(None)
+    }
+
+    /// Resume after a previously visited (level, layer index, entity index).
+    /// Positions are valid until levels, layers or entities are reordered, inserted or removed.
+    pub fn iter_entities_after(
+        &self,
+        previous: Option<(LevelKey, usize, usize)>,
+    ) -> impl Iterator<Item = EntityMatch<'_>> {
+        let (start, start_layer, start_entity) = previous
+            .map(|(key, layer, entity)| (key, layer, entity.saturating_add(1)))
+            .unwrap_or_default();
+        self.iter_levels_from(start)
+            .flat_map(move |(level, document)| {
+                document["layerInstances"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .enumerate()
+                    .skip(if level == start { start_layer } else { 0 })
+                    .flat_map(move |(layer_index, layer)| {
+                        let skip = if level == start && layer_index == start_layer {
+                            start_entity
+                        } else {
+                            0
+                        };
+                        layer["entityInstances"]
+                            .as_array()
+                            .into_iter()
+                            .flatten()
+                            .enumerate()
+                            .skip(skip)
+                            .map(move |(entity_index, entity)| EntityMatch {
+                                level,
+                                layer_index,
+                                entity_index,
+                                entity,
+                            })
+                    })
+            })
     }
 
     pub(super) fn level_stub(&self, key: LevelKey) -> Option<&Value> {

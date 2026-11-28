@@ -913,8 +913,7 @@ impl EditorApp {
                         .clicked()
                 })
                 .inner;
-            if clear {
-                self.settings.clear_trust(&iid);
+            if clear && self.change_command_trust(&iid, None) {
                 trust = None;
             }
         }
@@ -2219,7 +2218,7 @@ mod tests {
             (false, blocked, "Unblock it"),
             (true, allowed, "Remove authorization"),
         ] {
-            app.settings.set_trusted(&iid, trusted);
+            app.settings.set_trust(&iid, Some(trusted)).unwrap();
             let output = frame(&mut app, &ctx, vec![]);
             assert!(label(&output, message).is_some());
             assert!(label(&output, if trusted { blocked } else { allowed }).is_none());

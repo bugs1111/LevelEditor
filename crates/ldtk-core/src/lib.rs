@@ -8,6 +8,7 @@ mod field_edit;
 mod grid_presence;
 mod history;
 pub mod imports;
+pub mod ldtk_string;
 mod naming;
 mod project;
 mod selection;

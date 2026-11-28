@@ -1,5 +1,5 @@
 //! Source WorldPanel and LevelInstancePanel forms.
-use super::source_controls::edit_text;
+use super::source_controls::{edit_text, form_text_box};
 use super::*;
 use crate::app::chrome::ActionTooltip as _;
 
@@ -293,13 +293,6 @@ fn world_selector(
     .inner
 }
 
-fn form_text_box(value: &mut String) -> egui::TextEdit<'_> {
-    egui::TextEdit::singleline(value)
-        .font(theme::TextRole::FormValue.font())
-        .margin(egui::Margin::symmetric(9, 0))
-        .vertical_align(egui::Align::Center)
-}
-
 pub(super) fn form_text_input(
     ui: &mut egui::Ui,
     key: &'static str,
@@ -412,17 +405,7 @@ fn iid_row(ui: &mut egui::Ui, iid: &str, width: f32, key: &str, help: &str) {
                 .background_color(Color32::TRANSPARENT)
                 .text_color(GROUP_BAR),
         );
-        if icon_button(
-            ui,
-            egui::include_image!("../../assets/icons/copy.svg"),
-            help,
-            theme::LIGHT,
-            egui::vec2(SMALL_INPUT_WIDTH, 32.),
-        )
-        .clicked()
-        {
-            ui.ctx().copy_text(iid.to_owned());
-        }
+        source_controls::copy_iid_button(ui, iid, help, egui::vec2(SMALL_INPUT_WIDTH, 32.));
     });
 }
 

@@ -37,7 +37,6 @@ use definition_clipboard::ClipTarget;
 use serde_json::json;
 const TILESET_MIN_LABEL_WIDTH: f32 = 110.;
 const EMBEDDED_TILESET_DESCRIPTION: &str = "This tileset is using an embedded image from LDtk and cannot be modified. The tileset was added to your project because an element (an Entity or an Enum) uses it.";
-const EMBEDDED_TILESET_LICENSE: &str = "LICENSING: this image is only meant to be used inside LDtk and cannot be redistributed in any way. Please contact the author (FinalBossBlues) if you want to license this image for your own use in your game.";
 const ENUM_VALUE_SIZE: f32 = 32.;
 const ENUM_VALUE_SPACING: f32 = 3.;
 
@@ -61,64 +60,15 @@ fn tileset_has_marked_tiles(tileset: &Value) -> bool {
 }
 
 fn embedded_tileset_notice(ui: &mut egui::Ui) {
-    const WEBSITE: &str = "https://finalbossblues.itch.io/icons";
-    const PATREON: &str = "https://www.patreon.com/finalbossblues";
     let spacing = ui.spacing().item_spacing.y;
     ui.add_space(6.);
     ui.spacing_mut().item_spacing.y = 0.;
     let card = egui::Frame::new().inner_margin(17).show(ui, |ui| {
         ui.set_width(ui.available_width());
-        ui.spacing_mut().item_spacing.y = 8.;
-        ui.allocate_ui_with_layout(
-            egui::vec2(ui.available_width(), 32.),
-            egui::Layout::right_to_left(egui::Align::Center),
-            |ui| {
-                let support = source_controls::add_sized_button(
-                    ui,
-                    [99., 32.],
-                    egui::Button::image_and_text(
-                        egui::Image::new(egui::include_image!("../../assets/icons/love.svg"))
-                            .fit_to_exact_size(egui::Vec2::splat(20.))
-                            .tint(Color32::from_white_alpha(128)),
-                        RichText::new("Patreon").color(Color32::WHITE),
-                    )
-                    .fill(Color32::from_rgb(42, 114, 165))
-                    .corner_radius(0.),
-                )
-                .on_hover_cursor(egui::CursorIcon::PointingHand)
-                .detail_tooltip(PATREON);
-                support.widget_info(|| {
-                    egui::WidgetInfo::labeled(egui::WidgetType::Link, true, "Patreon")
-                });
-                if support.clicked() {
-                    ui.ctx().open_url(egui::OpenUrl::new_tab(PATREON));
-                }
-                ui.allocate_ui_with_layout(
-                    egui::vec2(ui.available_width(), 32.),
-                    egui::Layout::left_to_right(egui::Align::Center),
-                    |ui| {
-                        ui.spacing_mut().item_spacing.x = 4.;
-                        ui.label(RichText::new(locale::tr(ui, "Image by")).size(15.));
-                        ui.label(
-                            RichText::new("FinalBossBlues")
-                                .font(theme::TextRole::StrongBody.font()),
-                        );
-                        source_controls::hyperlink(ui, "website", WEBSITE);
-                    },
-                );
-            },
-        );
-        let (_, line) = ui.allocate_space(egui::vec2(ui.available_width(), 1.));
-        ui.painter().rect_filled(line, 0., theme::LIGHT);
         ui.label(
             RichText::new(locale::tr(ui, EMBEDDED_TILESET_DESCRIPTION))
                 .size(15.)
                 .color(Color32::WHITE),
-        );
-        ui.label(
-            RichText::new(locale::tr(ui, EMBEDDED_TILESET_LICENSE))
-                .size(15.)
-                .color(theme::ACCENT),
         );
     });
     ui.spacing_mut().item_spacing.y = spacing;
@@ -545,7 +495,7 @@ impl EditorApp {
                 ));
                 ui.add_sized(
                     [ui.available_width(), 30.],
-                    egui::TextEdit::singleline(&mut name).vertical_align(egui::Align::Center),
+                    source_controls::form_text_box(&mut name),
                 );
                 ui.horizontal_wrapped(|ui| {
                     if project_dialogs::action(ui, "Rename", true).clicked() {
@@ -2751,7 +2701,9 @@ impl EditorApp {
             if let Some(next) = text_editor::value_editor(
                 ui,
                 ("tileset-custom-data", uid, self.tile_id),
-                library::tile_custom_data(&def, self.tile_id).unwrap_or_default(),
+                library::tile_custom_data(&def, self.tile_id)
+                    .as_deref()
+                    .unwrap_or_default(),
                 "Tile custom data",
                 "LangJson",
                 false,
@@ -3240,7 +3192,7 @@ fn enum_value_name(
             let background = ui.painter().add(egui::Shape::Noop);
             let response = ui.add_sized(
                 size,
-                egui::TextEdit::singleline(&mut name)
+                source_controls::form_text_box(&mut name)
                     .desired_width(f32::INFINITY)
                     .min_size(size),
             );
@@ -3556,6 +3508,39 @@ mod tests {
         draw(vec![]);
         let (initial, view) = atlas(&draw(vec![]));
         assert!((initial.width() / 320. - 3.).abs() < 0.001);
+        let check_tip = |out: &egui::FullOutput, point: egui::Pos2, image: Rect| {
+            let cell = (point - image.min) / (image.width() / 20.);
+            let label = format!(
+                "Tile {}",
+                cell.x.floor() as i32 + 20 * cell.y.floor() as i32
+            );
+            let text = out
+                .shapes
+                .iter()
+                .find_map(|shape| match &shape.shape {
+                    egui::Shape::Text(text) if text.galley.text() == label => Some(text.pos),
+                    _ => None,
+                })
+                .expect("hovering a tile immediately shows its number");
+            // LDtk offsets the tip by (-16, 24), with 18 by 12 points of inner padding.
+            let top = if point.y >= 750. { 750. } else { point.y + 24. };
+            assert!(
+                text.distance(egui::pos2(point.x + 2., top + 12.)) < 2.,
+                "{point:?} -> {text:?}"
+            );
+        };
+        let first = view.min + egui::vec2(80., 16.);
+        for point in [
+            first,
+            first + egui::vec2(8., 5.),
+            view.left_bottom() + egui::vec2(80., -12.),
+        ] {
+            check_tip(
+                &draw(vec![egui::Event::PointerMoved(point)]),
+                point,
+                initial,
+            );
+        }
         let pointer = view.center();
         draw(vec![egui::Event::PointerMoved(pointer)]);
         draw(vec![egui::Event::MouseWheel {
@@ -3567,12 +3552,22 @@ mod tests {
         for _ in 0..12 {
             draw(vec![]);
         }
-        let (scaled, zoomed_view) = atlas(&draw(vec![]));
+        let outside = draw(vec![]);
+        assert!(!outside.shapes.iter().any(|shape| matches!(&shape.shape,
+            egui::Shape::Text(text) if text.galley.text().strip_prefix("Tile ").is_some_and(|id| id.parse::<u32>().is_ok())
+        )));
+        let (scaled, zoomed_view) = atlas(&outside);
         let zoom = scaled.width() / 320.;
         assert!((zoom - 2.64).abs() < 0.001, "{zoom}");
         assert_eq!(view, zoomed_view);
         assert!(((pointer - initial.min) / 3. - (pointer - scaled.min) / zoom).length() < 0.1);
         assert_eq!(view.bottom(), 879.);
+        check_tip(
+            &draw(vec![egui::Event::PointerMoved(pointer)]),
+            pointer,
+            scaled,
+        );
+        draw(vec![egui::Event::PointerMoved(egui::pos2(160., 520.))]);
         draw(vec![egui::Event::MouseWheel {
             unit: egui::MouseWheelUnit::Line,
             delta: egui::vec2(0., -1.),
@@ -3735,17 +3730,24 @@ mod tests {
                 .iter()
                 .any(|s| text_position(&s.shape, "TILE 2 CUSTOM DATA").is_some())
         );
+        let tile_data = "{\n  \"hint\": \"甲\\n乙\", \"path\": \"C:\\\\new\"\n}";
         draw(
             &mut app,
-            vec![egui::Event::Paste("  {\"cost\":2} \n".into())],
+            vec![egui::Event::Paste(format!("  {tile_data} \n"))],
         );
         text_editor::request_validate(&ctx);
         draw(&mut app, vec![]);
         let data = |app: &EditorApp| {
             app.project.as_ref().unwrap().tileset(uid).unwrap()["customData"].clone()
         };
-        let saved = json!([{"tileId":2,"data":"{\"cost\":2}"}]);
+        let saved =
+            json!([{"tileId":2,"data":r#"{\n  "hint": "甲\\n乙", "path": "C:\\\\new"\n}"#}]);
         assert_eq!(data(&app), saved);
+        assert_eq!(
+            library::tile_custom_data(app.project.as_ref().unwrap().tileset(uid).unwrap(), 2)
+                .as_deref(),
+            Some(tile_data)
+        );
 
         stroke(
             &mut app,
@@ -3907,10 +3909,10 @@ mod tests {
         );
         for text in ["Image by", "FinalBossBlues", "website", "Patreon"] {
             assert!(
-                out.shapes
+                !out.shapes
                     .iter()
                     .any(|shape| label(&shape.shape, text).is_some()),
-                "missing embedded tileset credit {text}"
+                "unexpected embedded tileset link or credit {text}"
             );
         }
         let notice_border = out
@@ -3934,11 +3936,9 @@ mod tests {
                 .iter()
                 .any(|shape| { label(&shape.shape, EMBEDDED_TILESET_DESCRIPTION).is_some() })
         );
-        assert!(
-            out.shapes
-                .iter()
-                .any(|shape| { label(&shape.shape, EMBEDDED_TILESET_LICENSE).is_some() })
-        );
+        assert!(!out.shapes.iter().any(|shape| matches!(&shape.shape,
+            egui::Shape::Text(text) if text.galley.text().starts_with("LICENSING:")
+        )));
         for name in [
             "Saved tile selections",
             "Selected tile data",
@@ -5069,10 +5069,7 @@ mod tests {
         click(&mut app, label(&closed, "Plain"));
         let opened = frame(&mut app, vec![]);
         assert!(label(&opened, "All tilesets").y < label(&opened, "Integrated LDtk tilesets").y);
-        click(
-            &mut app,
-            label(&opened, "⚙ Internal icons by FinalBossBlues"),
-        );
+        click(&mut app, label(&opened, "⚙ Internal icons"));
         let project = app.project.as_ref().unwrap();
         let definition = &project.json["defs"]["enums"][0];
         let atlas = definition["iconTilesetUid"].as_i64().unwrap();

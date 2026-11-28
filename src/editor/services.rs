@@ -3,22 +3,28 @@ use super::*;
 pub(super) struct LoadedProject {
     pub project: Project,
     snapshot: Option<ldtk_core::FilesystemSnapshot>,
-    pub migrated: bool,
-    pub warnings: Vec<String>,
+    needs_save: bool,
+    feedback: LoadFeedback,
     pub backup_original: Option<PathBuf>,
     keep_canvas_preview: bool,
+}
+
+enum LoadFeedback {
+    Warnings(Vec<String>),
+    Restored(ldtk_core::SaveReport),
 }
 
 #[derive(Debug)]
 pub(super) enum LoadFailure {
     MissingProject(PathBuf),
     ChangedDuringOpen,
-    Other(String),
+    Other(ldtk_core::Error),
 }
 
 pub(super) struct SavedProject {
     pub project: Project,
     pub report: ldtk_core::SaveReport,
+    pub renamed_from: Option<PathBuf>,
 }
 
 pub(super) enum SaveFailure {
@@ -37,6 +43,15 @@ pub(super) enum SaveWriteFailure {
 
 pub(super) const SAVE_INTERRUPTED: &str =
     "Saving was interrupted before completion could be confirmed.";
+
+fn with_report_details(ctx: &egui::Context, mut message: String, details: &[String]) -> String {
+    let language = locale::language(ctx);
+    for detail in details {
+        message.push_str(language.translate("; "));
+        message.push_str(language.translate(detail));
+    }
+    message
+}
 
 fn poll_worker<T>(worker: &mut Option<mpsc::Receiver<T>>) -> Option<Result<T, mpsc::RecvError>> {
     let result = match worker.as_ref()?.try_recv() {
@@ -111,7 +126,7 @@ pub(super) fn load_project(
             {
                 LoadFailure::MissingProject(path)
             } else {
-                LoadFailure::Other(error.to_string())
+                LoadFailure::Other(error)
             }
         })?;
     prepare_project(project, documents)
@@ -121,7 +136,6 @@ fn prepare_project(
     mut project: Project,
     documents: ldtk_core::FilesystemSnapshot,
 ) -> Result<LoadedProject, LoadFailure> {
-    let failure = |error: ldtk_core::Error| LoadFailure::Other(error.to_string());
     let version = text(&project.json, "jsonVersion", "0.0");
     let mut parts = version.split('.').map(|p| p.parse::<u32>().unwrap_or(0));
     let modern = (parts.next().unwrap_or(0), parts.next().unwrap_or(0)) >= (1, 5);
@@ -130,33 +144,60 @@ fn prepare_project(
         // Migration expects an array or null. The cache is derived from the source grid.
         project.layer_mut(key, index).expect("enumerated layer")["autoLayerTiles"] = Value::Null;
     }
-    let migrated = project.migrate_to_current().map_err(failure)?;
+    let migrated = project.migrate_to_current().map_err(LoadFailure::Other)?;
     if modern {
         for &(key, _, uid) in &repairs {
-            project.rebuild_auto_layer(key, uid).map_err(failure)?;
+            project
+                .rebuild_auto_layer(key, uid)
+                .map_err(LoadFailure::Other)?;
         }
         project.reconcile_cached_auto_tiles();
     } else {
         for key in project.level_keys() {
-            project.rebuild_auto_layers(key).map_err(failure)?;
+            project
+                .rebuild_auto_layers(key)
+                .map_err(LoadFailure::Other)?;
         }
     }
     let mut snapshot = documents.clone();
     project.watch_available_resources(&mut snapshot);
-    if !documents.changed_files().map_err(failure)?.is_empty() {
+    if !documents
+        .changed_files()
+        .map_err(LoadFailure::Other)?
+        .is_empty()
+    {
         return Err(LoadFailure::ChangedDuringOpen);
     }
+    // Bundled examples may need conversion on every open. Browsing them is a clean starting state.
+    let needs_save = (migrated || !repairs.is_empty())
+        && !project.path.as_deref().is_some_and(|path| {
+            path.canonicalize()
+                .ok()
+                .zip(resource_path("examples/original").canonicalize().ok())
+                .is_some_and(|(path, examples)| path.starts_with(examples))
+        });
     Ok(LoadedProject {
         snapshot: Some(snapshot),
         project,
-        migrated: migrated || !repairs.is_empty(),
-        warnings: Vec::new(),
+        needs_save,
+        feedback: LoadFeedback::Warnings(Vec::new()),
         backup_original: None,
         keep_canvas_preview: false,
     })
 }
 
 impl EditorApp {
+    fn log_export_diagnostics(&self, ctx: &egui::Context, report: &ldtk_core::SaveReport) {
+        for diagnostic in &report.export_diagnostics {
+            app_log::record(ctx, self.settings.path.as_deref(), diagnostic, true);
+        }
+    }
+
+    pub(super) fn set_operation_status(&mut self, status: impl Into<String>) {
+        self.status = status.into();
+        self.status_error = false;
+    }
+
     pub(super) fn reject_conflicting_save_folder(&mut self, path: &Path) -> bool {
         if !save_folder_conflicts(path) {
             return false;
@@ -193,17 +234,17 @@ impl EditorApp {
         }
         let (tx, rx) = mpsc::channel();
         self.loading = Some(rx);
-        self.status = "Creating project…".into();
+        self.set_operation_status("Creating project…");
         let ctx = ctx.clone();
         std::thread::spawn(move || {
             let result = (|| {
                 let mut project = Project::new();
-                project.save(&path).map_err(|e| e.to_string())?;
+                project.save(&path)?;
                 Ok(LoadedProject {
                     snapshot: project.filesystem_snapshot().ok(),
                     project,
-                    migrated: false,
-                    warnings: Vec::new(),
+                    needs_save: false,
+                    feedback: LoadFeedback::Warnings(Vec::new()),
                     backup_original: None,
                     keep_canvas_preview: false,
                 })
@@ -252,7 +293,7 @@ impl EditorApp {
                         self.settings.value["showDetails"] = true.into();
                     }
                     self.install_project(loaded.project, loaded.snapshot);
-                    self.dirty = loaded.migrated && !read_only;
+                    self.dirty = loaded.needs_save && !read_only;
                     if self.dirty
                         && let Some(project) = &self.project
                     {
@@ -264,8 +305,29 @@ impl EditorApp {
                     }
                     self.resource_scan(ctx);
                     self.queue_project_hooks(ctx, "AfterLoad", hooks::Continuation::None);
-                    if !loaded.warnings.is_empty() {
-                        self.status = loaded.warnings.join("; ");
+                    let warnings = match loaded.feedback {
+                        LoadFeedback::Warnings(warnings) => warnings,
+                        LoadFeedback::Restored(report) => {
+                            self.log_export_diagnostics(ctx, &report);
+                            let language = locale::language(ctx);
+                            let mut warnings = Vec::new();
+                            if !report.export_errors.is_empty() {
+                                warnings.push(with_report_details(
+                                    ctx,
+                                    language
+                                        .translate("Project restored with export issues")
+                                        .into(),
+                                    &report.export_errors,
+                                ));
+                            }
+                            warnings.extend(
+                                report.warnings.iter().map(|w| language.restore_warning(w)),
+                            );
+                            warnings
+                        }
+                    };
+                    if !warnings.is_empty() {
+                        self.status = warnings.join(locale::tr_ctx(ctx, "; "));
                         self.status_error = true;
                     }
                 }
@@ -273,13 +335,19 @@ impl EditorApp {
                     self.loading_progress = None;
                     self.status = match error {
                         LoadFailure::MissingProject(path) => {
-                            self.remove_recent("recentProjects", &path);
+                            self.settings.remove_recent("recentProjects", &path);
                             "Project file not found".into()
                         }
                         LoadFailure::ChangedDuringOpen => {
                             "Project files changed while opening. Open the project again.".into()
                         }
-                        LoadFailure::Other(error) => format!("Open failed: {error}"),
+                        LoadFailure::Other(error) => {
+                            let language = locale::language(ctx);
+                            language.format(
+                                "Open failed: {error}",
+                                &[("error", &language.project_error(&error))],
+                            )
+                        }
                     };
                     self.status_error = true;
                 }
@@ -293,9 +361,7 @@ impl EditorApp {
         if let Some(result) = poll_worker(&mut self.saving) {
             match result {
                 Ok(Ok(mut saved)) => {
-                    for diagnostic in &saved.report.export_diagnostics {
-                        app_log::record(ctx, self.settings.path.as_deref(), diagnostic, true);
-                    }
+                    self.log_export_diagnostics(ctx, &saved.report);
                     let mut snapshot = saved.report.document_snapshot.take();
                     if let Some(current) = &mut snapshot {
                         if let Some(previous) = self.file_snapshot.as_ref() {
@@ -320,7 +386,11 @@ impl EditorApp {
                     self.status = if saved.report.export_errors.is_empty() {
                         notifications::SAVED_PROJECT_TITLE.into()
                     } else {
-                        format!("Project saved; {}", saved.report.export_errors.join("; "))
+                        with_report_details(
+                            ctx,
+                            locale::tr_ctx(ctx, "Project saved").into(),
+                            &saved.report.export_errors,
+                        )
                     };
                     self.status_error = !saved.report.export_errors.is_empty();
                     if let Some(progress) = &self.saving_progress {
@@ -343,7 +413,8 @@ impl EditorApp {
                             .and_then(|k| project.level(k))
                             .and_then(|l| l["uid"].as_i64())
                             .unwrap_or(0);
-                        self.settings.remember(path, uid);
+                        self.settings
+                            .remember_project(path, uid, saved.renamed_from.as_deref());
                     }
                     self.queue_project_hooks(
                         ctx,
@@ -377,7 +448,7 @@ impl EditorApp {
                             {
                                 SaveWriteFailure::DirectoryConflict
                             }
-                            _ => SaveWriteFailure::Io(e.to_string()),
+                            _ => SaveWriteFailure::Io(locale::language(ctx).project_error(&e)),
                         };
                         self.fail_save(path, reason);
                     } else {
@@ -398,19 +469,23 @@ impl EditorApp {
             self.exporting_progress = None;
             match result {
                 Ok(Ok(report)) => {
-                    self.status = format!(
-                        "Exported {} files{}",
-                        report.outputs.len(),
-                        if report.warnings.is_empty() {
-                            String::new()
-                        } else {
-                            format!("; {}", report.warnings.join("; "))
-                        }
-                    );
+                    let summary = match report.outputs.len() {
+                        1 => locale::tr_ctx(ctx, "Exported 1 file").into(),
+                        count => locale::format_ctx(
+                            ctx,
+                            "Exported {count} files",
+                            &[("count", &count.to_string())],
+                        ),
+                    };
+                    self.status = with_report_details(ctx, summary, &report.warnings);
                     self.status_error = !report.warnings.is_empty();
                 }
                 Ok(Err(e)) => {
-                    self.status = format!("Export failed: {e}");
+                    let language = locale::language(ctx);
+                    self.status = language.format(
+                        "Export failed: {error}",
+                        &[("error", &language.project_error(&e))],
+                    );
                     self.status_error = true;
                 }
                 Err(_) => {
@@ -475,8 +550,7 @@ impl EditorApp {
         self.rebuilding_auto_layers = Some(rx);
         self.auto_layer_rebuild_progress = Some(progress);
         self.pending_auto_layer_rebuild = false;
-        self.status = "Updating auto-layers…".into();
-        self.status_error = false;
+        self.set_operation_status("Updating auto-layers…");
         std::thread::spawn(move || {
             let result = (|| {
                 for (i, &key) in keys.iter().enumerate() {
@@ -534,7 +608,7 @@ impl EditorApp {
         self.exporting = Some(rx);
         let progress = Arc::new(Mutex::new(None));
         self.exporting_progress = Some(progress.clone());
-        self.status = "Exporting…".into();
+        self.set_operation_status("Exporting…");
         let repaint = self.repaint.clone();
         std::thread::spawn(move || {
             let mut report_progress = |done, total| {
@@ -563,8 +637,7 @@ impl EditorApp {
                     outputs,
                     warnings: Vec::new(),
                 })
-            }
-            .map_err(|e| e.to_string());
+            };
             let _ = tx.send(result);
             if let Some(ctx) = repaint {
                 ctx.request_repaint();
@@ -575,7 +648,7 @@ impl EditorApp {
     pub(super) fn import_ogmo_async(&mut self, ctx: &egui::Context, path: PathBuf) {
         let (tx, rx) = mpsc::channel();
         self.loading = Some(rx);
-        self.status = "Importing Ogmo project…".into();
+        self.set_operation_status("Importing Ogmo project…");
         let ctx = ctx.clone();
         std::thread::spawn(move || {
             let result = Project::import_ogmo_with_report(path)
@@ -590,20 +663,21 @@ impl EditorApp {
                     Ok(LoadedProject {
                         snapshot: report.project.filesystem_snapshot().ok(),
                         project: report.project,
-                        migrated: false,
-                        warnings: report.warnings,
+                        needs_save: false,
+                        feedback: LoadFeedback::Warnings(report.warnings),
                         backup_original: None,
                         keep_canvas_preview: false,
                     })
                 })
-                .map_err(|error| LoadFailure::Other(error.to_string()));
+                .map_err(LoadFailure::Other);
             let _ = tx.send(result);
             ctx.request_repaint();
         });
     }
 
     pub(super) fn browse_ogmo(&mut self, ctx: &egui::Context) {
-        let mut dialog = FileDialog::new().add_filter("Supported file types", &["ogmo"]);
+        let mut dialog =
+            FileDialog::new().add_filter(locale::tr_ctx(ctx, "Supported file types"), &["ogmo"]);
         if let Some(dir) = self
             .settings
             .ui_dir(None, "ImportOgmo", None)
@@ -634,33 +708,30 @@ impl EditorApp {
             == Some(&backup);
         let (tx, rx) = mpsc::channel();
         self.loading = Some(rx);
-        self.status = if restore {
+        self.set_operation_status(if restore {
             "Restoring backup…"
         } else {
             "Opening backup…"
-        }
-        .into();
+        });
         let ctx = ctx.clone();
         std::thread::spawn(move || {
             let result = (|| {
-                let (mut project, warnings) = if restore {
+                let (mut project, feedback) = if restore {
                     Project::restore_backup_with_exports(&backup, &original)
-                        .map(|(project, report)| (project, report.warnings))
+                        .map(|(project, report)| (project, LoadFeedback::Restored(report)))
                 } else {
-                    Project::load_backup(&backup, &original).map(|project| (project, Vec::new()))
-                }
-                .map_err(|e| e.to_string())?;
-                let migrated = project.migrate_to_current().map_err(|e| e.to_string())?;
+                    Project::load_backup(&backup, &original)
+                        .map(|project| (project, LoadFeedback::Warnings(Vec::new())))
+                }?;
+                let migrated = project.migrate_to_current()?;
                 for key in project.level_keys() {
-                    project
-                        .rebuild_auto_layers(key)
-                        .map_err(|e| e.to_string())?;
+                    project.rebuild_auto_layers(key)?;
                 }
                 Ok(LoadedProject {
                     snapshot: project.filesystem_snapshot().ok(),
                     project,
-                    migrated,
-                    warnings,
+                    needs_save: migrated,
+                    feedback,
                     backup_original: Some(original),
                     keep_canvas_preview,
                 })
@@ -677,12 +748,17 @@ impl EditorApp {
         let snapshot = self.file_snapshot.clone();
         let (tx, rx) = mpsc::channel();
         self.saving = Some(rx);
-        self.status = "Renaming project…".into();
+        self.set_operation_status("Renaming project…");
         let ctx = ctx.clone();
         std::thread::spawn(move || {
+            let renamed_from = project.path.clone();
             let result = project
                 .rename_project_with_snapshot(&name, snapshot.as_ref())
-                .map(|report| SavedProject { project, report });
+                .map(|report| SavedProject {
+                    project,
+                    report,
+                    renamed_from,
+                });
             let _ = tx.send(result);
             ctx.request_repaint();
         });
@@ -704,21 +780,21 @@ impl EditorApp {
                     .and_then(|key| project.level(key))
                     .and_then(|level| level["uid"].as_i64())
                     .unwrap_or(0);
-                if let Some(old) = old {
-                    let name = old.to_string_lossy();
-                    self.settings.value["recentProjects"]
-                        .as_array_mut()
-                        .unwrap()
-                        .retain(|p| p.as_str() != Some(name.as_ref()));
-                }
-                self.settings.remember(path, uid);
+                self.settings.remember_project(path, uid, old.as_deref());
                 let extension = if use_ldtk { ".ldtk" } else { ".json" };
-                self.status = format!("Changed file extension to {extension}");
+                self.status = self.settings.language().format(
+                    "Changed file extension to {extension}",
+                    &[("extension", extension)],
+                );
                 self.status_error = false;
             }
             Ok(false) => {}
             Err(error) => {
-                self.status = format!("Couldn't rename project file: {error}");
+                let language = self.settings.language();
+                self.status = language.format(
+                    "Couldn't rename project file: {error}",
+                    &[("error", &language.project_error(&error))],
+                );
                 self.status_error = true;
             }
         }
@@ -745,7 +821,7 @@ impl EditorApp {
                 |ui| {
                     ui.horizontal(|ui| {
                         ui.spinner();
-                        ui.label(locale::tr(ui, &self.status));
+                        ui.add(egui::Label::new(locale::tr(ui, &self.status)).wrap());
                     });
                 },
             );
@@ -990,6 +1066,10 @@ mod creation_tests {
                 Some(std::slice::from_ref(&changed_path))
             );
             assert_eq!(app.project.as_ref().unwrap().path.as_ref(), Some(&path));
+            assert_eq!(
+                app.settings.value["recentProjects"],
+                serde_json::json!([path])
+            );
             assert!(!dir.path().join("Renamed.ldtk").exists());
             assert!(!dir.path().join("Renamed").exists());
         }
@@ -1072,7 +1152,7 @@ mod creation_tests {
             corrupt["layerInstances"][affected_index]["autoLayerTiles"] = malformed;
             std::fs::write(ext_file(level), serde_json::to_vec(&corrupt).unwrap()).unwrap();
             let mut loaded = load_project(path.clone(), |_, _| {}).unwrap();
-            assert!(loaded.migrated);
+            assert!(loaded.needs_save);
             assert_eq!(
                 loaded.project.layer(level, affected_index).unwrap()["autoLayerTiles"],
                 expected
@@ -1226,16 +1306,82 @@ mod creation_tests {
     }
 
     #[test]
+    fn opening_after_an_error_shows_the_localized_path_and_clears_the_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir
+            .path()
+            .join(format!("{}Open-{{count}}-雨.ldtk", "long-path-".repeat(9)));
+        Project::new().save(&path).unwrap();
+        let ctx = egui::Context::default();
+        locale::configure(&ctx, locale::Language::SimplifiedChinese);
+        let mut app = EditorApp::empty();
+        let invalid = dir.path().join("Broken-{error}.ldtk");
+        std::fs::write(&invalid, "{").unwrap();
+        app.open_async(&ctx, invalid.clone());
+        wait(&mut app, &ctx);
+        assert!(app.status_error);
+        assert!(
+            app.status
+                .starts_with(&format!("打开失败：{} 中的 JSON 无效：", invalid.display())),
+            "{}",
+            app.status
+        );
+
+        app.open_async(&ctx, path.clone());
+        let expected = format!("正在打开 {}…", path.display());
+        for _ in 0..2 {
+            let _ = ctx.run(Default::default(), |ctx| app.service_dialogs(ctx));
+        }
+        let output = ctx.run(Default::default(), |ctx| app.service_dialogs(ctx));
+        let message = output
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) if text.galley.text() == expected => Some(&text.galley),
+                _ => None,
+            })
+            .expect("localized file-opening message");
+        assert!(
+            message.rows.len() > 1 && message.size().x < 420.,
+            "{}",
+            message.size().x
+        );
+        assert!(!app.status_error);
+        wait(&mut app, &ctx);
+        assert_eq!(app.project.as_ref().unwrap().path.as_ref(), Some(&path));
+        assert!(!app.status_error);
+    }
+
+    #[test]
     fn preview_154_background_export_completion_clears_progress() {
         let ctx = egui::Context::default();
-        for result in [
-            Ok(ldtk_core::exports::ExportReport {
-                outputs: vec![PathBuf::from("level.png")],
-                warnings: vec![],
-            }),
-            Err("write failed".to_owned()),
+        locale::set(&ctx, locale::Language::SimplifiedChinese);
+        for (result, expected, failed) in [
+            (
+                Ok(ldtk_core::exports::ExportReport {
+                    outputs: vec![PathBuf::from("level.png")],
+                    warnings: vec![],
+                }),
+                "已导出 1 个文件",
+                false,
+            ),
+            (
+                Ok(ldtk_core::exports::ExportReport {
+                    outputs: vec![PathBuf::from("level.tmx"), PathBuf::from("level.tsx")],
+                    warnings: vec![
+                        "Tiled export includes the first world only, matching the original exporter".into(),
+                        "Atlas-{count}.png".into(),
+                    ],
+                }),
+                "已导出 2 个文件；Tiled 仅导出第一个世界，与原版导出器一致；Atlas-{count}.png",
+                true,
+            ),
+            (
+                Err(ldtk_core::Error::Unsupported("Atlas-{count}.png".into())),
+                "导出失败：不支持此操作：Atlas-{count}.png",
+                true,
+            ),
         ] {
-            let failed = result.is_err();
             let mut app = EditorApp::empty();
             let (tx, rx) = mpsc::channel();
             app.exporting = Some(rx);
@@ -1245,6 +1391,7 @@ mod creation_tests {
             assert!(app.exporting.is_none());
             assert!(app.exporting_progress.is_none());
             assert_eq!(app.status_error, failed);
+            assert_eq!(app.status, expected);
         }
     }
 
@@ -1459,6 +1606,104 @@ mod creation_tests {
         assert!(Project::load(imported).is_ok());
         assert!(!app.dirty);
     }
+    #[test]
+    fn backup_restore_keeps_the_project_open_and_reports_configured_png_results() {
+        let dir = tempfile::tempdir().unwrap();
+        let original = dir.path().join("Map.ldtk");
+        let mut project = Project::new();
+        let level = project.level_keys()[0];
+        project.resize_level(level, 32, 32, 0, 0).unwrap();
+        project.add_layer("Solid", "IntGrid", 16).unwrap();
+        project.json["imageExportMode"] = "OneImagePerLevel".into();
+        project.level_mut(level).unwrap()["bgRelPath"] = "missing.png".into();
+        project.level_mut(level).unwrap()["bgPos"] = "Unscaled".into();
+        project.save(&original).unwrap();
+        let backup = project.backup().unwrap().unwrap().join("Map.ldtk");
+        project.level_mut(level).unwrap()["identifier"] = "Current".into();
+        project.save(&original).unwrap();
+
+        let ctx = egui::Context::default();
+        locale::set(&ctx, locale::Language::SimplifiedChinese);
+        let mut app = EditorApp::empty();
+        app.settings.path = Some(dir.path().join("settings.json"));
+        let png = dir.path().join("Map/png");
+        std::fs::write(&png, b"blocks PNG export").unwrap();
+        app.backup_async(&ctx, backup.clone(), original.clone(), true);
+        wait(&mut app, &ctx);
+        assert_eq!(app.project.as_ref().unwrap().path.as_ref(), Some(&original));
+        assert_eq!(
+            Project::load(&original).unwrap().level(level).unwrap()["identifier"],
+            "Level_0"
+        );
+        assert!(app.status_error, "{}", app.status);
+        assert!(
+            app.status.starts_with("项目已恢复，导出时遇到问题"),
+            "{}",
+            app.status
+        );
+        assert!(app.status.contains("png"), "{}", app.status);
+        assert_eq!(std::fs::read(&png).unwrap(), b"blocks PNG export");
+
+        std::fs::remove_file(&png).unwrap();
+        app.backup_async(&ctx, backup, original, true);
+        wait(&mut app, &ctx);
+        assert!(!app.status_error, "{}", app.status);
+        assert!(png.join("Level_0.png").is_file());
+        app_log::flush();
+        let log = std::fs::read_to_string(app_log::path(app.settings.path.as_deref()).unwrap())
+            .unwrap_or_default();
+        assert!(
+            log.lines().any(
+                |line| line.contains("ERROR") && line.contains("missing.png for level Level_0")
+            ),
+            "{log}"
+        );
+    }
+
+    #[test]
+    fn backup_restore_reports_both_tiled_and_cleanup_warnings() {
+        let dir = tempfile::tempdir().unwrap();
+        let original = dir.path().join("Map.ldtk");
+        let mut project = Project::new();
+        project.save(&original).unwrap();
+        project.json["exportTiled"] = true.into();
+        let world = project.add_world("Other").unwrap();
+        project
+            .add_level(Some(world), "OtherLevel", 32, 32)
+            .unwrap();
+        let backup = project.write_crash_recovery(dir.path()).unwrap();
+        let note = backup.with_file_name("notes-{detail}.txt");
+        std::fs::write(&note, b"keep").unwrap();
+
+        let ctx = egui::Context::default();
+        for (language, export, cleanup) in [
+            (
+                locale::Language::English,
+                "Tiled export includes the first world only",
+                "could not remove crash backup: unrecognized recovery file",
+            ),
+            (
+                locale::Language::SimplifiedChinese,
+                "Tiled 仅导出第一个世界",
+                "无法删除崩溃恢复备份：备份目录中有未识别的文件",
+            ),
+        ] {
+            locale::set(&ctx, language);
+            let mut app = EditorApp::empty();
+            app.backup_async(&ctx, backup.clone(), original.clone(), true);
+            wait(&mut app, &ctx);
+            assert!(
+                app.status_error && app.status.contains(export),
+                "{}",
+                app.status
+            );
+            assert!(app.status.contains(cleanup), "{}", app.status);
+            assert!(app.status.contains("notes-{detail}.txt"), "{}", app.status);
+            assert_eq!(std::fs::read(&note).unwrap(), b"keep");
+            assert!(dir.path().join("Map/tiled/Level_0.tmx").is_file());
+        }
+    }
+
     #[test]
     fn opening_backup_replaces_a_previous_same_iid_original_path_binding() {
         let dir = tempfile::tempdir().unwrap();

@@ -31,7 +31,7 @@ pub(super) fn settings_update_version(ctx: &egui::Context) -> Option<String> {
     let dialog = shared.lock().unwrap_or_else(|error| error.into_inner());
     match &dialog.updater.state {
         State::Available(release) => Some(release.version.clone()),
-        State::Ready(prepared) => Some(prepared.version.clone()),
+        State::Ready(version) => Some(version.clone()),
         _ => None,
     }
 }
@@ -109,10 +109,12 @@ impl EditorApp {
         let mut dialog = state.lock().unwrap_or_else(|e| e.into_inner());
         dialog.open = true;
         dialog.ignored = None;
-        if matches!(
-            dialog.updater.state,
-            State::Idle | State::Current(_) | State::Cancelled | State::Failed(_)
-        ) {
+        if !dialog.updater.has_prepared_update()
+            && matches!(
+                dialog.updater.state,
+                State::Idle | State::Current(_) | State::Cancelled | State::Failed(_)
+            )
+        {
             check(&mut dialog, ctx);
         }
     }
@@ -181,11 +183,8 @@ impl EditorApp {
                 ),
                 Some(version.clone()),
             )),
-            State::Ready(prepared) if dialog.ignored.as_deref() != Some(&prepared.version) => {
-                Some((
-                    "Install update and restart".into(),
-                    Some(prepared.version.clone()),
-                ))
+            State::Ready(version) if dialog.ignored.as_deref() != Some(version) => {
+                Some(("Install update and restart".into(), Some(version.clone())))
             }
             State::Failed(_) => Some(("Could not update · Details".into(), None)),
             _ => None,
@@ -374,11 +373,11 @@ impl EditorApp {
                             *total as f64 / 1_048_576.
                         ));
                     }
-                    State::Ready(prepared) => {
+                    State::Ready(version) => {
                         ui.label(locale::format(
                             ui,
                             "Update {version} downloaded and SHA-256 verified.",
-                            &[("version", &prepared.version)],
+                            &[("version", version)],
                         ));
                     }
                     State::Cancelled => {
@@ -399,7 +398,13 @@ impl EditorApp {
                                         .strong()
                                         .color(theme::ACCENT),
                                 );
-                                ui.add(egui::Label::new(error).wrap().selectable(true));
+                                ui.add(
+                                    egui::Label::new(
+                                        locale::language(ui.ctx()).update_error(error),
+                                    )
+                                    .wrap()
+                                    .selectable(true),
+                                );
                             });
                         });
                     }
@@ -416,7 +421,7 @@ impl EditorApp {
         }
         ui.label(RichText::new(locale::tr(ui, "If authentication is required, use a token with Contents read access. The token is used only for this session.")).small());
         ui.add(
-            egui::TextEdit::singleline(&mut dialog.token)
+            source_controls::form_text_box(&mut dialog.token)
                 .id(id().with("session-token"))
                 .desired_width(f32::INFINITY)
                 .password(true)
@@ -425,12 +430,19 @@ impl EditorApp {
         source_controls::hyperlink(ui, "Open Releases", updater::RELEASES_URL);
         ui.add_space(6.);
         ui.horizontal_wrapped(|ui| {
+            let retry_install =
+                matches!(snapshot, State::Failed(_)) && dialog.updater.has_prepared_update();
             match snapshot {
                 State::Available(_) if action_button(ui, "Download update", true).clicked() => {
                     download(dialog, &ctx);
                 }
                 State::Ready(_)
                     if action_button(ui, "Install update and restart", true).clicked() =>
+                {
+                    *install = true;
+                }
+                State::Failed(_)
+                    if retry_install && action_button(ui, "Retry installation", true).clicked() =>
                 {
                     *install = true;
                 }
@@ -444,10 +456,14 @@ impl EditorApp {
                 }
                 _ => {}
             }
-            let failed = matches!(snapshot, State::Failed(_));
             ui.add_enabled_ui(!dialog.updater.busy(), |ui| {
-                let label = if failed { "Retry" } else { "Check for updates" };
-                let primary = !matches!(snapshot, State::Available(_) | State::Ready(_));
+                let label = if matches!(snapshot, State::Failed(_)) && !retry_install {
+                    "Retry"
+                } else {
+                    "Check for updates"
+                };
+                let primary =
+                    !matches!(snapshot, State::Available(_) | State::Ready(_)) && !retry_install;
                 if action_button(ui, label, primary).clicked() {
                     check(dialog, &ctx);
                 }
@@ -589,6 +605,56 @@ mod tests {
         assert!(clicked.platform_output.commands.iter().any(|command| {
             matches!(command, egui::OutputCommand::OpenUrl(url) if url.url == updater::RELEASES_URL)
         }));
+    }
+
+    #[test]
+    fn helper_exit_details_follow_dialog_language_and_keep_the_os_status() {
+        let ctx = egui::Context::default();
+        locale::configure(&ctx, locale::Language::SimplifiedChinese);
+        let mut app = EditorApp::empty();
+        let shared = state(&ctx);
+        let error = "Update helper exited before the restart handshake (signal: 9 (SIGKILL))";
+        {
+            let mut dialog = shared.lock().unwrap();
+            dialog.updater = Updater::ready_fixture();
+            dialog.updater.state = State::Failed(error.into());
+        }
+        app.open_updater(&ctx);
+        frame(&mut app, &ctx, vec![]);
+        let output = frame(&mut app, &ctx, vec![]);
+        center(&output, "更新助手在确认重启前退出（signal: 9 (SIGKILL)）");
+        locale::set(&ctx, locale::Language::English);
+        let output = frame(&mut app, &ctx, vec![]);
+        center(&output, error);
+        click(&mut app, &ctx, center(&output, "Retry installation"));
+        assert_eq!(shared.lock().unwrap().updater.test_install_requests, 1);
+    }
+
+    #[test]
+    fn reopening_a_failed_install_shows_its_error_and_retries_installation() {
+        let ctx = egui::Context::default();
+        locale::configure(&ctx, locale::Language::SimplifiedChinese);
+        let mut app = EditorApp::empty();
+        let shared = state(&ctx);
+        let error = "Install a Level Editor release package before using automatic updates. Download it from the Releases page.";
+        {
+            let mut dialog = shared.lock().unwrap();
+            dialog.updater = Updater::ready_fixture();
+            dialog.updater.state = State::Failed(error.into());
+        }
+        app.open_updater(&ctx);
+        frame(&mut app, &ctx, vec![]);
+        let output = frame(&mut app, &ctx, vec![]);
+        center(
+            &output,
+            "请先从发行页面下载并安装 Level Editor 正式版，再使用自动更新。",
+        );
+        click(&mut app, &ctx, center(&output, "关闭"));
+        app.open_updater(&ctx);
+        frame(&mut app, &ctx, vec![]);
+        let output = frame(&mut app, &ctx, vec![]);
+        click(&mut app, &ctx, center(&output, "重试安装"));
+        assert_eq!(shared.lock().unwrap().updater.test_install_requests, 1);
     }
 
     #[test]

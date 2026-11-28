@@ -65,7 +65,8 @@ impl EditorApp {
         let Some(backup) = self.project.as_ref().and_then(|p| p.path.clone()) else {
             return;
         };
-        let mut dialog = FileDialog::new().add_filter("LDtk project", &["ldtk", "json"]);
+        let mut dialog =
+            FileDialog::new().add_filter(locale::tr_ctx(ctx, "LDtk project"), &["ldtk", "json"]);
         if let Some(parent) = backup.parent() {
             dialog = dialog.set_directory(parent);
         }
@@ -451,7 +452,7 @@ impl EditorApp {
         ctx.request_repaint();
         match (choice, write) {
             (0, ApplicationWrite::Save(path) | ApplicationWrite::SaveAs(path)) => {
-                if let Some(destination) = Self::pick_save_path(Some(&path)) {
+                if let Some(destination) = Self::pick_save_path(ctx, Some(&path)) {
                     self.perform_project_write(ctx, ApplicationWrite::SaveAs(destination));
                 }
             }
@@ -578,7 +579,7 @@ impl EditorApp {
             }
             Choice::Retry => self.save_to(ctx, path),
             Choice::SaveAs => {
-                if let Some(path) = Self::pick_save_path(Some(&path)) {
+                if let Some(path) = Self::pick_save_path(ctx, Some(&path)) {
                     self.save_to(ctx, path);
                 }
             }
@@ -626,7 +627,7 @@ impl EditorApp {
             && let Some(services::SaveFailure::MissingTarget(path)) = self.save_failure.take()
         {
             ctx.request_repaint();
-            if confirm && let Some(destination) = Self::pick_save_path(Some(&path)) {
+            if confirm && let Some(destination) = Self::pick_save_path(ctx, Some(&path)) {
                 self.save_to(ctx, destination);
             }
         }
@@ -950,6 +951,39 @@ mod tests {
             Project::load(&path).unwrap().json["customCommands"][0]["command"],
             command
         );
+    }
+
+    #[test]
+    fn failed_command_authorization_keeps_the_prompt_and_allows_retry() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        let mut app = EditorApp::empty();
+        app.settings = super::super::settings::Settings::load_at(Some(path.clone()));
+        app.settings.value["language"] = json!("zh-CN");
+        let project = Project::new();
+        let iid = text(&project.json, "iid", "").to_owned();
+        app.set_project(project);
+        let lock = path.with_extension("lock");
+        std::fs::create_dir(&lock).unwrap();
+
+        let ctx = egui::Context::default();
+        theme::configure(&ctx);
+        ctx.style_mut(|style| style.animation_time = 0.);
+        app.run_command("echo sample".into(), None);
+        frame(&mut app, &ctx, vec![]);
+        let dialog = frame(&mut app, &ctx, vec![]);
+        click(&mut app, &ctx, label(&dialog, "允许项目命令").center());
+        assert!(app.status_error && app.status.contains("项目命令权限"));
+        assert!(app.hook_flow.is_some() && app.command_result.is_none() && !app.command_open);
+        assert_eq!(app.settings.trust_state(&iid), None);
+
+        std::fs::remove_dir(lock).unwrap();
+        let dialog = frame(&mut app, &ctx, vec![]);
+        click(&mut app, &ctx, label(&dialog, "阻止项目命令").center());
+        assert!(app.hook_flow.is_none() && app.command_result.is_none());
+        assert!(!app.status_error);
+        let saved = super::super::settings::Settings::load_at(Some(path));
+        assert_eq!(saved.trust_state(&iid), Some(false));
     }
 
     #[test]

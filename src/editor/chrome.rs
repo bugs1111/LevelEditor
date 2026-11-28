@@ -301,19 +301,66 @@ pub(super) fn source_tooltip_popup<'a>(
     let mut tooltip = egui::Tooltip::for_widget(response)
         .width(0.)
         .gap(if placement.is_some() { 10. } else { 8. });
-    tooltip.popup = tooltip.popup.align(align).frame(
-        egui::Frame::new()
-            .fill(theme::HELP_FILL)
-            .corner_radius(4)
-            .inner_margin(padding)
-            .shadow(egui::epaint::Shadow {
-                offset: [0, 8],
-                blur: 16,
-                spread: 0,
-                color: Color32::from_black_alpha(77),
-            }),
-    );
+    tooltip.popup = tooltip
+        .popup
+        .align(align)
+        .frame(source_tooltip_frame(padding));
     tooltip
+}
+
+fn source_tooltip_frame(padding: egui::Margin) -> egui::Frame {
+    egui::Frame::new()
+        .fill(theme::HELP_FILL)
+        .corner_radius(4)
+        .inner_margin(padding)
+        .shadow(egui::epaint::Shadow {
+            offset: [0, 8],
+            blur: 16,
+            spread: 0,
+            color: Color32::from_black_alpha(77),
+        })
+}
+
+pub(super) fn pointer_detail_tooltip(
+    ctx: &egui::Context,
+    pointer: egui::Pos2,
+    heading: String,
+    details: &[String],
+) {
+    let screen = ctx.content_rect();
+    let frame = source_tooltip_frame(egui::Margin::symmetric(18, 12));
+    let padding = frame.inner_margin;
+    let mut job = egui::text::LayoutJob::simple(
+        heading,
+        theme::TextRole::TooltipHeading.font(),
+        Color32::WHITE,
+        (screen.width() - padding.sum().x).clamp(1., theme::TOOLTIP_TEXT_WIDTH),
+    );
+    for line in details.iter().filter(|line| !line.is_empty()) {
+        job.append(
+            &format!("\n{line}"),
+            0.,
+            egui::TextFormat::simple(theme::TextRole::TooltipBody.font(), theme::HELP_TEXT),
+        );
+    }
+    // Paint without a hit target so moving through the tip still reaches the atlas.
+    let painter = ctx.layer_painter(egui::LayerId::new(
+        egui::Order::Tooltip,
+        egui::Id::new("pointer-detail-tooltip"),
+    ));
+    let text = painter.layout_job(job);
+    let bottom_limit = screen.bottom() - 150.;
+    let top = if pointer.y >= bottom_limit {
+        bottom_limit
+    } else {
+        pointer.y + 24.
+    };
+    let size = text.size() + padding.sum();
+    let origin =
+        egui::pos2(pointer.x - 16., top).clamp(screen.min, (screen.max - size).max(screen.min));
+    let content = Rect::from_min_size(origin + padding.left_top(), text.size());
+    painter.add(frame.paint(content));
+    painter.galley(content.min, text, theme::HELP_TEXT);
 }
 
 pub(super) fn source_tooltip(response: &egui::Response, text: &str, keys: &[&str], right: bool) {
@@ -327,7 +374,6 @@ pub(super) trait ActionTooltip {
     fn action_tooltip(self, text: impl AsRef<str>) -> Self;
     fn disabled_action_tooltip(self, text: impl AsRef<str>) -> Self;
     fn detail_tooltip(self, text: impl AsRef<str>) -> Self;
-    fn detail_tooltip_ui(self, contents: impl FnOnce(&mut egui::Ui)) -> Self;
 }
 
 impl ActionTooltip for egui::Response {
@@ -347,23 +393,14 @@ impl ActionTooltip for egui::Response {
 
     fn detail_tooltip(self, text: impl AsRef<str>) -> Self {
         let text = text.as_ref();
-        if text.is_empty() {
-            return self;
-        }
-        self.detail_tooltip_ui(|ui| {
-            ui.label(text);
-        })
-    }
-
-    fn detail_tooltip_ui(self, contents: impl FnOnce(&mut egui::Ui)) -> Self {
-        if self.enabled() && egui::Tooltip::should_show_tooltip(&self, false) {
+        if !text.is_empty() && self.enabled() && egui::Tooltip::should_show_tooltip(&self, false) {
             source_tooltip_popup(&self, None, egui::Margin::symmetric(18, 12)).show(|ui| {
                 ui.set_max_width(theme::TOOLTIP_TEXT_WIDTH);
                 ui.style_mut()
                     .text_styles
                     .insert(egui::TextStyle::Body, theme::TextRole::TooltipBody.font());
                 ui.visuals_mut().override_text_color = Some(theme::HELP_TEXT);
-                contents(ui);
+                ui.label(text);
             });
         }
         self
@@ -2469,6 +2506,56 @@ mod tests {
                     .any(|command| matches!(command, egui::ViewportCommand::CancelClose)),
                 dirty
             );
+        }
+    }
+
+    #[test]
+    fn command_w_only_prompts_after_a_user_edit_to_an_example() {
+        for (sample, edited) in [
+            ("AutoLayers_7_Biomes.ldtk", false),
+            ("SeparateLevelFiles.ldtk", false),
+            ("AutoLayers_7_Biomes.ldtk", true),
+        ] {
+            let path = resource_path("examples/original").join(sample);
+            let original = std::fs::read(&path).unwrap();
+            let ctx = egui::Context::default();
+            theme::configure(&ctx);
+            let mut app = EditorApp::empty();
+            app.repaint = Some(ctx.clone());
+            app.request(&ctx, Action::Open(path.clone()));
+            let deadline = Instant::now() + std::time::Duration::from_secs(15);
+            while app.loading.is_some() && Instant::now() < deadline {
+                app.poll_services(&ctx);
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            assert_eq!(app.project.as_ref().unwrap().path.as_ref(), Some(&path));
+            app_frame(&mut app, &ctx, vec![]);
+            if edited {
+                app.edit("Project setting changed", |project| {
+                    project.json["defaultGridSize"] = serde_json::json!(48);
+                    Ok(())
+                })
+                .unwrap();
+            }
+            app_frame(
+                &mut app,
+                &ctx,
+                vec![egui::Event::Key {
+                    key: Key::W,
+                    physical_key: Some(Key::W),
+                    pressed: true,
+                    repeat: false,
+                    modifiers: egui::Modifiers {
+                        mac_cmd: true,
+                        ..egui::Modifiers::COMMAND
+                    },
+                }],
+            );
+            let prompted = matches!(app.pending, Some(Action::Close));
+            let open = app.project.is_some();
+            drop(app);
+            assert_eq!((prompted, open), (edited, edited), "{sample}");
+            assert_eq!(std::fs::read(&path).unwrap(), original);
         }
     }
 

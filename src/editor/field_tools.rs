@@ -2,6 +2,102 @@ use super::*;
 use crate::app::chrome::ActionTooltip as _;
 use serde_json::json;
 
+pub(super) enum ReferenceCard {
+    Incoming,
+    Outgoing { preview: bool },
+}
+
+pub(super) fn reference_card(
+    ui: &mut egui::Ui,
+    project: &Project,
+    assets: &mut Assets,
+    source: LevelKey,
+    found: ldtk_core::EntityMatch<'_>,
+    width: f32,
+    kind: ReferenceCard,
+) -> egui::Response {
+    let target = found.level;
+    let level = project.level(target).expect("level of a resolved entity");
+    let entity = found.entity;
+    let name = text(entity, "__identifier", "Entity");
+    let level_name = text(level, "identifier", "");
+    let location = if target.world != source.world
+        && let Some(world) = target.world
+        && let Some(name) = project.json["worlds"][world]["identifier"].as_str()
+    {
+        locale::format(
+            ui,
+            "{level} in {world}",
+            &[("level", level_name), ("world", name)],
+        )
+    } else {
+        level_name.to_owned()
+    };
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(width, 33.), Sense::click());
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, name));
+    let highlighted = response.hovered() || response.has_focus();
+    ui.painter().rect_stroke(
+        rect,
+        4.,
+        Stroke::new(
+            1_f32,
+            if highlighted {
+                theme::ACCENT
+            } else {
+                theme::LIGHT
+            },
+        ),
+        egui::StrokeKind::Inside,
+    );
+    let painter = ui.painter().with_clip_rect(rect.shrink(1.));
+    let arrow = if matches!(kind, ReferenceCard::Incoming) {
+        egui::include_image!("../../assets/icons/left.svg")
+    } else {
+        egui::include_image!("../../assets/icons/right.svg")
+    };
+    egui::Image::new(arrow).paint_at(
+        ui,
+        Rect::from_center_size(rect.left_center() + egui::vec2(12., 0.), Vec2::splat(22.)),
+    );
+    let mut text_x = rect.left() + 26.;
+    if matches!(kind, ReferenceCard::Outgoing { preview: true })
+        && let Some((def, tile)) = ui_fields::reference_preview(project, entity)
+    {
+        let ctx = ui.ctx();
+        let icon = Rect::from_min_size(egui::pos2(text_x, rect.top() + 9.5), Vec2::splat(18.));
+        let painted = tile
+            .as_ref()
+            .is_some_and(|tile| library::paint_tile(ctx, &painter, icon, project, tile, assets));
+        if !painted {
+            library::paint_entity_definition_icon(ctx, &painter, icon, project, def, assets);
+        }
+        text_x += 22.;
+    }
+    painter.text(
+        egui::pos2(text_x, rect.top() + 3.),
+        egui::Align2::LEFT_TOP,
+        name,
+        FontId::new(12., egui::FontFamily::Name("body-bold".into())),
+        if highlighted {
+            Color32::WHITE
+        } else {
+            theme::ACCENT
+        },
+    );
+    painter.text(
+        egui::pos2(text_x, rect.top() + 17.),
+        egui::Align2::LEFT_TOP,
+        location,
+        FontId::new(10.667, egui::FontFamily::Name("body-bold".into())),
+        if highlighted {
+            Color32::WHITE
+        } else {
+            Color32::from_rgb(115, 127, 157)
+        },
+    );
+    response.on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
 fn point_coordinates(value: &Value) -> Option<String> {
     Some(format!(
         "{},{}",
@@ -865,95 +961,6 @@ impl EditorApp {
         }
     }
 
-    fn reference_card(
-        &mut self,
-        ui: &mut egui::Ui,
-        source: LevelKey,
-        value: &Value,
-        width: f32,
-        show_preview: bool,
-    ) -> Option<egui::Response> {
-        let project = self.project.as_ref()?;
-        let (target, level, entity) = ui_fields::reference_target(project, value)?;
-        let name = text(entity, "__identifier", "Entity");
-        let level_name = text(level, "identifier", "");
-        let location = if target.world != source.world
-            && let Some(world) = target.world
-            && let Some(name) = project.json["worlds"][world]["identifier"].as_str()
-        {
-            locale::format(
-                ui,
-                "{level} in {world}",
-                &[("level", level_name), ("world", name)],
-            )
-        } else {
-            level_name.to_owned()
-        };
-        let (rect, response) = ui.allocate_exact_size(egui::vec2(width, 33.), Sense::click());
-        response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, name));
-        let highlighted = response.hovered() || response.has_focus();
-        ui.painter().rect_stroke(
-            rect,
-            4.,
-            Stroke::new(
-                1_f32,
-                if highlighted {
-                    theme::ACCENT
-                } else {
-                    theme::LIGHT
-                },
-            ),
-            egui::StrokeKind::Inside,
-        );
-        let painter = ui.painter().with_clip_rect(rect.shrink(1.));
-        egui::Image::new(egui::include_image!("../../assets/icons/right.svg")).paint_at(
-            ui,
-            Rect::from_center_size(rect.left_center() + egui::vec2(12., 0.), Vec2::splat(22.)),
-        );
-        let mut text_x = rect.left() + 26.;
-        if show_preview && let Some((def, tile)) = ui_fields::reference_preview(project, entity) {
-            let ctx = ui.ctx();
-            let icon = Rect::from_min_size(egui::pos2(text_x, rect.top() + 9.5), Vec2::splat(18.));
-            let painted = tile.as_ref().is_some_and(|tile| {
-                library::paint_tile(ctx, &painter, icon, project, tile, &mut self.assets)
-            });
-            if !painted {
-                library::paint_entity_definition_icon(
-                    ctx,
-                    &painter,
-                    icon,
-                    project,
-                    def,
-                    &mut self.assets,
-                );
-            }
-            text_x += 22.;
-        }
-        painter.text(
-            egui::pos2(text_x, rect.top() + 3.),
-            egui::Align2::LEFT_TOP,
-            name,
-            FontId::proportional(12.),
-            if highlighted {
-                Color32::WHITE
-            } else {
-                theme::ACCENT
-            },
-        );
-        painter.text(
-            egui::pos2(text_x, rect.top() + 17.),
-            egui::Align2::LEFT_TOP,
-            location,
-            FontId::proportional(10.667),
-            if highlighted {
-                Color32::WHITE
-            } else {
-                Color32::from_rgb(115, 127, 157)
-            },
-        );
-        Some(response.on_hover_cursor(egui::CursorIcon::PointingHand))
-    }
-
     pub(super) fn field_pick_controls(
         &mut self,
         ui: &mut egui::Ui,
@@ -1226,9 +1233,20 @@ impl EditorApp {
                     let width = (ui.available_width() - reserved).max(24.);
                     let request = Some(array.then_some(index));
                     if let Some(iid) = iid
-                        && let Some(response) =
-                            self.reference_card(ui, key, value, width, array && owner.is_some())
+                        && let Some(project) = self.project.as_ref()
+                        && let Some(found) = project.entity_by_iid(iid)
                     {
+                        let response = reference_card(
+                            ui,
+                            project,
+                            &mut self.assets,
+                            key,
+                            found,
+                            width,
+                            ReferenceCard::Outgoing {
+                                preview: array && owner.is_some(),
+                            },
+                        );
                         self.hover_entity_reference(&response, iid);
                         if response.clicked() {
                             follow = Some(iid.to_owned());

@@ -177,8 +177,8 @@ fn display_value(value: &Value, fd: &Value) -> String {
     }
     let raw = value
         .as_str()
-        .map(str::to_owned)
-        .unwrap_or_else(|| value.to_string());
+        .map(Cow::Borrowed)
+        .unwrap_or_else(|| Cow::Owned(value.to_string()));
     match kind {
         "Int" | "Float" => format!(
             "{}{}{}",
@@ -186,10 +186,12 @@ fn display_value(value: &Value, fd: &Value) -> String {
             raw,
             text(fd, "editorTextSuffix", "")
         ),
-        "String" | "Multilines" | "FilePath" => format!("\"{raw}\""),
+        "String" | "Multilines" | "FilePath" => {
+            format!("\"{}\"", ldtk_core::ldtk_string::unescape(&raw))
+        }
         "Point" => format!("{},{}", value["cx"], value["cy"]),
         "EntityRef" => format!("@({})", value["entityIid"].as_str().unwrap_or("null")),
-        _ => raw,
+        _ => raw.into_owned(),
     }
 }
 impl Scene<'_> {
@@ -1631,6 +1633,16 @@ mod tests {
         assert!(!displayed(&owner, &fd, false));
         owner["fieldInstances"][0]["realEditorValues"] = json!([{"id":"V_Int","params":[5]}]);
         assert!(displayed(&owner, &fd, false));
+    }
+    #[test]
+    fn canvas_field_label_preserves_literal_backslashes_and_line_breaks() {
+        assert_eq!(
+            display_value(
+                &json!(r"C:\\new\\notes\n下一行"),
+                &json!({"__type":"Multilines"})
+            ),
+            "\"C:\\new\\notes\n下一行\""
+        );
     }
     #[test]
     fn numeric_prefix_and_boolean_value_labels_match_source() {

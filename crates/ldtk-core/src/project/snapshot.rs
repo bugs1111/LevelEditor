@@ -1,4 +1,4 @@
-use super::{Project, absolute};
+use super::{Project, absolute, is_file_path_field};
 use crate::{Error, Result};
 use serde_json::Value;
 use std::{
@@ -300,16 +300,7 @@ fn collect_resource_paths<'a>(value: &'a Value, paths: &mut BTreeSet<&'a str>) {
                         }
                     }
                     "__value" | "realEditorValues" | "realEditorValue" | "defaultOverride" => {
-                        let is_file = file_field.get_or_insert_with(|| {
-                            object
-                                .get("__type")
-                                .and_then(Value::as_str)
-                                .is_some_and(|t| t.contains("FilePath"))
-                                || object
-                                    .get("type")
-                                    .and_then(Value::as_str)
-                                    .is_some_and(|t| t == "F_Path" || t == "F_File")
-                        });
+                        let is_file = file_field.get_or_insert_with(|| is_file_path_field(object));
                         if *is_file {
                             collect_field_paths(value, paths);
                         }
@@ -368,6 +359,8 @@ mod tests {
         project.json["extension"] = json!([
             {"relPath":"atlas.png"},
             {"type":"F_File","defaultOverride":{"params":[absolute]}},
+            {"__type":"LocalEnum.FilePathKind","__value":"Forest"},
+            {"__type":"Array<ExternEnum.FilePathKind>","realEditorValues":[{"params":["Snow"]}]},
             {"__type":"String","__value":"not-a-resource.png"}
         ]);
         project.external_levels.insert(

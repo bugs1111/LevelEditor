@@ -19,6 +19,16 @@ pub(in crate::app) fn css_ease_remaining(progress: f32) -> f32 {
     (1. - t).powi(2) * (1. + 1.7 * t)
 }
 
+// Eight points of padding plus the one-point form border.
+pub(in crate::app) const FORM_TEXT_INSET: i8 = 9;
+
+pub(in crate::app) fn form_text_box(value: &mut dyn egui::TextBuffer) -> egui::TextEdit<'_> {
+    egui::TextEdit::singleline(value)
+        .font(theme::TextRole::FormValue.font())
+        .margin(egui::Margin::symmetric(FORM_TEXT_INSET, 2))
+        .vertical_align(egui::Align::Center)
+}
+
 pub(in crate::app) fn edit_text(
     ui: &mut egui::Ui,
     key: impl std::hash::Hash,
@@ -578,6 +588,23 @@ pub(in crate::app) fn form_row_left_aligned<R>(
     )
 }
 
+pub(in crate::app) fn form_row_left_wrapped<R>(
+    ui: &mut egui::Ui,
+    label: &str,
+    key: &str,
+    width: f32,
+    body: impl FnOnce(&mut egui::Ui) -> R,
+) -> R {
+    form_row_inner(
+        ui,
+        label,
+        key,
+        egui::vec2(width, 30.),
+        FormLabel::LeftWrapped,
+        body,
+    )
+}
+
 pub(in crate::app) fn form_row_wrapped<R>(
     ui: &mut egui::Ui,
     label: &str,
@@ -614,6 +641,7 @@ enum FormLabel {
     Wrapped,
     TopAligned,
     LeftAligned,
+    LeftWrapped,
 }
 
 fn form_row_inner<R>(
@@ -626,6 +654,9 @@ fn form_row_inner<R>(
 ) -> R {
     let row = |ui: &mut egui::Ui| {
         ui.spacing_mut().item_spacing.x = 8.;
+        if layout == FormLabel::Wrapped {
+            ui.spacing_mut().interact_size.y = label_size.y;
+        }
         let highlighted = property_label_layout(ui, label, key, label_size, layout);
         let background = highlighted.then(|| ui.painter().add(egui::Shape::Noop));
         let width = ui.available_width();
@@ -738,9 +769,12 @@ fn property_label_layout(
     label_size: Vec2,
     layout: FormLabel,
 ) -> bool {
-    let wrap = matches!(layout, FormLabel::Wrapped | FormLabel::TopAligned);
+    let wrap = matches!(
+        layout,
+        FormLabel::Wrapped | FormLabel::TopAligned | FormLabel::LeftWrapped
+    );
     let top_aligned = layout == FormLabel::TopAligned;
-    let left_aligned = layout == FormLabel::LeftAligned;
+    let left_aligned = matches!(layout, FormLabel::LeftAligned | FormLabel::LeftWrapped);
     let (info, reserve) = property_label_help(label, key);
     let width = ui.available_width().min(label_size.x);
     let text_width = (width - reserve).max(0.);
@@ -776,7 +810,7 @@ fn property_label_layout(
         }
     }
     lines.push(line);
-    let galley = if top_aligned {
+    let galley = if top_aligned || layout == FormLabel::Wrapped {
         let (text, max_width) = if displayed != label {
             (displayed.to_owned(), text_width)
         } else {
@@ -784,7 +818,9 @@ fn property_label_layout(
         };
         let mut job = egui::text::LayoutJob::simple(text, font, color, max_width);
         job.halign = egui::Align::RIGHT;
-        job.sections[0].format.line_height = Some(15.);
+        if top_aligned {
+            job.sections[0].format.line_height = Some(15.);
+        }
         ui.painter().layout_job(job)
     } else if wrap && displayed != label {
         ui.painter()
@@ -800,13 +836,15 @@ fn property_label_layout(
         Sense::hover(),
     );
     let right = rect.right() - reserve;
-    let position = if left_aligned {
+    let position = if layout == FormLabel::LeftWrapped {
+        rect.left_center() - egui::vec2(0., galley.size().y * 0.5)
+    } else if left_aligned {
         rect.left_top() + egui::vec2(0., 1.)
     } else if top_aligned {
         egui::pos2(right, rect.top() + 4.)
     } else {
         egui::pos2(
-            right - galley.size().x,
+            right - galley.rect.right(),
             rect.center().y - galley.size().y * 0.5,
         )
     };
@@ -1288,7 +1326,7 @@ pub(super) fn grouped_tileset_choices<'a>(
     ui: &egui::Ui,
     tilesets: &'a [Value],
 ) -> Vec<(TilesetChoice, (&'a str, Option<&'a str>))> {
-    let internal_icons = locale::tr(ui, "⚙ Internal icons by FinalBossBlues");
+    let internal_icons = locale::tr(ui, "⚙ Internal icons");
     let mut groups = std::collections::BTreeMap::<Option<&str>, Vec<(TilesetChoice, &str)>>::new();
     for tileset in tilesets {
         let Some(uid) = tileset["uid"].as_i64() else {
@@ -1678,6 +1716,20 @@ pub(in crate::app) fn add_sized_button(
     response
 }
 
+pub(in crate::app) fn copy_iid_button(ui: &mut egui::Ui, iid: &str, help: &str, size: Vec2) {
+    let icon = egui::Image::new(egui::include_image!("../../assets/icons/copy.svg"))
+        .fit_to_exact_size(Vec2::splat(20.));
+    let label = locale::tr(ui, help);
+    let response = add_sized_button(ui, size, egui::Button::new(icon).fill(theme::LIGHT))
+        .action_tooltip(label);
+    response.widget_info(|| {
+        egui::WidgetInfo::labeled(egui::WidgetType::Button, response.enabled(), label)
+    });
+    if response.clicked() {
+        ui.ctx().copy_text(iid.to_owned());
+    }
+}
+
 pub(in crate::app) fn underlined_link(label: egui::Label) -> impl egui::Widget {
     move |ui: &mut egui::Ui| {
         let (pos, galley, response) = label.sense(Sense::click()).layout_in_ui(ui);
@@ -1777,37 +1829,104 @@ pub(in crate::app) fn literal_checkbox(
     value: &mut bool,
     label: &str,
 ) -> egui::Response {
-    ui.scope(|ui| {
-        ui.spacing_mut().icon_width = CHECKBOX_WIDTH;
-        ui.spacing_mut().icon_width_inner = 18.;
-        let fill = if *value {
-            Color32::from_rgb(0, 117, 255)
+    let size = Vec2::splat(CHECKBOX_WIDTH);
+    let icon = egui::Id::new("check-box");
+    let layout = egui::AtomLayout::new((egui::Atom::custom(icon, size), label))
+        .sense(Sense::click())
+        .min_size(Vec2::splat(ui.spacing().interact_size.y))
+        .fallback_text_color(ui.visuals().strong_text_color())
+        .show(ui);
+    let rect = layout.rect(icon);
+    let mut response = layout.response;
+    if response.clicked() {
+        *value = !*value;
+        response.mark_changed();
+    }
+    response.widget_info(|| {
+        egui::WidgetInfo::selected(egui::WidgetType::Checkbox, ui.is_enabled(), *value, label)
+    });
+    if let Some(rect) = rect {
+        let blue = Color32::from_rgb(0, 117, 255);
+        let (fill, edge) = if *value {
+            (blue, blue)
         } else {
-            Color32::WHITE
+            (Color32::WHITE, Color32::GRAY)
         };
-        let states = &mut ui.visuals_mut().widgets;
-        for state in [
-            &mut states.inactive,
-            &mut states.hovered,
-            &mut states.active,
-        ] {
-            state.bg_fill = fill;
-            state.fg_stroke = Stroke::new(3_f32, Color32::WHITE);
-            state.bg_stroke = Stroke::new(1_f32, Color32::GRAY);
-            state.corner_radius = 2.into();
+        ui.painter()
+            .rect(rect, 2., fill, Stroke::new(1_f32, edge), StrokeKind::Inside);
+        if *value {
+            paint_checkmark(ui.painter(), rect, Color32::WHITE);
         }
-        let response = ui.checkbox(value, label);
         if !response.enabled() {
-            disabled_hatch(ui, response.rect);
+            disabled_hatch(ui, rect);
+        } else if response.hovered() || response.has_focus() {
+            ui.painter().rect_stroke(
+                rect,
+                2.,
+                Stroke::new(1_f32, theme::ACCENT),
+                StrokeKind::Outside,
+            );
         }
-        response
-    })
-    .inner
+    }
+    response.on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
+pub(in crate::app) fn paint_checkmark(painter: &egui::Painter, rect: Rect, ink: Color32) {
+    let point = |x, y| rect.min + egui::vec2(x, y) * (rect.width() / CHECKBOX_WIDTH);
+    painter.add(egui::Shape::line(
+        vec![point(4., 11.5), point(9.75, 17.25), point(20., 4.75)],
+        Stroke::new(rect.width() * 0.15, ink),
+    ));
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn wrapped_form_labels_center_on_the_control_at_different_widths() {
+        let ctx = egui::Context::default();
+        theme::configure(&ctx);
+        let label = "Display the selected value in the editor";
+        for width in [310., 90.] {
+            let mut control = Rect::NOTHING;
+            let output = ctx.run(egui::RawInput::default(), |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    form_row_wrapped_sized(
+                        ui,
+                        label,
+                        "editorDisplayMode",
+                        egui::vec2(width, 32.),
+                        |ui| {
+                            control = form_combo("display")
+                                .selected_text("Replace entity tile")
+                                .show_ui(ui, |_| {})
+                                .response
+                                .rect;
+                        },
+                    );
+                });
+            });
+            let text = output
+                .shapes
+                .iter()
+                .find_map(|shape| match &shape.shape {
+                    egui::Shape::Text(t) if t.galley.text().replace('\n', " ") == label => Some(t),
+                    _ => None,
+                })
+                .unwrap();
+            if width < 100. {
+                assert!(text.galley.rows.len() >= 3);
+            } else {
+                assert_eq!(text.galley.rows.len(), 1);
+            }
+            let bounds = text.galley.rect.translate(text.pos.to_vec2());
+            assert!(
+                (bounds.center().y - control.center().y).abs() <= 1.,
+                "{bounds:?} vs {control:?}"
+            );
+        }
+    }
 
     #[test]
     fn checkboxes_translate_tool_labels_and_keep_project_values_literal() {
@@ -2122,7 +2241,11 @@ mod tests {
                 _ => None,
             })
             .unwrap();
-        let visible = Rect::from_min_size(shape.pos, shape.galley.size()).intersect(clip);
+        let visible = shape
+            .galley
+            .rect
+            .translate(shape.pos.to_vec2())
+            .intersect(clip);
         assert!(
             visible.left() >= cell.left(),
             "label paints outside its column: {visible:?}"
@@ -2167,7 +2290,7 @@ mod tests {
             })
             .unwrap();
         assert!(
-            badge.left() >= label.pos.x + label.galley.size().x,
+            badge.left() >= label.pos.x + label.galley.rect.right(),
             "source info follows label even inside RTL owner"
         );
     }

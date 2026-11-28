@@ -157,6 +157,64 @@ fn copy_external_project(directory: &Path) -> PathBuf {
 }
 
 #[test]
+fn reopened_project_keeps_enum_values_and_rebases_only_file_fields() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut project = Project::new();
+    let key = project.level_keys()[0];
+    project
+        .add_enum_definition("FilePathKind", &["Forest", "Snow"])
+        .unwrap();
+    let enum_kind = "LocalEnum.FilePathKind";
+    let biomes = project
+        .add_field_definition(None, "Biomes", enum_kind, true)
+        .unwrap();
+    let biome = project
+        .add_field_definition(None, "Biome", enum_kind, false)
+        .unwrap();
+    let files = project
+        .add_field_definition(None, "Files", "FilePath", true)
+        .unwrap();
+    project
+        .set_field_value(key, None, biomes, json!(["Forest", "Snow"]))
+        .unwrap();
+    project.set_field_default(biome, json!("Forest")).unwrap();
+    project
+        .set_field_value(key, None, files, json!(["Forest/map.txt"]))
+        .unwrap();
+    project.set_external_levels(true).unwrap();
+    project.save(dir.path().join("Forest.ldtk")).unwrap();
+    fs::write(dir.path().join("Forest/map.txt"), b"map asset").unwrap();
+    let expected_biomes = project.level(key).unwrap()["fieldInstances"][0].clone();
+    let expected_default = project.json["defs"]["levelFields"][1]["defaultOverride"].clone();
+
+    project.rename_project("Moved").unwrap();
+    let copy = dir.path().join("copy");
+    fs::create_dir(&copy).unwrap();
+    let path = copy.join("Game.ldtk");
+    project.save(&path).unwrap();
+    let mut client = Client::start(&path);
+    client.initialize(PROTOCOL);
+    client.initialized();
+    let level = client.tool(
+        "get_level",
+        json!({"level_iid":project.level(key).unwrap()["iid"]}),
+    );
+    assert_eq!(level["field_instances"][0], expected_biomes);
+    let definitions = client.tool("get_definitions", json!({}));
+    assert_eq!(
+        definitions["levelFields"][1]["defaultOverride"],
+        expected_default
+    );
+    let paths = &level["field_instances"][2]["__value"];
+    assert_eq!(paths, &json!(["../Moved/map.txt"]));
+    assert_eq!(
+        fs::read(copy.join(paths[0].as_str().unwrap())).unwrap(),
+        b"map asset"
+    );
+    client.close();
+}
+
+#[test]
 fn mcp_level_lookup_tracks_reindexed_levels_after_reload() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("reload.ldtk");
@@ -202,14 +260,18 @@ fn entity_lookup_tracks_placement_limits_removals_and_external_reload() {
     let second = project.add_level(None, "Second", 64, 64).unwrap();
     project.add_layer("Actors", "Entities", 16).unwrap();
     let actor = project.add_entity_def("Actor", 16, 16).unwrap();
+    let marker = project.add_entity_def("Marker", 8, 8).unwrap();
     let definition = &mut project.json["defs"]["entities"][0];
     definition["maxCount"] = json!(1);
     definition["limitScope"] = json!("PerWorld");
     definition["limitBehavior"] = json!("MoveLastOne");
     assert!(project.add_entity(first, 0, actor, 0, 0).unwrap());
+    assert!(project.add_entity(first, 0, marker, 16, 0).unwrap());
     project.set_external_levels(true).unwrap();
     project.save(&path).unwrap();
     let original = &project.layer(first, 0).unwrap()["entityInstances"][0];
+    let marker_iid = &project.layer(first, 0).unwrap()["entityInstances"][1]["iid"];
+    let read_marker = json!({"entity_iid":marker_iid});
     let read = json!({"entity_iid":original["iid"]});
     let first_iid = &project.level(first).unwrap()["iid"];
     let second_iid = &project.level(second).unwrap()["iid"];
@@ -222,6 +284,10 @@ fn entity_lookup_tracks_placement_limits_removals_and_external_reload() {
         client.tool("get_entity", read.clone())["level_iid"],
         *first_iid
     );
+    assert_eq!(
+        client.tool("get_entity", read_marker.clone())["entity"]["iid"],
+        *marker_iid
+    );
     let placed = client.tool(
         "add_entity",
         json!({
@@ -232,6 +298,10 @@ fn entity_lookup_tracks_placement_limits_removals_and_external_reload() {
     let moved = client.tool("get_entity", read.clone());
     assert_eq!(moved["level_iid"], *second_iid);
     assert_eq!(moved["entity"]["px"], json!([16, 32]));
+    assert_eq!(
+        client.tool("get_entity", read_marker)["entity"]["iid"],
+        *marker_iid
+    );
     assert_eq!(
         client.tool(
             "remove_entity",

@@ -738,7 +738,7 @@ impl EditorApp {
                                 }
                                 let response = ui.add_sized(
                                     [width, GROUP_HEIGHT],
-                                    egui::TextEdit::singleline(draft).id(id),
+                                    source_controls::form_text_box(draft).id(id),
                                 );
                                 done = response.lost_focus()
                                     || ui.input(|i| {

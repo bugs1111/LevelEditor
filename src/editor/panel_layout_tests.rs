@@ -1250,6 +1250,61 @@ fn custom_field_world_view_checkbox_is_visible_only_for_level_fields() {
 }
 
 #[test]
+fn plant_field_uses_the_editor_type_name_and_centers_the_display_row() {
+    let project =
+        Project::load(resource_path("examples/original/WorldMap_Free_layout.ldtk")).unwrap();
+    let owner = project.json["defs"]["entities"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|entity| entity["identifier"] == "Plant")
+        .unwrap();
+    let plant = owner["uid"].as_i64().unwrap();
+    assert_eq!(owner["fieldDefs"][0]["__type"], "LocalEnum.Plants");
+    let mut app = EditorApp::empty();
+    app.set_project(project);
+    app.field_owner = Some(plant);
+    for (language, label, mode) in [
+        (
+            locale::Language::English,
+            "Display in editor",
+            "Replace entity tile",
+        ),
+        (
+            locale::Language::SimplifiedChinese,
+            "在编辑器中显示",
+            "替换实体图块",
+        ),
+    ] {
+        let ctx = egui::Context::default();
+        theme::configure_for_language(&ctx, language == locale::Language::SimplifiedChinese);
+        locale::set(&ctx, language);
+        draw_first_field_definition(&mut app, &ctx, vec![]);
+        let output = draw_first_field_definition(&mut app, &ctx, vec![]);
+        let text_rect = |s: &str| {
+            output
+                .shapes
+                .iter()
+                .find_map(|shape| match &shape.shape {
+                    egui::Shape::Text(t) if t.galley.text().replace('\n', " ") == s => {
+                        Some(t.galley.rect.translate(t.pos.to_vec2()))
+                    }
+                    _ => None,
+                })
+                .unwrap_or_else(|| panic!("missing {s}"))
+        };
+        let label = text_rect(label);
+        let mode = text_rect(mode);
+        assert!(
+            (label.center().y - mode.center().y).abs() <= 1.,
+            "{label:?} vs {mode:?}"
+        );
+        let name = text_rect("plantType");
+        assert!((name.left() - text_rect("Enum.Plants").left()).abs() <= 1.);
+    }
+}
+
+#[test]
 fn field_display_controls_follow_the_owner_and_mode_in_one_row() {
     let mut project = Project::new();
     let entity = project.add_entity_def("Actor", 16, 16).unwrap();
@@ -1756,7 +1811,7 @@ fn nested_field_form_labels_remain_fully_readable_inside_their_third_column() {
     };
     for label in ["Field identifier", "Documentation", "Limits", "Can be null"] {
         let (clip, text) = field_text(label);
-        let bounds = Rect::from_min_size(text.pos, text.galley.size());
+        let bounds = text.galley.rect.translate(text.pos.to_vec2());
         assert!(
             bounds.left() >= general.pos.x - 0.1,
             "{label} escapes left into the field list: {bounds:?}, third column {}",

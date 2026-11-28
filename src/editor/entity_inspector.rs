@@ -1,7 +1,7 @@
 //! Source EntityInstanceEditor: a right-edge inspector, independent of modal panels.
 use super::tools::Gesture;
 use super::*;
-use panels::source_controls::small_button;
+use panels::source_controls;
 
 fn state_id() -> egui::Id {
     egui::Id::new("entity-instance-inspector")
@@ -33,8 +33,13 @@ fn coordinate(
     unit: f64,
     bounds: [i32; 2],
     enabled: bool,
+    width: f32,
 ) -> Option<i32> {
     ui.push_id(key, |ui| {
+        ui.spacing_mut().interact_size = egui::vec2(width, 21.);
+        ui.spacing_mut().button_padding = egui::vec2(2., 1.);
+        ui.style_mut().override_font_id = Some(FontId::proportional(11.733));
+        ui.visuals_mut().widgets.inactive.weak_bg_fill = theme::DARK;
         let draft_id = ui.id().with("coordinate-draft");
         let mut display = ui
             .data(|data| data.get_temp::<(i32, f64, f64)>(draft_id))
@@ -65,41 +70,24 @@ fn coordinate(
     })
     .inner
 }
-fn incoming_references(project: &Project, iid: &str) -> Vec<(String, String)> {
-    let mut refs = Vec::new();
-    for key in project.level_keys() {
-        let Some(level) = project.level(key) else {
-            continue;
-        };
-        for layer in level["layerInstances"].as_array().into_iter().flatten() {
-            for source in layer["entityInstances"].as_array().into_iter().flatten() {
-                let points_to =
-                    |value: &Value| value["entityIid"] == iid || value.as_str() == Some(iid);
-                let refers = source["fieldInstances"]
+fn incoming_references<'a>(
+    project: &'a Project,
+    iid: &'a str,
+) -> impl Iterator<Item = ldtk_core::EntityMatch<'a>> {
+    project.iter_entities().filter(move |found| {
+        let points_to = |value: &Value| value["entityIid"] == iid || value.as_str() == Some(iid);
+        found.entity["fieldInstances"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .any(|field| match field["__type"].as_str() {
+                Some("EntityRef") => points_to(&field["__value"]),
+                Some("Array<EntityRef>") => field["__value"]
                     .as_array()
-                    .into_iter()
-                    .flatten()
-                    .any(|field| match field["__type"].as_str() {
-                        Some("EntityRef") => points_to(&field["__value"]),
-                        Some("Array<EntityRef>") => field["__value"]
-                            .as_array()
-                            .is_some_and(|values| values.iter().any(points_to)),
-                        _ => false,
-                    });
-                if refers {
-                    refs.push((
-                        text(source, "iid", "").to_owned(),
-                        format!(
-                            "{} / {}",
-                            text(level, "identifier", "Level"),
-                            text(source, "__identifier", "Entity")
-                        ),
-                    ));
-                }
-            }
-        }
-    }
-    refs
+                    .is_some_and(|values| values.iter().any(points_to)),
+                _ => false,
+            })
+    })
 }
 impl EditorApp {
     pub(super) fn show_entity_inspector(&mut self, ctx: &egui::Context) {
@@ -303,8 +291,7 @@ impl EditorApp {
                             ui.add(
                                 egui::Label::new(
                                     RichText::new(text(&def, "identifier", "Entity"))
-                                        .size(14.667)
-                                        .strong()
+                                        .font(theme::TextRole::StrongBody.font())
                                         .color(theme::ACCENT),
                                 )
                                 .truncate(),
@@ -337,8 +324,17 @@ impl EditorApp {
         let (rect, response) =
             ui.allocate_exact_size(egui::vec2(ui.available_width(), 30.), Sense::click());
         let hover = response.hovered();
-        ui.painter()
-            .rect_filled(rect, 3, if hover { theme::ACCENT } else { theme::LIGHT });
+        ui.painter().rect_filled(
+            rect,
+            if extra_open { 0 } else { 3 },
+            if hover {
+                theme::ACCENT
+            } else if extra_open {
+                theme::GROUP_BAR
+            } else {
+                theme::LIGHT
+            },
+        );
         egui::Image::new(if extra_open {
             egui::include_image!("../../assets/icons/expanded.svg")
         } else {
@@ -346,7 +342,7 @@ impl EditorApp {
         })
         .paint_at(
             ui,
-            Rect::from_center_size(rect.left_center() + egui::vec2(12., 0.), Vec2::splat(16.)),
+            Rect::from_center_size(rect.left_center() + egui::vec2(12., 0.), Vec2::splat(24.)),
         );
         ui.painter().text(
             rect.left_center() + egui::vec2(24., 0.),
@@ -376,19 +372,44 @@ impl EditorApp {
                 .stroke(Stroke::new(1_f32, theme::LIGHT))
                 .inner_margin(8)
                 .show(ui, |ui| {
-                    ui.label("IID");
-                    ui.horizontal(|ui| {
-                        let mut id = iid.to_owned();
-                        ui.add(
-                            egui::TextEdit::singleline(&mut id)
-                                .desired_width((ui.available_width() - 75.).max(30.))
-                                .interactive(false),
-                        );
-                        if small_button(ui, "Copy IID").clicked() {
-                            ui.ctx().copy_text(iid.to_owned());
-                        }
-                    });
-                    ui.label(locale::tr(ui, "Coords"));
+                    ui.set_width(ui.available_width());
+                    ui.spacing_mut().item_spacing.y = 8.;
+                    let project = self.project.as_ref().unwrap();
+                    let refs: Vec<_> = incoming_references(project, iid).collect();
+                    let label_width = if !refs.is_empty() {
+                        source_controls::property_label_intrinsic_width(
+                            ui,
+                            "References to this entity",
+                            "incomingEntityRefs",
+                        )
+                        .clamp(80., 108.)
+                    } else {
+                        80.
+                    };
+                    source_controls::form_row_left_wrapped(
+                        ui,
+                        "IID",
+                        "entityInstanceIid",
+                        label_width,
+                        |ui| {
+                            ui.spacing_mut().item_spacing.x = 1.;
+                            let mut id = iid;
+                            ui.add_sized(
+                                [(ui.available_width() - 43.).max(1.), 30.],
+                                egui::TextEdit::singleline(&mut id)
+                                    .font(FontId::proportional(10.667))
+                                    .margin(egui::Margin::symmetric(7, 0))
+                                    .vertical_align(egui::Align::Center)
+                                    .interactive(false),
+                            );
+                            source_controls::copy_iid_button(
+                                ui,
+                                iid,
+                                "Copy IID",
+                                egui::vec2(42., 30.),
+                            );
+                        },
+                    );
                     let unit_id = state_id().with("grid-units");
                     let mut cells = ui
                         .ctx()
@@ -405,52 +426,105 @@ impl EditorApp {
                     ];
                     let mut moved = false;
                     let mut resized = false;
-                    ui.horizontal(|ui| {
-                        ui.spacing_mut().item_spacing.x = 3.;
-                        for axis in 0..2 {
-                            if let Some(v) = coordinate(
-                                ui,
-                                if axis == 0 { "x" } else { "y" },
-                                position[axis],
-                                unit,
-                                [0, dimensions[axis]],
-                                !readonly,
-                            ) {
-                                position[axis] = v;
-                                moved = true;
-                            }
-                            ui.label(if axis == 0 { "," } else { ";" });
-                        }
-                        for (axis, dimension) in size.iter_mut().enumerate() {
-                            let (enabled, min, max) = if axis == 0 {
-                                ("resizableX", "minWidth", "maxWidth")
-                            } else {
-                                ("resizableY", "minHeight", "maxHeight")
-                            };
-                            let bounds = [
-                                number(&def, min, 1.) as i32,
-                                number(&def, max, 32767.) as i32,
-                            ];
-                            if let Some(v) = coordinate(
-                                ui,
-                                if axis == 0 { "w" } else { "h" },
-                                *dimension,
-                                unit,
-                                bounds,
-                                !readonly && def[enabled] == true,
-                            ) {
-                                *dimension = v;
-                                resized = true;
-                            }
-                            if axis == 0 {
-                                ui.label("×");
-                            }
-                        }
-                        if small_button(ui, if cells { "cells" } else { "px" }).clicked() {
-                            cells = !cells;
-                            ui.ctx().data_mut(|data| data.insert_temp(unit_id, cells));
-                        }
-                    });
+                    source_controls::form_row_left_wrapped(
+                        ui,
+                        "Coords",
+                        "entityInstanceCoords",
+                        label_width,
+                        |ui| {
+                            ui.horizontal_wrapped(|ui| {
+                                ui.spacing_mut().item_spacing = egui::vec2(2., 2.);
+                                for axis in 0..2 {
+                                    if let Some(v) = coordinate(
+                                        ui,
+                                        if axis == 0 { "x" } else { "y" },
+                                        position[axis],
+                                        unit,
+                                        [0, dimensions[axis]],
+                                        !readonly,
+                                        48.,
+                                    ) {
+                                        position[axis] = v;
+                                        moved = true;
+                                    }
+                                    ui.label(if axis == 0 { "," } else { ";" });
+                                }
+                                for (axis, dimension) in size.iter_mut().enumerate() {
+                                    let (enabled, min, max) = if axis == 0 {
+                                        ("resizableX", "minWidth", "maxWidth")
+                                    } else {
+                                        ("resizableY", "minHeight", "maxHeight")
+                                    };
+                                    let bounds = [
+                                        number(&def, min, 1.) as i32,
+                                        number(&def, max, 32767.) as i32,
+                                    ];
+                                    if let Some(v) = coordinate(
+                                        ui,
+                                        if axis == 0 { "w" } else { "h" },
+                                        *dimension,
+                                        unit,
+                                        bounds,
+                                        !readonly && def[enabled] == true,
+                                        24.,
+                                    ) {
+                                        *dimension = v;
+                                        resized = true;
+                                    }
+                                    if axis == 0 {
+                                        ui.label("×");
+                                    }
+                                }
+                                if ui
+                                    .add(
+                                        egui::Button::new(
+                                            RichText::new(locale::tr(
+                                                ui,
+                                                if cells { "cells" } else { "px" },
+                                            ))
+                                            .size(11.733),
+                                        )
+                                        .small()
+                                        .fill(theme::DARK),
+                                    )
+                                    .clicked()
+                                {
+                                    cells = !cells;
+                                    ui.ctx().data_mut(|data| data.insert_temp(unit_id, cells));
+                                }
+                            });
+                        },
+                    );
+                    let mut follow = None;
+                    if !refs.is_empty() {
+                        source_controls::form_row_left_wrapped(
+                            ui,
+                            "References to this entity",
+                            "incomingEntityRefs",
+                            label_width,
+                            |ui| {
+                                ui.vertical(|ui| {
+                                    for found in refs {
+                                        let id = text(found.entity, "iid", "");
+                                        let width = ui.available_width();
+                                        if field_tools::reference_card(
+                                            ui,
+                                            project,
+                                            &mut self.assets,
+                                            key,
+                                            found,
+                                            width,
+                                            field_tools::ReferenceCard::Incoming,
+                                        )
+                                        .clicked()
+                                        {
+                                            follow = Some(id.to_owned());
+                                        }
+                                    }
+                                });
+                            },
+                        );
+                    }
                     let layer = self.layer;
                     if moved {
                         self.edit_level("Entity moved", key, |p| {
@@ -462,16 +536,11 @@ impl EditorApp {
                             p.resize_entity(key, layer, index, size[0], size[1])
                         });
                     }
-                    let refs = incoming_references(self.project.as_ref().unwrap(), iid);
-                    if !refs.is_empty() {
-                        ui.label(locale::tr(ui, "References to this entity"));
-                        for (iid, label) in &refs {
-                            if small_button(ui, RichText::new(label)).clicked() {
-                                self.follow_entity(iid);
-                            }
-                        }
+                    if let Some(iid) = follow {
+                        self.follow_entity(&iid);
                     }
                 });
+            ui.add_space(6.);
         }
         if let Some(doc) = def["doc"].as_str().filter(|doc| !doc.is_empty()) {
             egui::Frame::new()
@@ -652,6 +721,25 @@ mod tests {
             .find_map(|s| find(&s.shape, label))
             .unwrap_or_else(|| panic!("missing label {label}"))
     }
+    fn copy_icon(output: &egui::FullOutput, ctx: &egui::Context) -> Rect {
+        let manager = ctx.tex_manager();
+        let textures = manager.read();
+        output
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Rect(rect)
+                    if textures
+                        .meta(rect.fill_texture_id())?
+                        .name
+                        .ends_with("/copy.svg") =>
+                {
+                    Some(rect.rect)
+                }
+                _ => None,
+            })
+            .expect("copy SVG on the IID row")
+    }
     #[test]
     fn inspector_header_keeps_edit_on_one_line_at_minimum_width() {
         fn rows(shape: &egui::Shape) -> Option<usize> {
@@ -741,7 +829,7 @@ mod tests {
         f.ctx = egui::Context::default();
         theme::configure(&f.ctx);
         let output = f.warm();
-        label(&output, "Copy IID");
+        assert!(copy_icon(&output, &f.ctx).is_positive());
     }
     #[test]
     fn inspector_is_right_anchored_centered_and_limited_to_ninety_percent_height() {
@@ -768,7 +856,7 @@ mod tests {
         label(&output, "cells");
         label(&output, "4");
         label(&output, "5");
-        let pos = label(&output, "Copy IID");
+        let pos = copy_icon(&output, &f.ctx).center();
         f.frame(vec![egui::Event::PointerMoved(pos), button(pos, true)]);
         let output = f.frame(vec![button(pos, false)]);
         let iid =
@@ -792,8 +880,16 @@ mod tests {
         label(&output, "编辑");
         f.click("更多实体信息");
         let output = f.warm();
-        label(&output, "复制 IID");
-        label(&output, "坐标");
+        let icon = copy_icon(&output, &f.ctx);
+        let iid = label(&output, "IID");
+        assert!((iid.y - icon.center().y).abs() < 2.);
+        assert!((label(&output, "坐标").y - label(&output, "64").y).abs() < 2.);
+        assert!(icon.right() < f.state().rect.right());
+        f.ctx
+            .style_mut(|style| style.interaction.tooltip_delay = 0.);
+        f.time += 1.;
+        f.frame(vec![egui::Event::PointerMoved(icon.center())]);
+        label(&f.warm(), "复制 IID");
     }
     #[test]
     fn actual_resize_bar_changes_width_clamps_to_source_bounds_and_remains_centered() {
@@ -896,7 +992,7 @@ mod tests {
         p.set_field_value(next, Some(&source), field, json!({"entityIid":target}))
             .unwrap();
         f.click("EXTRA ENTITY INFOS");
-        f.click("Other / Actor");
+        f.click("Other");
         assert_eq!(f.app.selected, Some(next));
         assert_eq!(f.app.entity_index, Some(0));
         assert!(f.app.panel == Some(Panel::Entity));

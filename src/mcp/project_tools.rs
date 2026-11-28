@@ -2,7 +2,6 @@ use super::tools::MAX_INT_GRID_REGION_CELLS;
 use ldtk_core::{FilesystemSnapshot, LevelKey, Project, TilePaint};
 use serde_json::{Map, Value, json};
 use std::{
-    cell::OnceCell,
     collections::{HashMap, HashSet},
     path::PathBuf,
 };
@@ -69,42 +68,53 @@ pub(super) struct LayerSummary<'a> {
 type EntityPosition = (LevelKey, usize, usize);
 
 #[derive(Default)]
-struct EntityIndex {
-    positions: HashMap<String, EntityPosition>,
+struct IidIndex<P> {
+    positions: HashMap<String, P>,
+    last_match: Option<P>,
     complete: bool,
 }
 
-impl EntityIndex {
-    fn find(&mut self, project: &Project, iid: &str) -> Option<EntityPosition> {
+impl<P: Copy> IidIndex<P> {
+    fn lookup<'p, I>(&mut self, iid: &str, entries: impl FnOnce(Option<P>) -> I) -> Option<P>
+    where
+        I: Iterator<Item = (&'p str, P)>,
+    {
         let cached = self.positions.get(iid).copied();
         if cached.is_some() || self.complete {
             return cached;
         }
-        // The first lookup can stop at its match. On a later miss, finish the
-        // index so a sequence of different queries scans the project at most twice.
-        let first_lookup = self.positions.is_empty();
-        for found in project.iter_entities() {
-            let Some(entity_iid) = found.entity["iid"].as_str() else {
-                continue;
-            };
-            let position = (found.level, found.layer_index, found.entity_index);
+        for (candidate, position) in entries(self.last_match) {
             self.positions
-                .entry(entity_iid.to_owned())
+                .entry(candidate.to_owned())
                 .or_insert(position);
-            if first_lookup && entity_iid == iid {
+            if candidate == iid {
+                self.last_match = Some(position);
                 return Some(position);
             }
         }
         self.complete = true;
-        self.positions.get(iid).copied()
+        None
+    }
+}
+
+impl IidIndex<EntityPosition> {
+    fn entity(&mut self, project: &Project, iid: &str) -> Option<EntityPosition> {
+        self.lookup(iid, |last| {
+            project.iter_entities_after(last).filter_map(|found| {
+                Some((
+                    found.entity["iid"].as_str()?,
+                    (found.level, found.layer_index, found.entity_index),
+                ))
+            })
+        })
     }
 }
 
 pub(super) struct Session {
     path: PathBuf,
     project: Project,
-    level_keys: OnceCell<HashMap<String, LevelKey>>,
-    entity_index: EntityIndex,
+    level_keys: IidIndex<LevelKey>,
+    entity_index: IidIndex<EntityPosition>,
     snapshot: Option<FilesystemSnapshot>,
     dirty: bool,
 }
@@ -115,8 +125,8 @@ impl Session {
         Ok(Self {
             path,
             project,
-            level_keys: OnceCell::new(),
-            entity_index: EntityIndex::default(),
+            level_keys: IidIndex::default(),
+            entity_index: IidIndex::default(),
             snapshot: Some(snapshot),
             dirty: false,
         })
@@ -250,8 +260,9 @@ impl Session {
         }
     }
 
-    fn get_level(&self, iid: &str) -> Result<ToolPayload<'_>, String> {
-        let (key, level) = self.level(iid)?;
+    fn get_level(&mut self, iid: &str) -> Result<ToolPayload<'_>, String> {
+        let key = self.level_key(iid)?;
+        let level = self.project.level(key).expect("indexed level");
         let layers = items(&level["layerInstances"])
             .map(|layer| LayerSummary {
                 iid: &layer["iid"],
@@ -271,29 +282,25 @@ impl Session {
         })
     }
 
-    fn level(&self, iid: &str) -> Result<(LevelKey, &Value), String> {
-        // The edit tools leave level IIDs and positions intact. Opening/reloading
-        // a session replaces the project and its index together.
-        let keys = self.level_keys.get_or_init(|| {
-            let mut keys = HashMap::new();
-            for key in self.project.iter_level_keys() {
-                if let Some(iid) = self
-                    .project
-                    .level(key)
-                    .and_then(|level| level["iid"].as_str())
-                {
-                    keys.entry(iid.to_owned()).or_insert(key);
-                }
-            }
-            keys
-        });
-        keys.get(iid)
-            .and_then(|&key| self.project.level(key).map(|level| (key, level)))
+    fn level_key(&mut self, iid: &str) -> Result<LevelKey, String> {
+        self.level_keys
+            .lookup(iid, |last| {
+                let start = last
+                    .map(|key| LevelKey {
+                        level: key.level + 1,
+                        ..key
+                    })
+                    .unwrap_or_default();
+                self.project
+                    .iter_levels_from(start)
+                    .filter_map(|(key, level)| Some((level["iid"].as_str()?, key)))
+            })
             .ok_or_else(|| format!("Level IID not found: {iid}"))
     }
 
-    fn layer_key(&self, args: &Arguments) -> Result<(LevelKey, usize), String> {
-        let (key, level) = self.level(args["level_iid"].as_str().unwrap())?;
+    fn layer_key(&mut self, args: &Arguments) -> Result<(LevelKey, usize), String> {
+        let key = self.level_key(args["level_iid"].as_str().unwrap())?;
+        let level = self.project.level(key).expect("indexed level");
         let iid = args["layer_iid"].as_str().unwrap();
         let index = items(&level["layerInstances"])
             .position(|layer| layer["iid"] == iid)
@@ -304,7 +311,7 @@ impl Session {
     fn get_entity(&mut self, iid: &str) -> Result<ToolPayload<'_>, String> {
         let (key, layer_index, entity_index) = self
             .entity_index
-            .find(&self.project, iid)
+            .entity(&self.project, iid)
             .ok_or_else(|| format!("Entity IID not found: {iid}"))?;
         let level = self.project.level(key).expect("indexed level");
         let layer = &level["layerInstances"][layer_index];
@@ -318,11 +325,11 @@ impl Session {
     }
 
     fn reset_lookup_indexes(&mut self) {
-        self.level_keys.take();
-        self.entity_index = EntityIndex::default();
+        self.level_keys = IidIndex::default();
+        self.entity_index = IidIndex::default();
     }
 
-    fn get_int_grid_region(&self, args: &Arguments) -> Result<ToolPayload<'_>, String> {
+    fn get_int_grid_region(&mut self, args: &Arguments) -> Result<ToolPayload<'_>, String> {
         let (key, index) = self.layer_key(args)?;
         let layer = self.project.layer(key, index).expect("resolved layer");
         if layer["__type"] != "IntGrid" {
@@ -449,7 +456,7 @@ impl Session {
         .map_err(|error| error.to_string())?;
         // Placement rules may also remove or relocate entities in other levels.
         if changed && matches!(name, "add_entity" | "remove_entity") {
-            self.entity_index = EntityIndex::default();
+            self.entity_index = IidIndex::default();
         }
         self.dirty |= changed;
         let mut result = json!({"changed":changed,"dirty":self.dirty});
@@ -596,6 +603,74 @@ fn in_bounds([width, height]: [i64; 2], x: i32, y: i32) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn single_level_queries_only_index_through_the_requested_document() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("worlds.ldtk");
+        let document = json!({
+            "levels":[{"iid":"first","identifier":"Root"},{}],
+            "worlds":[{"levels":[]},{"levels":[
+                {"iid":"first","identifier":"Duplicate"},
+                {"externalRelPath":"forest.ldtkl","iid":"stub"},
+                {"iid":"last","identifier":"Last"}
+            ]}]
+        });
+        std::fs::write(&path, document.to_string()).unwrap();
+        std::fs::write(
+            dir.path().join("forest.ldtkl"),
+            r#"{"iid":"forest","identifier":"Forest"}"#,
+        )
+        .unwrap();
+        let mut session = Session::open(path).unwrap();
+        for (iid, identifier, indexed) in [
+            ("first", "Root", 1),
+            ("forest", "Forest", 2),
+            ("first", "Root", 2),
+        ] {
+            let level = serde_json::to_value(session.get_level(iid).unwrap()).unwrap();
+            assert_eq!(level["identifier"], identifier);
+            assert_eq!(session.level_keys.positions.len(), indexed, "{iid}");
+        }
+        assert!(session.get_level("stub").is_err());
+        let last = serde_json::to_value(session.get_level("last").unwrap()).unwrap();
+        assert_eq!(last["identifier"], "Last");
+    }
+
+    #[test]
+    fn entity_queries_index_only_through_the_requested_instance() {
+        let mut project = Project::new();
+        let root = project.level_keys()[0];
+        project.json["levels"][0]["layerInstances"] = json!([
+            {"entityInstances":[{"iid":"a"}, {}, {"iid":"b"}]},
+            {"entityInstances":[]},
+            {"entityInstances":[{"iid":"c"}]}
+        ]);
+        project.json["worlds"] = json!([
+            {"levels":[]},
+            {"levels":[{"layerInstances":[]}, {"layerInstances":[
+                {"entityInstances":[{"iid":"a"}, {"iid":"d"}, {"iid":"e"}]}
+            ]}]}
+        ]);
+        let nested = LevelKey {
+            world: Some(1),
+            level: 1,
+        };
+        let mut index = IidIndex::default();
+        for (iid, position, indexed) in [
+            ("a", (root, 0, 0), 1),
+            ("b", (root, 0, 2), 2),
+            ("c", (root, 2, 0), 3),
+            ("d", (nested, 0, 1), 4),
+            ("a", (root, 0, 0), 4),
+        ] {
+            assert_eq!(index.entity(&project, iid), Some(position));
+            assert_eq!(index.positions.len(), indexed, "{iid}");
+        }
+        assert_eq!(index.entity(&project, "missing"), None);
+        assert_eq!(index.entity(&project, "e"), Some((nested, 0, 2)));
+        assert!(index.complete);
+    }
 
     #[test]
     fn failed_post_save_reload_requires_recovery_before_project_tools() {

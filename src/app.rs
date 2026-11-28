@@ -302,7 +302,7 @@ pub struct EditorApp {
     save_attempt: Option<PathBuf>,
     save_failure: Option<services::SaveFailure>,
     application_write: Option<project_dialogs::ApplicationWrite>,
-    exporting: Option<Receiver<Result<ldtk_core::exports::ExportReport, String>>>,
+    exporting: Option<Receiver<ldtk_core::Result<ldtk_core::exports::ExportReport>>>,
     external_changes: Option<Vec<PathBuf>>,
     status: String,
     published_window_title: String,
@@ -627,7 +627,11 @@ impl EditorApp {
         self.loading = Some(rx);
         let progress = Arc::new(Mutex::new(Some((0, 1))));
         self.loading_progress = Some(progress.clone());
-        self.status = format!("Opening {}…", path.display());
+        self.set_operation_status(locale::format_ctx(
+            ctx,
+            "Opening {path}…",
+            &[("path", &path.to_string_lossy())],
+        ));
         let ctx = ctx.clone();
         std::thread::spawn(move || {
             let result = (|| {
@@ -782,8 +786,9 @@ impl EditorApp {
                 .unwrap_or(0);
             self.settings.remember(path, uid);
         }
-        self.status =
-            "Project opened. Left: draw · Right: erase · Space + drag: pan · Wheel: zoom".into();
+        self.set_operation_status(
+            "Project opened. Left: draw · Right: erase · Space + drag: pan · Wheel: zoom",
+        );
         if closing_settings {
             self.finish_settings_dialog(&self.repaint.clone().unwrap_or_default());
         }
@@ -911,7 +916,8 @@ impl EditorApp {
     }
 
     fn new_project_dialog(&mut self, ctx: &egui::Context, dir: Option<PathBuf>) {
-        let mut dialog = FileDialog::new().add_filter("Supported file types", &["ldtk"]);
+        let mut dialog =
+            FileDialog::new().add_filter(locale::tr_ctx(ctx, "Supported file types"), &["ldtk"]);
         let browse_from = dir
             .or_else(|| self.settings.ui_dir(None, "NewProject", None))
             .or_else(|| self.settings.default_project_dialog_dir());
@@ -931,7 +937,10 @@ impl EditorApp {
     }
 
     fn browse_project_dialog(&mut self, ctx: &egui::Context, dir: Option<PathBuf>) {
-        let mut dialog = FileDialog::new().add_filter("Supported file types", &["ldtk", "json"]);
+        let mut dialog = FileDialog::new().add_filter(
+            locale::tr_ctx(ctx, "Supported file types"),
+            &["ldtk", "json"],
+        );
         if let Some(dir) = dir.or_else(|| self.settings.default_project_dialog_dir()) {
             dialog = dialog.set_directory(dir);
         }
@@ -959,14 +968,17 @@ impl EditorApp {
         };
         if let Some(path) = project.path.clone().filter(|_| !save_as) {
             self.check_application_write(&ctx, project_dialogs::ApplicationWrite::Save(path));
-        } else if let Some(path) = Self::pick_save_path(project.path.as_deref()) {
+        } else if let Some(path) = Self::pick_save_path(&ctx, project.path.as_deref()) {
             self.save_to(&ctx, path);
         }
         false
     }
 
-    fn pick_save_path(project_path: Option<&Path>) -> Option<PathBuf> {
-        let mut dialog = FileDialog::new().add_filter("Supported file types", &["ldtk", "json"]);
+    fn pick_save_path(ctx: &egui::Context, project_path: Option<&Path>) -> Option<PathBuf> {
+        let mut dialog = FileDialog::new().add_filter(
+            locale::tr_ctx(ctx, "Supported file types"),
+            &["ldtk", "json"],
+        );
         if let Some(path) = project_path {
             if let Some(parent) = path.parent() {
                 dialog = dialog.set_directory(parent);
@@ -1691,6 +1703,9 @@ impl Drop for EditorApp {
 
 impl eframe::App for EditorApp {
     fn raw_input_hook(&mut self, ctx: &egui::Context, input: &mut egui::RawInput) {
+        if self.project.is_some() && input.events.contains(&egui::Event::WindowFocused(true)) {
+            self.refresh_command_trust();
+        }
         panels::source_colors::capture_color_clipboard(ctx, input);
         self.capture_clipboard_preview(ctx, input);
         self.ui_commit_raw_input(ctx, input);
@@ -4997,7 +5012,7 @@ mod tests {
         app.project.as_mut().unwrap().json["customCommands"] = serde_json::json!([{"when":"BeforeSave","command":"python3 -c \"raise SystemExit(7)\""}]);
         app.project.as_mut().unwrap().save(&path).unwrap();
         let iid = text(&app.project.as_ref().unwrap().json, "iid", "").to_owned();
-        app.settings.set_trusted(&iid, true);
+        app.settings.set_trust(&iid, Some(true)).unwrap();
         press_canvas(&mut app);
         app.save(false);
         let ctx = egui::Context::default();

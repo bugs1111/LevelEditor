@@ -826,16 +826,9 @@ impl EditorApp {
                     } else {
                         &path
                     };
-                    let color = self.settings.dir_color(directory);
+                    let (color, forced) = self.settings.dir_color(directory);
                     let color =
                         Color32::from_rgb((color >> 16) as u8, (color >> 8) as u8, color as u8);
-                    let forced = self.settings.value["recentDirColors"]
-                        .as_array()
-                        .is_some_and(|colors| {
-                            colors
-                                .iter()
-                                .any(|entry| entry["path"].as_str() == directory.to_str())
-                        });
                     let sample = path.starts_with(resource_path("examples/original"));
                     let (row, response) = ui.allocate_exact_size(
                         egui::vec2(
@@ -907,7 +900,7 @@ impl EditorApp {
                     let menu_frame = panels::source_controls::context_menu_frame(ui.style());
                     egui::Popup::menu(&menu_response)
                         .frame(menu_frame)
-                        .show(|ui| self.recent_path_menu(ui, &path, files));
+                        .show(|ui| self.recent_path_menu(ui, &path, files, forced));
                     let mut text_right = menu_rect.left() - 8.;
                     if files {
                         let mut backup = child(
@@ -993,11 +986,7 @@ impl EditorApp {
                         } else if !missing {
                             *action = Some(Action::BrowseInDir(path.clone()));
                         } else {
-                            if let Some(entries) = self.settings.value["recentDirs"].as_array_mut()
-                            {
-                                entries.retain(|entry| entry.as_str() != path.to_str());
-                            }
-                            let _ = self.settings.save();
+                            self.settings.remove_recent("recentDirs", &path);
                             if let Some(parent) = path.parent().filter(|parent| parent.is_dir()) {
                                 *action = Some(Action::BrowseInDir(parent.to_owned()));
                             } else {
@@ -1008,7 +997,7 @@ impl EditorApp {
                     }
                     egui::Popup::context_menu(&response)
                         .frame(menu_frame)
-                        .show(|ui| self.recent_path_menu(ui, &path, files));
+                        .show(|ui| self.recent_path_menu(ui, &path, files, forced));
                 }
             });
     }
@@ -1506,6 +1495,114 @@ mod tests {
             assert_eq!(section.format.color, Color32::from_rgb(255, 163, 134));
             assert!(section.format.strikethrough.width > 0.);
         }
+    }
+
+    #[test]
+    fn renamed_project_replaces_the_old_home_entry_and_opens_from_its_new_row() {
+        use std::time::Duration;
+        let ctx = egui::Context::default();
+        let finish_file_operation = |app: &mut EditorApp| {
+            let deadline = Instant::now() + Duration::from_secs(15);
+            while app.saving.is_some() || app.loading.is_some() {
+                assert!(Instant::now() < deadline, "file operation timed out");
+                app.poll_services(&ctx);
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        };
+        theme::configure(&ctx);
+        let dir = tempfile::tempdir().unwrap();
+        let old = dir.path().join("OldMap.ldtk");
+        let new = dir.path().join("NewMap.ldtk");
+        let profile = dir.path().join("settings.json");
+        let mut app = EditorApp::empty();
+        app.settings = settings::Settings::load_at(Some(profile.clone()));
+        let mut project = Project::new();
+        project.save(&old).unwrap();
+        app.set_project(project);
+        app.request(&ctx, Action::RenameProject("NewMap".into()));
+        finish_file_operation(&mut app);
+        assert!(new.is_file() && !old.exists());
+        let mut home = EditorApp::empty();
+        home.settings = settings::Settings::load_at(Some(profile));
+        home_frame(&mut home, &ctx, vec![]);
+        let output = home_frame(&mut home, &ctx, vec![]);
+        assert!(!output.shapes.iter().any(|shape| {
+            matches!(&shape.shape, egui::Shape::Text(text) if text.galley.text() == "OldMap")
+        }));
+        click(&mut home, &ctx, text_rect(&output, "NewMap").center());
+        assert!(home.loading.is_some());
+        finish_file_operation(&mut home);
+        assert_eq!(
+            home.project.as_ref().unwrap().path.as_deref(),
+            Some(new.as_path())
+        );
+        let copy = dir.path().join("Copy.ldtk");
+        home.save_async_at(copy.clone(), None);
+        finish_file_operation(&mut home);
+        assert_eq!(
+            home.settings.value["recentProjects"],
+            serde_json::json!([copy, new])
+        );
+    }
+
+    #[test]
+    fn home_directory_color_survives_reload_and_resets_from_the_project_menu() {
+        let dir = tempfile::tempdir().unwrap();
+        let profile = Some(dir.path().join("settings.json"));
+        let directory = dir.path().join(r"art\maps");
+        std::fs::create_dir_all(&directory).unwrap();
+        let project = directory.join("ColorCheck.ldtk");
+        Project::new().save(&project).unwrap();
+        let mut settings = settings::Settings::load_at(profile.clone());
+        settings.remember(&project, 1);
+        settings.force_dir_color(&directory, Some(0x329D82));
+        let mut app = EditorApp::empty();
+        app.settings = settings::Settings::load_at(profile.clone());
+        let ctx = egui::Context::default();
+        theme::configure(&ctx);
+        home_frame(&mut app, &ctx, vec![]);
+        let output = home_frame(&mut app, &ctx, vec![]);
+        let fill = mix_color(theme::DARK, Color32::from_rgb(0x32, 0x9D, 0x82), 0.4);
+        let rows: Vec<_> = output
+            .shapes
+            .iter()
+            .filter_map(|shape| match &shape.shape {
+                egui::Shape::Rect(r) if r.fill == fill => Some(r.rect),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            rows.len(),
+            2,
+            "both the project and folder use the assigned color"
+        );
+        let title = text_rect(&output, "ColorCheck");
+        let row = rows
+            .iter()
+            .find(|row| row.contains(title.center()))
+            .unwrap();
+        click(
+            &mut app,
+            &ctx,
+            egui::pos2(row.right() - 17., row.center().y),
+        );
+        let output = home_frame(&mut app, &ctx, vec![]);
+        click(
+            &mut app,
+            &ctx,
+            text_rect(&output, "RESET ASSIGNED COLOR").center(),
+        );
+        assert_eq!(
+            settings::Settings::load_at(profile).value["recentDirColors"],
+            serde_json::json!([])
+        );
+        let output = home_frame(&mut app, &ctx, vec![]);
+        assert!(
+            !output
+                .shapes
+                .iter()
+                .any(|shape| matches!(&shape.shape, egui::Shape::Rect(r) if r.fill == fill))
+        );
     }
 
     #[test]
