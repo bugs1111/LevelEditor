@@ -328,6 +328,7 @@ pub struct EditorApp {
     definition_uid: Option<i64>,
     field_owner: Option<i64>,
     field_uid: Option<i64>,
+    field_type_picker: Option<panels::FieldTypePicker>,
     rule_group_uid: Option<i64>,
     open_rule_groups: HashSet<(i64, i64)>,
     rule_uid: Option<i64>,
@@ -566,6 +567,7 @@ impl EditorApp {
             definition_uid: None,
             field_owner: None,
             field_uid: None,
+            field_type_picker: None,
             rule_group_uid: None,
             open_rule_groups: HashSet::new(),
             rule_uid: None,
@@ -767,6 +769,7 @@ impl EditorApp {
         self.rule_hover = None;
         self.last_rule_list_row = None;
         self.field_uid = None;
+        self.field_type_picker = None;
         self.point_pick = None;
         self.reference_pick = None;
         self.chain_entity = None;

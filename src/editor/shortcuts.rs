@@ -799,7 +799,8 @@ impl EditorApp {
             None => {}
         }
         let world_context_open = self.world_context.menu_open();
-        let selector_open = ui_fields::enum_picker::is_open(ctx)
+        let selector_open = self.field_type_picker.is_some()
+            || ui_fields::enum_picker::is_open(ctx)
             || self.panel == Some(Panel::World) && Self::world_selector_open(ctx)
             || self.panel == Some(Panel::Layers) && egui::Popup::is_any_open(ctx)
             || self.layer_context_menu.is_some()

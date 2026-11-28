@@ -862,7 +862,8 @@ impl EditorApp {
                     _ => None,
                 })
             });
-            close |= !(panel == Panel::Level && level_point_picker_was_open)
+            close |= self.field_type_picker.is_none()
+                && !(panel == Panel::Level && level_point_picker_was_open)
                 && mask_press.is_some_and(|pos| {
                     ctx.layer_id_at(pos)
                         .is_none_or(|layer| layer.order == egui::Order::Background)

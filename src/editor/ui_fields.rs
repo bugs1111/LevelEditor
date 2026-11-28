@@ -697,7 +697,7 @@ fn scalar_editor_inner(
                 .unwrap_or(i32::MAX as i64);
             let before = v;
             let cleared = std::cell::Cell::new(false);
-            prepare_number_editor(ui);
+            ui_commit::prepare_editor(ui.ctx(), ui.next_auto_id());
             let response = ui.add(
                 egui::DragValue::new(&mut v)
                     .range(lo..=hi)
@@ -712,7 +712,6 @@ fn scalar_editor_inner(
                     }),
             );
             ui_commit::track_editor(ui.ctx(), &response);
-            track_default_editor(ui, &response);
             modified = cleared.get() || v != before;
             current = if cleared.get() { Value::Null } else { json!(v) };
         }
@@ -720,7 +719,7 @@ fn scalar_editor_inner(
             let mut v = current.as_f64().unwrap_or(0.0);
             let before = v;
             let cleared = std::cell::Cell::new(false);
-            prepare_number_editor(ui);
+            ui_commit::prepare_editor(ui.ctx(), ui.next_auto_id());
             let response = ui.add(
                 egui::DragValue::new(&mut v)
                     .update_while_editing(false)
@@ -739,7 +738,6 @@ fn scalar_editor_inner(
                     .speed(0.1),
             );
             ui_commit::track_editor(ui.ctx(), &response);
-            track_default_editor(ui, &response);
             modified = cleared.get() || v != before;
             current = if cleared.get() { Value::Null } else { json!(v) };
         }
@@ -1021,18 +1019,6 @@ struct DefaultEditor {
     active: bool,
     focus: bool,
 }
-fn prepare_number_editor(ui: &egui::Ui) {
-    let id = ui.next_auto_id();
-    let default = ui.make_persistent_id("instance-default-editor");
-    if ui
-        .data(|data| data.get_temp::<DefaultEditor>(default))
-        .is_some_and(|state| state.focus)
-    {
-        // DragValue selects the old number when it observes the focus change.
-        ui.memory_mut(|memory| memory.request_focus(id));
-    }
-    ui_commit::prepare_editor(ui.ctx(), id);
-}
 fn track_default_editor(ui: &egui::Ui, response: &egui::Response) {
     let id = ui.make_persistent_id("instance-default-editor");
     if let Some(mut state) = ui.data_mut(|data| data.get_temp::<DefaultEditor>(id)) {
@@ -1055,6 +1041,104 @@ pub(super) fn field_uses_default(field: &Value, index: usize) -> bool {
         .unwrap_or(&Value::Null)
         .is_null()
 }
+fn instance_number_editor(
+    ui: &mut egui::Ui,
+    kind: &str,
+    value: &Value,
+    definition: &Value,
+    using_default: bool,
+) -> Option<Value> {
+    use panels::source_controls::{NumberStyle, number_input_sized};
+    let integer = kind == "Int";
+    let lower = definition["min"].as_f64();
+    let upper = definition["max"].as_f64();
+    let (min, max) = if integer {
+        (
+            lower.map_or(i32::MIN as f64, |n| (n + 0.5).floor()),
+            upper.map_or(i32::MAX as f64, |n| (n + 0.5).floor()),
+        )
+    } else {
+        (lower.unwrap_or(f64::MIN), upper.unwrap_or(f64::MAX))
+    };
+    // LDtk scales horizontal motion by the field range and the numeric type.
+    let speed = lower
+        .zip(upper)
+        .map_or(2., |(lo, hi)| (hi - lo) / if integer { 50. } else { 3. });
+    let style = NumberStyle::FieldSlider {
+        integer,
+        min,
+        max,
+        speed: speed * if integer { 0.088 } else { 0.008 },
+        default: if using_default { value.as_f64() } else { None },
+    };
+    let current = if using_default {
+        String::new()
+    } else {
+        value.to_string()
+    };
+    let (result, editor) = ui
+        .horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 3.;
+            let prefix = text(definition, "editorTextPrefix", "");
+            let suffix = text(definition, "editorTextSuffix", "");
+            let mut width = ui.available_width();
+            // Units are project text and share the row with the editable number.
+            let unit = |unit: &str| {
+                ui.painter().layout_no_wrap(
+                    unit.into(),
+                    FontId::proportional(14.),
+                    theme::GROUP_BAR,
+                )
+            };
+            let prefix = (!using_default && !prefix.is_empty()).then(|| unit(prefix));
+            let suffix = (!using_default && !suffix.is_empty()).then(|| unit(suffix));
+            for unit in [&prefix, &suffix].into_iter().flatten() {
+                width -= unit.size().x + ui.spacing().item_spacing.x;
+            }
+            if let Some(prefix) = prefix {
+                ui.label(prefix);
+            }
+            let input_id = ui.make_persistent_id("number");
+            let result = number_input_sized(ui, "number", &current, style, width.max(24.));
+            let editor = ui.ctx().read_response(input_id);
+            if let Some(suffix) = suffix {
+                ui.label(suffix);
+            }
+            (result, editor)
+        })
+        .inner;
+    if let Some(response) = editor {
+        // The slider temporarily gives up text focus while previewing a drag.
+        let dragging = ui.input(|i| {
+            i.pointer.primary_down()
+                && i.pointer
+                    .press_origin()
+                    .is_some_and(|p| response.rect.contains(p))
+        });
+        if !dragging {
+            track_default_editor(ui, &response);
+        }
+    }
+    result
+        .filter(|_| !ui.input(|i| i.key_pressed(Key::Escape)))
+        .map(|raw| {
+            if raw.trim().is_empty() {
+                return Value::Null;
+            }
+            let n = raw
+                .trim()
+                .parse::<f64>()
+                .ok()
+                .filter(|n| n.is_finite())
+                .unwrap_or(0.);
+            if integer {
+                json!(n.trunc().clamp(min, max) as i64)
+            } else {
+                json!(n.clamp(min, max))
+            }
+        })
+}
+
 fn instance_scalar_editor(
     ui: &mut egui::Ui,
     project: &Project,
@@ -1198,8 +1282,11 @@ fn instance_scalar_editor(
                 if let Some(state) = state {
                     ui.data_mut(|data| data.insert_temp(child_id, state));
                 }
-                let result =
-                    scalar_editor_inner(ui, project, kind, value, definition, false, using_default);
+                let result = if matches!(kind, "Int" | "Float") {
+                    instance_number_editor(ui, kind, value, definition, using_default)
+                } else {
+                    scalar_editor_inner(ui, project, kind, value, definition, false, using_default)
+                };
                 next_state = ui.data_mut(|data| data.get_temp::<DefaultEditor>(child_id));
                 result
             },
@@ -1948,6 +2035,81 @@ mod tests {
             );
         }
     }
+    #[test]
+    fn overridden_numbers_show_units_and_commit_one_horizontal_drag() {
+        for kind in ["Int", "Float"] {
+            let mut p = Project::new();
+            let uid = p.add_field_definition(None, "Price", kind, false).unwrap();
+            p.update_field_definition(
+                uid,
+                &json!({"editorTextPrefix":"x","editorTextSuffix":"GOLD","min":0,"max":10}),
+            )
+            .unwrap();
+            p.set_field_editor_value(LEVEL, None, uid, json!(3))
+                .unwrap();
+            let ctx = egui::Context::default();
+            let out = ctx.run(egui::RawInput::default(), |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    field_value_editor(
+                        ui,
+                        &p,
+                        &p.level(LEVEL).unwrap()["fieldInstances"][0],
+                        &p.json["defs"]["levelFields"][0],
+                    );
+                });
+            });
+            for unit in ["x", "GOLD"] {
+                assert!(
+                    out.shapes.iter().any(
+                        |s| matches!(&s.shape, egui::Shape::Text(t) if t.galley.job.text == unit)
+                    ),
+                    "missing {unit}"
+                );
+            }
+            let (rect, _) = frame(&ctx, &mut p, uid, vec![]);
+            let start = rect.center();
+            let end = start + egui::vec2(100., 0.);
+            frame(
+                &ctx,
+                &mut p,
+                uid,
+                vec![egui::Event::PointerMoved(start), click(start, true)],
+            );
+            assert!(!frame(&ctx, &mut p, uid, vec![egui::Event::PointerMoved(end)]).1);
+            assert!(frame(&ctx, &mut p, uid, vec![click(end, false)]).1);
+            let value = p.level(LEVEL).unwrap()["fieldInstances"][0]["__value"]
+                .as_f64()
+                .unwrap();
+            assert!(value > 3. && value <= 10.);
+        }
+    }
+    #[test]
+    fn inherited_number_accepts_a_drag_after_activating_the_default() {
+        let mut p = Project::new();
+        let uid = p.add_field_definition(None, "Count", "Int", false).unwrap();
+        p.set_field_default(uid, json!(1)).unwrap();
+        let ctx = egui::Context::default();
+        focus(&ctx, &mut p, uid);
+        let (rect, _) = frame(&ctx, &mut p, uid, vec![]);
+        let start = rect.center();
+        let end = start + egui::vec2(100., 0.);
+        frame(
+            &ctx,
+            &mut p,
+            uid,
+            vec![egui::Event::PointerMoved(start), click(start, true)],
+        );
+        frame(&ctx, &mut p, uid, vec![egui::Event::PointerMoved(end)]);
+        frame(&ctx, &mut p, uid, vec![]);
+        assert!(frame(&ctx, &mut p, uid, vec![click(end, false)]).1);
+        assert!(
+            p.level(LEVEL).unwrap()["fieldInstances"][0]["__value"]
+                .as_i64()
+                .unwrap()
+                > 1
+        );
+    }
+
     #[test]
     fn numeric_keyboard_replacement_commits_only_on_enter() {
         for kind in ["Int", "Float"] {

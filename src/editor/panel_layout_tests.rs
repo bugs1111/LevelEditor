@@ -1725,6 +1725,104 @@ fn native_add_field_chooses_type_before_mutating_and_can_undo() {
     assert_eq!(app.project.as_ref().unwrap().json, before);
 }
 #[test]
+fn escape_closes_anchored_field_type_cards_before_the_entity_panel() {
+    let ctx = egui::Context::default();
+    theme::configure(&ctx);
+    let mut app = EditorApp::empty();
+    let mut p = Project::new();
+    let owner = p.add_entity_def("Actor", 16, 16).unwrap();
+    app.set_project(p);
+    app.show_panel(Some(Panel::Entities));
+    let before = app.project.as_ref().unwrap().json.clone();
+    let center = |out: &egui::FullOutput, label| {
+        out.shapes
+            .iter()
+            .find_map(|s| text_center(&s.shape, label))
+            .unwrap()
+    };
+    let button = center(&draw_fields(&mut app, &ctx, owner, vec![]), "+ ARRAY");
+    click_field(&mut app, &ctx, owner, button);
+    draw_fields(&mut app, &ctx, owner, vec![]);
+    let out = draw_fields(&mut app, &ctx, owner, vec![]);
+    let int = center(&out, "Integer");
+    assert!(int.y > button.y && int.y - button.y < 100.);
+    assert_eq!(int.y, center(&out, "Multilines").y);
+    assert!(center(&out, "Enum").y > int.y);
+    let esc = egui::Event::Key {
+        key: Key::Escape,
+        physical_key: None,
+        pressed: true,
+        repeat: false,
+        modifiers: egui::Modifiers::NONE,
+    };
+    for expected in [Some(Panel::Entities), None] {
+        let _ = ctx.run(
+            egui::RawInput {
+                events: vec![esc.clone()],
+                ..Default::default()
+            },
+            |ctx| {
+                app.shortcuts(ctx);
+                app.source_field_type_picker(ctx);
+            },
+        );
+        assert!(
+            app.panel == expected,
+            "expected Entities={} after Esc, got Entities={}, picker open={}",
+            expected.is_some(),
+            app.panel == Some(Panel::Entities),
+            app.field_type_picker.is_some()
+        );
+        let _ = ctx.run(
+            egui::RawInput {
+                events: vec![egui::Event::Key {
+                    key: Key::Escape,
+                    physical_key: None,
+                    pressed: false,
+                    repeat: false,
+                    modifiers: egui::Modifiers::NONE,
+                }],
+                ..Default::default()
+            },
+            |ctx| {
+                app.shortcuts(ctx);
+                app.source_field_type_picker(ctx);
+            },
+        );
+    }
+    assert_eq!(app.project.as_ref().unwrap().json, before);
+}
+#[test]
+fn enum_card_creates_an_array_only_after_selecting_its_enum() {
+    let ctx = egui::Context::default();
+    theme::configure(&ctx);
+    let mut app = EditorApp::empty();
+    let mut project = Project::new();
+    let owner = project.add_entity_def("Item", 16, 16).unwrap();
+    project.add_enum_definition("ItemType", &["Gold"]).unwrap();
+    app.set_project(project);
+    let before = app.project.as_ref().unwrap().json.clone();
+    for label in ["+ ARRAY", "Enum", "ItemType"] {
+        draw_fields(&mut app, &ctx, owner, vec![]);
+        let out = draw_fields(&mut app, &ctx, owner, vec![]);
+        let pos = out
+            .shapes
+            .iter()
+            .find_map(|s| text_center(&s.shape, label))
+            .unwrap();
+        assert_eq!(app.project.as_ref().unwrap().json, before);
+        click_field(&mut app, &ctx, owner, pos);
+    }
+    assert!(app.field_type_picker.is_none());
+    assert_eq!(
+        app.project.as_ref().unwrap().json["defs"]["entities"][0]["fieldDefs"][0]["__type"],
+        "Array<LocalEnum.ItemType>"
+    );
+    assert!(app.history.undo(app.project.as_mut().unwrap()));
+    assert_eq!(app.project.as_ref().unwrap().json, before);
+}
+
+#[test]
 fn sparse_saved_selection_ids_do_not_expand_to_the_bounding_rectangle() {
     let mut app = EditorApp::empty();
     let mut p = Project::new();

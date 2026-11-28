@@ -40,6 +40,14 @@ const EMBEDDED_TILESET_DESCRIPTION: &str = "This tileset is using an embedded im
 const ENUM_VALUE_SIZE: f32 = 32.;
 const ENUM_VALUE_SPACING: f32 = 3.;
 
+pub(super) struct FieldTypePicker {
+    anchor: Rect,
+    owner: Option<i64>,
+    array: bool,
+    convert: Option<i64>,
+    chosen: Option<String>,
+}
+
 #[derive(Clone)]
 struct EnumValueRemoval {
     project_iid: Value,
@@ -2477,16 +2485,16 @@ impl EditorApp {
                     ui.spacing_mut().item_spacing.x = caption_gap;
                     ui.spacing_mut().button_padding.x = number_padding;
                     ui.spacing_mut().interact_size.x = width;
-                    for (key, min, mut value, caption) in controls {
-                        ui_commit::prepare_editor(ui.ctx(), ui.next_auto_id());
-                        let response = ui.add_sized(
+                    for (key, min, original, caption) in controls {
+                        let mut value = original;
+                        ui_commit::sized_drag_value(
+                            ui,
                             [width, 32.],
                             egui::DragValue::new(&mut value)
                                 .range(min..=max)
                                 .update_while_editing(false),
                         );
-                        ui_commit::track_editor(ui.ctx(), &response);
-                        if response.changed() {
+                        if value != original {
                             patch[key] = json!(value);
                         }
                         ui.add(egui::Label::new(caption).extend());

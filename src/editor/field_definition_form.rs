@@ -56,20 +56,45 @@ fn field_type_caption(kind: &str, array: bool) -> String {
     }
 }
 
+// Order, family colors and examples follow the source field type palette.
+const FIELD_TYPES: &[(&str, &str, &str)] = &[
+    ("Int", "Integer", "123"),
+    ("Float", "Float", "1.0"),
+    ("Bool", "Boolean", ""),
+    ("String", "String", r#""Ab""#),
+    ("Multilines", "Multilines", r#""Ab\n""#),
+    ("Color", "Color", "Col"),
+    ("Enum", "Enum", "Enu"),
+    ("FilePath", "File path", "*.*"),
+    ("Tile", "Tile", "Tile"),
+    ("EntityRef", "Entity ref", "Ent"),
+    ("Point", "Point", "X,Y"),
+];
+
+fn field_type_color(kind: &str) -> Color32 {
+    theme::color(match kind {
+        "Int" | "Float" => "#50b3cb",
+        "Bool" => "#cd88dd",
+        "String" | "Multilines" => "#bd5f32",
+        "Color" | "Tile" => "#99d367",
+        "Point" | "FilePath" | "EntityRef" => "#7779c9",
+        _ => "#ff4b4b",
+    })
+}
+
 fn field_type_badge(ui: &mut egui::Ui, kind: &str, array: bool) {
-    let (badge, color) = match kind {
-        "Int" | "Float" => ("123", "#50b3cb"),
-        "Bool" => ("", "#cd88dd"),
-        "String" | "Multilines" => ("Abc", "#bd5f32"),
-        "Color" => ("#", "#99d367"),
-        "Tile" => ("Tile", "#99d367"),
-        "Point" => ("XY", "#7779c9"),
-        "FilePath" => ("File", "#7779c9"),
-        "EntityRef" => ("Ref", "#7779c9"),
-        _ => ("Enu", "#ff4b4b"),
+    let badge = match kind {
+        "Int" | "Float" => "123",
+        "String" | "Multilines" => "Abc",
+        "Color" => "#",
+        "Tile" => "Tile",
+        "Point" => "XY",
+        "FilePath" => "File",
+        "EntityRef" => "Ref",
+        _ => "Enu",
     };
     let (rect, _) = ui.allocate_exact_size(egui::vec2(FIELD_BADGE_WIDTH, 22.), Sense::hover());
-    let edge = theme::color(color);
+    let edge = field_type_color(kind);
     let ink = tint(edge, Color32::WHITE, 0.5);
     let painter = ui.painter();
     painter.add(
@@ -105,6 +130,111 @@ fn field_type_badge(ui: &mut egui::Ui, kind: &str, array: bool) {
     }
 }
 
+fn field_type_card(
+    ui: &mut egui::Ui,
+    kind: &str,
+    label: &str,
+    example: &str,
+    side: f32,
+) -> egui::Response {
+    let label = locale::tr(ui, label);
+    let (rect, response) = ui.allocate_exact_size(Vec2::splat(side), Sense::click());
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label));
+    let active = response.hovered() || response.has_focus();
+    let ink = if active {
+        Color32::BLACK
+    } else {
+        Color32::WHITE
+    };
+    let fill = if active {
+        SOURCE_ORANGE
+    } else {
+        tint(field_type_color(kind), Color32::BLACK, 0.38)
+    };
+    let p = ui.painter().with_clip_rect(ui.clip_rect().intersect(rect));
+    p.rect_filled(rect, 0., fill);
+    p.hline(
+        rect.x_range(),
+        rect.bottom() - 1.,
+        Stroke::new(2_f32, Color32::from_black_alpha(80)),
+    );
+    let border = rect.shrink(6.);
+    p.extend(egui::Shape::dashed_line(
+        &[
+            border.left_top(),
+            border.right_top(),
+            border.right_bottom(),
+            border.left_bottom(),
+            border.left_top(),
+        ],
+        Stroke::new(1_f32, Color32::WHITE),
+        3.,
+        2.,
+    ));
+    let center = rect.center();
+    let mut font = FontId::new(16., theme::TextRole::StrongBody.font().family);
+    let label_width = p.layout_no_wrap(label.into(), font.clone(), ink).size().x;
+    font.size *= ((side - 14.) / label_width).min(1.);
+    p.text(
+        center - egui::vec2(0., 15.),
+        Align2::CENTER_CENTER,
+        label,
+        font,
+        ink,
+    );
+    let sample = center + egui::vec2(0., 13.);
+    let muted = tint(fill, ink, 0.55);
+    if kind == "Bool" {
+        source_controls::paint_checkmark(
+            &p,
+            Rect::from_center_size(sample, Vec2::splat(25.)),
+            muted,
+        );
+    } else {
+        p.text(
+            sample,
+            Align2::CENTER_CENTER,
+            example,
+            FontId::proportional(27.),
+            muted,
+        );
+    }
+    response.on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
+enum FieldTypeChoice {
+    Type(String),
+    OpenEnums,
+}
+
+fn field_enum_menu(ui: &mut egui::Ui, defs: &Value) -> Option<FieldTypeChoice> {
+    let mut choice = None;
+    egui::ScrollArea::vertical()
+        .max_height(ui.ctx().content_rect().height() * 0.6)
+        .show(ui, |ui| {
+            let mut empty = true;
+            for (group, prefix) in [("enums", "LocalEnum"), ("externalEnums", "ExternEnum")] {
+                for def in defs[group].as_array().into_iter().flatten() {
+                    empty = false;
+                    let name = text(def, "identifier", "Enum");
+                    if ui.button(name).clicked() {
+                        choice = Some(FieldTypeChoice::Type(format!("{prefix}.{name}")));
+                    }
+                }
+            }
+            if empty {
+                ui.label(locale::tr(ui, "Create an enum in the Enum panel first."));
+                if project_dialogs::action(ui, "Open enum panel", false).clicked() {
+                    choice = Some(FieldTypeChoice::OpenEnums);
+                }
+            }
+        });
+    if choice.is_some() {
+        ui.close();
+    }
+    choice
+}
+
 impl EditorApp {
     pub(super) fn source_field_list(&mut self, ui: &mut egui::Ui, owner: Option<i64>, height: f32) {
         let fields = self
@@ -133,7 +263,7 @@ impl EditorApp {
             ui.spacing_mut().item_spacing.x = 4.;
             ui.spacing_mut().button_padding.x = 4.;
             for (array, label) in [(false, "+ SINGLE VALUE"), (true, "+ ARRAY")] {
-                if orange(
+                let button = orange(
                     ui,
                     label,
                     egui::vec2(
@@ -144,14 +274,14 @@ impl EditorApp {
                         },
                         button_row_height,
                     ),
-                )
-                .clicked()
-                {
-                    ui.ctx().data_mut(|d| {
-                        d.insert_temp(
-                            egui::Id::new("source-field-type-picker"),
-                            (owner, array, None::<i64>, None::<String>),
-                        )
+                );
+                if button.clicked() {
+                    self.field_type_picker = Some(FieldTypePicker {
+                        anchor: button.rect,
+                        owner,
+                        array,
+                        convert: None,
+                        chosen: None,
                     });
                 }
             }
@@ -348,12 +478,14 @@ impl EditorApp {
                 FontId::monospace(14.),
                 theme::TEXT.gamma_multiply(0.6),
             );
-            if orange(ui, "CONVERT", egui::vec2(73., 33.)).clicked() {
-                ui.ctx().data_mut(|d| {
-                    d.insert_temp(
-                        egui::Id::new("source-field-type-picker"),
-                        (self.field_owner, array, Some(uid), None::<String>),
-                    )
+            let convert = orange(ui, "CONVERT", egui::vec2(73., 33.));
+            if convert.clicked() {
+                self.field_type_picker = Some(FieldTypePicker {
+                    anchor: convert.rect,
+                    owner: self.field_owner,
+                    array,
+                    convert: Some(uid),
+                    chosen: None,
                 });
             }
         });
@@ -1048,8 +1180,8 @@ impl EditorApp {
                         let before =
                             (def["editorDisplayScale"].as_f64().unwrap_or(1.) * 100.).round();
                         let mut percent = before;
-                        ui_commit::prepare_editor(ui.ctx(), ui.next_auto_id());
-                        let response = ui.add_sized(
+                        let response = ui_commit::sized_drag_value(
+                            ui,
                             [scale_width - 4., 32.],
                             egui::DragValue::new(&mut percent)
                                 .speed(1.)
@@ -1070,7 +1202,6 @@ impl EditorApp {
                                     )
                                 }),
                         );
-                        ui_commit::track_editor(ui.ctx(), &response);
                         response.action_tooltip(locale::tr(ui, "Display scale (%)"));
                         if percent != before {
                             patch["editorDisplayScale"] = json!(percent.round() / 100.);
@@ -1190,81 +1321,112 @@ impl EditorApp {
     }
 
     pub(super) fn source_field_type_picker(&mut self, ctx: &egui::Context) {
-        let id = egui::Id::new("source-field-type-picker");
-        let Some((owner, array, convert, mut chosen)) =
-            ctx.data_mut(|d| d.get_temp::<(Option<i64>, bool, Option<i64>, Option<String>)>(id))
-        else {
+        let Some(mut picker) = self.field_type_picker.take() else {
             return;
         };
-        let mut dismiss = false;
+        let id = egui::Id::new("source-field-type-picker");
+        let FieldTypePicker {
+            anchor,
+            owner,
+            array,
+            convert,
+            ..
+        } = picker;
         let mut apply = None;
-        let title = if convert.is_some() {
-            "Convert field type"
-        } else if array {
-            "Create array field"
-        } else {
-            "Create single value field"
-        };
-        let modal = project_dialogs::show_dialog(ctx, id, title, 560., |ui| {
-            egui::ScrollArea::vertical()
-                .max_height((ctx.content_rect().height() - 140.).clamp(80., 420.))
-                .show(ui, |ui| {
-                ui.horizontal_wrapped(|ui| {
-                    for kind in [
-                        "Int", "Float", "Bool", "String", "Multilines", "Color", "FilePath",
-                        "Tile", "EntityRef", "Point",
-                    ] {
-                        if owner.is_none() && matches!(kind, "EntityRef" | "Point") {
-                            continue;
-                        }
-                        if project_dialogs::button(ui, kind, egui::vec2(95., 34.), true, 13.333).clicked() {
-                            chosen = Some(kind.into());
-                            if convert.is_none() {
-                                apply = chosen.clone();
-                            }
-                        }
-                    }
-                });
-                ui.separator();
-                ui.label(locale::tr(ui, "Enums"));
-                let project = self.project.as_ref().unwrap();
-                for (group, prefix) in [("enums", "LocalEnum"), ("externalEnums", "ExternEnum")] {
-                    for def in project.json["defs"][group].as_array().into_iter().flatten() {
-                        let name = text(def, "identifier", "Enum");
-                        if source_controls::button(ui, RichText::new(name)).clicked() {
-                            chosen = Some(format!("{prefix}.{name}"));
-                            if convert.is_none() {
-                                apply = chosen.clone();
-                            }
-                        }
-                    }
-                }
-                if project.json["defs"]["enums"].as_array().is_none_or(Vec::is_empty)
-                    && project.json["defs"]["externalEnums"].as_array().is_none_or(Vec::is_empty)
-                {
-                    ui.label(locale::tr(ui, "Create an enum in the Enum panel first."));
-                    if project_dialogs::action(ui, "Open enum panel", false).clicked() {
-                        self.show_panel(Some(Panel::Enums));
-                        dismiss = true;
-                    }
-                }
-                if convert.is_some() && let Some(kind) = &chosen {
-                    ui.separator();
-                    ui.colored_label(
-                        theme::ACCENT,
-                        locale::tr(ui, "Converting changes existing values and defaults. Values incompatible with the chosen type will be cleared."),
-                    );
+        let mut open;
+        if let Some(kind) = &picker.chosen {
+            let modal = project_dialogs::show_dialog(
+                ctx,
+                id.with("confirm"),
+                "Convert field type",
+                440.,
+                |ui| {
+                    ui.colored_label(theme::ACCENT, locale::tr(ui, "Converting changes existing values and defaults. Values incompatible with the chosen type will be cleared."));
                     let caption = field_type_caption(kind, array);
-                    let label = locale::tr(ui, &caption);
-                    ui.label(locale::format(ui, "Convert to {kind}", &[("kind", label)]));
-                    if project_dialogs::action(ui, "Convert all values", true).clicked() {
-                        apply = chosen.clone();
-                    }
+                    ui.label(locale::format(
+                        ui,
+                        "Convert to {kind}",
+                        &[("kind", locale::tr(ui, &caption))],
+                    ));
+                    ui.horizontal(|ui| {
+                        if project_dialogs::action(ui, "Convert all values", true).clicked() {
+                            apply = Some(kind.clone());
+                        }
+                        project_dialogs::action(ui, "Cancel", false).clicked()
+                    })
+                    .inner
+                },
+            );
+            open = !(modal.inner || modal.should_close());
+        } else {
+            let viewport = ctx.content_rect();
+            let types = if owner.is_some() {
+                FIELD_TYPES
+            } else {
+                &FIELD_TYPES[..9]
+            };
+            let cols = (((viewport.width() - 8.) / 99.).floor() as usize).clamp(1, 5);
+            let side = (viewport.width() - 10.).clamp(32., 97.);
+            let width = cols as f32 * (side + 2.) - 2.;
+            let height = types.len().div_ceil(cols) as f32 * (side + 2.) + 8.;
+            let below = viewport.bottom() - anchor.bottom();
+            let above = anchor.top() - viewport.top();
+            let flip = below < height && above > below;
+            let y = if flip {
+                anchor.top() - height.min(above)
+            } else {
+                anchor.bottom()
+            };
+            let area = egui::Area::new(id)
+                .kind(egui::UiKind::Modal)
+                .order(egui::Order::Foreground)
+                .sense(Sense::hover())
+                .default_width(width + 10.)
+                .fixed_pos(egui::pos2(
+                    anchor.left().clamp(
+                        viewport.left(),
+                        (viewport.right() - width - 10.).max(viewport.left()),
+                    ),
+                    y,
+                ));
+            let mut choice = None;
+            let modal = egui::Modal::new(id).area(area)
+                .frame(project_dialogs::dialog_frame(4).corner_radius(0).stroke(Stroke::new(1_f32, theme::LIGHT)))
+                .show(ctx, |ui| {
+                    ui.set_width(width);
+                    egui::ScrollArea::vertical().max_height((above.max(below) - 10.).max(side)).show(ui, |ui| {
+                        ui.spacing_mut().item_spacing = Vec2::splat(2.);
+                        for row in types.chunks(cols) {
+                            ui.horizontal(|ui| {
+                                for &(kind, label, example) in row {
+                                    let card = field_type_card(ui, kind, label, example, side);
+                                    if kind == "Enum" {
+                                        if let Some(menu) = egui::Popup::menu(&card).show(|ui| {
+                                            field_enum_menu(ui, &self.project.as_ref().unwrap().json["defs"])
+                                        }) {
+                                            choice = menu.inner;
+                                        }
+                                    } else if card.clicked() {
+                                        choice = Some(FieldTypeChoice::Type(kind.into()));
+                                    }
+                                }
+                            });
+                        }
+                    });
+                });
+            open = !modal.should_close();
+            match choice {
+                Some(FieldTypeChoice::OpenEnums) => {
+                    self.show_panel(Some(Panel::Enums));
+                    open = false;
                 }
-            });
-            project_dialogs::action(ui, "Cancel", false).clicked()
-        });
-        let mut open = !(dismiss || modal.inner || modal.should_close());
+                Some(FieldTypeChoice::Type(kind)) if convert.is_some() => {
+                    picker.chosen = Some(kind)
+                }
+                Some(FieldTypeChoice::Type(kind)) => apply = Some(kind),
+                None => {}
+            }
+        }
         if let Some(kind) = apply {
             if let Some(uid) = convert {
                 if self
@@ -1303,9 +1465,7 @@ impl EditorApp {
             }
         }
         if open {
-            ctx.data_mut(|d| d.insert_temp(id, (owner, array, convert, chosen)));
-        } else {
-            ctx.data_mut(|d| d.remove::<(Option<i64>, bool, Option<i64>, Option<String>)>(id));
+            self.field_type_picker = Some(picker);
         }
     }
 }

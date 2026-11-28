@@ -75,6 +75,20 @@ pub(super) fn prepare_editor(ctx: &egui::Context, id: egui::Id) {
         ctx.data_mut(|d| d.remove::<(egui::Id, u64)>(blur_key()));
     }
 }
+/// A sized widget gets a child Ui. Use its ID for both focus tracking and commit.
+pub(super) fn sized_drag_value(
+    ui: &mut egui::Ui,
+    size: [f32; 2],
+    widget: egui::DragValue<'_>,
+) -> egui::Response {
+    ui.add_sized(size, |ui: &mut egui::Ui| {
+        prepare_editor(ui.ctx(), ui.next_auto_id());
+        let response = ui.add(widget);
+        track_editor(ui.ctx(), &response);
+        response
+    })
+}
+
 pub(super) fn track_editor(ctx: &egui::Context, response: &egui::Response) {
     if response.has_focus() {
         ctx.data_mut(|d| {
@@ -380,6 +394,75 @@ mod tests {
             pressed,
             modifiers: egui::Modifiers::NONE,
         }
+    }
+    #[test]
+    fn tileset_grid_focus_releases_the_next_click_in_the_biomes_sample() {
+        let ctx = egui::Context::default();
+        theme::configure(&ctx);
+        let temp = tempfile::tempdir().unwrap();
+        let samples = resource_path("examples/original");
+        let map = "AutoLayers_7_Biomes.ldtk";
+        let atlas = "atlas/Cavernas_by_Adam_Saltsman.png";
+        std::fs::create_dir(temp.path().join("atlas")).unwrap();
+        for file in [map, atlas] {
+            std::fs::copy(samples.join(file), temp.path().join(file)).unwrap();
+        }
+        let mut app = EditorApp::empty();
+        app.set_project(Project::load(temp.path().join(map)).unwrap());
+        app.repaint = Some(ctx.clone());
+        app.show_panel(Some(Panel::Tilesets));
+        let frame = |app: &mut EditorApp, events| {
+            let mut input = egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1440., 900.),
+                )),
+                events,
+                ..Default::default()
+            };
+            app.ui_commit_raw_input(&ctx, &mut input);
+            ctx.run(input, |ctx| {
+                app.shortcuts(ctx);
+                if app.panel == Some(Panel::Tilesets) {
+                    app.source_panel(ctx, Panel::Tilesets);
+                }
+                app.flush_ui_action(ctx);
+            })
+        };
+        frame(&mut app, vec![]);
+        let output = frame(&mut app, vec![]);
+        let grid = output
+            .shapes
+            .iter()
+            .find_map(|s| match &s.shape {
+                egui::Shape::Text(t) if t.galley.text() == "8" => {
+                    Some(t.pos + t.galley.size() * 0.5)
+                }
+                _ => None,
+            })
+            .expect("Cavernas grid size");
+        frame(
+            &mut app,
+            vec![egui::Event::PointerMoved(grid), click(grid, true)],
+        );
+        frame(&mut app, vec![click(grid, false)]);
+        frame(&mut app, vec![]);
+        assert!(focused_editor(&ctx).is_some_and(|editor| editor.rect.contains(grid)));
+        frame(&mut app, vec![egui::Event::Text("8".into())]);
+        assert!(!app.dirty, "editing the draft must not rebuild the atlas");
+        let canvas = egui::pos2(1300., 500.);
+        frame(
+            &mut app,
+            vec![egui::Event::PointerMoved(canvas), click(canvas, true)],
+        );
+        frame(&mut app, vec![click(canvas, false)]);
+        frame(&mut app, vec![]);
+        assert!(
+            app.ui_commit.input_batches.is_empty(),
+            "click still queued after leaving the grid size"
+        );
+        assert!(app.panel.is_none(), "click outside should close Tilesets");
+        assert!(!app.dirty);
     }
     #[test]
     fn multiline_modal_save_commits_then_publishes_exact_text_once() {

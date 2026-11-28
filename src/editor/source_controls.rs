@@ -62,6 +62,13 @@ pub(in crate::app) enum NumberStyle {
         placeholder: Option<&'static str>,
     },
     Float,
+    FieldSlider {
+        integer: bool,
+        default: Option<f64>,
+        min: f64,
+        max: f64,
+        speed: f64,
+    },
     Percent,
     PercentSlider {
         min: f64,
@@ -139,6 +146,9 @@ pub(in crate::app) fn number_input_sized(
         NumberStyle::PercentSlider { min, max } => Some((min, max, 0.4)),
         NumberStyle::IntegerSlider {
             min, max, speed, ..
+        }
+        | NumberStyle::FieldSlider {
+            min, max, speed, ..
         } => Some((min, max, speed)),
         _ => None,
     };
@@ -165,18 +175,29 @@ pub(in crate::app) fn number_input_sized(
             Some((min, max, speed))
                 if ui.is_enabled() && (held || released) && distance.abs() >= 3. =>
             {
-                let start = current.parse::<f64>().unwrap_or(0.);
-                Some(
-                    (start + f64::from(distance) * speed + if percent { 0.5 } else { 0. })
-                        .floor()
-                        .clamp(min, max)
-                        .to_string(),
-                )
+                let start = current.parse::<f64>().unwrap_or_else(|_| match style {
+                    NumberStyle::FieldSlider { default, .. } => default.unwrap_or(0.),
+                    _ => 0.,
+                });
+                let next = start + f64::from(distance) * speed;
+                let next = match style {
+                    NumberStyle::FieldSlider { integer: false, .. } => (next * 20.).round() / 20.,
+                    NumberStyle::FieldSlider { integer: true, .. } => next.trunc(),
+                    NumberStyle::PercentSlider { .. } => (next + 0.5).floor(),
+                    _ => next.floor(),
+                };
+                Some(next.clamp(min, max).to_string())
             }
             _ => None,
         };
         previewing = preview.is_some();
-        if !previewing && !matches!(style, NumberStyle::Float) && step_number(ui, id, draft) {
+        if !previewing
+            && !matches!(
+                style,
+                NumberStyle::Float | NumberStyle::FieldSlider { integer: false, .. }
+            )
+            && step_number(ui, id, draft)
+        {
             immediate = Some(draft.clone());
         }
         let text = preview.as_mut().unwrap_or(draft);
@@ -207,6 +228,12 @@ pub(in crate::app) fn number_input_sized(
         };
         if let Some(placeholder) = placeholder {
             edit = edit.hint_text(locale::tr(ui, placeholder));
+        } else if let NumberStyle::FieldSlider {
+            default: Some(value),
+            ..
+        } = style
+        {
+            edit = edit.hint_text(value.to_string());
         }
         let response = ui.add_sized([width, 33.], edit);
         if slider

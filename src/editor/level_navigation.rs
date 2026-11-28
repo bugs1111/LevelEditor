@@ -228,6 +228,7 @@ impl EditorApp {
             self.set_world_view(false);
         }
         if self.panel != panel {
+            self.field_type_picker = None;
             // The standalone form opens directly on the current level.
             // The embedded World form checks the active depth on opening.
             self.level_form_depth_override = self.selected.filter(|_| panel == Some(Panel::Level));
