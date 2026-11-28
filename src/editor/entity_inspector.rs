@@ -696,14 +696,11 @@ mod tests {
         let strip = rect(theme::LIGHT, 330., Some(30.));
         let left = rect(Color32::from_rgb(115, 127, 157), 120., None);
         let panel = f.state().rect;
-        assert_eq!(
-            [
-                strip.top() - panel.top(),
-                left.top() - strip.bottom(),
-                panel.bottom() - left.bottom(),
-            ],
-            [36., 2., 20.],
-        );
+        // The reference font's line height differs by half a point across systems.
+        let header_height = strip.top() - panel.top();
+        assert!((header_height - 36.).abs() <= 0.5, "{header_height}");
+        assert_eq!(left.top() - strip.bottom(), 2.);
+        assert_eq!(panel.bottom() - left.bottom(), 20.);
     }
     fn label(output: &egui::FullOutput, label: &str) -> egui::Pos2 {
         fn find(shape: &egui::Shape, label: &str) -> Option<egui::Pos2> {

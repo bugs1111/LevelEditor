@@ -665,15 +665,11 @@ impl EditorApp {
                 let message = locale::tr(ui, "Do you want to save before leaving?");
                 let width = confirmation_prompt(ui, message);
                 ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 8.;
+                    let button_width = (width - 2. * ui.spacing().item_spacing.x) / 3.;
                     for (index, label) in ["YES", "NO", "CANCEL"].into_iter().enumerate() {
-                        if button(
-                            ui,
-                            label,
-                            egui::vec2((width - 4.) / 3., 35.),
-                            index == 2,
-                            14.667,
-                        )
-                        .clicked()
+                        if button(ui, label, egui::vec2(button_width, 35.), index == 2, 14.667)
+                            .clicked()
                         {
                             choice = Some(index);
                         }
