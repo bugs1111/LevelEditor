@@ -1065,11 +1065,7 @@ impl EditorApp {
                 "Show path of points (looping)",
                 entity && point && array,
             ),
-            (
-                "RadiusPx",
-                "As a radius (pixels)",
-                entity && number && !array,
-            ),
+            ("RadiusPx", "As a radius (px)", entity && number && !array),
             (
                 "RadiusGrid",
                 "As a radius (grid-based)",

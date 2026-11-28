@@ -290,7 +290,7 @@ impl EditorApp {
                         if value==0. {
                             locale::tr_ctx(&ctx, "Disabled").into()
                         } else {
-                            locale::format_ctx(&ctx, "{value} pixels", &[("value", &((value*64.).ceil() as i32).to_string())])
+                            format!("{} px", (value*64.).ceil() as i32)
                         }
                     });
                 });
@@ -733,7 +733,7 @@ mod tests {
             "Outlined texts (default)",
             "Switch when zooming in or out (default)",
             "WASD",
-            "64 pixels (default)",
+            "64 px (default)",
         ] {
             label(&output, name);
         }
@@ -772,7 +772,7 @@ mod tests {
         assert_eq!(app.settings.value["singleLayerModeIntensity"], 0.8);
         assert_eq!(app.settings.value["nearbyTilesRenderingDist"], 1.5);
         label(&output, "80%");
-        label(&output, "96 pixels");
+        label(&output, "96 px");
         click(&mut app, &ctx, label(&output, "CLOSE"));
         assert!(app.panel.is_none());
         assert_eq!(std::fs::read(&path).unwrap(), saved);

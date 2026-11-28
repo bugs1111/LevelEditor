@@ -428,7 +428,7 @@ pub(super) fn pivot_editor(
         ui.ctx().data_mut(|d|d.insert_temp(id,advanced));
         if advanced {
             let value=json!({"x":pivot[0],"y":pivot[1],"px":(pivot[0]*size[0]).floor(),"py":(pivot[1]*size[1]).floor()});
-            let patch=form(ui,&value,&[Property("x","Pivot X",Widget::Float(-50.,50.)),Property("y","Pivot Y",Widget::Float(-50.,50.)),Property("px","X pixels",Widget::Int(-2048,2048)),Property("py","Y pixels",Widget::Int(-2048,2048))]);
+            let patch=form(ui,&value,&[Property("x","Pivot X",Widget::Float(-50.,50.)),Property("y","Pivot Y",Widget::Float(-50.,50.)),Property("px","X (px)",Widget::Int(-2048,2048)),Property("py","Y (px)",Widget::Int(-2048,2048))]);
             if changed(&patch) {
                 let mut p=pivot;
                 for (axis,(ratio,pixels)) in [("x","px"),("y","py")].into_iter().enumerate() {

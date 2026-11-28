@@ -162,7 +162,7 @@ fn background_pivot_inputs(
                 egui::Layout::top_down(egui::Align::Min)
             };
             ui.with_layout(layout, |ui| {
-                for (pixels, caption) in [(false, "Float:"), (true, "Pixels:")] {
+                for (pixels, caption) in [(false, "Float:"), (true, "px:")] {
                     if pixels {
                         ui.separator();
                     }

@@ -3894,6 +3894,16 @@ mod tests {
                 .rect();
             assert_eq!(panel.right(), width);
         }
+        locale::set(&ctx, locale::Language::SimplifiedChinese);
+        draw(&mut app, &ctx, 1000.);
+        let out = draw(&mut app, &ctx, 1000.);
+        for suffix in ["px 图块，间距为", "px，图集边距为", "px"] {
+            assert!(
+                out.shapes.iter().any(|s| label(&s.shape, suffix).is_some()),
+                "missing {suffix}"
+            );
+        }
+        locale::set(&ctx, locale::Language::English);
         app.project.as_mut().unwrap().json["defs"]["tilesets"][0]["embedAtlas"] =
             json!("LdtkIcons");
         let out = draw(&mut app, &ctx, 1000.);

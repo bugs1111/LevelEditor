@@ -58,32 +58,17 @@ fn backup_labels(
         ))
     })()
     .unwrap_or_else(|| stamp.clone());
-    let title = if entry.crash {
-        locale::tr(ui, "Crash recovery").to_owned()
-    } else {
-        match age {
-            Some(seconds @ 0..=59) => locale::format(
-                ui,
-                "{count} seconds ago",
-                &[("count", &seconds.to_string())],
-            ),
-            Some(60..=119) => locale::tr(ui, "1 minute ago").to_owned(),
-            Some(seconds @ 120..=3599) => locale::format(
-                ui,
-                "{count} minutes ago",
-                &[("count", &(seconds / 60).to_string())],
-            ),
-            Some(3600..=7199) => locale::tr(ui, "1 hour ago").to_owned(),
-            Some(seconds @ 7200..=86399) => locale::format(
-                ui,
-                "{count} hours ago",
-                &[("count", &(seconds / 3600).to_string())],
-            ),
-            _ => date.clone(),
-        }
+    if entry.crash {
+        return (locale::tr(ui, "Crash recovery").to_uppercase(), Some(date));
+    }
+    let (count, unit) = match age {
+        Some(s @ 0..=59) => (s, "s"),
+        Some(s @ 60..=3599) => (s / 60, "min"),
+        Some(s @ 3600..=86399) => (s / 3600, "h"),
+        _ => return (date.to_uppercase(), None),
     };
-    let subtitle = (title != date).then_some(date);
-    (title.to_uppercase(), subtitle)
+    let title = locale::format(ui, "{age} AGO", &[("age", &format!("{count} {unit}"))]);
+    (title, Some(date))
 }
 
 fn backup_menu_row(
@@ -497,7 +482,7 @@ mod tests {
                 assert_eq!(backup_labels(ui, &entry, None), (date.to_uppercase(), None));
                 assert_eq!(
                     backup_labels(ui, &entry, Some(120)),
-                    ("2 MINUTES AGO".into(), Some(date.into()))
+                    ("2 min AGO".into(), Some(date.into()))
                 );
                 entry.crash = true;
                 assert_eq!(
@@ -509,6 +494,10 @@ mod tests {
                     backup_labels(ui, &entry, None),
                     ("崩溃恢复".into(), Some("2024年1月6日 13:15".into()))
                 );
+                entry.crash = false;
+                for (age, title) in [(3, "3 s 前"), (60, "1 min 前"), (7200, "2 h 前")] {
+                    assert_eq!(backup_labels(ui, &entry, Some(age)).0, title);
+                }
                 locale::set(ctx, locale::Language::English);
             });
         });

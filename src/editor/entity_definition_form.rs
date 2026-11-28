@@ -367,7 +367,7 @@ impl EditorApp {
                     );
                     source_controls::help_tooltip(
                         help.on_hover_cursor(egui::CursorIcon::Help),
-                        "9-slice scaling splits the texture into nine parts. Corners keep their size, edges repeat, and the center stretches. Border sizes are in pixels.",
+                        "9-slice scaling splits the texture into nine parts. Corners keep their size, edges repeat, and the center stretches. Border sizes are in px.",
                         false,
                     );
                     ui.label(locale::tr(ui, "9-slices borders:"));
@@ -510,7 +510,7 @@ impl EditorApp {
                         ui.spacing_mut().item_spacing.x = 4.;
                         for (label, inputs, pixels) in [
                             ("Float:", ["customFloatX", "customFloatY"], false),
-                            ("Pixels:", ["customPixelX", "customPixelY"], true),
+                            ("px:", ["customPixelX", "customPixelY"], true),
                         ] {
                             if pixels {
                                 ui.separator();

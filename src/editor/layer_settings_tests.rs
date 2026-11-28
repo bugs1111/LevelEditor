@@ -156,6 +156,14 @@ fn default_tileset_row_opens_the_library_and_reports_bound_tile_size() {
             "layer grid {grid}"
         );
     }
+    locale::set(&ctx, locale::Language::SimplifiedChinese);
+    let out = frame(&mut app, &ctx, vec![]);
+    let x_unit = label(&out, "px, Y=");
+    assert!(
+        labels(&out, "px")
+            .iter()
+            .any(|r| r.left() > x_unit.right() && (r.center().y - x_unit.center().y).abs() < 1.)
+    );
 }
 
 #[test]
