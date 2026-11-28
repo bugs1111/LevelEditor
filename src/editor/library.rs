@@ -2097,17 +2097,7 @@ impl EditorApp {
                         )
                         .backdrop_color(Color32::from_black_alpha(140))
                         .show(ctx, |ui| {
-                            let font = FontId::proportional(14.667);
-                            let width = ui
-                                .painter()
-                                .layout_no_wrap(title.clone(), font.clone(), Color32::WHITE)
-                                .size()
-                                .x
-                                .clamp(100., 360.);
-                            ui.set_width(width);
-                            ui.spacing_mut().item_spacing = egui::vec2(2., 0.);
-                            ui.label(RichText::new(title).font(font).color(Color32::WHITE));
-                            ui.add_space(16.);
+                            let width = project_dialogs::confirmation_prompt(ui, &title);
                             ui.horizontal(|ui| {
                                 let size = egui::vec2((width - 2.) * 0.5, 35.);
                                 let confirm =

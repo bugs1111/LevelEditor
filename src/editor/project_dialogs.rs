@@ -154,6 +154,31 @@ pub(super) fn dialog_frame(padding: i8) -> egui::Frame {
         })
 }
 
+// Logical points, including the frame. Keep a small gutter on compact windows.
+const MIN_DIALOG_SIZE: Vec2 = egui::vec2(400., 144.);
+
+pub(super) fn confirmation_prompt(ui: &mut egui::Ui, message: &str) -> f32 {
+    let size =
+        MIN_DIALOG_SIZE.min((ui.ctx().content_rect().size() - Vec2::splat(16.)).max(Vec2::ZERO));
+    let content = size - ui.stack().frame().total_margin().sum();
+    let width = content.x.max(1.);
+    let prompt_height = (content.y - 16. - 35.).max(0.);
+    ui.set_width(width);
+    ui.spacing_mut().item_spacing = egui::vec2(2., 0.);
+    ui.allocate_ui_with_layout(
+        egui::vec2(width, prompt_height),
+        egui::Layout::left_to_right(egui::Align::Center),
+        |ui| {
+            ui.set_min_height(prompt_height);
+            ui.add(
+                egui::Label::new(RichText::new(message).size(14.667).color(Color32::WHITE)).wrap(),
+            );
+        },
+    );
+    ui.add_space(16.);
+    width
+}
+
 pub(super) fn show_dialog<R>(
     ctx: &egui::Context,
     id: egui::Id,
@@ -167,6 +192,11 @@ pub(super) fn show_dialog<R>(
         .backdrop_color(Color32::from_black_alpha(140))
         .show(ctx, |ui| {
             ui.set_width(width);
+            ui.set_min_height(
+                MIN_DIALOG_SIZE
+                    .y
+                    .min((ctx.content_rect().height() - 24.).max(0.)),
+            );
             ui.spacing_mut().item_spacing.y = 0.;
             dialog_title(ui, title, width, theme::LIGHT);
             egui::Frame::new()
@@ -601,19 +631,12 @@ impl EditorApp {
             .frame(dialog_frame(20))
             .backdrop_color(Color32::from_black_alpha(140))
             .show(ctx, |ui| {
-                let width = (ctx.content_rect().width() - 56.).clamp(160., 360.);
-                ui.set_width(width);
-                ui.spacing_mut().item_spacing = egui::vec2(2., 0.);
-                ui.label(
-                    RichText::new(locale::format(
-                        ui,
-                        "The project file is no longer in {path}. Save to this path anyway?",
-                        &[("path", &path.display().to_string())],
-                    ))
-                    .size(14.667)
-                    .color(Color32::WHITE),
+                let message = locale::format(
+                    ui,
+                    "The project file is no longer in {path}. Save to this path anyway?",
+                    &[("path", &path.display().to_string())],
                 );
-                ui.add_space(16.);
+                let width = confirmation_prompt(ui, &message);
                 ui.horizontal(|ui| {
                     let size = egui::vec2((width - 2.) / 2., 35.);
                     let confirm = button(ui, "CONFIRM", size, false, 13.333).clicked();
@@ -640,20 +663,7 @@ impl EditorApp {
             .backdrop_color(Color32::from_black_alpha(140))
             .show(ctx, |ui| {
                 let message = locale::tr(ui, "Do you want to save before leaving?");
-                let width = ui.fonts_mut(|fonts| {
-                    fonts
-                        .layout_no_wrap(
-                            message.into(),
-                            FontId::proportional(14.667),
-                            Color32::WHITE,
-                        )
-                        .size()
-                        .x
-                });
-                ui.set_width(width);
-                ui.spacing_mut().item_spacing = egui::vec2(2., 0.);
-                ui.label(RichText::new(message).size(14.667).color(Color32::WHITE));
-                ui.add_space(16.);
+                let width = confirmation_prompt(ui, message);
                 ui.horizontal(|ui| {
                     for (index, label) in ["YES", "NO", "CANCEL"].into_iter().enumerate() {
                         if button(
@@ -1911,6 +1921,42 @@ mod tests {
             !destination.exists(),
             "A failed save created a directory at the project path"
         );
+    }
+
+    #[test]
+    fn close_confirmation_keeps_its_size_across_languages_and_fits_narrow_windows() {
+        for language in [
+            locale::Language::English,
+            locale::Language::SimplifiedChinese,
+        ] {
+            for screen_width in [960., 320.] {
+                let mut app = EditorApp::empty();
+                let ctx = egui::Context::default();
+                theme::configure(&ctx);
+                locale::set(&ctx, language);
+                let screen = Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(screen_width, 540.));
+                for _ in 0..4 {
+                    let _ = ctx.run(
+                        egui::RawInput {
+                            screen_rect: Some(screen),
+                            ..Default::default()
+                        },
+                        |ctx| app.show_unsaved_changes_dialog(ctx),
+                    );
+                }
+                let rect = egui::AreaState::load(&ctx, egui::Id::new("unsaved-changes"))
+                    .unwrap()
+                    .rect();
+                assert!(
+                    (rect.width() - (screen_width - 16.).min(400.)).abs() <= 1.,
+                    "{language:?}: {rect:?}"
+                );
+                assert!(
+                    rect.height() >= 143. && screen.contains_rect(rect),
+                    "{language:?}: {rect:?}"
+                );
+            }
+        }
     }
 
     #[test]

@@ -444,6 +444,7 @@ fn shortcut(raw: &str) -> egui::Key {
         "A" => egui::Key::A,
         "B" => egui::Key::B,
         "V" => egui::Key::V,
+        "W" => egui::Key::W,
         "S" => egui::Key::S,
         "E" => egui::Key::E,
         "P" => egui::Key::P,

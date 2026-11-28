@@ -122,20 +122,7 @@ impl EditorApp {
         };
         let modal = modal.show(ctx, |ui| {
             let prompt = locale::tr(ui, prompt);
-            let font = FontId::proportional(14.667);
-            let width = if layout_change {
-                (ctx.content_rect().width() - 42.).clamp(0., 358.)
-            } else {
-                ui.painter()
-                    .layout_no_wrap(prompt.to_owned(), font.clone(), Color32::WHITE)
-                    .size()
-                    .x
-                    .clamp(160., 360.)
-            };
-            ui.set_width(width);
-            ui.spacing_mut().item_spacing = egui::vec2(2., 0.);
-            ui.add(egui::Label::new(RichText::new(prompt).font(font).color(Color32::WHITE)).wrap());
-            ui.add_space(16.);
+            project_dialogs::confirmation_prompt(ui, prompt);
             let actions = egui::Frame::new()
                 .inner_margin(1)
                 .show(ui, |ui| {
@@ -421,7 +408,10 @@ mod tests {
                 (body.center() - egui::pos2(500., 450.)).abs().max_elem() <= 1.,
                 "{body:?}"
             );
-            assert!((body.height() - 112.).abs() <= 2., "{body:?}");
+            assert!(
+                (body.width() - 400.).abs() <= 1. && body.height() >= 144.,
+                "{body:?}"
+            );
             assert!((confirm.y - cancel.y).abs() < 1.);
             assert!(((confirm.x + cancel.x) * 0.5 - body.center().x).abs() <= 1.);
             click(&mut app, &ctx, "CANCEL");

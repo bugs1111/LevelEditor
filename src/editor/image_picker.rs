@@ -273,14 +273,10 @@ impl EditorApp {
             let modal = project_dialogs::form_warning_dialog(id)
                 .area(area)
                 .show(ui.ctx(), |ui| {
-                    ui.label(
-                        RichText::new(locale::tr(ui, "Stop using this image?"))
-                            .size(14.667)
-                            .color(Color32::WHITE),
-                    );
-                    ui.add_space(12.);
+                    let question = locale::tr(ui, "Stop using this image?");
+                    let width = project_dialogs::confirmation_prompt(ui, question);
                     ui.horizontal(|ui| {
-                        let size = egui::vec2(82., 34.);
+                        let size = egui::vec2((width - 2.) * 0.5, 35.);
                         let confirm =
                             project_dialogs::button(ui, "CONFIRM", size, false, 13.333).clicked();
                         let cancel =

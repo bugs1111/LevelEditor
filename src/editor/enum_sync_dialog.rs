@@ -466,15 +466,12 @@ impl EditorApp {
     }
 
     fn remove_external_enum_source_dialog(&mut self, ctx: &egui::Context, source: String) {
-        let width = (ctx.content_rect().width() - 40.).clamp(180., 360.);
         let modal = egui::Modal::new(egui::Id::new("remove-external-enum-source"))
             .frame(project_dialogs::dialog_frame(20).fill(Color32::from_rgb(112, 20, 4)))
             .backdrop_color(Color32::from_black_alpha(140))
             .show(ctx, |ui| {
-                ui.set_width(width);
-                ui.spacing_mut().item_spacing = egui::vec2(2., 0.);
-                ui.label(RichText::new(locale::tr(ui, "WARNING: removing this external enum will also remove ALL the external enums from the same source! Please note that this will also affect all Entities using any of these enums in ALL levels.")).size(14.).color(Color32::WHITE));
-                ui.add_space(16.);
+                let message = locale::tr(ui, "WARNING: removing this external enum will also remove ALL the external enums from the same source! Please note that this will also affect all Entities using any of these enums in ALL levels.");
+                let width = project_dialogs::confirmation_prompt(ui, message);
                 ui.horizontal(|ui| {
                     let size = egui::vec2((width - 2.) / 2., 35.);
                     let confirm = project_dialogs::button(ui, "CONFIRM", size, false, 13.333).clicked();

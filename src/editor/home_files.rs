@@ -289,13 +289,13 @@ impl EditorApp {
         let modal = egui::Modal::new(id)
             .frame(project_dialogs::dialog_frame(20).fill(Color32::from_rgb(121, 17, 5)))
             .show(ctx, |ui| {
-                ui.set_width((ctx.content_rect().width() - 40.).clamp(0., 358.));
                 let name = project.file_stem().unwrap_or_default().to_string_lossy();
-                ui.label(locale::format(
+                let message = locale::format(
                     ui,
                     "Delete all crash recovery files project {name}?",
                     &[("name", &name)],
-                ));
+                );
+                project_dialogs::confirmation_prompt(ui, &message);
                 ui.horizontal(|ui| {
                     let size = egui::vec2((ui.available_width() - 2.) * 0.5, 35.);
                     let confirm =
